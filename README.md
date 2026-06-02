@@ -14,6 +14,9 @@ A Firebase-based Point of Sale (POS) system.
 
 - `frontend/` - React frontend (Vite, TailwindCSS)
 - `firestore.rules` - Firebase Security Rules
+- `firestore.indexes.json` - Firestore composite index definitions
+- `firebase.json` - Firebase CLI deployment configuration
+- `.firebaserc.example` - Example local Firebase project mapping
 
 ## 1. Install Dependencies
 
@@ -45,11 +48,61 @@ VITE_FIREBASE_APP_ID=""
 npm run dev
 ```
 
-## 4. Setup Firestore Security Rules
+## 4. Connect Firebase CLI Locally
 
-You must deploy the rules provided in `firestore.rules` to your Firebase Firestore project to secure the database. You can do this by copying the contents of `firestore.rules` into **Firebase Console → Firestore Database → Rules**, then clicking Publish.
+Install and log in to the Firebase CLI if needed:
 
-## 5. Seed the System
+```bash
+npm install -g firebase-tools
+firebase login
+```
+
+Create a local `.firebaserc` file for your own Firebase project. Do not commit this file.
+
+Recommended:
+
+```bash
+firebase use --add
+```
+
+Then select your Firebase project and use `default` as the alias.
+
+Alternative manual setup:
+
+```bash
+cp .firebaserc.example .firebaserc
+```
+
+Then edit `.firebaserc` locally and replace `your-firebase-project-id` with your Firebase project ID.
+
+The real `.firebaserc` and `.env` files are intentionally ignored by git because they contain project-specific configuration.
+
+## 5. Deploy Firestore Rules and Indexes
+
+`firebase.json` points the Firebase CLI to the local rules and indexes files:
+
+- Rules: `firestore.rules`
+- Indexes: `firestore.indexes.json`
+
+Deploy Firestore security rules:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+Deploy Firestore indexes:
+
+```bash
+firebase deploy --only firestore:indexes
+```
+
+You can deploy both together with:
+
+```bash
+firebase deploy --only firestore
+```
+
+## 6. Seed the System
 
 To start using the app, you need administrative privileges and initial data:
 1. Log in with a standard email (e.g. `admin@coffeebond.com`) and any password. (Make sure you enable Email/Password authentication in Firebase).
@@ -59,7 +112,7 @@ To start using the app, you need administrative privileges and initial data:
 5. Go to **Admin → Seed Data** and click **"1. Initialize System Roles & Categories"**, followed by **"2. Seed Basic Menu Items"** if you want sample Coffee Bond data.
 6. The system is now fully set up.
 
-## 6. Test Flow
+## 7. Test Flow
 
 1. Go to the **POS**. Select an initial store if prompted.
 2. Add items to the cart and click checkout.
@@ -68,7 +121,7 @@ To start using the app, you need administrative privileges and initial data:
 5. Open the **Barista KOT** or **Kitchen KOT** page in a new window to see the incoming orders.
 6. Check **Reports** to see live stats update.
 
-## 7. Troubleshooting Firebase Auth
+## 8. Troubleshooting Firebase Auth
 
 If you encounter sign-in issues (like `auth/network-request-failed` or invalid API key), check the following:
 
@@ -76,17 +129,22 @@ If you encounter sign-in issues (like `auth/network-request-failed` or invalid A
 - **Email/Password Sign-in Not Enabled**: You must explicitly enable the "Email/Password" sign-in method in **Firebase Console → Authentication → Sign-in method**.
 - **Wrong Firebase Env Values**: Make sure the values in your `.env` file perfectly match the values from Firebase Console → Project Settings → General → Your apps (Web app configuration). Missing or incorrect `VITE_FIREBASE_API_KEY` or `VITE_FIREBASE_AUTH_DOMAIN` will cause instant failures.
 
-## 8. Required Firestore Indexes
+## 9. Required Firestore Indexes
 
-The application requires specific composite indexes to query data efficiently. 
-If an index is missing, you will see a UI warning guiding you to create it.
+The application requires specific composite indexes to query data efficiently. These are tracked in `firestore.indexes.json` and can be deployed with:
+
+```bash
+firebase deploy --only firestore:indexes
+```
+
+If an index is missing in Firebase, you may also see a UI warning guiding you to create it.
 
 **Required Composite Index:**
 Collection: `stockMovements`
 - `storeId` (Ascending)
 - `createdAt` (Descending)
 
-## 9. Production Modes / Stock Examples
+## 10. Production Modes / Stock Examples
 
 The new Menu Management architecture supports the following production modes:
 
