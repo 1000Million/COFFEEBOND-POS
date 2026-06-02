@@ -1,0 +1,161 @@
+import React, { useState } from 'react';
+import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Store, Tags, MenuSquare, Package, BookOpen, Menu, X } from 'lucide-react';
+
+export default function Layout() {
+  const { staffProfile, logout } = useAuth();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const location = useLocation();
+  const isPos = location.pathname === '/pos';
+
+  if (!staffProfile) return null;
+
+  const role = staffProfile.role;
+
+  // Determine navigation links based on role
+  const navLinks = [];
+
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
+    navLinks.push({ to: '/pos', label: 'POS', title: 'POS', icon: Calculator });
+    if (role === 'ADMIN' || role === 'STORE_MANAGER') {
+      navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
+    }
+  }
+  
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'BARISTA') {
+    navLinks.push({ to: '/kot/barista', label: 'Barista', title: 'Barista KOT', icon: Coffee });
+  }
+  
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'KITCHEN') {
+    navLinks.push({ to: '/kot/kitchen', label: 'Kitchen', title: 'Kitchen KOT', icon: ChefHat });
+  }
+  
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
+    navLinks.push({ to: '/kot/ready', label: 'Ready', title: 'Ready to Serve', icon: Coffee });
+  }
+
+  const showAdmin = role === 'ADMIN';
+
+  return (
+    <div className="min-h-[100dvh] bg-[#f9f5f0] flex flex-col font-sans text-neutral-800">
+      <header className={`bg-white border-b border-neutral-200 px-4 md:px-6 py-3 flex items-center justify-between sticky top-0 z-50 ${isPos ? 'hidden lg:flex' : ''}`}>
+        <div className="flex items-center gap-3">
+          <div className="md:hidden">
+             <button 
+               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+               className="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 rounded-lg transition-colors"
+             >
+               {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+             </button>
+          </div>
+          <div className="w-9 h-9 bg-[#5c4033] rounded-lg flex items-center justify-center text-[#f9f5f0]">
+            <Coffee size={18} />
+          </div>
+          <div className="hidden sm:block">
+            <h1 className="text-lg font-black tracking-tight text-[#3e2723] leading-none">Coffee Bond</h1>
+            <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-widest">Point of Sale</span>
+          </div>
+        </div>
+
+        {/* Center Nav - Desktop */}
+        <nav className="hidden md:flex items-center gap-1 bg-neutral-50 p-1 rounded-full border border-neutral-200 mx-4">
+          {navLinks.map((link) => (
+            <NavLink 
+              key={link.to} 
+              to={link.to}
+              title={link.title}
+              className={({ isActive }) => 
+                `px-4 py-1.5 rounded-full text-sm font-semibold transition-all flex items-center gap-1.5 ${
+                  isActive ? 'bg-white text-[#5c4033] shadow-sm ring-1 ring-neutral-200/50' : 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100'
+                }`
+              }
+            >
+              {link.label}
+            </NavLink>
+          ))}
+        </nav>
+
+        {/* Right Section */}
+        <div className="flex items-center gap-4">
+          {showAdmin && (
+            <NavLink 
+              to="/admin"
+              className={({ isActive }) => 
+                `hidden md:flex px-4 py-1.5 rounded-full text-sm font-bold transition-all items-center gap-1.5 border ${
+                  isActive ? 'bg-[#5c4033] text-white border-[#5c4033] shadow-sm' : 'bg-white text-[#5c4033] border-[#5c4033]/30 hover:bg-[#5c4033]/5'
+                }`
+              }
+            >
+              <LayoutDashboard size={16} />
+              Admin
+            </NavLink>
+          )}
+
+          <div className="flex flex-col items-end">
+            <span className="text-[13px] font-bold text-neutral-800 leading-tight">{staffProfile.name}</span>
+            <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-[1px] rounded uppercase tracking-wider">
+              {staffProfile.role.replace('_', ' ')}
+            </span>
+          </div>
+          
+          <button 
+            onClick={logout}
+            className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            title="Sign Out"
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile Nav Menu */}
+      {mobileMenuOpen && (
+        <nav className="md:hidden flex flex-col bg-white border-b border-neutral-200 px-4 py-2 absolute top-[61px] left-0 right-0 z-40 shadow-lg">
+          {navLinks.map((link) => (
+            <NavLink 
+              key={link.to} 
+              to={link.to}
+              onClick={() => setMobileMenuOpen(false)}
+              className={({ isActive }) => 
+                `px-4 py-3 rounded-xl text-sm font-bold transition-colors flex items-center gap-2 my-1 ${
+                  isActive ? 'bg-[#5c4033]/5 text-[#5c4033]' : 'text-neutral-600 hover:bg-neutral-50'
+                }`
+              }
+            >
+              <link.icon size={16} />
+              {link.label}
+            </NavLink>
+          ))}
+          
+          {showAdmin && (
+            <div className="mt-2 pt-2 border-t border-neutral-100">
+               <NavLink 
+                to="/admin"
+                onClick={() => setMobileMenuOpen(false)}
+                className={({ isActive }) => 
+                  `px-4 py-3 rounded-xl text-sm font-bold transition-colors flex items-center gap-2 ${
+                    isActive ? 'bg-[#5c4033] text-white' : 'text-[#5c4033] bg-[#5c4033]/5 hover:bg-[#5c4033]/10'
+                  }`
+                }
+              >
+                <LayoutDashboard size={16} />
+                Admin Dashboard
+              </NavLink>
+            </div>
+          )}
+        </nav>
+      )}
+
+      <main className={`flex-1 flex flex-col w-full min-w-0 h-full max-w-[1600px] mx-auto ${isPos ? 'p-0 lg:p-4 lg:md:p-6' : 'p-4 md:p-6'}`}>
+        <Outlet />
+      </main>
+      
+      {!isPos && (
+        <footer className="bg-[#f9f5f0] text-center pb-2 relative z-10 opacity-60 hover:opacity-100 transition-opacity">
+           <p className="text-[10px] font-mono text-neutral-400 font-medium tracking-wider">COFFEE BOND INC.</p>
+        </footer>
+      )}
+    </div>
+  );
+}

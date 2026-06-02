@@ -1,0 +1,178 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && (request.auth.uid == '51eEH5q0wVXe5aIPERsqOO8zx8A2' || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'ADMIN'));
+    }
+    
+    function isStoreManager() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'STORE_MANAGER';
+    }
+    
+    function isActiveStaff() {
+      return isSignedIn() && (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().isActive == true));
+    }
+
+    function isCheckoutStaff() {
+      return isAdmin() || (isActiveStaff() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role in ['STORE_MANAGER', 'CASHIER']);
+    }
+
+    function hasStoreAccess(storeId) {
+      return isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow read, write: if isAdmin();
+    }
+
+    // App Settings
+    match /appSettings/{document=**} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    // Stores
+    match /stores/{storeId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+    
+    // Categories
+    match /categories/{categoryId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+    
+    match /importDiagnostics/{docId} {
+      allow read, write: if isAdmin();
+    }
+    
+    // Menu Items
+    match /menuItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow create, delete: if isAdmin();
+      // Admin can update all fields.
+      // Store Manager can only update availableStoreIds.
+      allow update: if isAdmin() || (isStoreManager() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availableStoreIds', 'updatedAt']));
+    }
+    
+    // Counters
+    match /counters/{counterId} {
+      allow read: if isCheckoutStaff();
+      allow write: if isCheckoutStaff();
+    }
+
+    // Customers
+    match /customers/{customerId} {
+      allow get, list: if isCheckoutStaff();
+      allow create, update: if isCheckoutStaff();
+      allow delete: if isAdmin();
+    }
+
+    // Orders Collection
+    match /orders/{orderId} {
+      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      // Allow create only if POS staff, and they have access to the store they are creating for
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      // Allow update if Admin, or if they have access to the store
+      allow update: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow delete: if isAdmin();
+      
+      // Order Subcollections
+      match /items/{itemId} {
+        allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
+        allow write: if isActiveStaff(); 
+      }
+      match /payments/{paymentId} {
+        allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
+        allow write: if isCheckoutStaff();
+      }
+    }
+
+    match /kotItems/{kotId} {
+      allow read: if isActiveStaff() && hasStoreAccess(resource.data.storeId);
+      
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      
+      allow update: if isActiveStaff() && hasStoreAccess(resource.data.storeId) && (
+        isAdmin() || 
+        isStoreManager() ||
+        userData().role == 'CASHIER' ||
+        (userData().role == 'BARISTA' && resource.data.station == 'BARISTA') ||
+        (userData().role == 'KITCHEN' && resource.data.station == 'KITCHEN')
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    match /inventoryItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /storeInventory/{stockId} {
+      allow read: if isActiveStaff();
+      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId) 
+                    || (isCheckoutStaff() && hasStoreAccess(resource.data.storeId) && request.resource.data.currentStock <= resource.data.currentStock);
+      allow delete: if isAdmin();
+    }
+
+    match /recipes/{recipeId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /stockMovements/{movementId} {
+      allow read: if isActiveStaff();
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId) && (
+          (isAdmin() || isStoreManager()) || 
+          (request.resource.data.movementType in ['SALE_DEDUCTION', 'WASTAGE'])
+      );
+      allow delete: if false; // no deletions
+      allow update: if false; // no modifications
+    }
+
+    // --- Menu Management V2 Collections ---
+    match /rawIngredients/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /prepItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /finishedGoods/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /storeStock/{stockId} {
+      allow read: if isActiveStaff();
+      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId)
+                    || (isCheckoutStaff() && hasStoreAccess(resource.data.storeId) && request.resource.data.currentStock <= resource.data.currentStock);
+      allow delete: if isAdmin();
+    }
+
+    match /prepProductions/{prodId} {
+      allow read: if isActiveStaff();
+      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow delete, update: if isAdmin();
+    }
+  }
+}
