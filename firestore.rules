@@ -78,6 +78,10 @@ service cloud.firestore {
     match /importDiagnostics/{docId} {
       allow read, write: if isAdmin();
     }
+
+    match /importManifests/{document=**} {
+      allow read, write: if isAdmin();
+    }
     
     // Menu Items
     match /menuItems/{itemId} {

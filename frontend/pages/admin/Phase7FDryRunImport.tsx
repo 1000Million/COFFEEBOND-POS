@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 
 type FileKey = 'raw' | 'prepSummary' | 'prepBom' | 'finishedBom' | 'finishedSummary';
 type ReportAction = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'BLOCKED';
+type ImportCollection = 'rawIngredients' | 'prepItems' | 'finishedGoods' | 'storeStock';
 
 type CsvRow = Record<string, string>;
 
@@ -31,6 +32,17 @@ type FileConfig = {
 type DryRunReportRow = {
   collection: string;
   docId: string;
+  action: ReportAction;
+  reason: string;
+  hashBefore: string;
+  hashAfter: string;
+};
+
+type ImportPayloadRecord = {
+  collectionName: ImportCollection;
+  docId: string;
+  payload: Record<string, unknown>;
+  existing?: Record<string, unknown>;
   action: ReportAction;
   reason: string;
   hashBefore: string;
@@ -68,11 +80,52 @@ type DryRunResult = {
   warnings: string[];
   storeStockBreakdown: StoreStockBreakdown[];
   reportRows: DryRunReportRow[];
+  importPayloads: ImportPayloadRecord[];
   appSettingsPreview: {
     currentGlobalSource: string;
     requiredGlobalSource: 'LEGACY_MENU_ITEMS';
     storeOverrides: Record<string, string>;
   };
+};
+
+type LiveImportSummary = {
+  importBatchId: string;
+  manifestId: string;
+  createdCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  storeStockCreated: number;
+  storeStockUpdated: number;
+  posMenuSourceAfter: string;
+};
+
+type LiveImportGate = {
+  ready: boolean;
+  checks: {
+    label: string;
+    ok: boolean;
+  }[];
+  blockers: string[];
+};
+
+type LiveImportFailure = {
+  stage: string;
+  collection: string;
+  docPath: string;
+  code: string;
+  message: string;
+};
+
+type PermissionCheck = {
+  collection: ImportCollection | 'importManifests';
+  ruleSummary: string;
+  shouldAllow: boolean;
+};
+
+type QueuedWrite = {
+  collection: string;
+  docPath: string;
+  apply: (batch: ReturnType<typeof writeBatch>) => void;
 };
 
 const FILES: FileConfig[] = [
@@ -109,7 +162,10 @@ const FILES: FileConfig[] = [
 ];
 
 const REQUIRED_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51'];
-const COMPARE_COLLECTIONS = ['rawIngredients', 'prepItems', 'finishedGoods', 'storeStock'] as const;
+const COMPARE_COLLECTIONS: ImportCollection[] = ['rawIngredients', 'prepItems', 'finishedGoods', 'storeStock'];
+const LIVE_IMPORT_CONFIRMATION = 'I understand this will write Menu Management V2 data, but will not switch POS rollout.';
+const LIVE_IMPORT_MAX_BATCH_WRITES = 400;
+const BLOCKED_COLLECTIONS = ['menuItems', 'categories', 'inventoryItems', 'storeInventory', 'recipes', 'orders', 'kot', 'kotItems'];
 
 function cleanValue(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -321,8 +377,174 @@ async function readCollectionMap(collectionName: string): Promise<Map<string, Re
   return new Map(snapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Record<string, unknown>]));
 }
 
+function getPosGlobalSource(appSettings: Record<string, unknown>): string {
+  return cleanValue(appSettings.globalSource || appSettings.source || 'LEGACY_MENU_ITEMS') || 'LEGACY_MENU_ITEMS';
+}
+
+function getLiveImportGate(result: DryRunResult | null): LiveImportGate {
+  if (!result) {
+    return {
+      ready: false,
+      checks: [],
+      blockers: ['Run a successful dry-run first.'],
+    };
+  }
+
+  const rowCountsOk = FILES.every((file) => result.rowCounts[file.key] === file.expectedRows);
+  const missingReferencesOk = result.missingDependencies.length === 0;
+  const storesOk = result.stores.length === REQUIRED_STORE_CODES.length && result.missingStoreCodes.length === 0;
+  const sourceOk = result.appSettingsPreview.currentGlobalSource === 'LEGACY_MENU_ITEMS';
+
+  const checks = [
+    { label: 'Errors: 0', ok: rowCountsOk },
+    { label: 'Missing references: 0', ok: missingReferencesOk },
+    { label: 'Stores resolved: 3/3', ok: storesOk },
+    { label: 'POS source: LEGACY_MENU_ITEMS', ok: sourceOk },
+  ];
+
+  return {
+    ready: checks.every((check) => check.ok),
+    checks,
+    blockers: checks.filter((check) => !check.ok).map((check) => check.label),
+  };
+}
+
+function getPermissionChecks(isUiAdmin: boolean): PermissionCheck[] {
+  return [
+    {
+      collection: 'rawIngredients',
+      ruleSummary: 'match /rawIngredients/{itemId}: allow write if isAdmin()',
+      shouldAllow: isUiAdmin,
+    },
+    {
+      collection: 'prepItems',
+      ruleSummary: 'match /prepItems/{itemId}: allow write if isAdmin()',
+      shouldAllow: isUiAdmin,
+    },
+    {
+      collection: 'finishedGoods',
+      ruleSummary: 'match /finishedGoods/{itemId}: allow write if isAdmin()',
+      shouldAllow: isUiAdmin,
+    },
+    {
+      collection: 'storeStock',
+      ruleSummary: 'match /storeStock/{stockId}: Admin can create/update/delete',
+      shouldAllow: isUiAdmin,
+    },
+    {
+      collection: 'importManifests',
+      ruleSummary: 'match /importManifests/{document=**}: allow read, write if isAdmin()',
+      shouldAllow: isUiAdmin,
+    },
+  ];
+}
+
+function getErrorCode(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    return cleanValue((err as { code?: unknown }).code) || 'unknown';
+  }
+  return 'unknown';
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    return cleanValue((err as { message?: unknown }).message) || 'Unknown error';
+  }
+  return cleanValue(err) || 'Unknown error';
+}
+
+function makeImportPayloadRecord(
+  collectionName: ImportCollection,
+  docId: string,
+  payload: Record<string, unknown>,
+  existing?: Record<string, unknown>,
+  forcedAction?: ReportAction,
+  forcedReason?: string,
+): ImportPayloadRecord {
+  const reportRow = makeReportRow(collectionName, docId, payload, existing, forcedAction, forcedReason);
+  return {
+    collectionName,
+    docId,
+    payload,
+    existing,
+    action: reportRow.action,
+    reason: reportRow.reason,
+    hashBefore: reportRow.hashBefore,
+    hashAfter: reportRow.hashAfter,
+  };
+}
+
+function toReportRow(entry: ImportPayloadRecord): DryRunReportRow {
+  return {
+    collection: entry.collectionName,
+    docId: entry.docId,
+    action: entry.action,
+    reason: entry.reason,
+    hashBefore: entry.hashBefore,
+    hashAfter: entry.hashAfter,
+  };
+}
+
+function buildLiveWritePayload(entry: ImportPayloadRecord, importBatchId: string): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    ...entry.payload,
+    updatedAt: serverTimestamp(),
+    lastImportedAt: serverTimestamp(),
+    importBatchId,
+  };
+
+  if (!entry.existing) {
+    payload.createdAt = serverTimestamp();
+  }
+
+  return payload;
+}
+
+function buildStoreStockImportPayload(payload: Record<string, unknown>, existing?: Record<string, unknown>): Record<string, unknown> {
+  if (!existing) return payload;
+
+  return {
+    storeId: payload.storeId,
+    storeName: payload.storeName,
+    stockItemType: payload.stockItemType,
+    stockItemCode: payload.stockItemCode,
+    stockItemName: payload.stockItemName,
+    uom: payload.uom,
+    costPerUnit: payload.costPerUnit,
+    importSource: payload.importSource,
+    importVersion: payload.importVersion,
+  };
+}
+
+async function commitWriteQueue(
+  writeQueue: QueuedWrite[],
+  onFailure: (failure: LiveImportFailure) => void,
+) {
+  for (let index = 0; index < writeQueue.length; index += LIVE_IMPORT_MAX_BATCH_WRITES) {
+    const chunk = writeQueue.slice(index, index + LIVE_IMPORT_MAX_BATCH_WRITES);
+    const batch = writeBatch(db);
+    chunk.forEach((writeOperation) => {
+      writeOperation.apply(batch);
+    });
+    try {
+      await batch.commit();
+    } catch (err: unknown) {
+      const firstWrite = chunk[0];
+      onFailure({
+        stage: `Committing live import batch ${Math.floor(index / LIVE_IMPORT_MAX_BATCH_WRITES) + 1}`,
+        collection: firstWrite?.collection || 'unknown',
+        docPath: firstWrite?.docPath || 'unknown',
+        code: getErrorCode(err),
+        message: getErrorMessage(err),
+      });
+      throw err;
+    }
+  }
+}
+
 export default function Phase7FDryRunImport() {
-  const { staffProfile } = useAuth();
+  const { firebaseUser, staffProfile } = useAuth();
   const [selectedFiles, setSelectedFiles] = useState<Record<FileKey, File | null>>({
     raw: null,
     prepSummary: null,
@@ -332,17 +554,34 @@ export default function Phase7FDryRunImport() {
   });
   const [isRunning, setIsRunning] = useState(false);
   const [isResettingSource, setIsResettingSource] = useState(false);
+  const [isLiveImporting, setIsLiveImporting] = useState(false);
   const [error, setError] = useState('');
   const [resetMessage, setResetMessage] = useState('');
+  const [liveConfirmText, setLiveConfirmText] = useState('');
+  const [liveImportSummary, setLiveImportSummary] = useState<LiveImportSummary | null>(null);
+  const [firstWriteAttemptPath, setFirstWriteAttemptPath] = useState('');
+  const [liveImportFailure, setLiveImportFailure] = useState<LiveImportFailure | null>(null);
   const [result, setResult] = useState<DryRunResult | null>(null);
 
   const allFilesSelected = useMemo(() => FILES.every((file) => selectedFiles[file.key]), [selectedFiles]);
+  const liveGate = useMemo(() => getLiveImportGate(result), [result]);
+  const isUiAdmin = staffProfile?.role === 'ADMIN';
+  const permissionChecks = useMemo(() => getPermissionChecks(isUiAdmin), [isUiAdmin]);
+  const canRunLiveImport = !!result
+    && liveGate.ready
+    && isUiAdmin
+    && liveConfirmText.trim() === LIVE_IMPORT_CONFIRMATION
+    && !isLiveImporting;
 
   const handleFileChange = (key: FileKey, file: File | null) => {
     setSelectedFiles((current) => ({ ...current, [key]: file }));
     setResult(null);
     setError('');
     setResetMessage('');
+    setLiveConfirmText('');
+    setLiveImportSummary(null);
+    setFirstWriteAttemptPath('');
+    setLiveImportFailure(null);
   };
 
   const resetPosSourceToLegacy = async () => {
@@ -407,6 +646,267 @@ export default function Phase7FDryRunImport() {
     }
   };
 
+  const runLiveImport = async () => {
+    if (!result) {
+      setError('Run a successful dry-run before live import.');
+      return;
+    }
+    if (staffProfile?.role !== 'ADMIN') {
+      setError('Only an Admin can run the guarded live import.');
+      return;
+    }
+    if (!liveGate.ready) {
+      setError(`Live import is blocked: ${liveGate.blockers.join(', ')}`);
+      return;
+    }
+    if (liveConfirmText.trim() !== LIVE_IMPORT_CONFIRMATION) {
+      setError('Type the confirmation text exactly before running live import.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `${LIVE_IMPORT_CONFIRMATION}\n\nThis writes only rawIngredients, prepItems, finishedGoods, storeStock, and importManifests. It will not switch POS rollout and will not touch legacy collections.\n\nContinue with live import?`,
+    );
+    if (!confirmed) return;
+
+    let importBatchId = '';
+    setIsLiveImporting(true);
+    setError('');
+    setLiveImportSummary(null);
+    setFirstWriteAttemptPath('');
+    setLiveImportFailure(null);
+
+    const recordFailure = (failure: LiveImportFailure) => {
+      setLiveImportFailure(failure);
+    };
+
+    const runStage = async <T,>(
+      stage: string,
+      collectionName: string,
+      docPath: string,
+      action: () => Promise<T>,
+    ): Promise<T> => {
+      try {
+        return await action();
+      } catch (err: unknown) {
+        recordFailure({
+          stage,
+          collection: collectionName,
+          docPath,
+          code: getErrorCode(err),
+          message: getErrorMessage(err),
+        });
+        throw err;
+      }
+    };
+
+    try {
+      const appSettingsDoc = await runStage(
+        'Reading POS source safety setting',
+        'appSettings',
+        'appSettings/posMenuSource',
+        () => getDoc(doc(db, 'appSettings', 'posMenuSource')),
+      );
+      const appSettings = appSettingsDoc.exists() ? appSettingsDoc.data() as Record<string, unknown> : {};
+      const currentGlobalSource = getPosGlobalSource(appSettings);
+      if (currentGlobalSource !== 'LEGACY_MENU_ITEMS') {
+        throw new Error(`Live import blocked because appSettings/posMenuSource is ${currentGlobalSource}. Reset it to LEGACY_MENU_ITEMS first.`);
+      }
+
+      const latestExistingMaps: Record<ImportCollection, Map<string, Record<string, unknown>>> = {
+        rawIngredients: await runStage('Reading latest rawIngredients for comparison', 'rawIngredients', 'rawIngredients/*', () => readCollectionMap('rawIngredients')),
+        prepItems: await runStage('Reading latest prepItems for comparison', 'prepItems', 'prepItems/*', () => readCollectionMap('prepItems')),
+        finishedGoods: await runStage('Reading latest finishedGoods for comparison', 'finishedGoods', 'finishedGoods/*', () => readCollectionMap('finishedGoods')),
+        storeStock: await runStage('Reading latest storeStock for comparison', 'storeStock', 'storeStock/*', () => readCollectionMap('storeStock')),
+      };
+
+      const liveEntries = result.importPayloads.map((entry) => {
+        const existing = latestExistingMaps[entry.collectionName].get(entry.docId);
+        const payload = entry.collectionName === 'storeStock'
+          ? buildStoreStockImportPayload(entry.payload, existing)
+          : entry.payload;
+        return makeImportPayloadRecord(
+          entry.collectionName,
+          entry.docId,
+          payload,
+          existing,
+          undefined,
+          entry.collectionName === 'storeStock' && existing
+            ? 'Existing stock quantity fields are preserved; metadata is safely merged.'
+            : undefined,
+        );
+      });
+
+      const disallowedEntry = liveEntries.find((entry) => !COMPARE_COLLECTIONS.includes(entry.collectionName));
+      if (disallowedEntry) {
+        throw new Error(`Live import blocked by collection safety check: ${disallowedEntry.collectionName}/${disallowedEntry.docId}`);
+      }
+
+      const actions = liveEntries.reduce<Record<ReportAction, number>>((counts, entry) => {
+        counts[entry.action] += 1;
+        return counts;
+      }, { CREATE: 0, UPDATE: 0, UNCHANGED: 0, BLOCKED: 0 });
+
+      if (actions.BLOCKED > 0) {
+        throw new Error('Live import blocked because the latest comparison still has BLOCKED rows.');
+      }
+
+      importBatchId = `phase7g-live-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      const adminName = staffProfile.displayName || staffProfile.name || staffProfile.email || 'Admin';
+      const docPathsTouched = liveEntries.map((entry) => `${entry.collectionName}/${entry.docId}`);
+      const manifestRef = doc(db, 'importManifests', importBatchId);
+      const firstWritePath = `importManifests/${importBatchId}`;
+      setFirstWriteAttemptPath(firstWritePath);
+      console.info(`[Phase 7G] First write path attempted: ${firstWritePath}`);
+
+      await runStage('Creating import manifest header', 'importManifests', firstWritePath, () => setDoc(manifestRef, {
+        importBatchId,
+        mode: 'LIVE_IMPORT_NO_POS_ROLLOUT',
+        status: 'STARTED',
+        dryRunBatchId: result.batchId,
+        createdAt: serverTimestamp(),
+        createdBy: {
+          uid: staffProfile.uid,
+          name: adminName,
+          email: staffProfile.email || '',
+          role: staffProfile.role,
+        },
+        allowedCollections: COMPARE_COLLECTIONS,
+        blockedCollections: BLOCKED_COLLECTIONS,
+        posMenuSourceBefore: currentGlobalSource,
+        docPathsTouched,
+        totals: {
+          create: actions.CREATE,
+          update: actions.UPDATE,
+          unchanged: actions.UNCHANGED,
+          blocked: actions.BLOCKED,
+          total: liveEntries.length,
+        },
+        storeStockRows: {
+          create: liveEntries.filter((entry) => entry.collectionName === 'storeStock' && entry.action === 'CREATE').length,
+          update: liveEntries.filter((entry) => entry.collectionName === 'storeStock' && entry.action === 'UPDATE').length,
+          unchanged: liveEntries.filter((entry) => entry.collectionName === 'storeStock' && entry.action === 'UNCHANGED').length,
+        },
+        zeroCostCount: result.zeroCostCount,
+        warnings: result.warnings,
+        rollbackStrategy: 'Use importManifests/{importBatchId}/entries. CREATE rows can be deleted if rollback is approved. UPDATE rows include rollbackSnapshot for manual restore. UNCHANGED rows require no rollback.',
+      }));
+
+      const writeQueue: QueuedWrite[] = [];
+      liveEntries.forEach((entry, index) => {
+        const docPath = `${entry.collectionName}/${entry.docId}`;
+        const entryId = `${String(index + 1).padStart(4, '0')}_${stableHash(docPath)}`;
+        const manifestEntryPath = `importManifests/${importBatchId}/entries/${entryId}`;
+        const rollbackAction = entry.action === 'CREATE'
+          ? 'DELETE_CREATED_DOC'
+          : entry.action === 'UPDATE'
+            ? 'RESTORE_ROLLBACK_SNAPSHOT'
+            : 'NONE';
+
+        writeQueue.push({
+          collection: 'importManifests',
+          docPath: manifestEntryPath,
+          apply: (batch) => {
+            batch.set(doc(db, 'importManifests', importBatchId, 'entries', entryId), {
+              importBatchId,
+              collection: entry.collectionName,
+              docId: entry.docId,
+              docPath,
+              action: entry.action,
+              reason: entry.reason,
+              hashBefore: entry.hashBefore,
+              hashAfter: entry.hashAfter,
+              rollbackAction,
+              rollbackSnapshot: entry.action === 'UPDATE' ? entry.existing || null : null,
+              createdAt: serverTimestamp(),
+            });
+          },
+        });
+
+        if (entry.action === 'CREATE' || entry.action === 'UPDATE') {
+          writeQueue.push({
+            collection: entry.collectionName,
+            docPath,
+            apply: (batch) => {
+              batch.set(
+                doc(db, entry.collectionName, entry.docId),
+                buildLiveWritePayload(entry, importBatchId),
+                { merge: true },
+              );
+            },
+          });
+        }
+      });
+
+      await commitWriteQueue(writeQueue, recordFailure);
+
+      const appSettingsAfterDoc = await runStage(
+        'Verifying POS source after live import',
+        'appSettings',
+        'appSettings/posMenuSource',
+        () => getDoc(doc(db, 'appSettings', 'posMenuSource')),
+      );
+      const appSettingsAfter = appSettingsAfterDoc.exists() ? appSettingsAfterDoc.data() as Record<string, unknown> : {};
+      const posMenuSourceAfter = getPosGlobalSource(appSettingsAfter);
+
+      await runStage('Completing import manifest', 'importManifests', firstWritePath, () => setDoc(manifestRef, {
+        status: 'COMPLETED',
+        completedAt: serverTimestamp(),
+        posMenuSourceAfter,
+      }, { merge: true }));
+
+      const nextReportRows = [
+        ...liveEntries.map(toReportRow),
+        ...result.reportRows.filter((row) => row.collection === 'dependency-check' || row.collection === 'appSettings'),
+      ];
+      const nextActionCounts = nextReportRows.reduce<Record<ReportAction, number>>((counts, row) => {
+        counts[row.action] += 1;
+        return counts;
+      }, { CREATE: 0, UPDATE: 0, UNCHANGED: 0, BLOCKED: 0 });
+
+      setResult((current) => current ? {
+        ...current,
+        importPayloads: liveEntries,
+        reportRows: nextReportRows,
+        actionCounts: nextActionCounts,
+        appSettingsPreview: {
+          ...current.appSettingsPreview,
+          currentGlobalSource: posMenuSourceAfter,
+        },
+      } : current);
+
+      setLiveImportSummary({
+        importBatchId,
+        manifestId: importBatchId,
+        createdCount: actions.CREATE,
+        updatedCount: actions.UPDATE,
+        unchangedCount: actions.UNCHANGED,
+        storeStockCreated: liveEntries.filter((entry) => entry.collectionName === 'storeStock' && entry.action === 'CREATE').length,
+        storeStockUpdated: liveEntries.filter((entry) => entry.collectionName === 'storeStock' && entry.action === 'UPDATE').length,
+        posMenuSourceAfter,
+      });
+
+      if (posMenuSourceAfter !== 'LEGACY_MENU_ITEMS') {
+        setError(`Live import completed, but POS source is now ${posMenuSourceAfter}. Reset it to LEGACY_MENU_ITEMS before continuing.`);
+      }
+    } catch (err: unknown) {
+      if (importBatchId) {
+        try {
+          await setDoc(doc(db, 'importManifests', importBatchId), {
+            status: 'FAILED_OR_PARTIAL',
+            failedAt: serverTimestamp(),
+            failureMessage: err instanceof Error ? err.message : 'Live import failed.',
+          }, { merge: true });
+        } catch {
+          // Keep the original error visible if the failure manifest cannot be written.
+        }
+      }
+      setError(err instanceof Error ? err.message : 'Live import failed.');
+    } finally {
+      setIsLiveImporting(false);
+    }
+  };
+
   const runDryRun = async () => {
     if (!allFilesSelected) {
       setError('Select all five Phase 7F CSV files before running dry-run.');
@@ -416,6 +916,10 @@ export default function Phase7FDryRunImport() {
     setIsRunning(true);
     setError('');
     setResult(null);
+    setLiveConfirmText('');
+    setLiveImportSummary(null);
+    setFirstWriteAttemptPath('');
+    setLiveImportFailure(null);
 
     try {
       const batchId = `phase7f-dry-run-${new Date().toISOString()}`;
@@ -434,9 +938,10 @@ export default function Phase7FDryRunImport() {
       const missingDependencies: string[] = [];
       const checkoutBlockers: string[] = [];
       const warnings = [
-        'Dry-run does not write import/menu payloads. The only write on this screen is the explicit emergency reset of appSettings/posMenuSource.',
+        'Default mode is dry-run. Live import requires the guarded Phase 7G confirmation and writes only Menu Management V2 collections plus importManifests.',
         'globalSource must remain LEGACY_MENU_ITEMS until a separate rollout step is approved.',
         'Rollout cannot happen until opening/current stock is loaded for the pilot store.',
+        'Existing storeStock quantity fields are preserved during live import.',
       ];
 
       FILES.forEach((file) => {
@@ -747,27 +1252,30 @@ export default function Phase7FDryRunImport() {
         warnings.push('Opening/current stock is missing or zero for generated storeStock rows.');
       }
 
-      const reportRows: DryRunReportRow[] = [];
+      const importPayloads: ImportPayloadRecord[] = [];
       rawPayloads.forEach((payload, docId) => {
-        reportRows.push(makeReportRow('rawIngredients', docId, payload, existingMaps.rawIngredients.get(docId)));
+        importPayloads.push(makeImportPayloadRecord('rawIngredients', docId, payload, existingMaps.rawIngredients.get(docId)));
       });
       prepPayloads.forEach((payload, docId) => {
-        reportRows.push(makeReportRow('prepItems', docId, payload, existingMaps.prepItems.get(docId)));
+        importPayloads.push(makeImportPayloadRecord('prepItems', docId, payload, existingMaps.prepItems.get(docId)));
       });
       finishedPayloads.forEach((payload, docId) => {
-        reportRows.push(makeReportRow('finishedGoods', docId, payload, existingMaps.finishedGoods.get(docId)));
+        importPayloads.push(makeImportPayloadRecord('finishedGoods', docId, payload, existingMaps.finishedGoods.get(docId)));
       });
       storeStockPayloads.forEach((payload, docId) => {
         const existing = existingMaps.storeStock.get(docId);
-        reportRows.push(makeReportRow(
+        const importPayload = buildStoreStockImportPayload(payload, existing);
+        importPayloads.push(makeImportPayloadRecord(
           'storeStock',
           docId,
-          payload,
+          importPayload,
           existing,
-          existing ? 'UNCHANGED' : undefined,
-          existing ? 'Existing stock row is preserved; dry-run importer would not overwrite quantities.' : undefined,
+          undefined,
+          existing ? 'Existing stock quantity fields are preserved; metadata is compared for safe merge updates.' : undefined,
         ));
       });
+
+      const reportRows: DryRunReportRow[] = importPayloads.map(toReportRow);
 
       missingDependencies.forEach((dependency, index) => {
         reportRows.push({
@@ -782,7 +1290,7 @@ export default function Phase7FDryRunImport() {
 
       const appSettingsDoc = await getDoc(doc(db, 'appSettings', 'posMenuSource'));
       const appSettings = appSettingsDoc.exists() ? appSettingsDoc.data() as Record<string, unknown> : {};
-      const currentGlobalSource = cleanValue(appSettings.globalSource || appSettings.source || 'LEGACY_MENU_ITEMS') || 'LEGACY_MENU_ITEMS';
+      const currentGlobalSource = getPosGlobalSource(appSettings);
       const storeOverrides = (appSettings.storeOverrides || {}) as Record<string, string>;
       if (currentGlobalSource !== 'LEGACY_MENU_ITEMS') {
         checkoutBlockers.push(`Current appSettings/posMenuSource globalSource is ${currentGlobalSource}. It must remain LEGACY_MENU_ITEMS during import dry-run and stock setup.`);
@@ -820,6 +1328,7 @@ export default function Phase7FDryRunImport() {
         warnings,
         storeStockBreakdown,
         reportRows,
+        importPayloads,
         appSettingsPreview: {
           currentGlobalSource,
           requiredGlobalSource: 'LEGACY_MENU_ITEMS',
@@ -859,8 +1368,8 @@ export default function Phase7FDryRunImport() {
       <div className="bg-red-50 border border-red-200 text-red-800 rounded-2xl p-5 flex gap-4">
         <ShieldAlert className="w-6 h-6 shrink-0 mt-0.5" />
         <div>
-          <h2 className="font-black text-lg">Dry-run does not import or mutate menu data</h2>
-          <p className="text-sm mt-1">This tool reads Firestore for comparison. The only write available here is the explicit confirmed emergency reset of appSettings/posMenuSource back to legacy.</p>
+          <h2 className="font-black text-lg">Default mode is dry-run</h2>
+          <p className="text-sm mt-1">This screen reads Firestore for comparison first. The only writes available here are the explicit POS source reset and the guarded Phase 7G live import after a successful dry-run.</p>
         </div>
       </div>
 
@@ -1022,6 +1531,147 @@ export default function Phase7FDryRunImport() {
           </div>
 
           <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
+            <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+              <div>
+                <p className="text-sm font-bold text-amber-700 uppercase tracking-wide">Phase 7G</p>
+                <h2 className="text-xl font-black text-neutral-800">Permission Diagnostics</h2>
+                <p className="text-sm text-neutral-600 mt-2">
+                  This shows the profile data used by the UI and what the local Firestore rules should allow. If this says allowed but Firebase still denies writes, deploy rules to the active project.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-black ${isUiAdmin ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                UI Admin: {isUiAdmin ? 'YES' : 'NO'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5 text-sm">
+              <DiagnosticField label="Firebase Auth UID" value={firebaseUser?.uid || 'Not signed in'} />
+              <DiagnosticField label="Profile Document Path" value={firebaseUser?.uid ? `users/${firebaseUser.uid}` : 'users/{missing-auth-uid}'} />
+              <DiagnosticField label="Role From Firestore Profile" value={staffProfile?.role || 'Missing profile role'} />
+              <DiagnosticField label="isActive" value={staffProfile?.isActive === false ? 'false' : staffProfile?.isActive === true ? 'true' : 'Not set'} />
+              <DiagnosticField label="assignedStoreIds" value={(staffProfile?.assignedStoreIds || []).length > 0 ? staffProfile!.assignedStoreIds.join(', ') : '[]'} />
+              <DiagnosticField label="storeIds" value={(staffProfile?.storeIds || []).length > 0 ? staffProfile!.storeIds.join(', ') : '[]'} />
+            </div>
+
+            <div className="mt-5 overflow-x-auto border border-neutral-100 rounded-xl">
+              <table className="min-w-full text-xs">
+                <thead className="bg-neutral-50">
+                  <tr className="text-left text-neutral-500 uppercase">
+                    <th className="p-3">Write Target</th>
+                    <th className="p-3">Local Rule</th>
+                    <th className="p-3">Should Allow</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {permissionChecks.map((check) => (
+                    <tr key={check.collection} className="border-t border-neutral-100">
+                      <td className="p-3 font-mono">{check.collection}</td>
+                      <td className="p-3 text-neutral-600">{check.ruleSummary}</td>
+                      <td className="p-3">
+                        <span className={`rounded-full px-2 py-1 font-black ${check.shouldAllow ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                          {check.shouldAllow ? 'YES' : 'NO'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                <p className="text-xs uppercase tracking-wide font-black text-neutral-500">First Write Path Attempted</p>
+                <p className="mt-2 text-sm font-mono text-neutral-800 break-all">
+                  {firstWriteAttemptPath || 'Not attempted yet. First write will be importManifests/{importBatchId}.'}
+                </p>
+              </div>
+              <div className={`rounded-xl border p-4 ${liveImportFailure ? 'border-red-200 bg-red-50 text-red-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+                <p className="text-xs uppercase tracking-wide font-black opacity-70">Latest Live Import Failure</p>
+                {liveImportFailure ? (
+                  <div className="mt-2 space-y-1 text-sm">
+                    <p><strong>Stage:</strong> {liveImportFailure.stage}</p>
+                    <p><strong>Collection:</strong> {liveImportFailure.collection}</p>
+                    <p><strong>Doc path:</strong> <span className="font-mono break-all">{liveImportFailure.docPath}</span></p>
+                    <p><strong>Firebase code:</strong> {liveImportFailure.code}</p>
+                    <p><strong>Message:</strong> {liveImportFailure.message}</p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm">No live import failure captured yet.</p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
+            <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+              <div>
+                <p className="text-sm font-bold text-amber-700 uppercase tracking-wide">Phase 7G</p>
+                <h2 className="text-xl font-black text-neutral-800">Guarded Live Import</h2>
+                <p className="text-sm text-neutral-600 mt-2">
+                  Writes Menu Management V2 data only. POS remains on LEGACY_MENU_ITEMS and legacy collections are untouched.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-black ${liveGate.ready ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                {liveGate.ready ? 'READY AFTER CONFIRMATION' : 'BLOCKED'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-5">
+              {liveGate.checks.map((check) => (
+                <div key={check.label} className={`rounded-xl border p-4 flex items-center gap-2 ${check.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+                  {check.ok ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                  <span className="text-sm font-black">{check.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
+              <p className="text-sm font-black">Cost and stock warnings stay active after import.</p>
+              <p className="text-xs mt-1">The live import can proceed with zero costs, but POS rollout and checkout on Finished Goods must wait until costing and opening stock are loaded.</p>
+            </div>
+
+            <label className="block mt-5">
+              <span className="block text-sm font-black text-neutral-800 mb-2">Type this exact confirmation before live import:</span>
+              <code className="block text-xs bg-neutral-100 border border-neutral-200 rounded-xl p-3 text-neutral-700 whitespace-pre-wrap">{LIVE_IMPORT_CONFIRMATION}</code>
+              <input
+                type="text"
+                value={liveConfirmText}
+                onChange={(event) => setLiveConfirmText(event.target.value)}
+                className="mt-3 w-full border border-neutral-300 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[#5c4033] focus:border-transparent"
+                placeholder="Paste the confirmation text here"
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={runLiveImport}
+              disabled={!canRunLiveImport}
+              className="mt-5 w-full md:w-auto px-6 py-3 bg-red-700 text-white font-black rounded-xl hover:bg-red-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isLiveImporting ? <Loader2 size={18} className="animate-spin" /> : <ShieldAlert size={18} />}
+              {isLiveImporting ? 'Running Live Import...' : 'Run Live Import'}
+            </button>
+
+            {staffProfile?.role !== 'ADMIN' && (
+              <p className="text-xs text-red-700 font-bold mt-3">Only Admin users can run live import.</p>
+            )}
+
+            {liveImportSummary && (
+              <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
+                <p className="font-black">Live import complete. POS source remains {liveImportSummary.posMenuSourceAfter}.</p>
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-4 text-sm">
+                  <SummaryMini label="Created" value={liveImportSummary.createdCount} />
+                  <SummaryMini label="Updated" value={liveImportSummary.updatedCount} />
+                  <SummaryMini label="Unchanged" value={liveImportSummary.unchangedCount} />
+                  <SummaryMini label="Stock Created" value={liveImportSummary.storeStockCreated} />
+                  <SummaryMini label="Stock Updated" value={liveImportSummary.storeStockUpdated} />
+                </div>
+                <p className="text-xs mt-3">Manifest ID: <span className="font-mono">{liveImportSummary.manifestId}</span></p>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
               <div>
                 <h2 className="text-xl font-black text-neutral-800">Dry-Run Report</h2>
@@ -1085,6 +1735,24 @@ function SummaryCard({ label, value, tone = 'brown' }: { label: string; value: n
     <div className={`rounded-2xl border p-5 shadow-sm ${toneClass}`}>
       <p className="text-xs uppercase tracking-wide font-black opacity-75">{label}</p>
       <p className="text-3xl font-black mt-2">{value}</p>
+    </div>
+  );
+}
+
+function SummaryMini({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-emerald-200 bg-white/70 p-3">
+      <p className="text-xs uppercase tracking-wide font-black opacity-70">{label}</p>
+      <p className="text-2xl font-black mt-1">{value}</p>
+    </div>
+  );
+}
+
+function DiagnosticField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+      <p className="text-xs uppercase tracking-wide font-black text-neutral-500">{label}</p>
+      <p className="mt-2 text-sm font-mono text-neutral-800 break-all">{value}</p>
     </div>
   );
 }
