@@ -27,6 +27,7 @@ import MenuImport from './pages/admin/MenuImport';
 import DataManagement from './pages/admin/DataManagement';
 import StaffManagement from './pages/admin/StaffManagement';
 import Phase7AValidation from './pages/admin/Phase7AValidation';
+import Phase7FDryRunImport from './pages/admin/Phase7FDryRunImport';
 import POSHome from './pages/pos/POSHome';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
@@ -83,6 +84,7 @@ export default function App() {
                 <Route path="/admin/menu-import" element={<MenuImport />} />
                 <Route path="/admin/data" element={<DataManagement />} />
                 <Route path="/admin/phase-7a-validation" element={<Phase7AValidation />} />
+                <Route path="/admin/phase-7f-dry-run-import" element={<Phase7FDryRunImport />} />
                 <Route path="/admin/seed" element={<Seed />} />
                 <Route path="/admin/staff" element={<StaffManagement />} />
               </Route>
