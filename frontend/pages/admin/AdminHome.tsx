@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -233,6 +233,16 @@ export default function AdminHome() {
               </div>
               <div>
                 <h4 className="font-bold text-sm text-neutral-800">Excel Data Import/Export</h4>
+              </div>
+            </Link>
+
+            <Link to="/admin/phase-7a-validation" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
+              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
+                <FileCheck2 size={16} />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-neutral-800">Phase 7A Validation</h4>
+                <p className="text-xs text-neutral-500">Readiness check only</p>
               </div>
             </Link>
           </motion.div>

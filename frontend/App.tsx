@@ -26,6 +26,7 @@ import Seed from './pages/admin/Seed';
 import MenuImport from './pages/admin/MenuImport';
 import DataManagement from './pages/admin/DataManagement';
 import StaffManagement from './pages/admin/StaffManagement';
+import Phase7AValidation from './pages/admin/Phase7AValidation';
 import POSHome from './pages/pos/POSHome';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
@@ -81,6 +82,7 @@ export default function App() {
                 <Route path="/admin/recipes" element={<Recipes />} />
                 <Route path="/admin/menu-import" element={<MenuImport />} />
                 <Route path="/admin/data" element={<DataManagement />} />
+                <Route path="/admin/phase-7a-validation" element={<Phase7AValidation />} />
                 <Route path="/admin/seed" element={<Seed />} />
                 <Route path="/admin/staff" element={<StaffManagement />} />
               </Route>

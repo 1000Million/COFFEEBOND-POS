@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, doc, setDoc, writeBatch, serverTimestamp, query, where } from 'firebase/firestore';
-import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-react';
+import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet, FileCheck2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import * as XLSX from 'xlsx';
 
@@ -282,6 +283,20 @@ export default function DataManagement() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
+      <Link to="/admin/phase-7a-validation" className="block bg-amber-50 border border-amber-200 rounded-2xl p-5 hover:border-amber-400 transition-colors">
+        <div className="flex items-start gap-4">
+          <div className="w-11 h-11 bg-white text-amber-700 rounded-xl flex items-center justify-center border border-amber-200 shrink-0">
+            <FileCheck2 size={22} />
+          </div>
+          <div>
+            <h2 className="text-lg font-black text-amber-900">Phase 7A Validation</h2>
+            <p className="text-sm text-amber-800 mt-1">
+              Run the Coffee Bond menu, inventory, and BOM preflight before importing any production data.
+            </p>
+          </div>
+        </div>
+      </Link>
+
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200">
         <div className="flex items-center gap-4 mb-6">
           <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
