@@ -311,6 +311,20 @@ export default function DataManagement() {
             </div>
           </div>
         </Link>
+
+        <Link to="/admin/phase-7h-stock-costing" className="block bg-amber-50 border border-amber-200 rounded-2xl p-5 hover:border-amber-400 transition-colors">
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 bg-white text-amber-700 rounded-xl flex items-center justify-center border border-amber-200 shrink-0">
+              <FileSpreadsheet size={22} />
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-amber-900">Phase 7H Stock + Costing</h2>
+              <p className="text-sm text-amber-800 mt-1">
+                Export, validate, and upload raw ingredient costs and opening stock before any Finished Goods rollout.
+              </p>
+            </div>
+          </div>
+        </Link>
       </div>
 
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200">
