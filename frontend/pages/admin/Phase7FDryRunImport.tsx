@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, doc, getDoc, getDocs } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -14,6 +14,7 @@ import {
 import { db } from '../../lib/firebase';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
 import { Store } from '../../types';
+import { useAuth } from '../../contexts/AuthContext';
 
 type FileKey = 'raw' | 'prepSummary' | 'prepBom' | 'finishedBom' | 'finishedSummary';
 type ReportAction = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'BLOCKED';
@@ -321,6 +322,7 @@ async function readCollectionMap(collectionName: string): Promise<Map<string, Re
 }
 
 export default function Phase7FDryRunImport() {
+  const { staffProfile } = useAuth();
   const [selectedFiles, setSelectedFiles] = useState<Record<FileKey, File | null>>({
     raw: null,
     prepSummary: null,
@@ -329,7 +331,9 @@ export default function Phase7FDryRunImport() {
     finishedSummary: null,
   });
   const [isRunning, setIsRunning] = useState(false);
+  const [isResettingSource, setIsResettingSource] = useState(false);
   const [error, setError] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
   const [result, setResult] = useState<DryRunResult | null>(null);
 
   const allFilesSelected = useMemo(() => FILES.every((file) => selectedFiles[file.key]), [selectedFiles]);
@@ -338,6 +342,69 @@ export default function Phase7FDryRunImport() {
     setSelectedFiles((current) => ({ ...current, [key]: file }));
     setResult(null);
     setError('');
+    setResetMessage('');
+  };
+
+  const resetPosSourceToLegacy = async () => {
+    if (staffProfile?.role !== 'ADMIN') {
+      setError('Only an Admin can reset the POS source.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Emergency reset POS source?\n\nThis will update only appSettings/posMenuSource:\n- globalSource = LEGACY_MENU_ITEMS\n- storeOverrides = {}\n\nIt will not import menu data and will not modify rawIngredients, prepItems, finishedGoods, storeStock, menuItems, inventoryItems, recipes, or storeInventory.\n\nContinue?',
+    );
+    if (!confirmed) return;
+
+    setIsResettingSource(true);
+    setError('');
+    setResetMessage('');
+
+    try {
+      await setDoc(doc(db, 'appSettings', 'posMenuSource'), {
+        globalSource: 'LEGACY_MENU_ITEMS',
+        storeOverrides: {},
+        updatedAt: serverTimestamp(),
+        updatedByUserId: staffProfile.uid,
+        updatedByName: staffProfile.displayName || staffProfile.name || staffProfile.email || 'Admin',
+        resetReason: 'Phase 7F emergency reset before import and stock setup',
+      }, { merge: true });
+
+      setResetMessage('POS source reset complete. globalSource is now LEGACY_MENU_ITEMS and storeOverrides is empty.');
+      setResult((current) => {
+        if (!current) return current;
+        const reportRows = current.reportRows.map((row) => (
+          row.collection === 'appSettings' && row.docId === 'posMenuSource'
+            ? {
+              ...row,
+              action: 'UNCHANGED' as ReportAction,
+              reason: 'Emergency reset applied. appSettings/posMenuSource now matches required legacy source.',
+              hashBefore: row.hashAfter,
+            }
+            : row
+        ));
+        const actionCounts = reportRows.reduce<Record<ReportAction, number>>((counts, row) => {
+          counts[row.action] += 1;
+          return counts;
+        }, { CREATE: 0, UPDATE: 0, UNCHANGED: 0, BLOCKED: 0 });
+
+        return {
+          ...current,
+          actionCounts,
+          checkoutBlockers: current.checkoutBlockers.filter((blocker) => !blocker.includes('appSettings/posMenuSource globalSource')),
+          appSettingsPreview: {
+            ...current.appSettingsPreview,
+            currentGlobalSource: 'LEGACY_MENU_ITEMS',
+            storeOverrides: {},
+          },
+          reportRows,
+        };
+      });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to reset POS source.');
+    } finally {
+      setIsResettingSource(false);
+    }
   };
 
   const runDryRun = async () => {
@@ -367,7 +434,7 @@ export default function Phase7FDryRunImport() {
       const missingDependencies: string[] = [];
       const checkoutBlockers: string[] = [];
       const warnings = [
-        'No Firestore writes are performed on this screen.',
+        'Dry-run does not write import/menu payloads. The only write on this screen is the explicit emergency reset of appSettings/posMenuSource.',
         'globalSource must remain LEGACY_MENU_ITEMS until a separate rollout step is approved.',
         'Rollout cannot happen until opening/current stock is loaded for the pilot store.',
       ];
@@ -724,7 +791,7 @@ export default function Phase7FDryRunImport() {
         collection: 'appSettings',
         docId: 'posMenuSource',
         action: currentGlobalSource === 'LEGACY_MENU_ITEMS' ? 'UNCHANGED' : 'BLOCKED',
-        reason: 'Preview only. This screen never writes appSettings/posMenuSource.',
+        reason: 'Dry-run preview only. appSettings is changed only by the separate confirmed emergency reset action.',
         hashBefore: appSettingsDoc.exists() ? stableHash(appSettings) : '',
         hashAfter: stableHash({ globalSource: 'LEGACY_MENU_ITEMS', storeOverrides }),
       });
@@ -792,8 +859,8 @@ export default function Phase7FDryRunImport() {
       <div className="bg-red-50 border border-red-200 text-red-800 rounded-2xl p-5 flex gap-4">
         <ShieldAlert className="w-6 h-6 shrink-0 mt-0.5" />
         <div>
-          <h2 className="font-black text-lg">No Firestore writes are performed on this screen</h2>
-          <p className="text-sm mt-1">This tool reads Firestore for comparison only. There is no import button, no write button, and appSettings/posMenuSource is not changed.</p>
+          <h2 className="font-black text-lg">Dry-run does not import or mutate menu data</h2>
+          <p className="text-sm mt-1">This tool reads Firestore for comparison. The only write available here is the explicit confirmed emergency reset of appSettings/posMenuSource back to legacy.</p>
         </div>
       </div>
 
@@ -931,7 +998,27 @@ export default function Phase7FDryRunImport() {
             <h2 className="text-xl font-black text-neutral-800 mb-3">POS Source Preview</h2>
             <p className="text-sm text-neutral-600">Current global source: <strong>{result.appSettingsPreview.currentGlobalSource}</strong></p>
             <p className="text-sm text-neutral-600">Required during import: <strong>{result.appSettingsPreview.requiredGlobalSource}</strong></p>
-            <p className="text-xs text-neutral-500 mt-2">This screen does not write or switch appSettings/posMenuSource.</p>
+            <p className="text-xs text-neutral-500 mt-2">Dry-run does not switch appSettings/posMenuSource. The reset below is a separate explicit admin action.</p>
+            {result.appSettingsPreview.currentGlobalSource !== 'LEGACY_MENU_ITEMS' && (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4">
+                <p className="text-sm font-bold text-red-800">Emergency reset required before import and stock setup.</p>
+                <p className="text-xs text-red-700 mt-1">This action updates only appSettings/posMenuSource and clears store overrides.</p>
+                <button
+                  type="button"
+                  onClick={resetPosSourceToLegacy}
+                  disabled={isResettingSource || staffProfile?.role !== 'ADMIN'}
+                  className="mt-3 w-full md:w-auto px-4 py-2 rounded-xl bg-red-700 text-white font-black hover:bg-red-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isResettingSource ? <Loader2 size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+                  Reset POS Source to Legacy
+                </button>
+              </div>
+            )}
+            {resetMessage && (
+              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">
+                {resetMessage}
+              </div>
+            )}
           </div>
 
           <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
