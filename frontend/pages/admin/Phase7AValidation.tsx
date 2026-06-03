@@ -142,24 +142,48 @@ const FINISHED_REQUIRED_FIELDS = [
   'prepStation',
 ];
 
-const VALID_UOMS = new Set([
-  'g',
-  'kg',
-  'ml',
-  'l',
-  'pcs',
-  'pc',
-  'pack',
-  'unit',
-  'units',
-  'bottle',
-  'jar',
-  'can',
-  'bag',
-  'box',
-  'tray',
-  'portion',
-]);
+const UOM_ALIASES: Record<string, string> = {
+  litre: 'L',
+  liter: 'L',
+  ltr: 'L',
+  ltrs: 'L',
+  litres: 'L',
+  liters: 'L',
+  l: 'L',
+  millilitre: 'ML',
+  milliliter: 'ML',
+  millilitres: 'ML',
+  milliliters: 'ML',
+  ml: 'ML',
+  kilogram: 'KG',
+  kilograms: 'KG',
+  kg: 'KG',
+  gram: 'G',
+  grams: 'G',
+  g: 'G',
+  piece: 'PCS',
+  pieces: 'PCS',
+  pcs: 'PCS',
+  pc: 'PCS',
+  pack: 'PACK',
+  packs: 'PACK',
+  unit: 'UNIT',
+  units: 'UNIT',
+  bottle: 'BOTTLE',
+  bottles: 'BOTTLE',
+  jar: 'JAR',
+  jars: 'JAR',
+  can: 'CAN',
+  cans: 'CAN',
+  bag: 'BAG',
+  bags: 'BAG',
+  box: 'BOX',
+  boxes: 'BOX',
+  tray: 'TRAY',
+  trays: 'TRAY',
+  portion: 'PORTION',
+  portions: 'PORTION',
+};
 
 const VALID_PREP_STATIONS = new Set(['BARISTA', 'KITCHEN', 'BOTH', 'NONE']);
 const VALID_ITEM_TYPES = new Set(['MADE_TO_ORDER', 'DIRECT_STOCK', 'NO_STOCK']);
@@ -188,8 +212,38 @@ function normalizeCode(value: unknown): string {
   return cleanValue(value).toUpperCase();
 }
 
+function normalizeUomDetails(value: unknown): { input: string; value: string; isKnown: boolean } {
+  const input = cleanValue(value);
+  if (!input) return { input: '', value: '', isKnown: true };
+
+  const key = input.toLowerCase().replace(/\./g, '').trim();
+  const normalized = UOM_ALIASES[key];
+  if (normalized) return { input, value: normalized, isKnown: true };
+
+  return { input, value: input.toUpperCase(), isKnown: false };
+}
+
 function normalizeUom(value: unknown): string {
-  return cleanValue(value).toLowerCase();
+  return normalizeUomDetails(value).value;
+}
+
+function addUnknownUomIssue(
+  area: string,
+  code: string,
+  row: number,
+  field: string,
+  uom: { input: string; isKnown: boolean },
+  issues: ValidationIssue[],
+) {
+  if (!uom.input || uom.isKnown) return;
+
+  issues.push({
+    area,
+    severity: 'warning',
+    code,
+    row,
+    message: `Unknown ${field}: ${uom.input}. It could not be normalized automatically.`,
+  });
 }
 
 function normalizeComponentType(value: unknown): string {
@@ -277,11 +331,12 @@ function suggestCategory(code: string, legacyCategory: string, componentType: st
 
 function suggestUomFromBom(uom: string): { purchaseUOM: string; usageUOM: string; conversionFactor: number } {
   const normalized = normalizeUom(uom);
-  if (normalized === 'g') return { purchaseUOM: 'kg', usageUOM: 'g', conversionFactor: 1000 };
-  if (normalized === 'ml') return { purchaseUOM: 'l', usageUOM: 'ml', conversionFactor: 1000 };
-  if (normalized === 'kg') return { purchaseUOM: 'kg', usageUOM: 'kg', conversionFactor: 1 };
-  if (normalized === 'l') return { purchaseUOM: 'l', usageUOM: 'l', conversionFactor: 1 };
-  return { purchaseUOM: normalized || 'pcs', usageUOM: normalized || 'pcs', conversionFactor: 1 };
+  if (normalized === 'G') return { purchaseUOM: 'KG', usageUOM: 'G', conversionFactor: 1000 };
+  if (normalized === 'ML') return { purchaseUOM: 'L', usageUOM: 'ML', conversionFactor: 1000 };
+  if (normalized === 'KG') return { purchaseUOM: 'KG', usageUOM: 'KG', conversionFactor: 1 };
+  if (normalized === 'L') return { purchaseUOM: 'L', usageUOM: 'L', conversionFactor: 1 };
+  if (normalized === 'PCS') return { purchaseUOM: 'PCS', usageUOM: 'PCS', conversionFactor: 1 };
+  return { purchaseUOM: normalized || 'PCS', usageUOM: normalized || 'PCS', conversionFactor: 1 };
 }
 
 async function readRows(file: File, sheetName?: string): Promise<RowData[]> {
@@ -450,26 +505,10 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
       });
     }
 
-    const purchaseUom = normalizeUom(row.purchaseUOM);
-    const usageUom = normalizeUom(row.usageUOM);
-    if (purchaseUom && !VALID_UOMS.has(purchaseUom)) {
-      issues.push({
-        area: 'Raw Ingredients',
-        severity: 'error',
-        code,
-        row: rowNumber,
-        message: `Invalid purchaseUOM: ${row.purchaseUOM}`,
-      });
-    }
-    if (usageUom && !VALID_UOMS.has(usageUom)) {
-      issues.push({
-        area: 'Raw Ingredients',
-        severity: 'error',
-        code,
-        row: rowNumber,
-        message: `Invalid usageUOM: ${row.usageUOM}`,
-      });
-    }
+    const purchaseUom = normalizeUomDetails(row.purchaseUOM);
+    const usageUom = normalizeUomDetails(row.usageUOM);
+    addUnknownUomIssue('Raw Ingredients', code, rowNumber, 'purchaseUOM', purchaseUom, issues);
+    addUnknownUomIssue('Raw Ingredients', code, rowNumber, 'usageUOM', usageUom, issues);
 
     const conversionFactor = toNumber(row.conversionFactor);
     if (!Number.isFinite(conversionFactor) || conversionFactor <= 0) {
@@ -499,8 +538,8 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
         code,
         name: cleanValue(row.name),
         category: cleanValue(row.category),
-        purchaseUOM: cleanValue(row.purchaseUOM),
-        usageUOM: cleanValue(row.usageUOM),
+        purchaseUOM: purchaseUom.value,
+        usageUOM: usageUom.value,
         currentPurchaseCost: Number.isFinite(purchaseCost) ? purchaseCost : 0,
         suggestedPurchaseCost: '',
         notes: 'Fill purchase cost before final costing/margin rollout.',
@@ -558,6 +597,7 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
     const prepName = cleanValue(row.prepName);
     const componentType = normalizeComponentType(row.bomComponentType);
     const componentCode = normalizeCode(row.bomComponentCode);
+    const bomUom = normalizeUomDetails(row.bomUOM);
 
     PREP_REQUIRED_FIELDS.forEach((field) => {
       if (!cleanValue(row[field])) {
@@ -611,6 +651,7 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
         message: 'bomQuantity must be greater than 0.',
       });
     }
+    addUnknownUomIssue('Prep BOM', prepCode, rowNumber, 'bomUOM', bomUom, issues);
 
     if (prepCode && componentCode === prepCode) {
       issues.push({
@@ -738,6 +779,7 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
     const componentType = normalizeComponentType(row.bomComponentType);
     const componentCode = normalizeCode(row.bomComponentCode);
     const itemType = normalizeCode(row.itemType);
+    const bomUom = normalizeUomDetails(row.bomUOM);
 
     if (itemType !== 'NO_STOCK' || componentCode) {
       if (!componentCode) {
@@ -770,6 +812,7 @@ function buildValidationReport(rowsByKey: Record<FileKey, RowData[]>): Validatio
           message: 'bomQuantity must be greater than 0.',
         });
       }
+      addUnknownUomIssue('Finished Goods BOM', fgCode, rowNumber, 'bomUOM', bomUom, issues);
     }
 
     if (fgCode && componentCode === fgCode) {
