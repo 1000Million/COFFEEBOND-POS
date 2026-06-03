@@ -81,28 +81,28 @@ export default function ReadyToServe() {
       return;
     }
 
-    // We query for READY and SERVED (for today)
+    // We query per authorized store so store-scoped rules can validate every returned document.
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const baseQ = query(
-      collection(db, 'kotItems'),
-      where('status', 'in', ['READY', 'SERVED'])
-    );
+    const storeIdsToQuery = staffProfile.role === 'ADMIN'
+      ? stores.map(store => store.id)
+      : stores
+          .filter(store => staffProfile.storeIds.includes(store.id))
+          .map(store => store.id);
 
-    const unsub = onSnapshot(baseQ, (snap) => {
-      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem));
-      
-      let accessibleItems = fetched;
-      if (staffProfile.role !== 'ADMIN') {
-        accessibleItems = accessibleItems.filter(item => staffProfile.storeIds.includes(item.storeId));
-      }
+    if (storeIdsToQuery.length === 0) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
 
-      // filtered served items manually because of firestore composite indexing limits
-      accessibleItems = accessibleItems.filter(item => {
+    setLoading(true);
+    const itemsByStore = new Map<string, KotItem[]>();
+    const applySnapshots = () => {
+      const accessibleItems = Array.from(itemsByStore.values()).flat().filter(item => {
         if (item.status === 'READY') return true;
         if (item.status === 'SERVED') {
-          // only today's
           const servedTime = item.servedAt?.toDate ? item.servedAt.toDate().getTime() : 0;
           return servedTime >= today.getTime();
         }
@@ -111,10 +111,27 @@ export default function ReadyToServe() {
 
       setItems(accessibleItems);
       setLoading(false);
+    };
+
+    const unsubs = storeIdsToQuery.map(storeId => {
+      const readyQuery = query(
+        collection(db, 'kotItems'),
+        where('storeId', '==', storeId),
+        where('status', 'in', ['READY', 'SERVED'])
+      );
+
+      return onSnapshot(readyQuery, (snap) => {
+        itemsByStore.set(storeId, snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem)));
+        applySnapshots();
+      }, (error) => {
+        console.error('Error loading ready-to-serve items', error);
+        itemsByStore.set(storeId, []);
+        applySnapshots();
+      });
     });
 
-    return () => unsub();
-  }, [staffProfile]);
+    return () => unsubs.forEach(unsub => unsub());
+  }, [staffProfile, stores]);
 
   const displayedItems = useMemo(() => {
     let list = [...items];

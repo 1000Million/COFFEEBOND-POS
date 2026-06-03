@@ -14,6 +14,14 @@ export default function DataManagement() {
     setLogs(prev => [...prev, { message, type, time: new Date().toLocaleTimeString() }]);
   };
 
+  const parseStoreIds = (value: any, fallbackStoreIds: string[]) => {
+    if (Array.isArray(value)) return value.filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.split(',').map(id => id.trim()).filter(Boolean);
+    }
+    return fallbackStoreIds;
+  };
+
   const handleExportExcel = async () => {
     setIsRunning(true);
     setLogs([]);
@@ -127,6 +135,11 @@ export default function DataManagement() {
       return;
     }
 
+    if (!window.confirm(`Import Excel data\n\nThis will merge spreadsheet rows into Firestore collections. New menu items without availableStoreIds will be assigned to all active stores so they are visible in POS.\n\nContinue?`)) {
+      e.target.value = '';
+      return;
+    }
+
     setIsRunning(true);
     setLogs([]);
     addLog(`Reading file ${file.name}...`, 'info');
@@ -136,6 +149,8 @@ export default function DataManagement() {
       try {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
+        const activeStoresSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+        const defaultStoreIds = activeStoresSnap.docs.map(docSnap => docSnap.id);
 
         const processSheet = async (sheetName: string, collectionName: string, idField: string | ((row: any) => string), processRow?: (row: any) => any) => {
           if (!wb.SheetNames.includes(sheetName)) {
@@ -180,6 +195,7 @@ export default function DataManagement() {
           categoryCode: row.categoryCode || 'UNCATEGORISED',
           price: parseFloat(row.price) || 0,
           prepStation: row.prepStation || 'NONE',
+          availableStoreIds: parseStoreIds(row.availableStoreIds, defaultStoreIds),
           isActive: row.isActive !== false && row.isActive !== 'FALSE' && row.isActive !== 'false'
         }));
 

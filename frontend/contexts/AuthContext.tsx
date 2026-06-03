@@ -65,7 +65,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const data = docSnap.data();
-        const newProfile = { id: docSnap.id, ...data } as unknown as StaffProfile;
+        const assignedStoreIds = Array.isArray(data.assignedStoreIds)
+          ? data.assignedStoreIds
+          : Array.isArray(data.storeIds)
+            ? data.storeIds
+            : [];
+        const displayName = data.displayName || data.name || user.displayName || user.email || "Staff";
+        const newProfile = {
+          id: docSnap.id,
+          ...data,
+          uid: data.uid || docSnap.id,
+          name: data.name || displayName,
+          displayName,
+          storeIds: assignedStoreIds,
+          assignedStoreIds,
+        } as unknown as StaffProfile;
         
         setStaffProfile(prevProfile => {
           if (JSON.stringify(prevProfile) === JSON.stringify(newProfile)) {
@@ -105,4 +119,3 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     </AuthContext.Provider>
   );
 };
-

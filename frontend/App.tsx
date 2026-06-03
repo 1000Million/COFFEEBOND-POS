@@ -25,6 +25,7 @@ import Recipes from './pages/admin/Recipes';
 import Seed from './pages/admin/Seed';
 import MenuImport from './pages/admin/MenuImport';
 import DataManagement from './pages/admin/DataManagement';
+import StaffManagement from './pages/admin/StaffManagement';
 import POSHome from './pages/pos/POSHome';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
@@ -81,6 +82,7 @@ export default function App() {
                 <Route path="/admin/menu-import" element={<MenuImport />} />
                 <Route path="/admin/data" element={<DataManagement />} />
                 <Route path="/admin/seed" element={<Seed />} />
+                <Route path="/admin/staff" element={<StaffManagement />} />
               </Route>
 
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>

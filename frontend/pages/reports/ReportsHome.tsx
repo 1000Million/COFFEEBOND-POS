@@ -79,27 +79,26 @@ export default function ReportsHome() {
 
       try {
         let loadedOrders: Order[] = [];
-        
-        // Fetch all orders for the given date range (relies only on createdAt single-field index)
-        const qOrders = query(
-          collection(db, 'orders'),
-          where('createdAt', '>=', startTs),
-          where('createdAt', '<=', endTs)
-        );
-        const ordersSnap = await getDocs(qOrders);
-        const fetchedOrders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
 
         if (staffProfile.role === 'ADMIN' && selectedStoreId === 'ALL') {
-          loadedOrders = fetchedOrders;
+          const qOrders = query(
+            collection(db, 'orders'),
+            where('createdAt', '>=', startTs),
+            where('createdAt', '<=', endTs)
+          );
+          const ordersSnap = await getDocs(qOrders);
+          loadedOrders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
         } else {
           const storesToFetch = selectedStoreId === 'ALL' ? staffProfile.storeIds : [selectedStoreId];
-          loadedOrders = fetchedOrders.filter(o => {
-            if (!o.storeId) {
-              if (import.meta.env.DEV) console.warn(`[REPORTS] Order ${o.id} is missing storeId. Excluding from store-specific report.`);
-              return false;
-            }
-            return storesToFetch.includes(o.storeId);
-          });
+          if (storesToFetch.length > 0) {
+            const orderSnaps = await Promise.all(storesToFetch.map(storeId => getDocs(query(
+              collection(db, 'orders'),
+              where('storeId', '==', storeId),
+              where('createdAt', '>=', startTs),
+              where('createdAt', '<=', endTs)
+            ))));
+            loadedOrders = orderSnaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+          }
         }
 
         // Fetch sub-items in parallel for these orders
@@ -117,28 +116,29 @@ export default function ReportsHome() {
         let loadedKots: KotItem[] = [];
         let newCustCount = 0;
         if (staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER') {
-          const qKot = query(
-            collection(db, 'kotItems'),
-            where('createdAt', '>=', startTs),
-            where('createdAt', '<=', endTs)
-          );
-          const kotSnap = await getDocs(qKot);
-          const fetchedKots = kotSnap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem));
-
           if (staffProfile.role === 'ADMIN' && selectedStoreId === 'ALL') {
-            loadedKots = fetchedKots;
+            const qKot = query(
+              collection(db, 'kotItems'),
+              where('createdAt', '>=', startTs),
+              where('createdAt', '<=', endTs)
+            );
+            const kotSnap = await getDocs(qKot);
+            loadedKots = kotSnap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem));
           } else {
             const storesToFetch = selectedStoreId === 'ALL' ? staffProfile.storeIds : [selectedStoreId];
-            loadedKots = fetchedKots.filter(k => {
-              if (!k.storeId) {
-                if (import.meta.env.DEV) console.warn(`[REPORTS] KOT ${k.id} missing storeId.`);
-                return false;
-              }
-              return storesToFetch.includes(k.storeId);
-            });
+            if (storesToFetch.length > 0) {
+              const kotSnaps = await Promise.all(storesToFetch.map(storeId => getDocs(query(
+                collection(db, 'kotItems'),
+                where('storeId', '==', storeId),
+                where('createdAt', '>=', startTs),
+                where('createdAt', '<=', endTs)
+              ))));
+              loadedKots = kotSnaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem)));
+            }
           }
 
-          // Fetch new customers
+          // Customer documents are not store-scoped yet, so only Admin sees the global new-customer count.
+          if (staffProfile.role === 'ADMIN') {
           const qCust = query(
             collection(db, 'customers'),
             where('createdAt', '>=', startTs),
@@ -146,6 +146,7 @@ export default function ReportsHome() {
           );
           const custSnap = await getDocs(qCust);
           newCustCount = custSnap.docs.length;
+          }
         }
 
         if (active) {

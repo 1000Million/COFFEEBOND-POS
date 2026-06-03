@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, doc, setDoc, serverTimestamp, query, where } from 'firebase/firestore';
 import { DatabaseZap, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
@@ -9,6 +9,7 @@ import { RECIPES_RAW } from '../../data/rawData3';
 import { RECIPE_LINES_RAW_1 } from '../../data/rawData4';
 import { RECIPE_LINES_RAW_2 } from '../../data/rawData5';
 import { useAuth } from '../../contexts/AuthContext';
+import { Store } from '../../types';
 
 function sanitizeFirestoreData(obj: any): any {
   if (obj === undefined) return null;
@@ -62,6 +63,8 @@ export default function MenuImport() {
   const { staffProfile } = useAuth();
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<{message: string, type: 'info'|'success'|'error', time: string}[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
+  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>([]);
   const archiveOld = false; // Forced to false for now based on user request
 
   const cats = parseRawBlock<any>(CATEGORIES_RAW);
@@ -69,12 +72,40 @@ export default function MenuImport() {
   const invs = parseRawBlock<any>(INVENTORY_ITEMS_RAW);
   const recipes = parseRawBlock<any>(RECIPES_RAW);
 
+  useEffect(() => {
+    const loadStores = async () => {
+      const snap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+      const activeStores = snap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
+      activeStores.sort((a, b) => a.name.localeCompare(b.name));
+      setStores(activeStores);
+      setSelectedStoreIds(activeStores.map(store => store.id));
+    };
+    loadStores().catch((error) => {
+      addLog(`Unable to load active stores: ${error.message}`, 'error');
+    });
+  }, []);
+
   const addLog = (message: string, type: 'info'|'success'|'error' = 'info') => {
     setLogs(prev => [...prev, { message, type, time: new Date().toLocaleTimeString() }]);
   };
 
+  const confirmAdminWrite = (label: string, detail: string) => {
+    if (staffProfile?.role !== 'ADMIN') {
+      addLog('Unauthorized: Admin access required', 'error');
+      return false;
+    }
+    return window.confirm(`${label}\n\n${detail}\n\nThis writes to Firestore. Continue?`);
+  };
+
+  const toggleStore = (storeId: string) => {
+    setSelectedStoreIds(prev => prev.includes(storeId)
+      ? prev.filter(id => id !== storeId)
+      : [...prev, storeId]
+    );
+  };
+
   const handleRestoreActiveMenus = async () => {
-    if (staffProfile?.role !== 'ADMIN') return;
+    if (!confirmAdminWrite('Restore all menu items to active', 'This will mark every menu item in the menuItems collection as active.')) return;
     setIsRunning(true);
     setLogs([]);
     addLog('Restoring all menu items to Active...', 'info');
@@ -98,6 +129,7 @@ export default function MenuImport() {
   };
 
   const handleSeedCategories = async () => {
+    if (!confirmAdminWrite('Seed categories', 'This will merge category records from the bundled Coffee Bond import data.')) return;
     setIsRunning(true);
     addLog('Starting Categories Seed...', 'info');
     try {
@@ -130,6 +162,11 @@ export default function MenuImport() {
   };
 
   const handleSeedMenuItems = async () => {
+    if (selectedStoreIds.length === 0) {
+      addLog('Select at least one store before importing menu items so they are visible in POS.', 'error');
+      return;
+    }
+    if (!confirmAdminWrite('Seed menu items', `This will merge menu item records and assign them to ${selectedStoreIds.length} selected store(s).`)) return;
     setIsRunning(true);
     addLog('Starting Menu Items Seed...', 'info');
     try {
@@ -153,7 +190,7 @@ export default function MenuImport() {
             taxRate: parseFloat(m.taxRate) || 5,
             prepStation,
             isActive: m.isActive !== 'FALSE',
-            availableStoreIds: [],
+            availableStoreIds: selectedStoreIds,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp()
           };
@@ -173,6 +210,7 @@ export default function MenuImport() {
   };
 
   const handleSeedInventoryItems = async () => {
+    if (!confirmAdminWrite('Seed inventory items', 'This will merge inventory item records from the bundled Coffee Bond import data.')) return;
     setIsRunning(true);
     addLog('Starting Inventory Items Seed...', 'info');
     try {
@@ -210,6 +248,7 @@ export default function MenuImport() {
   };
 
   const handleSeedRecipes = async () => {
+    if (!confirmAdminWrite('Seed recipes', 'This will merge recipes and recipe lines from the bundled Coffee Bond import data.')) return;
     setIsRunning(true);
     addLog('Starting Recipes Seed...', 'info');
     try {
@@ -255,6 +294,7 @@ export default function MenuImport() {
   };
 
   const handleSeedStoreInventory = async () => {
+    if (!confirmAdminWrite('Seed store inventory', 'This will create missing store inventory rows for active stores. Existing rows are preserved.')) return;
     setIsRunning(true);
     addLog('Starting Store Inventory Seed...', 'info');
     try {
@@ -337,6 +377,37 @@ export default function MenuImport() {
           <label htmlFor="archiveOld" className="ml-2 text-sm font-medium text-neutral-800">
             Archive old menu items not found in 2026 import (Archiving disabled until 2026 seed is verified)
           </label>
+        </div>
+
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 mb-6">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 className="text-sm font-black text-neutral-800">Menu Item Store Assignment</h3>
+              <p className="text-xs text-neutral-500">Imported menu items will be visible in POS for the selected stores.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedStoreIds(stores.map(store => store.id))}
+              className="text-xs font-bold text-[#5c4033] hover:underline"
+            >
+              Select all
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {stores.length === 0 ? (
+              <p className="text-sm text-neutral-500">No active stores found. Seed stores before importing menu items.</p>
+            ) : stores.map(store => (
+              <label key={store.id} className="flex items-center gap-2 bg-white border border-neutral-100 rounded-lg px-3 py-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={selectedStoreIds.includes(store.id)}
+                  onChange={() => toggleStore(store.id)}
+                  className="rounded border-neutral-300 text-[#5c4033] focus:ring-[#5c4033]"
+                />
+                {store.name}
+              </label>
+            ))}
+          </div>
         </div>
 
         <div className="flex flex-col md:flex-row gap-4 mb-6 pb-6 border-b border-neutral-200">
@@ -427,4 +498,3 @@ export default function MenuImport() {
     </div>
   );
 }
-

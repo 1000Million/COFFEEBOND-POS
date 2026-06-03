@@ -36,7 +36,7 @@ export default function ProtectedRoute({ allowedRoles, children }: ProtectedRout
 
   if (authStatus === 'ready' && staffProfile) {
     if (allowedRoles && !allowedRoles.includes(staffProfile.role)) {
-      let fallback = '/login';
+      let fallback = '/';
       if (staffProfile.role === 'ADMIN') fallback = '/admin';
       else if (staffProfile.role === 'STORE_MANAGER' || staffProfile.role === 'CASHIER') fallback = '/pos';
       else if (staffProfile.role === 'BARISTA') fallback = '/kot/barista';

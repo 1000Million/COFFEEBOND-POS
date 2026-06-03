@@ -18,6 +18,18 @@ service cloud.firestore {
     function isStoreManager() {
       return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'STORE_MANAGER';
     }
+
+    function isCashier() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'CASHIER';
+    }
+
+    function isBarista() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'BARISTA';
+    }
+
+    function isKitchen() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'KITCHEN';
+    }
     
     function isActiveStaff() {
       return isSignedIn() && (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().isActive == true));
@@ -29,6 +41,14 @@ service cloud.firestore {
 
     function hasStoreAccess(storeId) {
       return isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
+    }
+
+    function canReadKot(data) {
+      return isAdmin()
+        || (isStoreManager() && hasStoreAccess(data.storeId))
+        || (isCashier() && hasStoreAccess(data.storeId))
+        || (isBarista() && data.station == 'BARISTA' && hasStoreAccess(data.storeId))
+        || (isKitchen() && data.station == 'KITCHEN' && hasStoreAccess(data.storeId));
     }
 
     // Users Collection
@@ -102,7 +122,7 @@ service cloud.firestore {
     }
 
     match /kotItems/{kotId} {
-      allow read: if isActiveStaff() && hasStoreAccess(resource.data.storeId);
+      allow read: if isActiveStaff() && canReadKot(resource.data);
       
       allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
       

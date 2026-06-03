@@ -404,6 +404,7 @@ export default function POSHome() {
 
       const reqStock: Record<string, { id: string, name: string, unit: string, qty: number, type: string, code: string }> = {};
       const missingRecipes: string[] = []; // for dev logs
+      const allowMissingRecipeCheckout = import.meta.env.DEV && import.meta.env.VITE_ALLOW_MISSING_RECIPE_CHECKOUT === 'true';
       
       if (posSource === 'FINISHED_GOODS') {
         for (const item of cart) {
@@ -460,8 +461,12 @@ export default function POSHome() {
         }
       }
 
-      if (import.meta.env.DEV && missingRecipes.length > 0) {
-         console.warn(`[CHECKOUT] No recipe mapped for: ${missingRecipes.join(', ')}; stock not deducted.`);
+      if (missingRecipes.length > 0) {
+        const message = `Checkout blocked. These items require inventory deduction but have no recipe/BOM mapped: ${missingRecipes.join(', ')}. Add the missing recipe/BOM or mark the item as No Stock before selling.`;
+        if (!allowMissingRecipeCheckout) {
+          throw new Error(message);
+        }
+        console.warn(`[CHECKOUT DEV BYPASS] ${message}`);
       }
 
       const { sequence, savedOrder, savedItems, savedPayment } = await runTransaction(db, async (transaction) => {

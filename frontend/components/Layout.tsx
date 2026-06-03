@@ -18,9 +18,7 @@ export default function Layout() {
 
   if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
     navLinks.push({ to: '/pos', label: 'POS', title: 'POS', icon: Calculator });
-    if (role === 'ADMIN' || role === 'STORE_MANAGER') {
-      navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
-    }
+    navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
   }
   
   if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'BARISTA') {

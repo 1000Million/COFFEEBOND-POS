@@ -1,4 +1,4 @@
-export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN";
+export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE";
 
 export type AuthStatus = 
   | "checking-auth"
@@ -12,10 +12,12 @@ export type AuthStatus =
 export interface StaffProfile {
   uid: string;
   name: string;
+  displayName: string;
   email: string;
   role: Role;
   isActive: boolean;
   storeIds: string[];
+  assignedStoreIds: string[];
   createdAt: any; // Firestore Timestamp
   updatedAt: any; // Firestore Timestamp
 }
@@ -249,5 +251,4 @@ export interface StockMovement {
   stockItemType?: string;
   stockItemCode?: string;
 }
-
 

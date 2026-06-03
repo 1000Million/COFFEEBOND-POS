@@ -90,11 +90,16 @@ export default function Seed() {
     setLogs(prev => [...prev, { message, type }]);
   };
 
-  const handleSeed = async () => {
+  const confirmAdminWrite = (label: string, detail: string) => {
     if (staffProfile?.role !== 'ADMIN') {
       addLog('Unauthorized: Admin access required', 'error');
-      return;
+      return false;
     }
+    return window.confirm(`${label}\n\n${detail}\n\nThis writes to Firestore. Continue?`);
+  };
+
+  const handleSeed = async () => {
+    if (!confirmAdminWrite('Run system seed process', 'This will add missing default stores, categories, and menu items. Existing customized records should not be overwritten.')) return;
     setIsRunning(true);
     setLogs([]);
     
@@ -202,10 +207,7 @@ export default function Seed() {
 
   const handleMigrate = async () => {
     console.log('[MIGRATION] Migrate Prep Stations clicked');
-    if (staffProfile?.role !== 'ADMIN') {
-      addLog('Unauthorized: Admin access required', 'error');
-      return;
-    }
+    if (!confirmAdminWrite('Migrate prep stations', 'This will update prepStation/defaultPrepStation values on categories and menu items.')) return;
     
     setIsRunning(true);
     setLogs([]);
@@ -293,7 +295,7 @@ export default function Seed() {
   };
 
   const handleSeedInventory = async () => {
-    if (staffProfile?.role !== 'ADMIN') return;
+    if (!confirmAdminWrite('Seed legacy inventory', 'This will add missing inventory items, recipes, and initial stock rows for stores.')) return;
     setIsRunning(true); setLogs([]);
     addLog('Starting Inventory Seed...', 'info');
 

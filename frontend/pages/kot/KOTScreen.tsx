@@ -72,29 +72,46 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
       return;
     }
 
-    // Use a single-field query to prevent composite index requirements (storeId + station, etc.)
-    // Active orders are generally under 100 globally, easily filtered locally
-    let baseQ = query(
-      collection(db, 'kotItems'), 
-      where('status', 'in', ['PENDING', 'PREPARING', 'READY'])
-    );
+    const storeIdsToQuery = staffProfile.role === 'ADMIN'
+      ? stores.map(store => store.id)
+      : stores
+          .filter(store => staffProfile.storeIds.includes(store.id))
+          .map(store => store.id);
 
-    const unsub = onSnapshot(baseQ, (snap) => {
-      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem));
-      
-      // Local Filtering
-      let accessibleItems = fetched.filter(item => item.station === station);
-      
-      if (staffProfile.role !== 'ADMIN') {
-        accessibleItems = accessibleItems.filter(item => staffProfile.storeIds.includes(item.storeId));
-      }
-
-      setItems(accessibleItems.sort((a, b) => b.createdAt?.toMillis() - a.createdAt?.toMillis())); // Newest first? Or oldest first? Oldest first is better for KOT!
+    if (storeIdsToQuery.length === 0) {
+      setItems([]);
       setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const itemsByStore = new Map<string, KotItem[]>();
+    const applySnapshots = () => {
+      const accessibleItems = Array.from(itemsByStore.values()).flat();
+      setItems(accessibleItems);
+      setLoading(false);
+    };
+
+    const unsubs = storeIdsToQuery.map(storeId => {
+      const storeKotQuery = query(
+        collection(db, 'kotItems'),
+        where('storeId', '==', storeId),
+        where('station', '==', station),
+        where('status', 'in', ['PENDING', 'PREPARING', 'READY'])
+      );
+
+      return onSnapshot(storeKotQuery, (snap) => {
+        itemsByStore.set(storeId, snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem)));
+        applySnapshots();
+      }, (error) => {
+        console.error('Error loading KOT items', error);
+        itemsByStore.set(storeId, []);
+        applySnapshots();
+      });
     });
 
-    return () => unsub();
-  }, [staffProfile, station]);
+    return () => unsubs.forEach(unsub => unsub());
+  }, [staffProfile, station, stores]);
 
   const displayedItems = useMemo(() => {
     let list = [...items];
