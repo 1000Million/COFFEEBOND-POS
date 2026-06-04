@@ -7,6 +7,7 @@ import {
   Download,
   FileSearch,
   Loader2,
+  RefreshCw,
   ShieldAlert,
   Upload,
   XCircle,
@@ -14,7 +15,7 @@ import {
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store } from '../../types';
-import { FinishedGood, PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
+import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
 
 type CsvRow = Record<string, string>;
 type ReportAction = 'UPDATE' | 'UNCHANGED' | 'BLOCKED';
@@ -45,6 +46,19 @@ type WriteEntry = {
   update: Record<string, unknown>;
 };
 
+type PendingStockValues = Partial<Pick<StoreStock, 'openingStock' | 'currentStock' | 'minimumStock'>> & { confirmedZero?: boolean };
+
+type ReadinessBlocker = {
+  storeCode: string;
+  stockItemType: string;
+  stockItemCode: string;
+  stockItemName: string;
+  currentOpeningStock: number | null;
+  currentCurrentStock: number | null;
+  confirmedZero: boolean;
+  blockerReason: string;
+};
+
 type ReadinessStatus = {
   storeId: string;
   storeCode: string;
@@ -56,6 +70,8 @@ type ReadinessStatus = {
   costingIssues: number;
   stockIssues: number;
   checkoutIssues: number;
+  stockBlockers: ReadinessBlocker[];
+  checkoutBlockers: ReadinessBlocker[];
 };
 
 type DryRunResult = {
@@ -258,42 +274,59 @@ function getStockDocId(storeId: string, stockItemType: string, stockItemCode: st
   return `${storeId}_${stockItemType}_${stockItemCode}`;
 }
 
-function collectPrepRawCodes(
-  prepCode: string,
-  prepByCode: Map<string, PrepItem & { id: string }>,
-  visited = new Set<string>(),
-): Set<string> {
-  const rawCodes = new Set<string>();
-  if (visited.has(prepCode)) return rawCodes;
-  visited.add(prepCode);
+type RequiredStockRow = {
+  docId: string;
+  stockItemType: StockItemType;
+  stockItemCode: string;
+  stockItemName: string;
+  fallbackDocId?: string;
+  fallbackStockItemType?: StockItemType;
+};
 
-  const prep = prepByCode.get(prepCode);
-  prep?.bom?.forEach((line) => {
-    if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
-      rawCodes.add(line.componentCode);
-    }
-    if (line.componentType === 'PREP_ITEM') {
-      collectPrepRawCodes(line.componentCode, prepByCode, visited).forEach((code) => rawCodes.add(code));
-    }
-  });
-
-  return rawCodes;
+function isStockItemType(value: string): value is StockItemType {
+  return ['RAW_INGREDIENT', 'PREP_ITEM', 'BOUGHT_COMPONENT', 'FINISHED_GOOD', 'PACKAGING'].includes(value);
 }
 
-function collectFinishedGoodRawCodes(
-  finishedGood: FinishedGood,
+function getExistingConfirmedZero(stock: (StoreStock & Record<string, unknown>) | undefined): boolean {
+  return stock?.confirmedZero === true;
+}
+
+function makeReadinessBlocker(
+  store: Store & { id: string },
+  requirement: RequiredStockRow,
+  stock: (StoreStock & { id: string } & Record<string, unknown>) | undefined,
+  pending: PendingStockValues | undefined,
+  reason: string,
+): ReadinessBlocker {
+  return {
+    storeCode: store.code,
+    stockItemType: stock?.stockItemType || requirement.stockItemType,
+    stockItemCode: stock?.stockItemCode || requirement.stockItemCode,
+    stockItemName: stock?.stockItemName || requirement.stockItemName,
+    currentOpeningStock: stock ? pending?.openingStock ?? toNumber(stock.openingStock) : null,
+    currentCurrentStock: stock ? pending?.currentStock ?? toNumber(stock.currentStock) : null,
+    confirmedZero: pending?.confirmedZero ?? getExistingConfirmedZero(stock),
+    blockerReason: reason,
+  };
+}
+
+function componentName(
+  line: BOMComponent,
+  rawByCode: Map<string, RawIngredient & { id: string }>,
   prepByCode: Map<string, PrepItem & { id: string }>,
-): Set<string> {
-  const rawCodes = new Set<string>();
-  finishedGood.bom?.forEach((line) => {
-    if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
-      rawCodes.add(line.componentCode);
-    }
-    if (line.componentType === 'PREP_ITEM') {
-      collectPrepRawCodes(line.componentCode, prepByCode).forEach((code) => rawCodes.add(code));
-    }
-  });
-  return rawCodes;
+  finishedByCode: Map<string, FinishedGood & { id: string }>,
+): string {
+  if (line.componentName) return line.componentName;
+  if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
+    return rawByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  if (line.componentType === 'PREP_ITEM') {
+    return prepByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  if (line.componentType === 'FINISHED_GOOD') {
+    return finishedByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  return line.componentCode;
 }
 
 function buildReadiness(
@@ -303,11 +336,12 @@ function buildReadiness(
   finishedGoods: (FinishedGood & { id: string })[],
   prepItems: (PrepItem & { id: string })[],
   pendingRawCosts: Map<string, number>,
-  pendingStock: Map<string, Partial<Pick<StoreStock, 'openingStock' | 'currentStock' | 'minimumStock'>> & { confirmedZero?: boolean }>,
+  pendingStock: Map<string, PendingStockValues>,
 ): ReadinessStatus[] {
   const rawByCode = new Map(rawIngredients.map((raw) => [raw.code, raw]));
   const prepByCode = new Map(prepItems.map((prep) => [prep.code, prep]));
-  const stockById = new Map(stockRows.map((row) => [row.id, row]));
+  const finishedByCode = new Map(finishedGoods.map((finishedGood) => [finishedGood.code, finishedGood]));
+  const stockById = new Map(stockRows.map((row) => [row.id, row as StoreStock & { id: string } & Record<string, unknown>]));
   const activeRawCodes = rawIngredients.filter((raw) => raw.isActive !== false).map((raw) => raw.code);
 
   return stores.map((store) => {
@@ -324,43 +358,91 @@ function buildReadiness(
       && fg.isSellable !== false
       && (!Array.isArray(fg.availableStoreIds) || fg.availableStoreIds.length === 0 || fg.availableStoreIds.includes(store.id))
     ));
-    const requiredStockIds = new Set<string>();
-    let checkoutIssues = 0;
+    const requiredStockRows = new Map<string, RequiredStockRow>();
+    const checkoutBlockers: ReadinessBlocker[] = [];
+
+    const addRequiredStock = (requirement: RequiredStockRow) => {
+      if (!requiredStockRows.has(requirement.docId)) {
+        requiredStockRows.set(requirement.docId, requirement);
+      }
+    };
 
     activeSellable.forEach((fg) => {
-      if ((fg.productionMode === 'MADE_TO_ORDER' || fg.productionMode === 'ASSEMBLED_TO_ORDER') && (!fg.bom || fg.bom.length === 0)) {
-        checkoutIssues += 1;
+      const usesBom = fg.itemType === 'MADE_TO_ORDER' || (fg.itemType === 'DIRECT_STOCK' && Array.isArray(fg.bom) && fg.bom.length > 0);
+      if ((fg.productionMode === 'MADE_TO_ORDER' || fg.productionMode === 'ASSEMBLED_TO_ORDER' || usesBom) && (!fg.bom || fg.bom.length === 0)) {
+        checkoutBlockers.push({
+          storeCode: store.code,
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: fg.code,
+          stockItemName: fg.name,
+          currentOpeningStock: null,
+          currentCurrentStock: null,
+          confirmedZero: false,
+          blockerReason: 'Sellable item requires a BOM before checkout can use FINISHED_GOODS.',
+        });
       }
-      collectFinishedGoodRawCodes(fg, prepByCode).forEach((code) => {
-        const raw = rawByCode.get(code);
-        const type = raw?.category?.toUpperCase().includes('PACKAGING') ? 'PACKAGING' : 'RAW_INGREDIENT';
-        requiredStockIds.add(getStockDocId(store.id, type, code));
-      });
-      if (fg.itemType === 'DIRECT_STOCK') {
-        requiredStockIds.add(getStockDocId(store.id, 'FINISHED_GOOD', fg.code));
+
+      if (usesBom) {
+        fg.bom?.forEach((line) => {
+          if (!line.componentCode || !isStockItemType(line.componentType)) return;
+          const stockItemType = line.componentType;
+          const fallbackStockItemType = stockItemType === 'PACKAGING' ? 'RAW_INGREDIENT' : undefined;
+          addRequiredStock({
+            docId: getStockDocId(store.id, stockItemType, line.componentCode),
+            stockItemType,
+            stockItemCode: line.componentCode,
+            stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
+            fallbackDocId: fallbackStockItemType ? getStockDocId(store.id, fallbackStockItemType, line.componentCode) : undefined,
+            fallbackStockItemType,
+          });
+        });
+      } else if (fg.itemType === 'DIRECT_STOCK') {
+        addRequiredStock({
+          docId: getStockDocId(store.id, 'FINISHED_GOOD', fg.code),
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: fg.code,
+          stockItemName: fg.name,
+        });
       }
     });
 
-    let stockIssues = 0;
-    requiredStockIds.forEach((id) => {
-      const existing = stockById.get(id);
-      const pending = pendingStock.get(id);
+    const stockBlockers: ReadinessBlocker[] = [];
+    requiredStockRows.forEach((requirement) => {
+      let existing = stockById.get(requirement.docId);
+      let pending = pendingStock.get(requirement.docId);
+      if (!existing && requirement.fallbackDocId) {
+        existing = stockById.get(requirement.fallbackDocId);
+        pending = pendingStock.get(requirement.fallbackDocId);
+      }
+
       if (!existing) {
-        stockIssues += 1;
-        checkoutIssues += 1;
+        const missingReason = requirement.fallbackDocId
+          ? `Missing required stock row ${requirement.docId}; fallback ${requirement.fallbackDocId} was also not found.`
+          : `Missing required stock row ${requirement.docId}.`;
+        const blocker = makeReadinessBlocker(store, requirement, undefined, undefined, missingReason);
+        stockBlockers.push(blocker);
+        checkoutBlockers.push(blocker);
         return;
       }
       const openingStock = pending?.openingStock ?? toNumber(existing.openingStock);
       const currentStock = pending?.currentStock ?? toNumber(existing.currentStock);
-      const confirmedZero = pending?.confirmedZero === true;
+      const confirmedZero = pending?.confirmedZero ?? getExistingConfirmedZero(existing);
       if ((openingStock <= 0 || currentStock <= 0) && !confirmedZero) {
-        stockIssues += 1;
+        const blocker = makeReadinessBlocker(
+          store,
+          requirement,
+          existing,
+          pending,
+          'Opening/current stock must be greater than 0, unless confirmedZero is stored as true.',
+        );
+        stockBlockers.push(blocker);
+        checkoutBlockers.push(blocker);
       }
     });
 
     const costingComplete = costingIssues === 0;
-    const stockLoaded = stockIssues === 0;
-    const checkoutSafe = costingComplete && stockLoaded && checkoutIssues === 0;
+    const stockLoaded = stockBlockers.length === 0;
+    const checkoutSafe = costingComplete && stockLoaded && checkoutBlockers.length === 0;
 
     return {
       storeId: store.id,
@@ -371,8 +453,10 @@ function buildReadiness(
       checkoutSafe,
       eligibleForFinishedGoodsPilot: checkoutSafe,
       costingIssues,
-      stockIssues,
-      checkoutIssues,
+      stockIssues: stockBlockers.length,
+      checkoutIssues: checkoutBlockers.length,
+      stockBlockers,
+      checkoutBlockers,
     };
   });
 }
@@ -420,12 +504,40 @@ export default function Phase7HStockCosting() {
   const [dryRun, setDryRun] = useState<DryRunResult | null>(null);
   const [confirmationText, setConfirmationText] = useState('');
   const [liveSummary, setLiveSummary] = useState<LiveSummary | null>(null);
+  const [freshReadiness, setFreshReadiness] = useState<ReadinessStatus[] | null>(null);
+  const [readinessRefreshedAt, setReadinessRefreshedAt] = useState('');
+  const [isRefreshingReadiness, setIsRefreshingReadiness] = useState(false);
 
   const liveReady = !!dryRun
     && dryRun.counts.rowsBlocked === 0
     && staffProfile?.role === 'ADMIN'
     && confirmationText.trim() === LIVE_CONFIRMATION
     && !isWritingLive;
+
+  const refreshReadinessFromFirestore = async (showSpinner = true) => {
+    if (showSpinner) setIsRefreshingReadiness(true);
+    setError('');
+    try {
+      const data = await loadPhase7HData();
+      const readiness = buildReadiness(
+        data.targetStores,
+        data.rawIngredients,
+        data.storeStock,
+        data.finishedGoods,
+        data.prepItems,
+        new Map(),
+        new Map(),
+      );
+      setFreshReadiness(readiness);
+      setReadinessRefreshedAt(new Date().toLocaleString());
+      return readiness;
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to refresh readiness from Firestore.');
+      return null;
+    } finally {
+      if (showSpinner) setIsRefreshingReadiness(false);
+    }
+  };
 
   const runDryRun = async () => {
     if (!costingFile && !stockFile) {
@@ -437,6 +549,8 @@ export default function Phase7HStockCosting() {
     setError('');
     setDryRun(null);
     setLiveSummary(null);
+    setFreshReadiness(null);
+    setReadinessRefreshedAt('');
 
     try {
       const data = await loadPhase7HData();
@@ -887,6 +1001,7 @@ export default function Phase7HStockCosting() {
         stockRowsUpdated: dryRun.counts.stockRowsToUpdate,
         unchangedRows: dryRun.counts.unchangedRows,
       });
+      await refreshReadinessFromFirestore(false);
     } catch (err: unknown) {
       if (importBatchId) {
         try {
@@ -906,6 +1021,12 @@ export default function Phase7HStockCosting() {
   };
 
   const blockedRows = useMemo(() => dryRun?.reportRows.filter((row) => row.action === 'BLOCKED') || [], [dryRun]);
+  const displayedReadiness = freshReadiness || dryRun?.readiness || [];
+  const readinessSource = freshReadiness
+    ? 'Latest Firestore data'
+    : dryRun
+      ? 'Dry-run preview with uploaded values'
+      : 'No readiness loaded yet';
 
   return (
     <div className="max-w-6xl mx-auto w-full pb-20 space-y-6">
@@ -1006,6 +1127,39 @@ export default function Phase7HStockCosting() {
         </button>
       </div>
 
+      <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-5">
+          <div>
+            <h2 className="text-xl font-black text-neutral-800">Readiness Status</h2>
+            <p className="text-sm text-neutral-500 mt-1">
+              Source: <span className="font-bold text-neutral-700">{readinessSource}</span>
+              {readinessRefreshedAt && <span> | Last refreshed: {readinessRefreshedAt}</span>}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => refreshReadinessFromFirestore()}
+            disabled={isRefreshingReadiness}
+            className="px-4 py-2 rounded-xl bg-neutral-100 text-neutral-800 font-bold flex items-center justify-center gap-2 hover:bg-neutral-200 disabled:opacity-50"
+          >
+            {isRefreshingReadiness ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            Refresh Readiness from Firestore
+          </button>
+        </div>
+
+        {displayedReadiness.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 p-5 text-sm text-neutral-600">
+            Run a dry-run or refresh from Firestore to view rollout readiness.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {displayedReadiness.map((store) => (
+              <ReadinessStoreCard key={store.storeId} store={store} />
+            ))}
+          </div>
+        )}
+      </div>
+
       {dryRun && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
@@ -1015,22 +1169,6 @@ export default function Phase7HStockCosting() {
             <SummaryCard label="Stock Update" value={dryRun.counts.stockRowsToUpdate} tone="amber" />
             <SummaryCard label="Confirmed Zero" value={dryRun.counts.confirmedZeroRows} tone="neutral" />
             <SummaryCard label="Unchanged" value={dryRun.counts.unchangedRows} tone="neutral" />
-          </div>
-
-          <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
-            <h2 className="text-xl font-black text-neutral-800 mb-4">Readiness Status</h2>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {dryRun.readiness.map((store) => (
-                <div key={store.storeId} className="border border-neutral-200 rounded-xl p-4">
-                  <p className="font-black text-neutral-800">{store.storeName}</p>
-                  <p className="text-xs text-neutral-500 mb-3">{store.storeCode}</p>
-                  <StatusLine label="Costing complete" ok={store.costingComplete} detail={`${store.costingIssues} issue(s)`} />
-                  <StatusLine label="Stock loaded" ok={store.stockLoaded} detail={`${store.stockIssues} issue(s)`} />
-                  <StatusLine label="Checkout safe" ok={store.checkoutSafe} detail={`${store.checkoutIssues} issue(s)`} />
-                  <StatusLine label="Eligible for FINISHED_GOODS pilot" ok={store.eligibleForFinishedGoodsPilot} />
-                </div>
-              ))}
-            </div>
           </div>
 
           {dryRun.warnings.length > 0 && (
@@ -1181,6 +1319,73 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
     <div className={`rounded-2xl border p-5 shadow-sm ${toneClass}`}>
       <p className="text-xs uppercase tracking-wide font-black opacity-75">{label}</p>
       <p className="text-3xl font-black mt-2">{value}</p>
+    </div>
+  );
+}
+
+function readinessBlockerKey(blocker: ReadinessBlocker): string {
+  return `${blocker.storeCode}_${blocker.stockItemType}_${blocker.stockItemCode}_${blocker.blockerReason}`;
+}
+
+function ReadinessStoreCard({ store }: { store: ReadinessStatus }) {
+  const blockers = [
+    ...store.stockBlockers,
+    ...store.checkoutBlockers.filter((blocker) => !store.stockBlockers.some((stockBlocker) => readinessBlockerKey(stockBlocker) === readinessBlockerKey(blocker))),
+  ];
+
+  return (
+    <div className="border border-neutral-200 rounded-xl p-4">
+      <p className="font-black text-neutral-800">{store.storeName}</p>
+      <p className="text-xs text-neutral-500 mb-3">{store.storeCode}</p>
+      <StatusLine label="Costing complete" ok={store.costingComplete} detail={`${store.costingIssues} issue(s)`} />
+      <StatusLine label="Stock loaded" ok={store.stockLoaded} detail={`${store.stockIssues} issue(s)`} />
+      <StatusLine label="Checkout safe" ok={store.checkoutSafe} detail={`${store.checkoutIssues} issue(s)`} />
+      <StatusLine
+        label={store.checkoutSafe ? 'Eligible for FINISHED_GOODS pilot' : 'Not eligible for FINISHED_GOODS pilot'}
+        ok={store.eligibleForFinishedGoodsPilot}
+      />
+
+      {blockers.length > 0 ? (
+        <details className="mt-4 rounded-xl border border-red-100 bg-red-50 p-3">
+          <summary className="cursor-pointer text-sm font-black text-red-800">
+            Show exact blocker rows ({blockers.length})
+          </summary>
+          <div className="mt-3 max-h-64 overflow-auto">
+            <table className="min-w-[720px] text-xs">
+              <thead>
+                <tr className="text-left uppercase text-red-700 border-b border-red-200">
+                  <th className="py-2 pr-3">Store</th>
+                  <th className="py-2 pr-3">Type</th>
+                  <th className="py-2 pr-3">Code</th>
+                  <th className="py-2 pr-3">Name</th>
+                  <th className="py-2 pr-3">Opening</th>
+                  <th className="py-2 pr-3">Current</th>
+                  <th className="py-2 pr-3">Confirmed Zero</th>
+                  <th className="py-2 pr-3">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {blockers.map((blocker) => (
+                  <tr key={readinessBlockerKey(blocker)} className="border-b border-red-100 last:border-0">
+                    <td className="py-2 pr-3 font-bold">{blocker.storeCode}</td>
+                    <td className="py-2 pr-3">{blocker.stockItemType}</td>
+                    <td className="py-2 pr-3 font-mono">{blocker.stockItemCode}</td>
+                    <td className="py-2 pr-3">{blocker.stockItemName}</td>
+                    <td className="py-2 pr-3">{blocker.currentOpeningStock ?? 'Missing'}</td>
+                    <td className="py-2 pr-3">{blocker.currentCurrentStock ?? 'Missing'}</td>
+                    <td className="py-2 pr-3">{blocker.confirmedZero ? 'TRUE' : 'FALSE'}</td>
+                    <td className="py-2 pr-3">{blocker.blockerReason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : (
+        <p className="mt-4 rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs font-bold text-emerald-800">
+          No stock or checkout blocker rows found for this store.
+        </p>
+      )}
     </div>
   );
 }
