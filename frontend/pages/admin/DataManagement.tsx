@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, doc, setDoc, writeBatch, serverTimestamp, query, where } from 'firebase/firestore';
-import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet, FileCheck2, FileSearch } from 'lucide-react';
+import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet, FileCheck2, FileSearch, Coffee } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import * as XLSX from 'xlsx';
 
@@ -335,6 +335,20 @@ export default function DataManagement() {
               <h2 className="text-lg font-black text-amber-900">Phase 7I BOM Alias Correction</h2>
               <p className="text-sm text-amber-800 mt-1">
                 Dry-run and guarded correction for V2 BOM alias component codes before Finished Goods pilot readiness.
+              </p>
+            </div>
+          </div>
+        </Link>
+
+        <Link to="/admin/phase-7j-uday-park-pilot" className="block bg-emerald-50 border border-emerald-200 rounded-2xl p-5 hover:border-emerald-400 transition-colors">
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 bg-white text-emerald-700 rounded-xl flex items-center justify-center border border-emerald-200 shrink-0">
+              <Coffee size={22} />
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-emerald-900">Phase 7J Uday Park Pilot</h2>
+              <p className="text-sm text-emerald-800 mt-1">
+                Preview and guard the single-store FINISHED_GOODS POS source override for Uday Park only.
               </p>
             </div>
           </div>
