@@ -29,6 +29,7 @@ import StaffManagement from './pages/admin/StaffManagement';
 import Phase7AValidation from './pages/admin/Phase7AValidation';
 import Phase7FDryRunImport from './pages/admin/Phase7FDryRunImport';
 import Phase7HStockCosting from './pages/admin/Phase7HStockCosting';
+import Phase7IBomAliasCorrection from './pages/admin/Phase7IBomAliasCorrection';
 import POSHome from './pages/pos/POSHome';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
@@ -87,6 +88,7 @@ export default function App() {
                 <Route path="/admin/phase-7a-validation" element={<Phase7AValidation />} />
                 <Route path="/admin/phase-7f-dry-run-import" element={<Phase7FDryRunImport />} />
                 <Route path="/admin/phase-7h-stock-costing" element={<Phase7HStockCosting />} />
+                <Route path="/admin/phase-7i-bom-alias-correction" element={<Phase7IBomAliasCorrection />} />
                 <Route path="/admin/seed" element={<Seed />} />
                 <Route path="/admin/staff" element={<StaffManagement />} />
               </Route>

@@ -265,6 +265,16 @@ export default function AdminHome() {
                 <p className="text-xs text-neutral-500">Costs and opening stock</p>
               </div>
             </Link>
+
+            <Link to="/admin/phase-7i-bom-alias-correction" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
+              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
+                <FileSearch size={16} />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-neutral-800">Phase 7I BOM Alias Correction</h4>
+                <p className="text-xs text-neutral-500">Correct V2 BOM aliases</p>
+              </div>
+            </Link>
           </motion.div>
         )}
       </motion.div>
