@@ -12,9 +12,11 @@ import EntryRedirect from './components/EntryRedirect';
 import AppLoading from './components/AppLoading';
 import MissingProfile from './pages/MissingProfile';
 import InactiveProfile from './pages/InactiveProfile';
+import CustomerOrder from './pages/customer/CustomerOrder';
 import { KOTBarista, KOTKitchen } from './pages/Placeholders';
 import ReadyToServe from './pages/kot/ReadyToServe';
 import ReportsHome from './pages/reports/ReportsHome';
+import DayClose from './pages/reports/DayClose';
 import AdminHome from './pages/admin/AdminHome';
 import Stores from './pages/admin/Stores';
 import Categories from './pages/admin/Categories';
@@ -31,6 +33,7 @@ import Phase7HStockCosting from './pages/admin/Phase7HStockCosting';
 import Phase7IBomAliasCorrection from './pages/admin/Phase7IBomAliasCorrection';
 import POSReadiness from './pages/admin/POSReadiness';
 import POSHome from './pages/pos/POSHome';
+import IncomingOnlineOrders from './pages/pos/IncomingOnlineOrders';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
 
@@ -70,6 +73,7 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
+          <Route path="/order" element={<CustomerOrder />} />
           <Route path="/login" element={<LoginRoute />} />
           
           {/* Main App Layout - Protected by Auth */}
@@ -101,7 +105,9 @@ export default function App() {
 
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'CASHIER']} />}>
                 <Route path="/pos" element={<POSHome />} />
+                <Route path="/pos/incoming-orders" element={<IncomingOnlineOrders />} />
                 <Route path="/reports" element={<ReportsHome />} />
+                <Route path="/reports/day-close" element={<DayClose />} />
                 <Route path="/kot/ready" element={<ReadyToServe />} />
               </Route>
               

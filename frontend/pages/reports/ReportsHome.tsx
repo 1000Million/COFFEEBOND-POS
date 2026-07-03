@@ -677,6 +677,13 @@ export default function ReportsHome() {
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
+            <Link
+              to="/reports/day-close"
+              className="px-4 py-2 rounded-lg bg-[#3e2723] text-white text-sm font-black uppercase tracking-wider hover:bg-[#2d1c19] transition-colors"
+            >
+              Day Close
+            </Link>
+
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
               <input 
@@ -731,6 +738,7 @@ export default function ReportsHome() {
               <option value="ZOMATO">Zomato</option>
               <option value="CREDIT">Credit</option>
               <option value="COMPLIMENTARY">Complimentary</option>
+              <option value="PAY_AT_COUNTER">Pay at Counter</option>
             </select>
           </div>
         </div>

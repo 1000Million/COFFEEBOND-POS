@@ -61,6 +61,20 @@
       ]
     },
     {
+      "collectionGroup": "onlineOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "storeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "kotItems",
       "queryScope": "COLLECTION",
       "fields": [

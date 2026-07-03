@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Store, Tags, MenuSquare, Package, BookOpen, Menu, X } from 'lucide-react';
+import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Store, Tags, MenuSquare, Package, BookOpen, Menu, X, ShoppingBag } from 'lucide-react';
 
 export default function Layout() {
   const { staffProfile, logout } = useAuth();
@@ -18,6 +18,7 @@ export default function Layout() {
 
   if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
     navLinks.push({ to: '/pos', label: 'POS', title: 'POS', icon: Calculator });
+    navLinks.push({ to: '/pos/incoming-orders', label: 'Online', title: 'Online Orders', icon: ShoppingBag });
     navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
   }
   

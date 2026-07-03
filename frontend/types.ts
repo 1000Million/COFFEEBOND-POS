@@ -47,7 +47,7 @@ export type PrepStation = "BARISTA" | "KITCHEN" | "BOTH" | "NONE";
 
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
-export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY";
+export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER";
 
 export interface CartItem {
   id: string; // generate unique ID for cart row, or use menu item ID if grouping
@@ -180,6 +180,80 @@ export interface OrderPayment {
   reference: string | null;
   paymentIndex?: number;
   createdAt: any;
+}
+
+export type OnlineOrderType = "PICKUP" | "DINE_IN";
+export type OnlineOrderStatus = "PENDING" | "CONVERTED" | "REJECTED" | "NEEDS_ATTENTION";
+
+export interface OnlineOrderItem {
+  finishedGoodCode: string;
+  itemName: string;
+  categoryId: string;
+  categoryName: string;
+  quantity: number;
+  unitPrice: number;
+  taxRate: number;
+  lineSubtotal: number;
+  lineTaxable: number;
+  lineTax: number;
+  lineTotal: number;
+  prepStation: PrepStation;
+  itemType?: string;
+}
+
+export interface OnlineOrder {
+  id?: string;
+  storeId: string;
+  storeName: string;
+  customerName: string;
+  customerPhone: string;
+  orderType: OnlineOrderType;
+  notes: string;
+  items: OnlineOrderItem[];
+  subtotal: number;
+  taxableAmount: number;
+  gstTotal: number;
+  grandTotal: number;
+  status: OnlineOrderStatus;
+  source: "CUSTOMER_WEB";
+  linkedOrderId?: string | null;
+  linkedOrderNumber?: string | null;
+  convertedBy?: string | null;
+  convertedByName?: string | null;
+  convertedAt?: any;
+  rejectedBy?: string | null;
+  rejectedByName?: string | null;
+  rejectedAt?: any;
+  rejectReason?: string | null;
+  attentionReason?: string | null;
+  createdAt: any;
+  updatedAt: any;
+}
+
+export type DayClosingStatus = "CLOSED";
+
+export interface DayClosing {
+  id?: string;
+  storeId: string;
+  storeName: string;
+  businessDate: string;
+  completedBillCount: number;
+  voidedBillCount: number;
+  grossSales: number;
+  voidedSales: number;
+  netSales: number;
+  gstTotal: number;
+  discountTotal: number;
+  paymentBreakdown: Record<PaymentMethod, number>;
+  expectedCash: number;
+  actualCash: number;
+  cashVariance: number;
+  notes: string;
+  closedBy: string;
+  closedByName: string;
+  closedByEmail?: string | null;
+  closedAt: any;
+  status: DayClosingStatus;
 }
 
 export interface Counter {

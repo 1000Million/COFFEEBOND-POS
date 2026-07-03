@@ -51,6 +51,49 @@ service cloud.firestore {
         || (isKitchen() && data.station == 'KITCHEN' && hasStoreAccess(data.storeId));
     }
 
+    function isValidPublicOnlineOrderCreate() {
+      return request.resource.data.keys().hasOnly([
+        'storeId',
+        'storeName',
+        'customerName',
+        'customerPhone',
+        'orderType',
+        'notes',
+        'items',
+        'subtotal',
+        'taxableAmount',
+        'gstTotal',
+        'grandTotal',
+        'status',
+        'source',
+        'createdAt',
+        'updatedAt'
+      ])
+      && request.resource.data.status == 'PENDING'
+      && request.resource.data.source == 'CUSTOMER_WEB'
+      && request.resource.data.storeId is string
+      && exists(/databases/$(database)/documents/stores/$(request.resource.data.storeId))
+      && get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.isActive == true
+      && request.resource.data.storeName is string
+      && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
+      && request.resource.data.customerName is string
+      && request.resource.data.customerName.size() > 0
+      && request.resource.data.customerPhone is string
+      && request.resource.data.customerPhone.size() > 0
+      && request.resource.data.orderType in ['PICKUP', 'DINE_IN']
+      && request.resource.data.items is list
+      && request.resource.data.items.size() > 0
+      && request.resource.data.items.size() <= 30
+      && request.resource.data.subtotal is number
+      && request.resource.data.taxableAmount is number
+      && request.resource.data.gstTotal is number
+      && request.resource.data.grandTotal is number
+      && request.resource.data.subtotal >= 0
+      && request.resource.data.taxableAmount >= 0
+      && request.resource.data.gstTotal >= 0
+      && request.resource.data.grandTotal >= 0;
+    }
+
     // Users Collection
     match /users/{userId} {
       allow read: if isSignedIn() && request.auth.uid == userId;
@@ -58,6 +101,12 @@ service cloud.firestore {
     }
 
     // App Settings
+    match /appSettings/{document} {
+      allow get: if isActiveStaff() || document == 'gstConfig';
+      allow list: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
     match /appSettings/{document=**} {
       allow read: if isActiveStaff();
       allow write: if isAdmin();
@@ -65,7 +114,7 @@ service cloud.firestore {
 
     // Stores
     match /stores/{storeId} {
-      allow read: if isActiveStaff();
+      allow read: if isActiveStaff() || resource.data.isActive == true;
       allow write: if isAdmin();
     }
     
@@ -102,6 +151,29 @@ service cloud.firestore {
     match /customers/{customerId} {
       allow get, list: if isCheckoutStaff();
       allow create, update: if isCheckoutStaff();
+      allow delete: if isAdmin();
+    }
+
+    match /onlineOrders/{onlineOrderId} {
+      allow create: if isValidPublicOnlineOrderCreate();
+      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow update: if isCheckoutStaff()
+        && (isAdmin() || hasStoreAccess(resource.data.storeId))
+        && request.resource.data.storeId == resource.data.storeId;
+      allow delete: if isAdmin();
+    }
+
+    match /dayClosings/{closingId} {
+      allow get: if isCheckoutStaff() && (
+        !exists(/databases/$(database)/documents/dayClosings/$(closingId))
+        || isAdmin()
+        || hasStoreAccess(resource.data.storeId)
+      );
+      allow list: if isAdmin();
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      allow update: if (isAdmin() || isStoreManager())
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId;
       allow delete: if isAdmin();
     }
 
@@ -181,7 +253,12 @@ service cloud.firestore {
     }
 
     match /finishedGoods/{itemId} {
-      allow read: if isActiveStaff();
+      allow read: if isActiveStaff()
+        || (
+          resource.data.isActive == true
+          && resource.data.isSellable == true
+          && resource.data.isAvailable == true
+        );
       allow write: if isAdmin();
     }
 

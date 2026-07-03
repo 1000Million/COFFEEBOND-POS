@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -101,12 +101,36 @@ export default function AdminHome() {
           </motion.div>
 
           <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/pos/incoming-orders" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <ShoppingBag size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Online Orders</h4>
+                <p className="text-xs text-neutral-500">Accept or reject customer requests</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
             <Link to="/reports" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
               <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
                 <LineChart size={20} />
               </div>
               <div>
                 <h4 className="font-bold text-neutral-800">Reports</h4>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/reports/day-close" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <FileCheck2 size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Day Close</h4>
+                <p className="text-xs text-neutral-500">Cashier closing and payment reconciliation</p>
               </div>
             </Link>
           </motion.div>
