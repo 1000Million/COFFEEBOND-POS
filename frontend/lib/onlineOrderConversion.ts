@@ -544,6 +544,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       status: 'CONVERTED',
       linkedOrderId: newOrderRef.id,
       linkedOrderNumber: orderNumber,
+      customerStatusMessage: 'Your order has been accepted and is being prepared.',
       convertedBy: staffProfile.uid,
       convertedByName: staffProfile.name,
       convertedAt: serverTimestamp(),
@@ -562,6 +563,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       await updateDoc(onlineOrderRef, {
         status: 'NEEDS_ATTENTION',
         attentionReason: error.blockers.map(blocker => `${blocker.itemName}: ${blocker.blockerType}`).join('; '),
+        customerStatusMessage: 'The store is reviewing this order.',
         updatedAt: serverTimestamp(),
       });
     }

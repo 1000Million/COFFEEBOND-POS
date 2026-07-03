@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
 import { AlertCircle, CheckCircle2, Coffee, Minus, Plus, Search, ShoppingBag, Store as StoreIcon, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { OnlineOrder, OnlineOrderItem, OnlineOrderType, Store } from '../../types';
 import { FinishedGood } from '../../types/menu-management';
@@ -10,6 +11,15 @@ type CustomerMenuItem = FinishedGood & { id: string };
 type CartLine = {
   item: CustomerMenuItem;
   quantity: number;
+};
+
+type ConfirmationState = {
+  id: string;
+  storeName: string;
+  customerName: string;
+  items: OnlineOrderItem[];
+  total: number;
+  status: OnlineOrder['status'];
 };
 
 type GstConfig = {
@@ -86,7 +96,7 @@ export default function CustomerOrder() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<{ id: string; storeName: string; total: number } | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -235,7 +245,14 @@ export default function CustomerOrder() {
       };
 
       const orderRef = await addDoc(collection(db, 'onlineOrders'), payload);
-      setConfirmation({ id: orderRef.id, storeName: selectedStore.name, total: totals.grandTotal });
+      setConfirmation({
+        id: orderRef.id,
+        storeName: selectedStore.name,
+        customerName: payload.customerName,
+        items: onlineItems,
+        total: totals.grandTotal,
+        status: 'PENDING',
+      });
       setCart([]);
       setNotes('');
     } catch (err) {
@@ -258,11 +275,30 @@ export default function CustomerOrder() {
           <div className="mt-6 rounded-2xl bg-neutral-50 p-4 text-left text-sm">
             <p><span className="font-bold">Reference:</span> {confirmation.id}</p>
             <p><span className="font-bold">Store:</span> {confirmation.storeName}</p>
+            <p><span className="font-bold">Customer:</span> {confirmation.customerName}</p>
+            <p><span className="font-bold">Status:</span> {confirmation.status}</p>
+            <div className="mt-3 border-t border-neutral-200 pt-3">
+              <p className="mb-2 font-bold">Items</p>
+              <div className="space-y-1">
+                {confirmation.items.map(item => (
+                  <div key={item.finishedGoodCode} className="flex justify-between gap-3">
+                    <span>{item.quantity} x {item.itemName}</span>
+                    <span className="font-bold">{formatMoney(item.lineTotal)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <p><span className="font-bold">Total:</span> {formatMoney(confirmation.total)}</p>
           </div>
+          <Link
+            to={`/order/status/${confirmation.id}`}
+            className="mt-6 block w-full rounded-xl bg-[#5c4033] px-4 py-3 text-sm font-black text-white"
+          >
+            Track Order
+          </Link>
           <button
             onClick={() => setConfirmation(null)}
-            className="mt-6 w-full rounded-xl bg-[#5c4033] px-4 py-3 text-sm font-black text-white"
+            className="mt-3 w-full rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm font-black text-[#5c4033]"
           >
             Place another order
           </button>

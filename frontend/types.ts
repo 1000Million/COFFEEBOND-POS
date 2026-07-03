@@ -183,7 +183,7 @@ export interface OrderPayment {
 }
 
 export type OnlineOrderType = "PICKUP" | "DINE_IN";
-export type OnlineOrderStatus = "PENDING" | "CONVERTED" | "REJECTED" | "NEEDS_ATTENTION";
+export type OnlineOrderStatus = "PENDING" | "ACCEPTED" | "CONVERTED" | "REJECTED" | "NEEDS_ATTENTION";
 
 export interface OnlineOrderItem {
   finishedGoodCode: string;
@@ -218,6 +218,7 @@ export interface OnlineOrder {
   source: "CUSTOMER_WEB";
   linkedOrderId?: string | null;
   linkedOrderNumber?: string | null;
+  customerStatusMessage?: string | null;
   convertedBy?: string | null;
   convertedByName?: string | null;
   convertedAt?: any;

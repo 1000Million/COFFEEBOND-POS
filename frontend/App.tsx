@@ -13,6 +13,7 @@ import AppLoading from './components/AppLoading';
 import MissingProfile from './pages/MissingProfile';
 import InactiveProfile from './pages/InactiveProfile';
 import CustomerOrder from './pages/customer/CustomerOrder';
+import CustomerOrderStatus from './pages/customer/CustomerOrderStatus';
 import { KOTBarista, KOTKitchen } from './pages/Placeholders';
 import ReadyToServe from './pages/kot/ReadyToServe';
 import ReportsHome from './pages/reports/ReportsHome';
@@ -74,6 +75,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/order" element={<CustomerOrder />} />
+          <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
           <Route path="/login" element={<LoginRoute />} />
           
           {/* Main App Layout - Protected by Auth */}

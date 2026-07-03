@@ -156,7 +156,8 @@ service cloud.firestore {
 
     match /onlineOrders/{onlineOrderId} {
       allow create: if isValidPublicOnlineOrderCreate();
-      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow get: if true;
+      allow list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       allow update: if isCheckoutStaff()
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
         && request.resource.data.storeId == resource.data.storeId;

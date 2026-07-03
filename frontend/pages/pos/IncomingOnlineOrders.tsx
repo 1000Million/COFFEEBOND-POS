@@ -142,6 +142,7 @@ export default function IncomingOnlineOrders() {
       await updateDoc(doc(db, 'onlineOrders', order.id), {
         status: 'REJECTED',
         rejectReason: reason,
+        customerStatusMessage: 'Sorry, the store could not accept this order.',
         rejectedBy: staffProfile.uid,
         rejectedByName: staffProfile.name,
         rejectedAt: serverTimestamp(),
