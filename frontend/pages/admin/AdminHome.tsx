@@ -3,12 +3,12 @@ import { Link } from 'react-router-dom';
 import { 
   Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export default function AdminHome() {
-  const [showLegacy, setShowLegacy] = useState(false);
+  const [showHistoricalTools, setShowHistoricalTools] = useState(false);
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -52,7 +52,7 @@ export default function AdminHome() {
             </div>
             <div>
               <h3 className="font-bold text-2xl text-neutral-800 mb-2 group-hover:text-amber-800 transition-colors">Menu Management</h3>
-              <p className="text-neutral-600">Ingredients, BOM, Finished Goods, Stock, Costing, and POS rollout.</p>
+              <p className="text-neutral-600">Ingredients, BOM, Finished Goods, Stock, Costing, and POS V2 readiness.</p>
             </div>
           </div>
         </Link>
@@ -112,6 +112,18 @@ export default function AdminHome() {
           </motion.div>
 
           <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/admin/pos-readiness" className="bg-emerald-50 p-5 rounded-2xl shadow-sm border border-emerald-200 hover:border-emerald-400 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-white text-emerald-700 rounded-xl flex items-center justify-center shrink-0 border border-emerald-200">
+                <ShieldCheck size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">POS Readiness</h4>
+                <p className="text-xs text-neutral-500">Go-live blockers and stock fixes</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
             <Link to="/kot/barista" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
               <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
                 <Coffee size={20} />
@@ -146,7 +158,7 @@ export default function AdminHome() {
         </motion.div>
       </div>
 
-      {/* Legacy Setup Tools Overlay */}
+      {/* Historical Setup Tools Overlay */}
       <motion.div 
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
@@ -154,19 +166,19 @@ export default function AdminHome() {
         className="bg-neutral-50 border border-neutral-200 rounded-3xl p-6"
       >
         <button 
-          onClick={() => setShowLegacy(!showLegacy)}
+          onClick={() => setShowHistoricalTools(!showHistoricalTools)}
           className="flex items-center justify-between w-full group cursor-pointer outline-none"
         >
           <div className="text-left font-sans">
             <h3 className="text-xl font-bold text-neutral-800 flex items-center gap-2 group-hover:text-[#5c4033] transition-colors">
-              Legacy Setup Tools
-              {showLegacy ? <ChevronDown size={20} className="text-neutral-400" /> : <ChevronRight size={20} className="text-neutral-400" />}
+              Historical Setup Tools
+              {showHistoricalTools ? <ChevronDown size={20} className="text-neutral-400" /> : <ChevronRight size={20} className="text-neutral-400" />}
             </h3>
-            <p className="text-sm text-neutral-500 mt-1 block">Legacy tools remain available while Menu Management is piloted store-by-store.</p>
+            <p className="text-sm text-neutral-500 mt-1 block">Older setup and import utilities remain available for review while POS V2 is tested.</p>
           </div>
         </button>
 
-        {showLegacy && (
+        {showHistoricalTools && (
           <motion.div 
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -246,16 +258,6 @@ export default function AdminHome() {
               </div>
             </Link>
 
-            <Link to="/admin/phase-7f-dry-run-import" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
-                <FileSearch size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Phase 7F Dry-Run Import</h4>
-                <p className="text-xs text-neutral-500">Compare only, no writes</p>
-              </div>
-            </Link>
-
             <Link to="/admin/phase-7h-stock-costing" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
               <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
                 <FileSpreadsheet size={16} />
@@ -276,15 +278,6 @@ export default function AdminHome() {
               </div>
             </Link>
 
-            <Link to="/admin/phase-7j-uday-park-pilot" className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200 hover:border-emerald-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-emerald-50 text-emerald-700 rounded-lg flex items-center justify-center shrink-0">
-                <Coffee size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Phase 7J Uday Park Pilot</h4>
-                <p className="text-xs text-neutral-500">Single-store POS source switch</p>
-              </div>
-            </Link>
           </motion.div>
         )}
       </motion.div>

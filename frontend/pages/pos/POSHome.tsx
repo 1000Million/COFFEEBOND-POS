@@ -1,23 +1,231 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { collection, query, getDocs, orderBy, where, runTransaction, doc, serverTimestamp, setDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, Category, MenuItem, CartItem, OrderType, PaymentMethod, Customer, Order, OrderItem, OrderPayment } from '../../types';
+import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment } from '../../types';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+type CheckoutError = {
+  message: string;
+  details?: string;
+  blockers?: CheckoutBlocker[];
+};
+
+type CheckoutBlockerType =
+  | 'Missing stock record'
+  | 'Zero stock'
+  | 'confirmedZero false'
+  | 'Missing BOM'
+  | 'Missing prep/raw ingredient reference'
+  | 'Insufficient stock';
+
+type CheckoutBlocker = {
+  itemName: string;
+  itemCode: string;
+  finishedGoodCode?: string;
+  blockerType: CheckoutBlockerType;
+  componentType?: string;
+  componentCode?: string;
+  componentName?: string;
+  requiredQuantity?: number;
+  availableQuantity?: number;
+  unit?: string;
+  confirmedZero?: boolean;
+  storeName: string;
+  storeId: string;
+  suggestedAdminAction: string;
+};
+
+type StockSource = {
+  itemName: string;
+  itemCode: string;
+  finishedGoodCode?: string;
+  lineQuantity: number;
+  componentType: string;
+  componentCode: string;
+  componentName: string;
+  quantity: number;
+  unit: string;
+};
+
+type RequiredStock = {
+  id: string;
+  name: string;
+  unit: string;
+  qty: number;
+  type: string;
+  code: string;
+  sources: StockSource[];
+};
+
+type TaxConfig = {
+  rate: number;
+  source: string;
+};
+
+type TotalsInput = {
+  price: number;
+  quantity: number;
+  taxRate?: number | null;
+};
+
+type CalculatedTotals = {
+  subtotal: number;
+  discountPercent: number;
+  discountAmount: number;
+  taxableAmount: number;
+  taxTotal: number;
+  grandTotal: number;
+};
+
+class CheckoutBlockerError extends Error {
+  blockers: CheckoutBlocker[];
+
+  constructor(blockers: CheckoutBlocker[]) {
+    super('Checkout blocked by stock/BOM readiness checks.');
+    this.name = 'CheckoutBlockerError';
+    this.blockers = blockers;
+  }
+}
+
+const TAX_SETTING_DOC_IDS = ['tax', 'taxSettings', 'posSettings', 'settings'];
+const TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultTaxRate', 'defaultGstRate', 'defaultGSTPercent', 'gstPercent'];
+
+function toFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeTaxRate(value: unknown): number {
+  const parsed = toFiniteNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function pickTaxConfig(data: Record<string, unknown>, source: string): TaxConfig | null {
+  for (const key of TAX_RATE_KEYS) {
+    const rate = normalizeTaxRate(data[key]);
+    if (rate > 0) return { rate, source: `${source}.${key}` };
+  }
+  return null;
+}
+
+function getItemTaxRate(item: { taxRate?: number | null }, fallbackTaxRate: number): number {
+  const itemTax = normalizeTaxRate(item.taxRate);
+  return itemTax > 0 ? itemTax : fallbackTaxRate;
+}
+
+function clampDiscountPercent(value: unknown): number {
+  const parsed = toFiniteNumber(value) || 0;
+  if (parsed < 0) return 0;
+  if (parsed > 100) return 100;
+  return parsed;
+}
+
+function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
+  const subtotal = items.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 0), 0);
+  const discountPercent = clampDiscountPercent(discountPercentInput);
+  const discountAmount = subtotal * (discountPercent / 100);
+  const taxableAmount = Math.max(0, subtotal - discountAmount);
+  const discountRatio = subtotal > 0 ? discountAmount / subtotal : 0;
+  const taxTotal = items.reduce((sum, item) => {
+    const lineSubtotal = (Number(item.price) || 0) * (Number(item.quantity) || 0);
+    const lineTaxable = Math.max(0, lineSubtotal - (lineSubtotal * discountRatio));
+    return sum + lineTaxable * (getItemTaxRate(item, fallbackTaxRate) / 100);
+  }, 0);
+
+  return {
+    subtotal,
+    discountPercent,
+    discountAmount,
+    taxableAmount,
+    taxTotal,
+    grandTotal: taxableAmount + taxTotal,
+  };
+}
+
+function formatQuantity(value: number | undefined, unit?: string): string {
+  if (value === undefined || Number.isNaN(value)) return 'n/a';
+  return `${value.toFixed(2)}${unit ? ` ${unit}` : ''}`;
+}
+
+function formatCheckoutBlockerDetails(blockers: CheckoutBlocker[]): string {
+  return blockers.map((blocker, index) => {
+    const component = blocker.componentCode
+      ? `${blocker.componentType || 'COMPONENT'} / ${blocker.componentCode} (${blocker.componentName || 'Unnamed'})`
+      : 'Item-level setup';
+
+    return [
+      `${index + 1}. ${blocker.itemName}`,
+      `Item code: ${blocker.itemCode}`,
+      `Finished goods code: ${blocker.finishedGoodCode || blocker.itemCode}`,
+      `Blocker: ${blocker.blockerType}`,
+      `Component: ${component}`,
+      `Required: ${formatQuantity(blocker.requiredQuantity, blocker.unit)}`,
+      `Available: ${formatQuantity(blocker.availableQuantity, blocker.unit)}`,
+      `confirmedZero: ${blocker.confirmedZero === undefined ? 'n/a' : String(blocker.confirmedZero)}`,
+      `Store: ${blocker.storeName}`,
+      `Suggested action: ${blocker.suggestedAdminAction}`,
+    ].join('\n');
+  }).join('\n\n');
+}
+
+function buildCheckoutError(error: unknown): CheckoutError {
+  if (error instanceof CheckoutBlockerError) {
+    return {
+      message: 'This item is not ready for billing because stock/BOM setup is incomplete. Please ask an Admin or Store Manager to check POS Readiness.',
+      details: formatCheckoutBlockerDetails(error.blockers),
+      blockers: error.blockers,
+    };
+  }
+
+  const details = error instanceof Error ? error.message : String(error || 'Unknown checkout error');
+  const lower = details.toLowerCase();
+
+  if (
+    lower.includes('insufficient stock')
+    || lower.includes('recipe/bom')
+    || lower.includes('checkout blocked')
+    || lower.includes('required stock')
+  ) {
+    return {
+      message: 'This item is not ready for billing because stock/BOM setup is incomplete. Please ask an Admin or Store Manager to check POS Readiness.',
+      details,
+    };
+  }
+
+  if (lower.includes('permission') || lower.includes('permission-denied')) {
+    return {
+      message: 'This checkout could not be saved because your account does not have permission for this action. Please contact an Admin.',
+      details,
+    };
+  }
+
+  return {
+    message: 'Checkout could not be completed. Please check the cart and try again.',
+    details,
+  };
+}
 
 export default function POSHome() {
   const { staffProfile } = useAuth();
   const isAdmin = staffProfile?.role === 'ADMIN';
+  const canViewCheckoutDebug = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
 
   const [stores, setStores] = useState<Store[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [defaultTaxConfig, setDefaultTaxConfig] = useState<TaxConfig>({
+    rate: 0,
+    source: 'No app/store GST fallback configured',
+  });
 
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [orderType, setOrderType] = useState<OrderType>('DINE_IN');
   const [tableNumber, setTableNumber] = useState('');
@@ -25,111 +233,106 @@ export default function POSHome() {
   const [customerPhone, setCustomerPhone] = useState('');
 
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [globalDiscountStr, setGlobalDiscountStr] = useState<string>('');
+  const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const [isSaving, setIsSaving] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
   const [completedOrder, setCompletedOrder] = useState<{ order: Order, items: OrderItem[], payment: OrderPayment, storeName: string } | null>(null);
 
-  const [posSourceSettings, setPosSourceSettings] = useState<{ globalSource: string, storeOverrides: Record<string, string> }>({ globalSource: 'LEGACY_MENU_ITEMS', storeOverrides: {} });
-  const [posSource, setPosSource] = useState<'LEGACY_MENU_ITEMS' | 'FINISHED_GOODS'>('LEGACY_MENU_ITEMS');
+  const posSource = 'FINISHED_GOODS' as const;
 
   const [debugCounts, setDebugCounts] = useState<any>(null);
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
 
   useEffect(() => {
     fetchData();
-    const unsub = onSnapshot(doc(db, 'appSettings', 'posMenuSource'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const globalSource = data.globalSource || data.source || 'LEGACY_MENU_ITEMS';
-        const storeOverrides = data.storeOverrides || {};
-        setPosSourceSettings({ globalSource, storeOverrides });
-      } else {
-        setPosSourceSettings({ globalSource: 'LEGACY_MENU_ITEMS', storeOverrides: {} });
-      }
-    });
-    return () => unsub();
+    fetchMenuData();
+    fetchTaxConfig();
   }, []);
 
   useEffect(() => {
-    if (selectedStoreId) {
-       const override = posSourceSettings.storeOverrides[selectedStoreId];
-       if (override === 'FINISHED_GOODS' || override === 'LEGACY_MENU_ITEMS') {
-          setPosSource(override);
-       } else {
-          setPosSource(posSourceSettings.globalSource as 'LEGACY_MENU_ITEMS' | 'FINISHED_GOODS');
-       }
-    } else {
-       setPosSource(posSourceSettings.globalSource as 'LEGACY_MENU_ITEMS' | 'FINISHED_GOODS');
+    if (!loading) {
+      const timer = window.setTimeout(() => searchInputRef.current?.focus(), 100);
+      return () => window.clearTimeout(timer);
     }
-  }, [selectedStoreId, posSourceSettings]);
+  }, [loading, selectedStoreId]);
 
-  // Effect to reload menu items when source changes
   useEffect(() => {
-    fetchMenuData();
-  }, [posSource]);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName || '';
+      const isTyping = target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName);
+
+      if (event.key === '/' && !isTyping) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (event.key === 'Escape' && (document.activeElement === searchInputRef.current || searchQuery)) {
+        event.preventDefault();
+        setSearchQuery('');
+        searchInputRef.current?.blur();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [searchQuery]);
 
   const fetchMenuData = async () => {
     setLoading(true);
     try {
-      if (posSource === 'FINISHED_GOODS') {
-        const fgSnap = await getDocs(query(collection(db, 'finishedGoods')));
-        
-        let total = 0;
-        let activeCount = 0;
-        let sellableCount = 0;
-        let availableCount = 0;
-        let finalCount = 0;
+      const fgSnap = await getDocs(query(collection(db, 'finishedGoods')));
 
-        const mappedItems: (MenuItem & { itemType: string, bom: any[], finishedGoodCode: string })[] = [];
+      let total = 0;
+      let activeCount = 0;
+      let sellableCount = 0;
+      let availableCount = 0;
 
-        fgSnap.docs.forEach(d => {
-           const data = d.data();
-           total++;
-           
-           if (!data.isActive) return;
-           activeCount++;
-           
-           if (!data.isSellable) return;
-           sellableCount++;
-           
-           // If 'isAvailable' is checked
-           if (data.isAvailable === false) return; // sometimes omitted, so assume true if not false
-           availableCount++;
+      const mappedItems: (MenuItem & { itemType: string, bom: any[], finishedGoodCode: string })[] = [];
 
-           mappedItems.push({
-             id: data.code,
-             name: data.displayName || data.name,
-             code: data.code,
-             categoryId: data.posCategoryCode || 'MISC',
-             categoryCode: data.posCategoryCode || 'MISC',
-             categoryName: data.posCategoryName || 'Misc',
-             categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : 999,
-             subcategoryCode: data.posSubcategoryCode || 'MISC',
-             subcategoryName: data.posSubcategoryName || '',
-             subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : 999,
-             sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 999,
-             description: data.description || '',
-             price: data.salePrice || 0,
-             taxRate: data.taxRate || 0,
-             prepStation: data.prepStation || 'NONE',
-             isActive: data.isActive,
-             availableStoreIds: data.availableStoreIds || [],
-             itemType: data.itemType,
-             bom: data.bom || [],
-             finishedGoodCode: data.code,
-             createdAt: data.createdAt,
-             updatedAt: data.updatedAt
-           } as any);
-        });
-        
-        setMenuItems(mappedItems);
-        setDebugCounts({ total, activeCount, sellableCount, availableCount, mappedCount: mappedItems.length });
-      } else {
-        const itemsSnap = await getDocs(query(collection(db, 'menuItems'), where('isActive', '==', true)));
-        setMenuItems(itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as MenuItem)));
-        setDebugCounts(null);
-      }
+      fgSnap.docs.forEach(d => {
+         const data = d.data();
+         total++;
+
+         if (!data.isActive) return;
+         activeCount++;
+
+         if (!data.isSellable) return;
+         sellableCount++;
+
+         if (data.isAvailable === false) return;
+         availableCount++;
+
+         mappedItems.push({
+           id: data.code,
+           name: data.displayName || data.name,
+           code: data.code,
+           categoryId: data.posCategoryCode || 'MISC',
+           categoryCode: data.posCategoryCode || 'MISC',
+           categoryName: data.posCategoryName || 'Misc',
+           categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : 999,
+           subcategoryCode: data.posSubcategoryCode || 'MISC',
+           subcategoryName: data.posSubcategoryName || '',
+           subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : 999,
+           sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 999,
+           description: data.description || '',
+           price: data.salePrice || 0,
+           taxRate: data.taxRate || 0,
+           prepStation: data.prepStation || 'NONE',
+           isActive: data.isActive,
+           availableStoreIds: data.availableStoreIds || [],
+           itemType: data.itemType,
+           bom: data.bom || [],
+           finishedGoodCode: data.code,
+           createdAt: data.createdAt,
+           updatedAt: data.updatedAt
+         } as any);
+      });
+
+      setMenuItems(mappedItems);
+      setDebugCounts({ total, activeCount, sellableCount, availableCount, mappedCount: mappedItems.length });
     } catch (e: any) {
       console.error(e);
     } finally {
@@ -139,20 +342,15 @@ export default function POSHome() {
 
   const fetchData = async () => {
     try {
-      const [storesSnap, catSnap] = await Promise.all([
-        getDocs(query(collection(db, 'stores'), where('isActive', '==', true))),
-        getDocs(query(collection(db, 'categories'), orderBy('sortOrder', 'asc')))
-      ]);
+      const storesSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
 
       const fetchedStores = storesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
-      
-      const allowedStores = isAdmin 
-        ? fetchedStores 
+
+      const allowedStores = isAdmin
+        ? fetchedStores
         : fetchedStores.filter(s => staffProfile?.storeIds.includes(s.id));
 
       setStores(allowedStores);
-      setCategories(catSnap.docs.map(d => ({ id: d.id, ...d.data() } as Category)).filter(c => c.isActive));
-
       if (allowedStores.length > 0) {
         setSelectedStoreId(allowedStores[0].id);
       }
@@ -163,39 +361,54 @@ export default function POSHome() {
     }
   };
 
+  const fetchTaxConfig = async () => {
+    try {
+      for (const docId of TAX_SETTING_DOC_IDS) {
+        const snap = await getDoc(doc(db, 'appSettings', docId));
+        if (!snap.exists()) continue;
+        const picked = pickTaxConfig(snap.data() as Record<string, unknown>, `appSettings/${docId}`);
+        if (picked) {
+          setDefaultTaxConfig(picked);
+          return;
+        }
+      }
+      setDefaultTaxConfig({ rate: 0, source: 'No app/store GST fallback configured' });
+    } catch (error) {
+      console.warn('Unable to load POS tax fallback config', error);
+      setDefaultTaxConfig({ rate: 0, source: 'GST fallback config unavailable' });
+    }
+  };
+
   const handleStoreChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (cart.length > 0) {
       if (window.confirm("Changing store will clear your current cart. Proceed?")) {
         setCart([]);
+        setCheckoutError(null);
         setSelectedStoreId(e.target.value);
       }
     } else {
+      setCheckoutError(null);
       setSelectedStoreId(e.target.value);
     }
   };
 
+  const selectedStoreTaxConfig = useMemo(() => {
+    const selectedStore = stores.find(s => s.id === selectedStoreId);
+    const storeTaxConfig = selectedStore
+      ? pickTaxConfig(selectedStore as unknown as Record<string, unknown>, `stores/${selectedStore.id}`)
+      : null;
+    return storeTaxConfig || defaultTaxConfig;
+  }, [stores, selectedStoreId, defaultTaxConfig]);
+
   const displayCategories = useMemo(() => {
-    if (posSource === 'LEGACY_MENU_ITEMS') {
-      return categories.map(cat => {
-        const count = menuItems.filter(i => i.categoryId === cat.id && i.availableStoreIds?.includes(selectedStoreId)).length;
-        return { ...cat, sortOrder: cat.sortOrder || 999, count };
-      }).sort((a, b) => {
-        if (a.sortOrder !== b.sortOrder) {
-          return a.sortOrder - b.sortOrder;
-        }
-        return a.name.localeCompare(b.name);
-      });
-    }
-    
-    // FINISHED_GOODS categories
     const catsMap = new Map<string, { id: string, name: string, sortOrder: number, count: number }>();
     menuItems.forEach(item => {
       if (!item.availableStoreIds?.includes(selectedStoreId)) return;
-      
+
       const code = (item as any).categoryCode || item.categoryId || 'MISC';
       const name = (item as any).categoryName || 'Misc';
       const order = (item as any).categorySortOrder !== undefined ? (item as any).categorySortOrder : 999;
-      
+
       if (!catsMap.has(code)) {
          catsMap.set(code, { id: code, name: name, sortOrder: order, count: 0 });
       }
@@ -208,7 +421,7 @@ export default function POSHome() {
       }
       return a.name.localeCompare(b.name);
     });
-  }, [posSource, categories, menuItems, selectedStoreId]);
+  }, [menuItems, selectedStoreId]);
 
   // Reset selected category if it's no longer valid for the current display categories
   useEffect(() => {
@@ -224,11 +437,11 @@ export default function POSHome() {
     const filtered = menuItems.filter(item => {
       // Must be available in selected store
       if (!item.availableStoreIds?.includes(selectedStoreId)) return false;
-      
+
       // Must match category if selected
-      const catCode = posSource === 'FINISHED_GOODS' ? (item as any).categoryCode || item.categoryId : item.categoryId;
+      const catCode = (item as any).categoryCode || item.categoryId;
       if (selectedCategoryId !== 'ALL' && catCode !== selectedCategoryId) return false;
-      
+
       // Must match search query
       if (searchQuery) {
         const queryLower = searchQuery.toLowerCase();
@@ -250,10 +463,41 @@ export default function POSHome() {
       }
       return (a.name || '').localeCompare(b.name || '');
     });
-  }, [menuItems, selectedStoreId, selectedCategoryId, searchQuery, posSource]);
+  }, [menuItems, selectedStoreId, selectedCategoryId, searchQuery]);
+
+  const availableMenuItems = useMemo(() => {
+    return menuItems
+      .filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId))
+      .sort((a: any, b: any) => {
+        const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : 999;
+        const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+  }, [menuItems, selectedStoreId]);
+
+  const fastItems = useMemo(() => {
+    return [...availableMenuItems]
+      .sort((a: any, b: any) => {
+        const aPopular = Boolean(a.isPopular || a.isFastItem || a.fastItem);
+        const bPopular = Boolean(b.isPopular || b.isFastItem || b.fastItem);
+        if (aPopular !== bPopular) return aPopular ? -1 : 1;
+
+        const aSales = Number(a.salesCount || a.orderCount || a.popularityScore || 0);
+        const bSales = Number(b.salesCount || b.orderCount || b.popularityScore || 0);
+        if (aSales !== bSales) return bSales - aSales;
+
+        const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : 999;
+        const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.name || '').localeCompare(b.name || '');
+      })
+      .slice(0, 8);
+  }, [availableMenuItems]);
 
   // --- Cart Operations ---
   const addToCart = (item: any) => {
+    setCheckoutError(null);
     setCart(prev => {
       const existing = prev.find(ci => ci.menuItemId === item.id);
       if (existing) {
@@ -277,6 +521,7 @@ export default function POSHome() {
   };
 
   const updateQuantity = (cartItemId: string, delta: number) => {
+    setCheckoutError(null);
     setCart(prev => prev.map(ci => {
       if (ci.id === cartItemId) {
         const newQty = Math.max(0, ci.quantity + delta);
@@ -287,13 +532,15 @@ export default function POSHome() {
   };
 
   const removeCartItem = (cartItemId: string) => {
+    setCheckoutError(null);
     setCart(prev => prev.filter(ci => ci.id !== cartItemId));
   };
 
   const clearCart = (skipConfirm: boolean = false) => {
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
-      setGlobalDiscountStr('');
+      setCheckoutError(null);
+      setDiscountPercentStr('');
       setPaymentMethod('');
       setCustomerName('');
       setCustomerPhone('');
@@ -303,28 +550,8 @@ export default function POSHome() {
   };
 
   const cartTotals = useMemo(() => {
-    let subtotal = 0;
-    let taxTotal = 0;
-    
-    cart.forEach(item => {
-      const lineSub = item.price * item.quantity;
-      const lineTax = lineSub * (item.taxRate / 100);
-      subtotal += lineSub;
-      taxTotal += lineTax;
-    });
-
-    let discount = Number(globalDiscountStr) || 0;
-    if (discount < 0) discount = 0;
-    
-    // Prevent discount > total
-    if (discount > subtotal + taxTotal) {
-      discount = subtotal + taxTotal;
-    }
-
-    const grandTotal = subtotal + taxTotal - discount;
-
-    return { subtotal, taxTotal, discount, grandTotal };
-  }, [cart, globalDiscountStr]);
+    return calculateTotals(cart, discountPercentStr, selectedStoreTaxConfig.rate);
+  }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);
 
   const handleCheckout = async () => {
     if (!staffProfile || !auth.currentUser) return;
@@ -332,32 +559,39 @@ export default function POSHome() {
     if (!selectedStoreId) return alert("Please select a store");
     if (!paymentMethod) return alert("Please select a payment method");
     if (orderType === 'DINE_IN' && !tableNumber.trim()) return alert("Table number is required for DINE IN");
-    
+
     setIsSaving(true);
-    
+    setCheckoutError(null);
+
     try {
       const selectedStore = stores.find(s => s.id === selectedStoreId);
       if (!selectedStore) throw new Error("Store not found");
 
       // Verify menu items exist and are still active/available, and compute true totals
-      let trueSubtotal = 0;
-      let trueTaxTotal = 0;
-      
-      for (const item of cart) {
+      const validatedCart = cart.map(item => {
         const liveItem = menuItems.find(mi => mi.id === item.menuItemId && mi.isActive && mi.availableStoreIds.includes(selectedStoreId));
         if (!liveItem) {
           throw new Error(`Menu item ${item.name} is no longer available at this store.`);
         }
-        const lineSub = liveItem.price * item.quantity;
-        const lineTax = lineSub * (liveItem.taxRate / 100);
-        trueSubtotal += lineSub;
-        trueTaxTotal += lineTax;
-      }
+        return { cartItem: item, liveItem };
+      });
 
-      let trueDiscount = Number(globalDiscountStr) || 0;
-      if (trueDiscount < 0) trueDiscount = 0;
-      if (trueDiscount > trueSubtotal + trueTaxTotal) trueDiscount = trueSubtotal + trueTaxTotal;
-      const trueGrandTotal = trueSubtotal + trueTaxTotal - trueDiscount;
+      const trueTotals = calculateTotals(
+        validatedCart.map(({ cartItem, liveItem }) => ({
+          price: liveItem.price,
+          quantity: cartItem.quantity,
+          taxRate: liveItem.taxRate,
+        })),
+        discountPercentStr,
+        selectedStoreTaxConfig.rate,
+      );
+      const trueSubtotal = trueTotals.subtotal;
+      const trueDiscount = trueTotals.discountAmount;
+      const trueDiscountPercent = trueTotals.discountPercent;
+      const trueTaxableAmount = trueTotals.taxableAmount;
+      const trueTaxTotal = trueTotals.taxTotal;
+      const trueGrandTotal = trueTotals.grandTotal;
+      const trueDiscountRatio = trueSubtotal > 0 ? trueDiscount / trueSubtotal : 0;
 
       if (paymentMethod === 'COMPLIMENTARY' && trueGrandTotal > 0) {
         if (!window.confirm(`This order is COMPLIMENTARY but has a total of ₹${trueGrandTotal.toFixed(2)}. Proceed?`)) {
@@ -368,13 +602,13 @@ export default function POSHome() {
 
       // Detailed Checkout Logging
       if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}, Phone: ${customerPhone}`);
-      
+
       // Check customer
       let customerId: string | null = null;
       let customerNameFinal = customerName.trim() || null;
       let existingCustomerDocs: any[] = [];
       const phoneToSearch = customerPhone.trim();
-      
+
       if (phoneToSearch) {
         try {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Fetching customer with phone: ${phoneToSearch}`);
@@ -390,8 +624,8 @@ export default function POSHome() {
         }
       }
 
-      const custRef = existingCustomerDocs.length > 0 
-        ? doc(db, 'customers', existingCustomerDocs[0].id) 
+      const custRef = existingCustomerDocs.length > 0
+        ? doc(db, 'customers', existingCustomerDocs[0].id)
         : phoneToSearch ? doc(collection(db, 'customers')) : null;
 
       // 10. Generate order number & save transaction
@@ -402,120 +636,206 @@ export default function POSHome() {
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);
 
-      const reqStock: Record<string, { id: string, name: string, unit: string, qty: number, type: string, code: string }> = {};
-      const missingRecipes: string[] = []; // for dev logs
+      const reqStock: Record<string, RequiredStock> = {};
+      const setupBlockers: CheckoutBlocker[] = [];
       const allowMissingRecipeCheckout = import.meta.env.DEV && import.meta.env.VITE_ALLOW_MISSING_RECIPE_CHECKOUT === 'true';
-      
-      if (posSource === 'FINISHED_GOODS') {
-        for (const item of cart) {
-          if (item.itemType === 'NO_STOCK') continue;
-          
-          if (item.itemType === 'MADE_TO_ORDER' || (item.itemType === 'DIRECT_STOCK' && item.bom && item.bom.length > 0)) {
-            // Deduct BOM
-            if (!item.bom || item.bom.length === 0) {
-               missingRecipes.push(item.name);
-               continue;
-            }
-            item.bom.forEach((line: any) => {
-              const code = line.componentCode;
-              const type = line.componentType;
-              let stockId = `${selectedStoreId}_${type}_${code}`;
 
-              if (!reqStock[stockId]) {
-                 reqStock[stockId] = { id: stockId, name: line.componentName, unit: line.uom, qty: 0, type, code };
-              }
-              reqStock[stockId].qty += (line.quantity * item.quantity);
-            });
-          } else if (item.itemType === 'DIRECT_STOCK') {
-            // Deduct directly
-            const stockId = `${selectedStoreId}_FINISHED_GOOD_${item.menuItemCode}`;
-            if (!reqStock[stockId]) {
-              reqStock[stockId] = { id: stockId, name: item.name, unit: 'pcs', qty: 0, type: 'FINISHED_GOOD', code: item.menuItemCode };
-            }
-            reqStock[stockId].qty += item.quantity;
-          }
+      const addSetupBlocker = (blocker: Omit<CheckoutBlocker, 'storeName' | 'storeId'>) => {
+        setupBlockers.push({
+          ...blocker,
+          storeName: selectedStore.name,
+          storeId: selectedStore.id,
+        });
+      };
+
+      const addStockRequirement = (stockId: string, source: StockSource) => {
+        if (!reqStock[stockId]) {
+          reqStock[stockId] = {
+            id: stockId,
+            name: source.componentName,
+            unit: source.unit,
+            qty: 0,
+            type: source.componentType,
+            code: source.componentCode,
+            sources: [],
+          };
         }
-      } else {
-        const allRecipesSnap = await getDocs(collection(db, 'recipes'));
-        const activeRecipes = allRecipesSnap.docs.map(d => d.data()).filter(r => r.isActive);
-        
-        for (const item of cart) {
-          // Find recipes for this menu item
-          const matchingRecipes = activeRecipes.filter(r => r.menuItemCode === item.menuItemCode);
-          if (matchingRecipes.length > 0) {
-            matchingRecipes.forEach(rec => {
-               const recipeItems = rec.recipeItems || [];
-               for (const ri of recipeItems) {
-                  const invCode = ri.inventoryItemCode || ri.inventoryItemId; 
-                  if (!invCode) continue;
-                  const stockId = `${selectedStoreId}_${invCode}`;
-                  if (!reqStock[stockId]) {
-                     reqStock[stockId] = { id: stockId, name: ri.inventoryItemName, unit: ri.unit, qty: 0, type: 'LEGACY', code: invCode };
-                  }
-                  reqStock[stockId].qty += (ri.quantity * item.quantity);
-               }
+        reqStock[stockId].qty += source.quantity;
+        reqStock[stockId].sources.push(source);
+      };
+
+      for (const { cartItem, liveItem } of validatedCart) {
+        const liveItemData = liveItem as any;
+        const itemType = liveItemData.itemType || cartItem.itemType;
+        const bom = Array.isArray(liveItemData.bom) ? liveItemData.bom : (Array.isArray(cartItem.bom) ? cartItem.bom : []);
+
+        if (itemType === 'NO_STOCK') continue;
+
+        if (itemType === 'MADE_TO_ORDER' || (itemType === 'DIRECT_STOCK' && bom.length > 0)) {
+          if (bom.length === 0) {
+            addSetupBlocker({
+              itemName: liveItem.name,
+              itemCode: liveItem.code,
+              finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
+              blockerType: 'Missing BOM',
+              requiredQuantity: cartItem.quantity,
+              availableQuantity: 0,
+              unit: 'BOM',
+              suggestedAdminAction: 'Add a BOM/recipe for this finished good in Menu Management, or mark it as No Stock only if it should never deduct inventory.',
             });
-          } else {
-            missingRecipes.push(item.name);
+            continue;
           }
+          bom.forEach((line: any) => {
+            const code = String(line.componentCode || '').trim();
+            const type = String(line.componentType || '').trim();
+            const quantity = Number(line.quantity) || 0;
+            const unit = String(line.uom || line.usageUOM || '').trim();
+
+            if (!code || !type || quantity <= 0) {
+              addSetupBlocker({
+                itemName: liveItem.name,
+                itemCode: liveItem.code,
+                finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
+                blockerType: 'Missing prep/raw ingredient reference',
+                componentType: type || 'UNKNOWN',
+                componentCode: code || 'UNKNOWN',
+                componentName: line.componentName || 'Missing component',
+                requiredQuantity: quantity,
+                availableQuantity: 0,
+                unit,
+                suggestedAdminAction: 'Fix the BOM row so it has a valid component type, component code, quantity, and UOM.',
+              });
+              return;
+            }
+
+            const stockId = `${selectedStoreId}_${type}_${code}`;
+            addStockRequirement(stockId, {
+              itemName: liveItem.name,
+              itemCode: liveItem.code,
+              finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
+              lineQuantity: cartItem.quantity,
+              componentType: type,
+              componentCode: code,
+              componentName: line.componentName || code,
+              quantity: quantity * cartItem.quantity,
+              unit,
+            });
+          });
+        } else if (itemType === 'DIRECT_STOCK') {
+          const stockId = `${selectedStoreId}_FINISHED_GOOD_${liveItem.code}`;
+          addStockRequirement(stockId, {
+            itemName: liveItem.name,
+            itemCode: liveItem.code,
+            finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
+            lineQuantity: cartItem.quantity,
+            componentType: 'FINISHED_GOOD',
+            componentCode: liveItem.code,
+            componentName: liveItem.name,
+            quantity: cartItem.quantity,
+            unit: 'pcs',
+          });
         }
       }
 
-      if (missingRecipes.length > 0) {
-        const message = `Checkout blocked. These items require inventory deduction but have no recipe/BOM mapped: ${missingRecipes.join(', ')}. Add the missing recipe/BOM or mark the item as No Stock before selling.`;
-        if (!allowMissingRecipeCheckout) {
-          throw new Error(message);
+      if (setupBlockers.length > 0) {
+        if (!allowMissingRecipeCheckout || setupBlockers.some(blocker => blocker.blockerType !== 'Missing BOM')) {
+          throw new CheckoutBlockerError(setupBlockers);
         }
-        console.warn(`[CHECKOUT DEV BYPASS] ${message}`);
+        console.warn(`[CHECKOUT DEV BYPASS] ${formatCheckoutBlockerDetails(setupBlockers)}`);
       }
+
+      const buildStockBlockers = (
+        req: RequiredStock,
+        blockerType: CheckoutBlockerType,
+        availableQuantity: number,
+        confirmedZero: boolean | undefined,
+        suggestedAdminAction: string,
+      ): CheckoutBlocker[] => req.sources.map(source => ({
+        itemName: source.itemName,
+        itemCode: source.itemCode,
+        finishedGoodCode: source.finishedGoodCode,
+        blockerType,
+        componentType: source.componentType,
+        componentCode: source.componentCode,
+        componentName: source.componentName,
+        requiredQuantity: req.qty,
+        availableQuantity,
+        unit: source.unit,
+        confirmedZero,
+        storeName: selectedStore.name,
+        storeId: selectedStore.id,
+        suggestedAdminAction,
+      }));
 
       const { sequence, savedOrder, savedItems, savedPayment } = await runTransaction(db, async (transaction) => {
         // --- READ PHASE ONLY ---
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get counter`);
         const counterDoc = await transaction.get(counterRef);
-        
+
         let custDoc: any = null;
         if (custRef) {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get customer doc`);
           custDoc = await transaction.get(custRef);
         }
-        
+
         // Fetch current stock
         const stockDocsMap: Record<string, any> = {};
+        const stockBlockers: CheckoutBlocker[] = [];
         for (const stockKey of Object.keys(reqStock)) {
            const req = reqStock[stockKey];
-           
+
            let stockRef;
-           if (posSource === 'FINISHED_GOODS') {
-              if (req.type === 'PACKAGING') {
-                 // Try packaging first, if not found (we can't easily fallback inside a transaction optimally without complex logic, so we will just use the exact ID we specified or RAW_INGREDIENT)
-                 stockRef = doc(db, 'storeStock', `${selectedStoreId}_PACKAGING_${req.code}`);
-              } else {
-                 stockRef = doc(db, 'storeStock', stockKey);
-              }
+           if (req.type === 'PACKAGING') {
+              stockRef = doc(db, 'storeStock', `${selectedStoreId}_PACKAGING_${req.code}`);
            } else {
-              stockRef = doc(db, 'storeInventory', stockKey);
+              stockRef = doc(db, 'storeStock', stockKey);
            }
-           
+
            let stockDoc = await transaction.get(stockRef);
-           
-           if (posSource === 'FINISHED_GOODS' && req.type === 'PACKAGING' && !stockDoc.exists()) {
+
+           if (req.type === 'PACKAGING' && !stockDoc.exists()) {
               stockRef = doc(db, 'storeStock', `${selectedStoreId}_RAW_INGREDIENT_${req.code}`);
               stockDoc = await transaction.get(stockRef);
            }
 
            if (!stockDoc.exists()) {
-              throw new Error(`Insufficient stock: ${req.name} required ${req.qty.toFixed(2)}${req.unit}, available 0.00${req.unit}.`);
+              stockBlockers.push(...buildStockBlockers(
+                req,
+                'Missing stock record',
+                0,
+                undefined,
+                `Create a storeStock row for ${req.type} / ${req.code} at ${selectedStore.name}, then load opening/current stock.`,
+              ));
+              continue;
            }
-           
-           const currentStock = (stockDoc.data() as any).currentStock || 0;
+
+           const stockData = stockDoc.data() as any;
+           const currentStock = toFiniteNumber(stockData.currentStock) || 0;
+           const confirmedZero = stockData.confirmedZero === true;
            if (currentStock < req.qty) {
-              throw new Error(`Insufficient stock: ${req.name} required ${req.qty.toFixed(2)}${req.unit}, available ${currentStock.toFixed(2)}${req.unit}.`);
+              const blockerType: CheckoutBlockerType = currentStock <= 0
+                ? (confirmedZero ? 'Zero stock' : 'confirmedZero false')
+                : 'Insufficient stock';
+              const suggestedAdminAction = currentStock <= 0
+                ? `Load current stock for ${req.type} / ${req.code}, or mark confirmedZero TRUE only if this item is intentionally unavailable.`
+                : `Adjust stock or reduce the cart quantity. Required total is ${req.qty.toFixed(2)} ${req.unit}; available is ${currentStock.toFixed(2)} ${req.unit}.`;
+              stockBlockers.push(...buildStockBlockers(
+                req,
+                blockerType,
+                currentStock,
+                confirmedZero,
+                suggestedAdminAction,
+              ));
+              continue;
            }
-           
+
            stockDocsMap[stockKey] = { ref: stockRef, currentStock };
         }
-        
+
+        if (stockBlockers.length > 0) {
+          throw new CheckoutBlockerError(stockBlockers);
+        }
+
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction read phase complete`);
 
         // --- VALIDATION PHASE ---
@@ -526,23 +846,23 @@ export default function POSHome() {
 
         const orderNumber = `CB-${selectedStore.code}-${dateKey}-${seq.toString().padStart(4, '0')}`;
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction validation complete - order number generated: ${orderNumber}`);
-        
+
         // --- WRITE PHASE ONLY ---
-        
+
         // Inventory Deduction Writes
         for (const stockKey of Object.keys(reqStock)) {
            const { ref, currentStock } = stockDocsMap[stockKey] as { ref: any, currentStock: number };
            const req = reqStock[stockKey];
            const deduction = req.qty;
-           
+
            transaction.update(ref, {
               currentStock: currentStock - deduction,
               updatedAt: serverTimestamp()
            });
-           
+
            // movement record
            const moveRef = doc(collection(db, 'stockMovements'));
-           
+
            const movementData: any = {
               storeId: selectedStore.id,
               storeName: selectedStore.name,
@@ -559,11 +879,9 @@ export default function POSHome() {
               createdAt: serverTimestamp()
            };
 
-           if (posSource === 'FINISHED_GOODS') {
-             movementData.stockSystem = 'MENU_MANAGEMENT';
-             movementData.stockItemType = req.type === 'PACKAGING' ? (ref.id.includes('RAW_INGREDIENT') ? 'RAW_INGREDIENT' : 'PACKAGING') : req.type;
-             movementData.stockItemCode = req.code;
-           }
+           movementData.stockSystem = 'MENU_MANAGEMENT';
+           movementData.stockItemType = req.type === 'PACKAGING' ? (ref.id.includes('RAW_INGREDIENT') ? 'RAW_INGREDIENT' : 'PACKAGING') : req.type;
+           movementData.stockItemCode = req.code;
 
            transaction.set(moveRef, movementData);
         }
@@ -621,7 +939,12 @@ export default function POSHome() {
           tableNumber: tableNumber.trim() || null,
           subtotal: trueSubtotal,
           taxTotal: trueTaxTotal,
+          gstTotal: trueTaxTotal,
+          taxableAmount: trueTaxableAmount,
+          discountPercent: trueDiscountPercent,
+          discountAmount: trueDiscount,
           discountTotal: trueDiscount,
+          discount: trueDiscount,
           grandTotal: trueGrandTotal,
           paymentMethod: paymentMethod as PaymentMethod,
           createdAt: serverTimestamp(),
@@ -634,12 +957,14 @@ export default function POSHome() {
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
         const newItems: OrderItem[] = [];
-        cart.forEach(item => {
-          const liveItem = menuItems.find(mi => mi.id === item.menuItemId)!;
+        validatedCart.forEach(({ cartItem: item, liveItem }) => {
           const lineRef = doc(collection(newOrderRef, 'items'));
           const lineSub = liveItem.price * item.quantity;
-          const lineTax = lineSub * (liveItem.taxRate / 100);
-          
+          const lineDiscount = lineSub * trueDiscountRatio;
+          const lineTaxable = Math.max(0, lineSub - lineDiscount);
+          const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);
+          const lineTax = lineTaxable * (appliedTaxRate / 100);
+
           const itemData: OrderItem = {
             menuItemId: liveItem.id,
             itemName: liveItem.name,
@@ -648,18 +973,20 @@ export default function POSHome() {
             categoryName: liveItem.categoryName,
             quantity: item.quantity,
             unitPrice: liveItem.price,
-            taxRate: liveItem.taxRate,
+            taxRate: appliedTaxRate,
             lineSubtotal: lineSub,
+            lineDiscount,
+            lineTaxable,
             lineTax: lineTax,
-            lineTotal: lineSub + lineTax,
+            lineTotal: lineTaxable + lineTax,
             prepStation: liveItem.prepStation,
             status: 'PENDING',
             createdAt: serverTimestamp(),
-            sourceSystem: item.sourceSystem || 'LEGACY_MENU_ITEMS',
+            sourceSystem: 'FINISHED_GOODS',
             itemType: item.itemType,
             finishedGoodCode: item.finishedGoodCode
           };
-          
+
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set lineItem ${lineRef.id}`);
           transaction.set(lineRef, itemData);
           newItems.push({ id: lineRef.id, ...itemData });
@@ -708,7 +1035,7 @@ export default function POSHome() {
           createdAt: serverTimestamp()
         };
         transaction.set(paymentRef, paymentData);
-        
+
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction write phase complete`);
 
         return { sequence: seq, savedOrder: { id: newOrderRef.id, ...orderData }, savedItems: newItems, savedPayment: { id: paymentRef.id, ...paymentData } };
@@ -725,8 +1052,12 @@ export default function POSHome() {
       });
       clearCart(true); // pass true to skip confirmation on submit
     } catch (err: any) {
-      console.error(err);
-      alert(err.message || 'Error saving order');
+      if (err instanceof CheckoutBlockerError) {
+        console.warn(err.message);
+      } else {
+        console.error(err);
+      }
+      setCheckoutError(buildCheckoutError(err));
     } finally {
       setIsSaving(false);
     }
@@ -807,15 +1138,9 @@ export default function POSHome() {
                  </select>
                </div>
                <div className="flex flex-col">
-                 {posSource === 'FINISHED_GOODS' ? (
-                    <span className="text-[8px] sm:text-[9px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded self-start">
-                      Menu Management POS
-                    </span>
-                 ) : isAdmin ? (
-                    <span className="text-[8px] sm:text-[9px] font-bold uppercase tracking-wider text-neutral-500 bg-neutral-100 border border-neutral-200 px-1.5 py-0.5 rounded self-start">
-                      Classic POS Source
-                    </span>
-                 ) : null}
+                 <span className="text-[8px] sm:text-[9px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded self-start">
+                   POS V2 · Finished Goods Menu
+                 </span>
                </div>
             </div>
           </div>
@@ -853,7 +1178,7 @@ export default function POSHome() {
         </div>
 
         {/* DEV Debug Panel */}
-        {import.meta.env.DEV && posSource === 'FINISHED_GOODS' && debugCounts && (
+        {import.meta.env.DEV && debugCounts && (
           <div className="mx-4 mt-4 bg-blue-50 border border-blue-200 p-3 rounded-xl shadow-sm text-xs text-blue-900 grid grid-cols-2 md:grid-cols-4 gap-2 xl:grid-cols-6 items-center text-center">
              <div className="flex flex-col"><span className="font-bold">Total Finished Goods</span><span>{debugCounts.total}</span></div>
              <div className="flex flex-col"><span className="font-bold">Unique Categories</span><span>{displayCategories.length}</span></div>
@@ -866,16 +1191,71 @@ export default function POSHome() {
 
         {/* Search & Items Grid */}
         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col">
+          <div className="mb-3 shrink-0 overflow-x-auto custom-scrollbar">
+            <div className="flex gap-2 min-w-max pb-1">
+              <button
+                type="button"
+                onClick={() => setSelectedCategoryId('ALL')}
+                className={`px-3 py-2 rounded-full border text-xs font-black uppercase tracking-wide transition-colors ${
+                  selectedCategoryId === 'ALL'
+                    ? 'bg-[#5c4033] border-[#5c4033] text-white'
+                    : 'bg-white border-neutral-200 text-neutral-600 hover:border-[#5c4033]/30'
+                }`}
+              >
+                All ({availableMenuItems.length})
+              </button>
+              {displayCategories.map(cat => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setSelectedCategoryId(cat.id)}
+                  className={`px-3 py-2 rounded-full border text-xs font-black uppercase tracking-wide whitespace-nowrap transition-colors ${
+                    selectedCategoryId === cat.id
+                      ? 'bg-[#5c4033] border-[#5c4033] text-white'
+                      : 'bg-white border-neutral-200 text-neutral-600 hover:border-[#5c4033]/30'
+                  }`}
+                >
+                  {cat.name} {(cat as any).count !== undefined ? `(${(cat as any).count})` : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="relative mb-4 shrink-0">
             <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-            <input 
+            <input
+              ref={searchInputRef}
               type="text"
-              placeholder="Search menu..."
+              placeholder="Search menu...  / to focus, Esc to clear"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-3 bg-white border border-neutral-200 rounded-xl shadow-sm focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] outline-none font-medium"
             />
           </div>
+
+          {fastItems.length > 0 && (
+            <div className="mb-4 shrink-0">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <h3 className="text-sm font-black text-neutral-700 uppercase tracking-wider">Popular / Fast Items</h3>
+                <span className="text-xs text-neutral-400 font-bold">Tap once to add</span>
+              </div>
+              <div className="overflow-x-auto custom-scrollbar">
+                <div className="flex gap-2 min-w-max pb-1">
+                  {fastItems.map((item: any) => (
+                    <button
+                      key={`fast_${item.id}`}
+                      type="button"
+                      onClick={() => addToCart(item)}
+                      className="w-40 text-left bg-white border border-neutral-200 hover:border-[#5c4033]/40 hover:bg-[#fffaf4] rounded-xl p-3 shadow-sm transition-colors"
+                    >
+                      <p className="font-black text-sm text-neutral-800 line-clamp-2 leading-tight">{item.name}</p>
+                      <p className="font-mono font-bold text-[#5c4033] mt-2">₹{item.price}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex-1">
             {menuItems.length === 0 ? (
@@ -890,13 +1270,9 @@ export default function POSHome() {
               <div className="h-full flex flex-col items-center justify-center text-neutral-400 p-6 text-center">
                 <Coffee size={48} className="mb-4 opacity-30 text-[#5c4033]" />
                 <p className="font-medium text-lg text-neutral-600 mb-2">No items found</p>
-                {posSource === 'FINISHED_GOODS' ? (
-                  <p className="text-sm text-amber-700 bg-amber-50 p-4 border border-amber-200 rounded-xl max-w-md">
-                    No Finished Goods are available for this store. Check <strong>Finished Goods &rarr; POS Visibility</strong>.
-                  </p>
-                ) : (
-                  <p className="text-sm bg-neutral-50 px-4 py-2 rounded-xl">Try changing category or search terms.</p>
-                )}
+                <p className="text-sm text-amber-700 bg-amber-50 p-4 border border-amber-200 rounded-xl max-w-md">
+                  No Finished Goods are available for this store. Check <strong>Menu Management &rarr; Sellable Items</strong> and store availability.
+                </p>
               </div>
             ) : (
               <div className="pb-32 lg:pb-4">
@@ -924,10 +1300,10 @@ export default function POSHome() {
                     </motion.button>
                   );
 
-                  if (posSource === 'FINISHED_GOODS' && selectedCategoryId !== 'ALL') {
+                  if (selectedCategoryId !== 'ALL') {
                     const grouped = new Map<string, any[]>();
                     const sortedSubcats = new Map<string, {name: string, order: number}>();
-                    
+
                     filteredMenuItems.forEach((item: any) => {
                       const subCode = item.subcategoryCode || 'MISC';
                       const subName = item.subcategoryName || 'Other';
@@ -969,7 +1345,7 @@ export default function POSHome() {
 
       {/* Right Area: Cart Panel */}
       <div className={`lg:w-[360px] xl:w-[400px] shrink-0 bg-white border-l border-neutral-200 flex flex-col z-[100] lg:z-20 fixed lg:static inset-0 lg:inset-auto w-full h-[100dvh] lg:h-full transition-transform duration-300 transform overflow-hidden ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}`}>
-           
+
         {/* Cart Header */}
         <div className="p-4 pl-4 pr-3 border-b border-neutral-100 bg-[#faf8f5] shrink-0 sticky lg:static top-0 z-20 w-full">
           <div className="flex items-center justify-between">
@@ -989,17 +1365,17 @@ export default function POSHome() {
 
         {/* Scrollable Body (Mobile) / Flex Container (Desktop) */}
         <div className="flex-1 overflow-y-auto lg:overflow-hidden flex flex-col w-full pb-28 lg:pb-0 custom-scrollbar min-h-0">
-          
+
           {/* Order Details Inputs */}
           <div className="p-4 border-b border-neutral-100 bg-[#faf8f5] shrink-0">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
               {orderType === 'DINE_IN' && (
                 <div className="col-span-1 sm:col-span-2 flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px]">
                   <MapPin size={16} className="text-neutral-400" />
-                  <input 
-                    type="text" 
-                    placeholder="Table Number" 
-                    value={tableNumber} 
+                  <input
+                    type="text"
+                    placeholder="Table Number"
+                    value={tableNumber}
                     onChange={e => setTableNumber(e.target.value)}
                     className="bg-transparent outline-none w-full font-medium placeholder-neutral-400"
                   />
@@ -1007,26 +1383,105 @@ export default function POSHome() {
               )}
               <div className={`flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px] ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2' : ''}`}>
                 <User size={16} className="text-neutral-400 shrink-0" />
-                <input 
-                  type="text" 
-                  placeholder="Name" 
-                  value={customerName} 
+                <input
+                  type="text"
+                  placeholder="Name"
+                  value={customerName}
                   onChange={e => setCustomerName(e.target.value)}
                   className="bg-transparent outline-none w-full font-medium placeholder-neutral-400"
                 />
               </div>
               <div className={`flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px] ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2' : ''}`}>
                 <Phone size={16} className="text-neutral-400 shrink-0" />
-                <input 
-                  type="tel" 
-                  placeholder="Phone" 
-                  value={customerPhone} 
+                <input
+                  type="tel"
+                  placeholder="Phone"
+                  value={customerPhone}
                   onChange={e => setCustomerPhone(e.target.value)}
                   className="bg-transparent outline-none w-full font-medium placeholder-neutral-400"
                 />
               </div>
             </div>
           </div>
+
+          {checkoutError && (
+            <div className="mx-4 mt-4 bg-red-50 border border-red-200 text-red-900 rounded-xl p-4 text-sm shrink-0">
+              <div className="flex gap-3">
+                <AlertCircle size={20} className="shrink-0 mt-0.5 text-red-600" />
+                <div className="min-w-0">
+                  <p className="font-black">Checkout needs attention</p>
+                  <p className="mt-1 font-medium">{checkoutError.message}</p>
+                  {canViewCheckoutDebug && checkoutError.blockers && checkoutError.blockers.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {checkoutError.blockers.map((blocker, index) => (
+                        <div key={`${blocker.itemCode}-${blocker.componentCode || 'item'}-${index}`} className="bg-white border border-red-100 rounded-lg p-3 min-w-0 overflow-hidden">
+                          <div className="space-y-1">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Item</p>
+                            <p className="font-black text-red-800 break-words leading-snug">{blocker.itemName}</p>
+                            <span className="inline-flex max-w-full text-[11px] font-mono bg-red-100 text-red-700 rounded px-2 py-0.5 break-words whitespace-normal">
+                              {blocker.blockerType}
+                            </span>
+                          </div>
+                          <div className="mt-3 space-y-2 text-xs text-red-900">
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Item code</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{blocker.itemCode}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">FG code</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{blocker.finishedGoodCode || blocker.itemCode}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Component type/code</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{blocker.componentType || 'ITEM'} / {blocker.componentCode || '-'}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Component name</p>
+                              <p className="mt-0.5 break-words whitespace-normal leading-relaxed">{blocker.componentName || blocker.itemName}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Required quantity</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{formatQuantity(blocker.requiredQuantity, blocker.unit)}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Available quantity</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{formatQuantity(blocker.availableQuantity, blocker.unit)}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Store</p>
+                              <p className="mt-0.5 break-words whitespace-normal leading-relaxed">{blocker.storeName}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50/70 p-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-red-500">confirmedZero</p>
+                              <p className="mt-0.5 font-mono break-words whitespace-normal leading-relaxed">{blocker.confirmedZero === undefined ? 'n/a' : String(blocker.confirmedZero)}</p>
+                            </div>
+                          </div>
+                          <div className="mt-3 rounded-lg border border-red-100 bg-red-50 p-3">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-red-500">Suggested admin action</p>
+                            <p className="mt-1 text-xs font-bold text-red-900 break-words whitespace-normal leading-relaxed">{blocker.suggestedAdminAction}</p>
+                          </div>
+                        </div>
+                      ))}
+                      <Link
+                        to="/admin/pos-readiness"
+                        className="inline-flex w-full items-center justify-center rounded-lg bg-red-700 px-3 py-2 text-xs font-black text-white hover:bg-red-800"
+                      >
+                        Open POS Readiness
+                      </Link>
+                    </div>
+                  )}
+                  {canViewCheckoutDebug && checkoutError.details && (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer font-bold text-red-700">Technical debug details</summary>
+                      <pre className="mt-2 whitespace-pre-wrap break-words bg-white/80 border border-red-100 rounded-lg p-3 text-xs font-mono text-red-800">
+                        {checkoutError.details}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Cart Items List */}
           <div className="shrink-0 lg:flex-1 lg:overflow-y-auto custom-scrollbar p-4 space-y-3 min-h-max lg:min-h-0">
@@ -1042,8 +1497,8 @@ export default function POSHome() {
               <div className="space-y-3">
                 <AnimatePresence initial={false} mode="popLayout">
                   {cart.map(item => (
-                    <motion.div 
-                      key={item.id} 
+                    <motion.div
+                      key={item.id}
                       layout
                       initial={{ opacity: 0, x: 20, height: 0 }}
                       animate={{ opacity: 1, x: 0, height: "auto" }}
@@ -1060,11 +1515,21 @@ export default function POSHome() {
                           ₹{(item.price * item.quantity).toFixed(2)}
                         </span>
                         <div className="flex items-center gap-1.5 flex-nowrap">
-                          <button onClick={() => updateQuantity(item.id, -1)} className="p-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-md text-neutral-600 transition-colors flex items-center justify-center cursor-pointer">
+                          <button
+                            onClick={() => updateQuantity(item.id, -1)}
+                            aria-label={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
+                            title={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
+                            className="p-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-md text-neutral-600 transition-colors flex items-center justify-center cursor-pointer"
+                          >
                             {item.quantity === 1 ? <Trash2 size={14} className="text-red-500" /> : <Minus size={14} />}
                           </button>
                           <span className="font-mono font-bold w-6 text-center text-sm">{item.quantity}</span>
-                          <button onClick={() => updateQuantity(item.id, 1)} className="p-1.5 bg-[#5c4033]/10 hover:bg-[#5c4033]/20 rounded-md text-[#5c4033] transition-colors flex items-center justify-center cursor-pointer">
+                          <button
+                            onClick={() => updateQuantity(item.id, 1)}
+                            aria-label={`Increase ${item.name}`}
+                            title={`Increase ${item.name}`}
+                            className="p-1.5 bg-[#5c4033]/10 hover:bg-[#5c4033]/20 rounded-md text-[#5c4033] transition-colors flex items-center justify-center cursor-pointer"
+                          >
                             <Plus size={14} />
                           </button>
                         </div>
@@ -1083,26 +1548,48 @@ export default function POSHome() {
                 <span>Subtotal</span>
                 <span className="font-mono">₹{cartTotals.subtotal.toFixed(2)}</span>
               </div>
-              
-              <div className="flex justify-between items-center text-sm font-medium text-neutral-500">
-                <span>Discount (₹)</span>
+
+              <div className="flex justify-between items-center text-sm font-medium text-neutral-500 gap-3">
+                <span>Discount (%)</span>
                 <input
                   type="number"
                   min="0"
-                  value={globalDiscountStr}
-                  onChange={e => setGlobalDiscountStr(e.target.value)}
+                  max="100"
+                  step="0.1"
+                  value={discountPercentStr}
+                  onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
                   className="w-20 text-right bg-white lg:bg-white border border-neutral-200 rounded px-2 py-1 font-mono outline-none focus:border-[#5c4033]"
                   placeholder="0"
                 />
               </div>
-              
+
               <div className="flex justify-between text-sm font-medium text-neutral-500">
-                <span>Taxes</span>
-                <span className="font-mono">₹{cartTotals.taxTotal.toFixed(2)}</span>
+                <span>Discount Amount</span>
+                <span className="font-mono">-₹{cartTotals.discountAmount.toFixed(2)}</span>
               </div>
 
+              <div className="flex justify-between text-sm font-medium text-neutral-500">
+                <span>Taxable Amount</span>
+                <span className="font-mono">₹{cartTotals.taxableAmount.toFixed(2)}</span>
+              </div>
+
+              <div className="flex justify-between text-sm font-medium text-neutral-500">
+                <span>GST</span>
+                <span className="font-mono">₹{cartTotals.taxTotal.toFixed(2)}</span>
+              </div>
+              {cart.length > 0 && cartTotals.taxTotal === 0 && (
+                <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">
+                  GST is ₹0.00 because selected items do not have a tax rate and no store/app fallback GST is configured.
+                </p>
+              )}
+              {canViewCheckoutDebug && selectedStoreTaxConfig.rate > 0 && (
+                <p className="text-[11px] text-neutral-400">
+                  GST fallback source: {selectedStoreTaxConfig.source} ({selectedStoreTaxConfig.rate}% when item tax is missing)
+                </p>
+              )}
+
               <div className="h-px bg-neutral-200 my-2" />
-              
+
               <div className="flex justify-between items-end gap-2">
                 <span className="font-black text-lg text-neutral-800 shrink-0">Total</span>
                 <span className="font-black font-mono text-2xl text-[#3e2723] break-all text-right">₹{cartTotals.grandTotal.toFixed(2)}</span>
@@ -1117,8 +1604,8 @@ export default function POSHome() {
                     key={method}
                     onClick={() => setPaymentMethod(method)}
                     className={`py-3 lg:py-2 px-1 text-[11px] lg:text-[10px] font-bold uppercase rounded-xl lg:rounded-md border transition-all h-full min-h-[44px] ${
-                      paymentMethod === method 
-                        ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm' 
+                      paymentMethod === method
+                        ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm'
                         : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
                     }`}
                   >
@@ -1135,7 +1622,7 @@ export default function POSHome() {
                   disabled={cart.length === 0 || isSaving}
                   className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all shadow-sm ${
                     (cart.length > 0 && !isSaving)
-                      ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99]' 
+                      ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99]'
                       : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
                   }`}
                   onClick={handleCheckout}
@@ -1155,7 +1642,7 @@ export default function POSHome() {
             disabled={cart.length === 0 || isSaving}
             className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all shadow-[0_4px_14px_rgba(0,0,0,0.15)] ${
               (cart.length > 0 && !isSaving)
-                ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99] border border-[#2d1c19]' 
+                ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99] border border-[#2d1c19]'
                 : 'bg-neutral-200 text-neutral-400 cursor-not-allowed border border-neutral-300'
             }`}
             onClick={handleCheckout}
@@ -1185,7 +1672,7 @@ export default function POSHome() {
                <h2 className="text-2xl font-black mb-1 tracking-tight">Order Saved</h2>
                <p className="text-white/80 font-mono text-sm">{completedOrder.order.orderNumber}</p>
             </div>
-            
+
             {/* Printable Receipt Area */}
             <div id="receipt-area" className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar text-neutral-800 text-sm">
                <div className="text-center mb-6 border-b border-dashed border-neutral-300 pb-6">
@@ -1196,7 +1683,7 @@ export default function POSHome() {
                  {completedOrder.order.customerName && <p className="text-neutral-500 text-xs mt-1">Guest: {completedOrder.order.customerName} {completedOrder.order.customerPhone ? `(${completedOrder.order.customerPhone})` : ''}</p>}
                  <p className="font-bold mt-3 border border-neutral-200 inline-block px-3 py-1 rounded-md">{completedOrder.order.orderType.replace('_', ' ')} {completedOrder.order.tableNumber ? `- Table ${completedOrder.order.tableNumber}` : ''}</p>
                </div>
-               
+
                <div className="space-y-3 mb-6 border-b border-dashed border-neutral-300 pb-6">
                  <div className="flex justify-between font-bold text-xs text-neutral-500 uppercase pb-1 border-b border-neutral-100">
                     <span>Item</span>
@@ -1212,40 +1699,44 @@ export default function POSHome() {
                    </div>
                  ))}
                </div>
-               
+
                <div className="space-y-2 mb-6 text-sm">
                  <div className="flex justify-between text-neutral-500">
                     <span>Subtotal</span>
                     <span className="font-mono text-neutral-800">₹{completedOrder.order.subtotal.toFixed(2)}</span>
                  </div>
-                 {completedOrder.order.discountTotal > 0 && (
+                 {(completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0) > 0 && (
                    <div className="flex justify-between text-red-500">
-                      <span>Discount</span>
-                      <span className="font-mono">-₹{completedOrder.order.discountTotal.toFixed(2)}</span>
+                      <span>Discount ({(completedOrder.order.discountPercent || 0).toFixed(2)}%)</span>
+                      <span className="font-mono">-₹{(completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0).toFixed(2)}</span>
                    </div>
                  )}
+                 <div className="flex justify-between text-neutral-500">
+                    <span>Taxable Amount</span>
+                    <span className="font-mono text-neutral-800">₹{(completedOrder.order.taxableAmount ?? (completedOrder.order.subtotal - (completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0))).toFixed(2)}</span>
+                 </div>
                  <div className="flex justify-between text-neutral-500 pb-2 border-b border-neutral-100">
-                    <span>Taxes</span>
-                    <span className="font-mono text-neutral-800">₹{completedOrder.order.taxTotal.toFixed(2)}</span>
+                    <span>GST</span>
+                    <span className="font-mono text-neutral-800">₹{(completedOrder.order.gstTotal ?? completedOrder.order.taxTotal).toFixed(2)}</span>
                  </div>
                  <div className="flex justify-between font-black text-lg pt-1">
-                    <span>Grand Total</span>
+                    <span>Total Paid</span>
                     <span className="font-mono">₹{completedOrder.order.grandTotal.toFixed(2)}</span>
                  </div>
                </div>
-               
+
                <div className="text-center text-xs font-bold text-neutral-500 mb-6">
-                 <p>Paid via {completedOrder.order.paymentMethod}</p>
+                 <p>Payment Method: {completedOrder.order.paymentMethod}</p>
                  <p>{completedOrder.order.paymentStatus}</p>
                </div>
-               
+
                <div className="text-center font-bold text-neutral-400 pt-4 border-t border-dashed border-neutral-300">
                  Thank you! Keep Brewing.
                </div>
             </div>
 
             <div className="p-4 bg-neutral-50 border-t border-neutral-200 grid grid-cols-2 gap-2 shrink-0">
-               <button 
+               <button
                  onClick={() => {
                    const content = document.getElementById('receipt-area')?.innerHTML;
                    if (content) {
@@ -1300,7 +1791,7 @@ export default function POSHome() {
                >
                  <Printer size={18} /> Print
                </button>
-               <button 
+               <button
                  onClick={() => setCompletedOrder(null)}
                  className="bg-[#5c4033] hover:bg-[#4a332a] text-white font-bold py-3 rounded-xl transition-colors"
                >

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, doc, setDoc, writeBatch, serverTimestamp, query, where } from 'firebase/firestore';
-import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet, FileCheck2, FileSearch, Coffee } from 'lucide-react';
+import { Download, Upload, AlertCircle, Loader2, FileSpreadsheet, FileCheck2, FileSearch, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import * as XLSX from 'xlsx';
 
@@ -298,20 +298,6 @@ export default function DataManagement() {
           </div>
         </Link>
 
-        <Link to="/admin/phase-7f-dry-run-import" className="block bg-red-50 border border-red-200 rounded-2xl p-5 hover:border-red-400 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-11 h-11 bg-white text-red-700 rounded-xl flex items-center justify-center border border-red-200 shrink-0">
-              <FileSearch size={22} />
-            </div>
-            <div>
-              <h2 className="text-lg font-black text-red-900">Phase 7F Dry-Run Import</h2>
-              <p className="text-sm text-red-800 mt-1">
-                Compare final import payloads against Firestore with no writes, no imports, and no rollout switch.
-              </p>
-            </div>
-          </div>
-        </Link>
-
         <Link to="/admin/phase-7h-stock-costing" className="block bg-amber-50 border border-amber-200 rounded-2xl p-5 hover:border-amber-400 transition-colors">
           <div className="flex items-start gap-4">
             <div className="w-11 h-11 bg-white text-amber-700 rounded-xl flex items-center justify-center border border-amber-200 shrink-0">
@@ -320,7 +306,7 @@ export default function DataManagement() {
             <div>
               <h2 className="text-lg font-black text-amber-900">Phase 7H Stock + Costing</h2>
               <p className="text-sm text-amber-800 mt-1">
-                Export, validate, and upload raw ingredient costs and opening stock before any Finished Goods rollout.
+                Export, validate, and upload raw ingredient costs and opening stock for POS V2 readiness.
               </p>
             </div>
           </div>
@@ -334,21 +320,21 @@ export default function DataManagement() {
             <div>
               <h2 className="text-lg font-black text-amber-900">Phase 7I BOM Alias Correction</h2>
               <p className="text-sm text-amber-800 mt-1">
-                Dry-run and guarded correction for V2 BOM alias component codes before Finished Goods pilot readiness.
+                Dry-run and guarded correction for V2 BOM alias component codes.
               </p>
             </div>
           </div>
         </Link>
 
-        <Link to="/admin/phase-7j-uday-park-pilot" className="block bg-emerald-50 border border-emerald-200 rounded-2xl p-5 hover:border-emerald-400 transition-colors">
+        <Link to="/admin/pos-readiness" className="block bg-emerald-50 border border-emerald-200 rounded-2xl p-5 hover:border-emerald-400 transition-colors">
           <div className="flex items-start gap-4">
             <div className="w-11 h-11 bg-white text-emerald-700 rounded-xl flex items-center justify-center border border-emerald-200 shrink-0">
-              <Coffee size={22} />
+              <ShieldCheck size={22} />
             </div>
             <div>
-              <h2 className="text-lg font-black text-emerald-900">Phase 7J Uday Park Pilot</h2>
+              <h2 className="text-lg font-black text-emerald-900">POS Go-Live Readiness</h2>
               <p className="text-sm text-emerald-800 mt-1">
-                Preview and guard the single-store FINISHED_GOODS POS source override for Uday Park only.
+                Check POS V2 source, Finished Goods menu counts, stock/BOM blockers, KOT coverage, and the Uday Park espresso fix.
               </p>
             </div>
           </div>

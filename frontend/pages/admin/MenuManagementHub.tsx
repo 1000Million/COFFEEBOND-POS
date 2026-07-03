@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   Store,
   TrendingUp,
-  AlertTriangle,
   Plus,
   ChevronDown,
   List,
@@ -18,7 +17,6 @@ import PrepItemsTab from "../../components/admin/menu-management/PrepItemsTab";
 import PrepProductionTab from "../../components/admin/menu-management/PrepProductionTab";
 import FinishedGoodsTab from "../../components/admin/menu-management/FinishedGoodsTab";
 import PosMenuSettingsTab from "../../components/admin/menu-management/PosMenuSettingsTab";
-import MigrationPreviewTab from "../../components/admin/menu-management/MigrationPreviewTab";
 import OverviewTab from "../../components/admin/menu-management/OverviewTab";
 
 type TabId =
@@ -29,8 +27,7 @@ type TabId =
   | "finished"
   | "stock"
   | "pos"
-  | "costing"
-  | "migration";
+  | "costing";
 
 export default function MenuManagementHub() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
@@ -43,9 +40,8 @@ export default function MenuManagementHub() {
     { id: "prep-production", label: "Prep Production", icon: ClipboardList },
     { id: "finished", label: "Sellable Items", icon: Coffee },
     { id: "stock", label: "Store Stock", icon: Store },
-    { id: "pos", label: "POS Rollout", icon: LayoutGrid },
+    { id: "pos", label: "POS V2 Source", icon: LayoutGrid },
     { id: "costing", label: "Costing Dashboard", icon: TrendingUp },
-    { id: "migration", label: "Migration Preview", icon: AlertTriangle },
   ];
 
   const activeTabDetails = tabs.find((t) => t.id === activeTab);
@@ -144,8 +140,6 @@ export default function MenuManagementHub() {
                 soon.
               </p>
             </div>
-          ) : activeTab === "migration" ? (
-            <MigrationPreviewTab />
           ) : null}
         </main>
       </div>

@@ -93,7 +93,12 @@ export interface Order {
   tableNumber: string | null;
   subtotal: number;
   taxTotal: number;
+  gstTotal?: number;
+  taxableAmount?: number;
+  discountPercent?: number;
+  discountAmount?: number;
   discountTotal: number;
+  discount?: number;
   grandTotal: number;
   paymentMethod: PaymentMethod;
   createdAt: any;
@@ -111,6 +116,8 @@ export interface OrderItem {
   unitPrice: number;
   taxRate: number;
   lineSubtotal: number;
+  lineDiscount?: number;
+  lineTaxable?: number;
   lineTax: number;
   lineTotal: number;
   prepStation: PrepStation;
@@ -251,4 +258,3 @@ export interface StockMovement {
   stockItemType?: string;
   stockItemCode?: string;
 }
-

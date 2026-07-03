@@ -6,7 +6,6 @@ import {
   Store,
   LayoutGrid,
   TrendingUp,
-  AlertTriangle,
   Blocks,
 } from "lucide-react";
 
@@ -19,8 +18,7 @@ interface OverviewTabProps {
       | "finished"
       | "pos"
       | "stock"
-      | "costing"
-      | "migration",
+      | "costing",
   ) => void;
 }
 
@@ -64,9 +62,9 @@ export default function OverviewTab({ onNavigate }: OverviewTabProps) {
     },
     {
       id: "pos",
-      title: "POS Rollout",
+      title: "POS V2 Source",
       description:
-        "Control which store uses the live Menu Management POS source.",
+        "Finished Goods Menu, BOM, stock tracking, and KOT routing are the active POS path.",
       icon: LayoutGrid,
       color: "bg-blue-50 text-blue-700",
       status: "Active",
@@ -78,14 +76,6 @@ export default function OverviewTab({ onNavigate }: OverviewTabProps) {
       icon: TrendingUp,
       color: "bg-neutral-100 text-neutral-600",
       status: "Pending",
-    },
-    {
-      id: "migration",
-      title: "Migration Preview",
-      description: "Review data consistency before expanding rollout.",
-      icon: AlertTriangle,
-      color: "bg-rose-50 text-rose-700",
-      status: "Review",
     },
   ];
 
