@@ -1,14 +1,30 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { db } from '../../lib/firebase';
-import { collection, query, where, getDocs, Timestamp, orderBy } from 'firebase/firestore';
-import { Order, OrderItem, KotItem, Store } from '../../types';
+import { auth, db } from '../../lib/firebase';
+import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
+import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
 import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 type ReportPaymentBreakdown = {
-  method: string;
+  method: PaymentMethod | string;
   amount: number;
+};
+
+type StockMovementDoc = {
+  id: string;
+  storeId?: string;
+  storeName?: string;
+  inventoryItemId?: string;
+  inventoryItemName?: string;
+  movementType?: string;
+  quantity?: number;
+  unit?: string;
+  referenceType?: string;
+  referenceId?: string;
+  stockSystem?: string;
+  stockItemType?: string;
+  stockItemCode?: string;
 };
 
 function moneyNumber(value: unknown): number {
@@ -64,6 +80,21 @@ function orderHasPaymentMethod(order: Order, method: string): boolean {
   return orderPaymentBreakdown(order).some(payment => payment.method === method);
 }
 
+function effectiveOrderStatus(order: Order): 'COMPLETED' | 'VOIDED' | 'CANCELLED' {
+  if (order.status === 'VOIDED') return 'VOIDED';
+  if (order.status === 'CANCELLED') return 'CANCELLED';
+  return 'COMPLETED';
+}
+
+function isVoidedOrder(order: Order): boolean {
+  return effectiveOrderStatus(order) === 'VOIDED';
+}
+
+function formatOrderDateTime(order: Order): string {
+  const date = order.createdAt?.toDate ? order.createdAt.toDate() : null;
+  return date ? `${date.toLocaleDateString()} ${date.toLocaleTimeString()}` : 'Unknown time';
+}
+
 export default function ReportsHome() {
   const { staffProfile } = useAuth();
   
@@ -85,6 +116,12 @@ export default function ReportsHome() {
   const [orderItems, setOrderItems] = useState<(OrderItem & { orderId: string })[]>([]);
   const [kotItems, setKotItems] = useState<KotItem[]>([]);
   const [newCustomersToday, setNewCustomersToday] = useState<number>(0);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [voidConfirmation, setVoidConfirmation] = useState('');
+  const [voidingOrderId, setVoidingOrderId] = useState<string | null>(null);
+  const [voidError, setVoidError] = useState<string | null>(null);
+  const [voidSuccess, setVoidSuccess] = useState<string | null>(null);
   
   // Data Fetching
   useEffect(() => {
@@ -252,40 +289,60 @@ export default function ReportsHome() {
     return fOrders;
   }, [orders, selectedOrderType, selectedPaymentMethod, selectedStoreId, stores]);
   
+  const completedOrders = useMemo(() => filteredOrders.filter(o => !isVoidedOrder(o)), [filteredOrders]);
+  const voidedOrders = useMemo(() => filteredOrders.filter(isVoidedOrder), [filteredOrders]);
   const filteredOrderIds = useMemo(() => new Set(filteredOrders.map(o => o.id)), [filteredOrders]);
+  const completedOrderIds = useMemo(() => new Set(completedOrders.map(o => o.id)), [completedOrders]);
   
   const filteredItems = useMemo(() => {
-    return orderItems.filter(i => filteredOrderIds.has(i.orderId as string));
-  }, [orderItems, filteredOrderIds]);
+    return orderItems.filter(i => completedOrderIds.has(i.orderId as string));
+  }, [orderItems, completedOrderIds]);
+
+  const selectedOrderItems = useMemo(() => {
+    if (!selectedOrder?.id) return [];
+    return orderItems.filter(i => i.orderId === selectedOrder.id);
+  }, [orderItems, selectedOrder]);
+
+  const displayOrders = useMemo(() => {
+    return [...filteredOrders].sort((a, b) => {
+      const aTime = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+      const bTime = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [filteredOrders]);
 
   // Metrics
-  const totalSales = filteredOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const totalBills = filteredOrders.length;
+  const grossSalesBeforeVoids = filteredOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const voidedSales = voidedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const totalSales = completedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const totalBills = completedOrders.length;
+  const totalOrdersIncludingVoids = filteredOrders.length;
+  const voidCount = voidedOrders.length;
   const avgOrderValue = totalBills > 0 ? (totalSales / totalBills) : 0;
-  const totalTax = filteredOrders.reduce((sum, o) => sum + orderTaxTotal(o), 0);
-  const totalDiscount = filteredOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
+  const totalTax = completedOrders.reduce((sum, o) => sum + orderTaxTotal(o), 0);
+  const totalDiscount = completedOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
   
-  const paidSales = filteredOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const unpaidSales = filteredOrders.reduce((sum, o) => {
+  const paidSales = completedOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const unpaidSales = completedOrders.reduce((sum, o) => {
     const creditAmount = orderPaymentBreakdown(o)
       .filter(payment => payment.method === 'CREDIT')
       .reduce((creditSum, payment) => creditSum + payment.amount, 0);
     if (creditAmount > 0) return sum + creditAmount;
     return o.paymentStatus !== 'PAID' ? sum + (o.grandTotal || 0) : sum;
   }, 0);
-  const compSales = filteredOrders.reduce((sum, o) => {
+  const compSales = completedOrders.reduce((sum, o) => {
     return sum + orderPaymentBreakdown(o)
       .filter(payment => payment.method === 'COMPLIMENTARY')
       .reduce((compSum, payment) => compSum + payment.amount, 0);
   }, 0);
 
-  const dineInCount = filteredOrders.filter(o => o.orderType === 'DINE_IN').length;
-  const takeawayCount = filteredOrders.filter(o => o.orderType === 'TAKEAWAY').length;
-  const deliveryCount = filteredOrders.filter(o => o.orderType === 'DELIVERY').length;
+  const dineInCount = completedOrders.filter(o => o.orderType === 'DINE_IN').length;
+  const takeawayCount = completedOrders.filter(o => o.orderType === 'TAKEAWAY').length;
+  const deliveryCount = completedOrders.filter(o => o.orderType === 'DELIVERY').length;
 
   const paymentSummary = useMemo(() => {
     const summary: Record<string, { count: number, total: number }> = {};
-    filteredOrders.forEach(o => {
+    completedOrders.forEach(o => {
       orderPaymentBreakdown(o).forEach(payment => {
         const pm = payment.method || 'UNKNOWN';
         if (!summary[pm]) summary[pm] = { count: 0, total: 0 };
@@ -294,7 +351,7 @@ export default function ReportsHome() {
       });
     });
     return summary;
-  }, [filteredOrders]);
+  }, [completedOrders]);
 
   const categorySummary = useMemo(() => {
     const summary: Record<string, { count: number, total: number, tax: number }> = {};
@@ -322,7 +379,7 @@ export default function ReportsHome() {
   
   const hourlySales = useMemo(() => {
     const hours = Array.from({length: 24}, (_, i) => ({ hour: i, count: 0, total: 0 }));
-    filteredOrders.forEach(o => {
+    completedOrders.forEach(o => {
        if (o.createdAt) {
          const date = o.createdAt.toDate();
          const h = date.getHours();
@@ -331,7 +388,7 @@ export default function ReportsHome() {
        }
     });
     return hours.filter(h => h.count > 0);
-  }, [filteredOrders]);
+  }, [completedOrders]);
 
   // Additional Reports for Admin/Manager
   const { walkInOrders, customerOrders, topCustomers } = useMemo(() => {
@@ -339,7 +396,7 @@ export default function ReportsHome() {
     let custOrds = 0;
     const custSpend: Record<string, { name: string, total: number }> = {};
     
-    filteredOrders.forEach(o => {
+    completedOrders.forEach(o => {
       if (!o.customerId) {
         walkIn++;
       } else {
@@ -357,14 +414,14 @@ export default function ReportsHome() {
       .map(([id, data]) => ({ id, ...data }));
       
     return { walkInOrders: walkIn, customerOrders: custOrds, topCustomers: top };
-  }, [filteredOrders]);
+  }, [completedOrders]);
 
   const storeComparison = useMemo(() => {
     if (staffProfile.role !== 'ADMIN') return [];
     
     const storeStats: Record<string, { storeName: string; totalSales: number; billCount: number; discount: number; topItemCounter: Record<string, number> }> = {};
     
-    filteredOrders.forEach(o => {
+    completedOrders.forEach(o => {
       const s = o.storeId;
       if (!storeStats[s]) storeStats[s] = { storeName: o.storeName, totalSales: 0, billCount: 0, discount: 0, topItemCounter: {} };
       storeStats[s].totalSales += o.grandTotal || 0;
@@ -373,7 +430,7 @@ export default function ReportsHome() {
     });
     
     filteredItems.forEach(i => {
-       const o = filteredOrders.find(ord => ord.id === i.orderId);
+       const o = completedOrders.find(ord => ord.id === i.orderId);
        if (o && storeStats[o.storeId]) {
          const nm = i.itemName || 'Unknown Item';
          if (!storeStats[o.storeId].topItemCounter[nm]) storeStats[o.storeId].topItemCounter[nm] = 0;
@@ -393,7 +450,164 @@ export default function ReportsHome() {
         topItem: best ? best[0] : 'None'
       };
     }).sort((a,b) => b.totalSales - a.totalSales);
-  }, [filteredOrders, filteredItems, staffProfile.role]);
+  }, [completedOrders, filteredItems, staffProfile.role]);
+
+  const canVoidOrders = staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER';
+
+  const openOrderDetail = (order: Order) => {
+    setSelectedOrder(order);
+    setVoidReason('');
+    setVoidConfirmation('');
+    setVoidError(null);
+    setVoidSuccess(null);
+  };
+
+  const handleVoidOrder = async () => {
+    if (!selectedOrder?.id || !staffProfile || !auth.currentUser) return;
+    if (!canVoidOrders) {
+      setVoidError('Only Admin or Store Manager can void orders.');
+      return;
+    }
+    if (isVoidedOrder(selectedOrder)) {
+      setVoidError('This order is already voided.');
+      return;
+    }
+    if (!voidReason.trim()) {
+      setVoidError('Void reason is required.');
+      return;
+    }
+    if (voidConfirmation.trim() !== 'VOID ORDER') {
+      setVoidError('Type VOID ORDER to confirm.');
+      return;
+    }
+
+    setVoidingOrderId(selectedOrder.id);
+    setVoidError(null);
+    setVoidSuccess(null);
+
+    try {
+      const orderRef = doc(db, 'orders', selectedOrder.id);
+      const [movementSnap, kotSnap] = await Promise.all([
+        getDocs(query(collection(db, 'stockMovements'), where('referenceId', '==', selectedOrder.id))),
+        getDocs(query(collection(db, 'kotItems'), where('orderId', '==', selectedOrder.id))),
+      ]);
+
+      const movementDocs = movementSnap.docs.map(movementDoc => ({
+        id: movementDoc.id,
+        ...movementDoc.data(),
+      } as StockMovementDoc));
+      const reversalAlreadyExists = movementDocs.some(movement => movement.movementType === 'ORDER_VOID_REVERSAL');
+      if (reversalAlreadyExists) {
+        throw new Error('This order already has reversal stock movements. It cannot be voided again.');
+      }
+
+      const saleMovements = movementDocs.filter(movement => (
+        movement.movementType === 'SALE_DEDUCTION'
+        && (movement.referenceType === 'ORDER' || !movement.referenceType)
+        && Number(movement.quantity) < 0
+      ));
+
+      const invalidMovement = saleMovements.find(movement => (
+        !movement.storeId
+        || !(movement.stockItemType || movement.inventoryItemId)
+        || !(movement.stockItemCode || movement.inventoryItemId)
+      ));
+      if (invalidMovement) {
+        throw new Error(`Cannot reverse stock movement ${invalidMovement.id}; stock item details are missing.`);
+      }
+
+      await runTransaction(db, async transaction => {
+        const freshOrderSnap = await transaction.get(orderRef);
+        if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
+        const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
+        if (isVoidedOrder(freshOrder)) throw new Error('This order is already voided.');
+
+        const stockTargets = saleMovements.map(movement => {
+          const stockItemType = String(movement.stockItemType || 'RAW_INGREDIENT');
+          const stockItemCode = String(movement.stockItemCode || movement.inventoryItemId);
+          const stockRef = doc(db, 'storeStock', `${movement.storeId}_${stockItemType}_${stockItemCode}`);
+          return { movement, stockRef, stockItemType, stockItemCode };
+        });
+
+        const stockSnaps = await Promise.all(stockTargets.map(target => transaction.get(target.stockRef)));
+        const missingStockTarget = stockSnaps.findIndex(stockSnap => !stockSnap.exists());
+        if (missingStockTarget >= 0) {
+          const target = stockTargets[missingStockTarget];
+          throw new Error(`Cannot reverse stock; storeStock row is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
+        }
+
+        stockTargets.forEach(target => {
+          const reversalQuantity = Math.abs(Number(target.movement.quantity) || 0);
+          transaction.update(target.stockRef, {
+            currentStock: increment(reversalQuantity),
+            updatedAt: serverTimestamp(),
+          });
+
+          const reversalRef = doc(collection(db, 'stockMovements'));
+          transaction.set(reversalRef, {
+            storeId: target.movement.storeId,
+            storeName: target.movement.storeName || freshOrder.storeName,
+            inventoryItemId: target.stockItemCode,
+            inventoryItemName: target.movement.inventoryItemName || target.stockItemCode,
+            movementType: 'ORDER_VOID_REVERSAL',
+            reason: 'ORDER_VOID_REVERSAL',
+            quantity: reversalQuantity,
+            unit: target.movement.unit || '',
+            referenceType: 'ORDER',
+            referenceId: selectedOrder.id,
+            originalMovementId: target.movement.id,
+            notes: `Void order ${freshOrder.orderNumber}: ${voidReason.trim()}`,
+            createdByUserId: auth.currentUser!.uid,
+            createdByName: staffProfile.name,
+            createdAt: serverTimestamp(),
+            stockSystem: target.movement.stockSystem || 'MENU_MANAGEMENT',
+            stockItemType: target.stockItemType,
+            stockItemCode: target.stockItemCode,
+          });
+        });
+
+        kotSnap.docs.forEach(kotDoc => {
+          transaction.update(kotDoc.ref, {
+            status: 'CANCELLED',
+            voidReason: voidReason.trim(),
+            handledByUserId: auth.currentUser!.uid,
+            handledByName: staffProfile.name,
+            updatedAt: serverTimestamp(),
+          });
+        });
+
+        transaction.update(orderRef, {
+          status: 'VOIDED',
+          voidReason: voidReason.trim(),
+          voidedBy: auth.currentUser!.uid,
+          voidedByName: staffProfile.name,
+          voidedByEmail: staffProfile.email || null,
+          voidedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      const updatedOrder: Order = {
+        ...selectedOrder,
+        status: 'VOIDED',
+        voidReason: voidReason.trim(),
+        voidedBy: auth.currentUser.uid,
+        voidedByName: staffProfile.name,
+        voidedByEmail: staffProfile.email || null,
+        voidedAt: new Date(),
+      };
+      setOrders(prev => prev.map(order => order.id === selectedOrder.id ? updatedOrder : order));
+      setKotItems(prev => prev.map(kot => kot.orderId === selectedOrder.id ? { ...kot, status: 'CANCELLED' } : kot));
+      setSelectedOrder(updatedOrder);
+      setVoidReason('');
+      setVoidConfirmation('');
+      setVoidSuccess(`Order ${selectedOrder.orderNumber} voided. Reversed ${saleMovements.length} stock movements and cancelled ${kotSnap.docs.length} KOT items.`);
+    } catch (error: any) {
+      setVoidError(error?.message || 'Void failed.');
+    } finally {
+      setVoidingOrderId(null);
+    }
+  };
 
   const handleExportCSV = (type: 'orders' | 'payments' | 'categories' | 'items') => {
     let rows: string[] = [];
@@ -415,7 +629,7 @@ export default function ReportsHome() {
           orderTaxTotal(o),
           o.grandTotal,
           orderPaymentLabel(o),
-          o.paymentStatus
+          effectiveOrderStatus(o)
         ].map(col => `"${col}"`).join(','));
       });
     } else if (type === 'payments') {
@@ -546,28 +760,45 @@ export default function ReportsHome() {
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                <div className="col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-neutral-200 relative overflow-hidden group">
                  <div className="absolute inset-0 bg-gradient-to-r from-[#5c4033]/5 to-transparent pointer-events-none" />
-                 <p className="text-xs font-bold text-[#5c4033] uppercase tracking-widest mb-1 opacity-80">Total Gross Sales</p>
+                 <p className="text-xs font-bold text-[#5c4033] uppercase tracking-widest mb-1 opacity-80">Net Sales</p>
                  <h2 className="text-4xl font-mono font-black text-neutral-900 tracking-tight">₹{totalSales.toFixed(2)}</h2>
+                 <p className="mt-2 text-xs font-bold text-neutral-400">Completed gross after excluding voided orders</p>
                </div>
                
                <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200">
-                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Total Bills</p>
-                 <h2 className="text-3xl font-mono font-bold text-neutral-800">{totalBills}</h2>
+                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Gross Before Voids</p>
+                 <h2 className="text-3xl font-mono font-bold text-neutral-800">₹{Math.round(grossSalesBeforeVoids)}</h2>
                </div>
                
                <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200">
-                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Avg Order Val</p>
-                 <h2 className="text-3xl font-mono font-bold text-neutral-800">₹{Math.round(avgOrderValue)}</h2>
+                 <p className="text-xs font-bold text-red-600 uppercase tracking-widest mb-1">Voided Sales</p>
+                 <h2 className="text-3xl font-mono font-bold text-red-700">₹{Math.round(voidedSales)}</h2>
                </div>
 
                <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200">
-                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Total GST</p>
-                 <h2 className="text-3xl font-mono font-bold text-neutral-800">₹{Math.round(totalTax)}</h2>
+                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Void Count</p>
+                 <h2 className="text-3xl font-mono font-bold text-neutral-800">{voidCount}</h2>
                </div>
             </div>
 
             {/* Sub-KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
+              <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Completed Bills</div>
+                 <div className="text-xl font-bold font-mono">{totalBills}</div>
+              </div>
+              <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">All Orders</div>
+                 <div className="text-xl font-bold font-mono">{totalOrdersIncludingVoids}</div>
+              </div>
+              <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Avg Order Val</div>
+                 <div className="text-xl font-bold font-mono">₹{Math.round(avgOrderValue)}</div>
+              </div>
+              <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Total GST</div>
+                 <div className="text-xl font-bold font-mono">₹{Math.round(totalTax)}</div>
+              </div>
               <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
                  <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Dine-in</div>
                  <div className="text-xl font-bold font-mono">{dineInCount}</div>
@@ -721,6 +952,68 @@ export default function ReportsHome() {
                </div>
                
             </div>
+
+            {/* Order List */}
+            <div className="bg-white border border-neutral-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-neutral-800">Order List</h3>
+                  <p className="text-xs font-medium text-neutral-500">Voided orders remain visible and are excluded from net sales.</p>
+                </div>
+                {voidCount > 0 && (
+                  <span className="rounded-full bg-red-50 border border-red-100 px-3 py-1 text-xs font-black text-red-700">
+                    {voidCount} voided
+                  </span>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="bg-neutral-50 text-neutral-500 font-bold text-xs uppercase tracking-wider">
+                    <tr>
+                      <th className="px-4 py-3">Order</th>
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Store</th>
+                      <th className="px-4 py-3">Customer</th>
+                      <th className="px-4 py-3">Payment</th>
+                      <th className="px-4 py-3 text-right">Total</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100 font-medium">
+                    {displayOrders.map(order => {
+                      const status = effectiveOrderStatus(order);
+                      const isVoided = status === 'VOIDED';
+                      return (
+                        <tr key={order.id} className={`transition-colors ${isVoided ? 'bg-red-50/40 text-neutral-500' : 'hover:bg-neutral-50'}`}>
+                          <td className="px-4 py-3 font-mono font-bold text-neutral-900">{order.orderNumber}</td>
+                          <td className="px-4 py-3 text-neutral-500">{formatOrderDateTime(order)}</td>
+                          <td className="px-4 py-3 text-neutral-700">{order.storeName}</td>
+                          <td className="px-4 py-3 text-neutral-600">{order.customerName || 'Walk-in'}</td>
+                          <td className="px-4 py-3 text-neutral-600 max-w-[220px] truncate">{orderPaymentLabel(order)}</td>
+                          <td className={`px-4 py-3 text-right font-mono font-bold ${isVoided ? 'line-through text-red-500' : 'text-[#5c4033]'}`}>₹{(order.grandTotal || 0).toFixed(2)}</td>
+                          <td className="px-4 py-3">
+                            <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
+                              isVoided ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              onClick={() => openOrderDetail(order)}
+                              className="rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-black uppercase tracking-wider text-neutral-700 hover:bg-neutral-50"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             
             {/* KOT Performance & Store Comparison for Admin / Manager */}
             {(staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER') && (
@@ -842,6 +1135,131 @@ export default function ReportsHome() {
           </div>
         )}
       </div>
+
+      {selectedOrder && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className={`p-5 text-white ${isVoidedOrder(selectedOrder) ? 'bg-red-700' : 'bg-[#5c4033]'}`}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-widest text-white/70">Order Detail</p>
+                  <h2 className="text-2xl font-black mt-1">{selectedOrder.orderNumber}</h2>
+                  <p className="text-sm text-white/80 mt-1">{selectedOrder.storeName} • {formatOrderDateTime(selectedOrder)}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedOrder(null)}
+                  className="rounded-full bg-white/15 hover:bg-white/25 px-3 py-1 text-sm font-black"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="p-5 overflow-y-auto custom-scrollbar space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Status</p>
+                  <p className={`mt-1 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-emerald-700'}`}>
+                    {effectiveOrderStatus(selectedOrder)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Customer</p>
+                  <p className="mt-1 font-bold text-neutral-800">{selectedOrder.customerName || 'Walk-in'}</p>
+                </div>
+                <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Order Type</p>
+                  <p className="mt-1 font-bold text-neutral-800">{selectedOrder.orderType.replace('_', ' ')}{selectedOrder.tableNumber ? ` • Table ${selectedOrder.tableNumber}` : ''}</p>
+                </div>
+              </div>
+
+              {isVoidedOrder(selectedOrder) && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                  <p className="text-sm font-black text-red-800">VOIDED</p>
+                  <p className="mt-1 text-sm font-medium text-red-700">{selectedOrder.voidReason || 'No reason saved'}</p>
+                  <p className="mt-2 text-xs text-red-600">
+                    Voided by {selectedOrder.voidedByName || 'Unknown'}{selectedOrder.voidedByEmail ? ` (${selectedOrder.voidedByEmail})` : ''}
+                  </p>
+                </div>
+              )}
+
+              <div className="rounded-xl border border-neutral-200 overflow-hidden">
+                <div className="bg-neutral-50 px-4 py-3 font-black text-neutral-800">Items</div>
+                <div className="divide-y divide-neutral-100">
+                  {selectedOrderItems.map(item => (
+                    <div key={item.id} className="px-4 py-3 flex justify-between gap-4 text-sm">
+                      <div>
+                        <p className="font-bold text-neutral-900">{item.itemName}</p>
+                        <p className="text-xs text-neutral-500 font-mono">{item.quantity} x ₹{item.unitPrice.toFixed(2)}</p>
+                      </div>
+                      <span className="font-mono font-bold text-neutral-800">₹{(item.lineTotal || 0).toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-neutral-200 p-4 space-y-2 text-sm">
+                  <p className="font-black text-neutral-800">Totals</p>
+                  <div className="flex justify-between text-neutral-500"><span>Subtotal</span><span className="font-mono">₹{(selectedOrder.subtotal || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between text-neutral-500"><span>Discount</span><span className="font-mono">-₹{orderDiscountTotal(selectedOrder).toFixed(2)}</span></div>
+                  <div className="flex justify-between text-neutral-500"><span>GST</span><span className="font-mono">₹{orderTaxTotal(selectedOrder).toFixed(2)}</span></div>
+                  <div className={`flex justify-between pt-2 border-t border-neutral-100 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700 line-through' : 'text-neutral-900'}`}>
+                    <span>Total</span><span className="font-mono">₹{(selectedOrder.grandTotal || 0).toFixed(2)}</span>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-neutral-200 p-4 space-y-2 text-sm">
+                  <p className="font-black text-neutral-800">Payment</p>
+                  {orderPaymentBreakdown(selectedOrder).map((payment, index) => (
+                    <div key={`${payment.method}-${index}`} className="flex justify-between text-neutral-600">
+                      <span>{payment.method}</span>
+                      <span className="font-mono">₹{payment.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {canVoidOrders && !isVoidedOrder(selectedOrder) && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+                  <div>
+                    <p className="font-black text-red-900">Void Order</p>
+                    <p className="text-xs font-medium text-red-700 mt-1">This will mark the order VOIDED, cancel related KOT items, and reverse sale stock deductions.</p>
+                  </div>
+                  <textarea
+                    value={voidReason}
+                    onChange={e => setVoidReason(e.target.value)}
+                    placeholder="Void reason"
+                    className="w-full rounded-lg border border-red-200 bg-white p-3 text-sm font-medium outline-none focus:border-red-500"
+                    rows={3}
+                  />
+                  <input
+                    value={voidConfirmation}
+                    onChange={e => setVoidConfirmation(e.target.value)}
+                    placeholder="Type VOID ORDER"
+                    className="w-full rounded-lg border border-red-200 bg-white p-3 text-sm font-mono font-bold outline-none focus:border-red-500"
+                  />
+                  {voidError && <p className="rounded-lg border border-red-200 bg-white p-3 text-sm font-bold text-red-700">{voidError}</p>}
+                  {voidSuccess && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{voidSuccess}</p>}
+                  <button
+                    onClick={handleVoidOrder}
+                    disabled={voidingOrderId === selectedOrder.id}
+                    className="w-full rounded-xl bg-red-700 px-4 py-3 text-sm font-black uppercase tracking-widest text-white hover:bg-red-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {voidingOrderId === selectedOrder.id ? 'Voiding...' : 'Void Order'}
+                  </button>
+                </div>
+              )}
+
+              {canVoidOrders && isVoidedOrder(selectedOrder) && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">
+                  This order is already VOIDED and cannot be voided again.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

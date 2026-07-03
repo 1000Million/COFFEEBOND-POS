@@ -88,7 +88,7 @@ export interface Order {
   createdByUserId: string;
   createdByName: string;
   orderType: OrderType;
-  status: "COMPLETED" | "CANCELLED";
+  status: "COMPLETED" | "CANCELLED" | "VOIDED";
   paymentStatus: "PAID" | "UNPAID" | "PARTIAL";
   tableNumber: string | null;
   subtotal: number;
@@ -104,6 +104,11 @@ export interface Order {
   paymentMethodLabel?: string;
   isSplitPayment?: boolean;
   paymentBreakdown?: { method: PaymentMethod; amount: number }[];
+  voidReason?: string | null;
+  voidedBy?: string | null;
+  voidedByName?: string | null;
+  voidedByEmail?: string | null;
+  voidedAt?: any;
   createdAt: any;
   updatedAt: any;
 }
