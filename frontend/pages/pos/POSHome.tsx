@@ -65,6 +65,12 @@ type TaxConfig = {
   source: string;
 };
 
+type AppGstConfig = {
+  defaultRate: number;
+  defaultSource: string;
+  storeOverrides: Record<string, number>;
+};
+
 type TotalsInput = {
   price: number;
   quantity: number;
@@ -90,8 +96,11 @@ class CheckoutBlockerError extends Error {
   }
 }
 
-const TAX_SETTING_DOC_IDS = ['tax', 'taxSettings', 'posSettings', 'settings'];
-const TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultTaxRate', 'defaultGstRate', 'defaultGSTPercent', 'gstPercent'];
+const GST_CONFIG_DOC_ID = 'gstConfig';
+const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettings', 'settings'];
+const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
+const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
+const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 function toFiniteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
@@ -104,12 +113,26 @@ function normalizeTaxRate(value: unknown): number {
   return parsed !== null && parsed > 0 ? parsed : 0;
 }
 
-function pickTaxConfig(data: Record<string, unknown>, source: string): TaxConfig | null {
-  for (const key of TAX_RATE_KEYS) {
+function pickTaxConfig(data: Record<string, unknown>, source: string, keys = APP_TAX_RATE_KEYS): TaxConfig | null {
+  for (const key of keys) {
     const rate = normalizeTaxRate(data[key]);
     if (rate > 0) return { rate, source: `${source}.${key}` };
   }
   return null;
+}
+
+function normalizeStoreOverrides(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((acc, [key, rate]) => {
+    const normalizedRate = normalizeTaxRate(rate);
+    if (normalizedRate > 0) acc[key] = normalizedRate;
+    return acc;
+  }, {});
+}
+
+function pickItemTaxRate(item: Record<string, unknown>): number {
+  const picked = pickTaxConfig(item, 'item', ITEM_TAX_RATE_KEYS);
+  return picked?.rate || 0;
 }
 
 function getItemTaxRate(item: { taxRate?: number | null }, fallbackTaxRate: number): number {
@@ -217,9 +240,10 @@ export default function POSHome() {
   const [stores, setStores] = useState<Store[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [defaultTaxConfig, setDefaultTaxConfig] = useState<TaxConfig>({
-    rate: 0,
-    source: 'No app/store GST fallback configured',
+  const [appGstConfig, setAppGstConfig] = useState<AppGstConfig>({
+    defaultRate: 0,
+    defaultSource: 'No app GST fallback configured',
+    storeOverrides: {},
   });
 
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
@@ -319,7 +343,7 @@ export default function POSHome() {
            sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 999,
            description: data.description || '',
            price: data.salePrice || 0,
-           taxRate: data.taxRate || 0,
+           taxRate: pickItemTaxRate(data),
            prepStation: data.prepStation || 'NONE',
            isActive: data.isActive,
            availableStoreIds: data.availableStoreIds || [],
@@ -363,19 +387,37 @@ export default function POSHome() {
 
   const fetchTaxConfig = async () => {
     try {
+      let defaultConfig: TaxConfig | null = null;
+      let storeOverrides: Record<string, number> = {};
+
       for (const docId of TAX_SETTING_DOC_IDS) {
         const snap = await getDoc(doc(db, 'appSettings', docId));
         if (!snap.exists()) continue;
-        const picked = pickTaxConfig(snap.data() as Record<string, unknown>, `appSettings/${docId}`);
+
+        const data = snap.data() as Record<string, unknown>;
+        if (docId === GST_CONFIG_DOC_ID) {
+          storeOverrides = normalizeStoreOverrides(data.storeOverrides);
+        }
+
+        const picked = pickTaxConfig(data, `appSettings/${docId}`, APP_TAX_RATE_KEYS);
         if (picked) {
-          setDefaultTaxConfig(picked);
-          return;
+          defaultConfig = picked;
+          break;
         }
       }
-      setDefaultTaxConfig({ rate: 0, source: 'No app/store GST fallback configured' });
+
+      setAppGstConfig({
+        defaultRate: defaultConfig?.rate || 0,
+        defaultSource: defaultConfig?.source || 'No app GST fallback configured',
+        storeOverrides,
+      });
     } catch (error) {
       console.warn('Unable to load POS tax fallback config', error);
-      setDefaultTaxConfig({ rate: 0, source: 'GST fallback config unavailable' });
+      setAppGstConfig({
+        defaultRate: 0,
+        defaultSource: 'GST fallback config unavailable',
+        storeOverrides: {},
+      });
     }
   };
 
@@ -394,11 +436,26 @@ export default function POSHome() {
 
   const selectedStoreTaxConfig = useMemo(() => {
     const selectedStore = stores.find(s => s.id === selectedStoreId);
+    const configuredStoreOverride = selectedStore
+      ? appGstConfig.storeOverrides[selectedStore.id] || appGstConfig.storeOverrides[selectedStore.code]
+      : 0;
+    if (configuredStoreOverride > 0 && selectedStore) {
+      return {
+        rate: configuredStoreOverride,
+        source: `appSettings/${GST_CONFIG_DOC_ID}.storeOverrides.${selectedStore.code}`,
+      };
+    }
+
     const storeTaxConfig = selectedStore
-      ? pickTaxConfig(selectedStore as unknown as Record<string, unknown>, `stores/${selectedStore.id}`)
+      ? pickTaxConfig(selectedStore as unknown as Record<string, unknown>, `stores/${selectedStore.id}`, STORE_TAX_RATE_KEYS)
       : null;
-    return storeTaxConfig || defaultTaxConfig;
-  }, [stores, selectedStoreId, defaultTaxConfig]);
+    if (storeTaxConfig) return storeTaxConfig;
+
+    return {
+      rate: appGstConfig.defaultRate,
+      source: appGstConfig.defaultSource,
+    };
+  }, [stores, selectedStoreId, appGstConfig]);
 
   const displayCategories = useMemo(() => {
     const catsMap = new Map<string, { id: string, name: string, sortOrder: number, count: number }>();
@@ -552,6 +609,12 @@ export default function POSHome() {
   const cartTotals = useMemo(() => {
     return calculateTotals(cart, discountPercentStr, selectedStoreTaxConfig.rate);
   }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);
+
+  const cartHasItemTaxRate = useMemo(() => {
+    return cart.some(item => normalizeTaxRate(item.taxRate) > 0);
+  }, [cart]);
+
+  const cartIsMissingGstConfig = cart.length > 0 && !cartHasItemTaxRate && selectedStoreTaxConfig.rate <= 0;
 
   const handleCheckout = async () => {
     if (!staffProfile || !auth.currentUser) return;
@@ -1577,9 +1640,9 @@ export default function POSHome() {
                 <span>GST</span>
                 <span className="font-mono">₹{cartTotals.taxTotal.toFixed(2)}</span>
               </div>
-              {cart.length > 0 && cartTotals.taxTotal === 0 && (
+              {canViewCheckoutDebug && cartIsMissingGstConfig && (
                 <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">
-                  GST is ₹0.00 because selected items do not have a tax rate and no store/app fallback GST is configured.
+                  GST rate is not configured for this store/menu.
                 </p>
               )}
               {canViewCheckoutDebug && selectedStoreTaxConfig.rate > 0 && (

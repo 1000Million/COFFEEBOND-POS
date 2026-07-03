@@ -6,6 +6,28 @@ import { Order, OrderItem, KotItem, Store } from '../../types';
 import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+function moneyNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function orderTaxTotal(order: Order): number {
+  const gstTotal = moneyNumber(order.gstTotal);
+  return gstTotal > 0 ? gstTotal : moneyNumber(order.taxTotal);
+}
+
+function orderDiscountTotal(order: Order): number {
+  const discountAmount = moneyNumber(order.discountAmount);
+  if (discountAmount > 0) return discountAmount;
+  const discountTotal = moneyNumber(order.discountTotal);
+  if (discountTotal > 0) return discountTotal;
+  return moneyNumber(order.discount);
+}
+
+function orderTaxableAmount(order: Order): number {
+  return moneyNumber(order.taxableAmount ?? (moneyNumber(order.subtotal) - orderDiscountTotal(order)));
+}
+
 export default function ReportsHome() {
   const { staffProfile } = useAuth();
   
@@ -204,8 +226,8 @@ export default function ReportsHome() {
   const totalSales = filteredOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
   const totalBills = filteredOrders.length;
   const avgOrderValue = totalBills > 0 ? (totalSales / totalBills) : 0;
-  const totalTax = filteredOrders.reduce((sum, o) => sum + (o.taxTotal || 0), 0);
-  const totalDiscount = filteredOrders.reduce((sum, o) => sum + (o.discountTotal || 0), 0);
+  const totalTax = filteredOrders.reduce((sum, o) => sum + orderTaxTotal(o), 0);
+  const totalDiscount = filteredOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
   
   const paidSales = filteredOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
   const unpaidSales = filteredOrders.filter(o => o.paymentMethod === 'CREDIT' || o.paymentStatus !== 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
@@ -299,7 +321,7 @@ export default function ReportsHome() {
       if (!storeStats[s]) storeStats[s] = { storeName: o.storeName, totalSales: 0, billCount: 0, discount: 0, topItemCounter: {} };
       storeStats[s].totalSales += o.grandTotal || 0;
       storeStats[s].billCount += 1;
-      storeStats[s].discount += o.discountTotal || 0;
+      storeStats[s].discount += orderDiscountTotal(o);
     });
     
     filteredItems.forEach(i => {
@@ -328,7 +350,7 @@ export default function ReportsHome() {
   const handleExportCSV = (type: 'orders' | 'payments' | 'categories' | 'items') => {
     let rows: string[] = [];
     if (type === 'orders') {
-      rows.push(['Date', 'Time', 'Order #', 'Store', 'Type', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Status'].join(','));
+      rows.push(['Date', 'Time', 'Order #', 'Store', 'Type', 'Customer', 'Subtotal', 'Discount %', 'Discount', 'Taxable', 'GST', 'Total', 'Payment', 'Status'].join(','));
       filteredOrders.forEach(o => {
         const d = o.createdAt?.toDate();
         rows.push([
@@ -339,8 +361,10 @@ export default function ReportsHome() {
           o.orderType,
           o.customerName || 'Walk-in',
           o.subtotal,
-          o.taxTotal,
-          o.discountTotal,
+          o.discountPercent ?? 0,
+          orderDiscountTotal(o),
+          orderTaxableAmount(o),
+          orderTaxTotal(o),
           o.grandTotal,
           o.paymentMethod,
           o.paymentStatus
@@ -489,13 +513,13 @@ export default function ReportsHome() {
                </div>
 
                <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200">
-                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Total Tax</p>
+                 <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Total GST</p>
                  <h2 className="text-3xl font-mono font-bold text-neutral-800">₹{Math.round(totalTax)}</h2>
                </div>
             </div>
 
             {/* Sub-KPIs */}
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
               <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
                  <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Dine-in</div>
                  <div className="text-xl font-bold font-mono">{dineInCount}</div>
@@ -519,6 +543,10 @@ export default function ReportsHome() {
               <div className="bg-white/50 border border-purple-200/50 rounded-xl p-4">
                  <div className="text-[10px] font-bold text-purple-700 uppercase tracking-widest mb-1">Complimentary</div>
                  <div className="text-xl font-bold font-mono text-purple-800">₹{Math.round(compSales)}</div>
+              </div>
+              <div className="bg-white/50 border border-red-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-red-700 uppercase tracking-widest mb-1">Discount</div>
+                 <div className="text-xl font-bold font-mono text-red-800">₹{Math.round(totalDiscount)}</div>
               </div>
             </div>
             

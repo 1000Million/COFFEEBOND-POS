@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, doc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -58,8 +58,24 @@ type StoreReadiness = {
   zeroCurrentStockCount: number;
   unconfirmedZeroCount: number;
   kotCoverage: KotCoverage;
+  gstStatus: StoreGstStatus;
   tone: StatusTone;
   summary: string;
+};
+
+type StoreGstStatus = {
+  configured: boolean;
+  source: 'item' | 'store' | 'app' | 'missing';
+  rateLabel: string;
+  missingFinishedGoodsTaxCount: number;
+  detail: string;
+};
+
+type AppGstConfig = {
+  exists: boolean;
+  defaultRate: number;
+  defaultSource: string;
+  storeOverrides: Record<string, number>;
 };
 
 type LoadedData = {
@@ -68,6 +84,7 @@ type LoadedData = {
   prepItems: (PrepItem & { id: string })[];
   finishedGoods: (FinishedGood & { id: string })[];
   storeStock: (StoreStock & { id: string } & Record<string, unknown>)[];
+  gstConfig: AppGstConfig;
 };
 
 type EspressoFixState = {
@@ -82,6 +99,12 @@ type EspressoFixState = {
 const TARGET_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51'];
 const ESPRESSO_STOCK_CODE = 'ESPRESSO_DOUBLE_RISTRETTO';
 const ESPRESSO_FIX_CONFIRMATION = 'RESTORE ESPRESSO STOCK';
+const GST_CONFIG_DOC_ID = 'gstConfig';
+const GST_CONFIG_CONFIRMATION = 'SAVE GST CONFIG';
+const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettings', 'settings'];
+const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
+const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
+const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 function cleanValue(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -93,6 +116,35 @@ function toNumber(value: unknown, fallback = 0): number {
   if (!cleaned) return fallback;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toOptionalNumber(value: unknown): number | null {
+  const cleaned = cleanValue(value).replace(/,/g, '');
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeTaxRate(value: unknown): number {
+  const parsed = toOptionalNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function pickTaxRate(data: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const rate = normalizeTaxRate(data[key]);
+    if (rate > 0) return rate;
+  }
+  return 0;
+}
+
+function normalizeStoreOverrides(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((acc, [key, rate]) => {
+    const normalizedRate = normalizeTaxRate(rate);
+    if (normalizedRate > 0) acc[key] = normalizedRate;
+    return acc;
+  }, {});
 }
 
 function withId<T extends Record<string, unknown>>(id: string, data: T): T & { id: string } {
@@ -167,13 +219,46 @@ function componentMasterExists(
   return true;
 }
 
+async function loadGstConfig(): Promise<AppGstConfig> {
+  let defaultRate = 0;
+  let defaultSource = 'No app GST fallback configured';
+  let storeOverrides: Record<string, number> = {};
+  let exists = false;
+
+  for (const docId of TAX_SETTING_DOC_IDS) {
+    const snap = await getDoc(doc(db, 'appSettings', docId));
+    if (!snap.exists()) continue;
+
+    exists = exists || docId === GST_CONFIG_DOC_ID;
+    const data = snap.data() as Record<string, unknown>;
+    if (docId === GST_CONFIG_DOC_ID) {
+      storeOverrides = normalizeStoreOverrides(data.storeOverrides);
+    }
+
+    const pickedRate = pickTaxRate(data, APP_TAX_RATE_KEYS);
+    if (pickedRate > 0) {
+      defaultRate = pickedRate;
+      defaultSource = `appSettings/${docId}`;
+      break;
+    }
+  }
+
+  return {
+    exists,
+    defaultRate,
+    defaultSource,
+    storeOverrides,
+  };
+}
+
 async function loadReadinessData(): Promise<LoadedData> {
-  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap] = await Promise.all([
+  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, gstConfig] = await Promise.all([
     getDocs(collection(db, 'stores')),
     getDocs(collection(db, 'rawIngredients')),
     getDocs(collection(db, 'prepItems')),
     getDocs(collection(db, 'finishedGoods')),
     getDocs(collection(db, 'storeStock')),
+    loadGstConfig(),
   ]);
 
   const allStores = storesSnap.docs.map((snap) => withId(snap.id, snap.data() as Store & Record<string, unknown>));
@@ -187,6 +272,82 @@ async function loadReadinessData(): Promise<LoadedData> {
     prepItems: prepSnap.docs.map((snap) => withId(snap.id, snap.data() as PrepItem & Record<string, unknown>)),
     finishedGoods: finishedSnap.docs.map((snap) => withId(snap.id, snap.data() as FinishedGood & Record<string, unknown>)),
     storeStock: stockSnap.docs.map((snap) => withId(snap.id, snap.data() as StoreStock & Record<string, unknown>)),
+    gstConfig,
+  };
+}
+
+function resolveStoreGstFallback(store: Store & { id: string }, gstConfig: AppGstConfig): { rate: number; source: 'store' | 'app' | 'missing'; detail: string } {
+  const overrideRate = gstConfig.storeOverrides[store.id] || gstConfig.storeOverrides[store.code] || 0;
+  if (overrideRate > 0) {
+    return {
+      rate: overrideRate,
+      source: 'store',
+      detail: `appSettings/${GST_CONFIG_DOC_ID}.storeOverrides.${store.code}`,
+    };
+  }
+
+  const storeRate = pickTaxRate(store as unknown as Record<string, unknown>, STORE_TAX_RATE_KEYS);
+  if (storeRate > 0) {
+    return {
+      rate: storeRate,
+      source: 'store',
+      detail: `stores/${store.id}`,
+    };
+  }
+
+  if (gstConfig.defaultRate > 0) {
+    return {
+      rate: gstConfig.defaultRate,
+      source: 'app',
+      detail: gstConfig.defaultSource,
+    };
+  }
+
+  return {
+    rate: 0,
+    source: 'missing',
+    detail: 'No item, store, or app GST rate configured.',
+  };
+}
+
+function buildStoreGstStatus(
+  store: Store & { id: string },
+  finishedGoods: (FinishedGood & { id: string })[],
+  gstConfig: AppGstConfig,
+): StoreGstStatus {
+  const itemRates = finishedGoods
+    .map((fg) => pickTaxRate(fg as unknown as Record<string, unknown>, ITEM_TAX_RATE_KEYS))
+    .filter(rate => rate > 0);
+  const missingFinishedGoodsTaxCount = Math.max(0, finishedGoods.length - itemRates.length);
+  const uniqueItemRates = Array.from(new Set(itemRates));
+  const fallback = resolveStoreGstFallback(store, gstConfig);
+
+  if (missingFinishedGoodsTaxCount === 0 && finishedGoods.length > 0) {
+    return {
+      configured: true,
+      source: 'item',
+      rateLabel: uniqueItemRates.length === 1 ? `${uniqueItemRates[0]}%` : 'Mixed item rates',
+      missingFinishedGoodsTaxCount,
+      detail: 'Every active finished good has its own GST/tax rate.',
+    };
+  }
+
+  if (fallback.rate > 0) {
+    return {
+      configured: true,
+      source: fallback.source,
+      rateLabel: `${fallback.rate}%`,
+      missingFinishedGoodsTaxCount,
+      detail: fallback.detail,
+    };
+  }
+
+  return {
+    configured: false,
+    source: 'missing',
+    rateLabel: '0%',
+    missingFinishedGoodsTaxCount,
+    detail: 'GST will calculate as 0 until item, store, or app GST is configured.',
   };
 }
 
@@ -309,7 +470,12 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
     }, { barista: 0, kitchen: 0, both: 0, none: 0, missing: 0 });
 
     const hasCheckoutBlockers = activePosItems.length === 0 || stockBlockers.length > 0 || bomBlockers.length > 0;
-    const tone: StatusTone = hasCheckoutBlockers ? 'blocked' : unconfirmedZeroCount > 0 || kotCoverage.missing > 0 ? 'warning' : 'ready';
+    const gstStatus = buildStoreGstStatus(store, finishedGoods, data.gstConfig);
+    const tone: StatusTone = hasCheckoutBlockers
+      ? 'blocked'
+      : unconfirmedZeroCount > 0 || kotCoverage.missing > 0 || !gstStatus.configured
+        ? 'warning'
+        : 'ready';
     const summary = tone === 'blocked'
       ? activePosItems.length === 0 ? 'No active Finished Goods are available for billing.' : 'Checkout will fail for at least one item.'
       : tone === 'warning'
@@ -328,6 +494,7 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
       zeroCurrentStockCount,
       unconfirmedZeroCount,
       kotCoverage,
+      gstStatus,
       tone,
       summary,
     };
@@ -451,6 +618,10 @@ export default function POSReadiness() {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [confirmationText, setConfirmationText] = useState('');
+  const [gstDefaultRateInput, setGstDefaultRateInput] = useState('');
+  const [gstStoreRateInputs, setGstStoreRateInputs] = useState<Record<string, string>>({});
+  const [gstConfirmationText, setGstConfirmationText] = useState('');
+  const [isSavingGst, setIsSavingGst] = useState(false);
   const [refreshedAt, setRefreshedAt] = useState('');
 
   const isAdmin = staffProfile?.role === 'ADMIN';
@@ -474,6 +645,82 @@ export default function POSReadiness() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (!data) return;
+    setGstDefaultRateInput(data.gstConfig.defaultRate > 0 ? String(data.gstConfig.defaultRate) : '');
+    setGstStoreRateInputs(data.stores.reduce<Record<string, string>>((acc, store) => {
+      const rate = data.gstConfig.storeOverrides[store.id] || data.gstConfig.storeOverrides[store.code] || 0;
+      acc[store.id] = rate > 0 ? String(rate) : '';
+      return acc;
+    }, {}));
+  }, [data]);
+
+  const saveGstConfig = async () => {
+    if (!isAdmin) {
+      setError('Admin access is required to update GST settings.');
+      return;
+    }
+    if (!data) {
+      setError('Readiness data is still loading.');
+      return;
+    }
+    if (gstConfirmationText.trim() !== GST_CONFIG_CONFIRMATION) {
+      setError(`Type ${GST_CONFIG_CONFIRMATION} to confirm this GST configuration update.`);
+      return;
+    }
+
+    const defaultRate = toOptionalNumber(gstDefaultRateInput) || 0;
+    if (defaultRate < 0 || defaultRate > 100) {
+      setError('Default GST rate must be between 0 and 100.');
+      return;
+    }
+
+    const storeOverrides: Record<string, number> = {};
+    for (const store of data.stores) {
+      const rawValue = cleanValue(gstStoreRateInputs[store.id]);
+      if (!rawValue) continue;
+      const rate = toOptionalNumber(rawValue);
+      if (rate === null || rate < 0 || rate > 100) {
+        setError(`GST override for ${store.name} must be between 0 and 100.`);
+        return;
+      }
+      if (rate > 0) storeOverrides[store.id] = rate;
+    }
+
+    if (defaultRate <= 0 && Object.keys(storeOverrides).length === 0) {
+      setError('Enter a positive default GST rate or at least one positive store GST override.');
+      return;
+    }
+
+    if (!window.confirm('Save GST settings for POS V2? This updates appSettings/gstConfig only and does not modify historical orders.')) {
+      return;
+    }
+
+    setIsSavingGst(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const adminName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Admin';
+      await setDoc(doc(db, 'appSettings', GST_CONFIG_DOC_ID), {
+        defaultGstRate: defaultRate,
+        storeOverrides,
+        updatedAt: serverTimestamp(),
+        updatedByUserId: staffProfile?.uid || '',
+        updatedByName: adminName,
+        ...(data.gstConfig.exists ? {} : { createdAt: serverTimestamp(), createdByUserId: staffProfile?.uid || '', createdByName: adminName }),
+      }, { merge: true });
+
+      setSuccessMessage('GST configuration saved. Readiness has been refreshed.');
+      setGstConfirmationText('');
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to save GST configuration.');
+    } finally {
+      setIsSavingGst(false);
+    }
+  };
 
   const restoreEspressoStock = async () => {
     if (!isAdmin) {
@@ -640,6 +887,78 @@ export default function POSReadiness() {
         </div>
       </div>
 
+      {isAdmin && data && (
+        <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div>
+              <h2 className="text-xl font-black text-neutral-900">GST Configuration</h2>
+              <p className="text-sm text-neutral-600 mt-1">
+                Checkout uses item GST first, then store GST override, then this app default. Historical orders are not changed.
+              </p>
+              <div className="mt-3 text-xs text-neutral-500">
+                <p><strong>Current app default:</strong> {data.gstConfig.defaultRate > 0 ? `${data.gstConfig.defaultRate}%` : 'Not configured'}</p>
+                <p><strong>Source:</strong> {data.gstConfig.defaultSource}</p>
+              </div>
+            </div>
+            <div className="w-full lg:max-w-2xl space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Default GST rate (%)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={gstDefaultRateInput}
+                    onChange={(event) => setGstDefaultRateInput(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder="5"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Confirmation</span>
+                  <input
+                    type="text"
+                    value={gstConfirmationText}
+                    onChange={(event) => setGstConfirmationText(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder={GST_CONFIG_CONFIRMATION}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {data.stores.map((store) => (
+                  <label key={store.id} className="block">
+                    <span className="text-xs font-black uppercase tracking-widest text-neutral-500">{store.name} override (%)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={gstStoreRateInputs[store.id] || ''}
+                      onChange={(event) => setGstStoreRateInputs(prev => ({ ...prev, [store.id]: event.target.value }))}
+                      className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                      placeholder="Optional"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={saveGstConfig}
+                disabled={isSavingGst || gstConfirmationText.trim() !== GST_CONFIG_CONFIRMATION}
+                className="w-full md:w-auto px-4 py-3 bg-[#5c4033] text-white rounded-xl font-black hover:bg-[#4a332a] disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+              >
+                {isSavingGst ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+                Save GST Configuration
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-5">
         {readiness.map((store) => {
           const blockers = [...store.stockBlockers, ...store.bomBlockers];
@@ -661,7 +980,7 @@ export default function POSReadiness() {
                 </div>
               </div>
 
-              <div className="mt-5 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+              <div className="mt-5 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">
                 <Stat label="Active Finished Goods" value={store.activePosMenuItemCount} tone={store.activePosMenuItemCount ? 'green' : 'red'} />
                 <Stat label="Finished Goods Menu" value={store.finishedGoodsAvailableCount} />
                 <Stat label="Stock Blockers" value={store.stockBlockers.length} tone={store.stockBlockers.length ? 'red' : 'green'} />
@@ -669,16 +988,31 @@ export default function POSReadiness() {
                 <Stat label="Current <= 0" value={store.zeroCurrentStockCount} tone={store.zeroCurrentStockCount ? 'amber' : 'green'} />
                 <Stat label="Zero Not Confirmed" value={store.unconfirmedZeroCount} tone={store.unconfirmedZeroCount ? 'amber' : 'green'} />
                 <Stat label="KOT Missing" value={store.kotCoverage.missing} tone={store.kotCoverage.missing ? 'amber' : 'green'} />
+                <Stat label="GST Configured" value={store.gstStatus.configured ? 'Yes' : 'No'} tone={store.gstStatus.configured ? 'green' : 'amber'} />
+                <Stat label="Missing Item GST" value={store.gstStatus.missingFinishedGoodsTaxCount} tone={store.gstStatus.missingFinishedGoodsTaxCount ? 'amber' : 'green'} />
               </div>
 
-              <div className="mt-4 bg-white/70 border border-white/70 rounded-xl p-4">
-                <p className="text-sm font-black mb-2">KOT Station Coverage</p>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
-                  <span>Barista: <strong>{store.kotCoverage.barista}</strong></span>
-                  <span>Kitchen: <strong>{store.kotCoverage.kitchen}</strong></span>
-                  <span>Both: <strong>{store.kotCoverage.both}</strong></span>
-                  <span>No KOT: <strong>{store.kotCoverage.none}</strong></span>
-                  <span>Missing: <strong>{store.kotCoverage.missing}</strong></span>
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="bg-white/70 border border-white/70 rounded-xl p-4">
+                  <p className="text-sm font-black mb-2">KOT Station Coverage</p>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                    <span>Barista: <strong>{store.kotCoverage.barista}</strong></span>
+                    <span>Kitchen: <strong>{store.kotCoverage.kitchen}</strong></span>
+                    <span>Both: <strong>{store.kotCoverage.both}</strong></span>
+                    <span>No KOT: <strong>{store.kotCoverage.none}</strong></span>
+                    <span>Missing: <strong>{store.kotCoverage.missing}</strong></span>
+                  </div>
+                </div>
+
+                <div className="bg-white/70 border border-white/70 rounded-xl p-4">
+                  <p className="text-sm font-black mb-2">GST Status</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                    <span>Configured: <strong>{store.gstStatus.configured ? 'Yes' : 'No'}</strong></span>
+                    <span>Source: <strong>{store.gstStatus.source}</strong></span>
+                    <span>Rate used: <strong>{store.gstStatus.rateLabel}</strong></span>
+                    <span>Missing item GST: <strong>{store.gstStatus.missingFinishedGoodsTaxCount}</strong></span>
+                  </div>
+                  <p className="mt-2 text-xs font-bold opacity-70 break-words">{store.gstStatus.detail}</p>
                 </div>
               </div>
 
