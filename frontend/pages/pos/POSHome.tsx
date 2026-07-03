@@ -86,6 +86,67 @@ type CalculatedTotals = {
   grandTotal: number;
 };
 
+type ReceiptLineSnapshot = {
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+};
+
+type ReceiptOrderSnapshot = {
+  orderNumber: string;
+  storeName: string;
+  createdAtIso: string;
+  createdByName: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  orderType: OrderType;
+  tableNumber: string | null;
+  subtotal: number;
+  discountPercent: number;
+  discountAmount: number;
+  taxableAmount: number;
+  gstTotal: number;
+  grandTotal: number;
+  paymentMethod: PaymentMethod;
+  isSplitPayment: boolean;
+  paymentStatus?: string | null;
+};
+
+type ReceiptPaymentSnapshot = {
+  method: PaymentMethod;
+  amount: number;
+};
+
+type ReceiptSnapshot = {
+  order: ReceiptOrderSnapshot;
+  items: ReceiptLineSnapshot[];
+  payments: ReceiptPaymentSnapshot[];
+};
+
+type SplitPaymentRow = {
+  id: string;
+  method: PaymentMethod;
+  amountStr: string;
+};
+
+type HeldBill = {
+  id: string;
+  storeId: string;
+  storeName: string;
+  orderType: OrderType;
+  tableNumber: string;
+  customerName: string;
+  customerPhone: string;
+  cart: CartItem[];
+  discountPercentStr: string;
+  isSplitPayment?: boolean;
+  splitPayments?: SplitPaymentRow[];
+  heldAtIso: string;
+  itemCount: number;
+  total: number;
+};
+
 class CheckoutBlockerError extends Error {
   blockers: CheckoutBlocker[];
 
@@ -101,6 +162,10 @@ const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettin
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
+const LAST_RECEIPT_STORAGE_KEY = 'coffeeBondPos:lastReceipt:v1';
+const HELD_BILLS_STORAGE_KEY = 'coffeeBondPos:heldBills:v1';
+const PAYMENT_TOLERANCE = 0.01;
+const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
 
 function toFiniteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
@@ -147,6 +212,40 @@ function clampDiscountPercent(value: unknown): number {
   return parsed;
 }
 
+function getMaxDiscountPercent(role?: string): number {
+  if (role === 'ADMIN') return 100;
+  if (role === 'STORE_MANAGER') return 20;
+  return 10;
+}
+
+function normalizePaymentAmount(value: unknown): number {
+  const parsed = toFiniteNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function paymentRowsAllocated(rows: SplitPaymentRow[]): number {
+  return rows.reduce((sum, row) => sum + normalizePaymentAmount(row.amountStr), 0);
+}
+
+function paymentRowsAreBalanced(totalDue: number, allocated: number): boolean {
+  return Math.abs(totalDue - allocated) <= PAYMENT_TOLERANCE;
+}
+
+function buildPaymentLabel(payments: ReceiptPaymentSnapshot[]): string {
+  if (payments.length === 0) return 'UNKNOWN';
+  if (payments.length === 1) return payments[0].method;
+  return payments.map(payment => `${payment.method} ₹${payment.amount.toFixed(2)}`).join(' + ');
+}
+
+function splitPaymentStatus(payments: ReceiptPaymentSnapshot[], totalDue: number): Order['paymentStatus'] {
+  const creditAmount = payments
+    .filter(payment => payment.method === 'CREDIT')
+    .reduce((sum, payment) => sum + payment.amount, 0);
+
+  if (creditAmount <= PAYMENT_TOLERANCE) return 'PAID';
+  return creditAmount >= totalDue - PAYMENT_TOLERANCE ? 'UNPAID' : 'PARTIAL';
+}
+
 function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
   const subtotal = items.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 0), 0);
   const discountPercent = clampDiscountPercent(discountPercentInput);
@@ -167,6 +266,138 @@ function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fa
     taxTotal,
     grandTotal: taxableAmount + taxTotal,
   };
+}
+
+function readLocalStorageJson<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : fallback;
+  } catch (error) {
+    console.warn(`Unable to read ${key} from localStorage`, error);
+    return fallback;
+  }
+}
+
+function writeLocalStorageJson<T>(key: string, value: T) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.warn(`Unable to write ${key} to localStorage`, error);
+  }
+}
+
+function loadStoredHeldBills(): HeldBill[] {
+  const bills = readLocalStorageJson<HeldBill[]>(HELD_BILLS_STORAGE_KEY, []);
+  return Array.isArray(bills) ? bills : [];
+}
+
+function buildReceiptSnapshot(
+  order: Order,
+  items: OrderItem[],
+  payments: OrderPayment[],
+  storeName: string,
+): ReceiptSnapshot {
+  const discountAmount =
+    toFiniteNumber(order.discountAmount) ??
+    toFiniteNumber(order.discountTotal) ??
+    toFiniteNumber(order.discount) ??
+    0;
+  const taxableAmount = toFiniteNumber(order.taxableAmount) ?? Math.max(0, (toFiniteNumber(order.subtotal) || 0) - discountAmount);
+  const gstTotal = toFiniteNumber(order.gstTotal) ?? toFiniteNumber(order.taxTotal) ?? 0;
+  const receiptPayments = payments
+    .map(payment => ({
+      method: payment.method,
+      amount: normalizePaymentAmount(payment.amount),
+    }))
+    .filter(payment => payment.amount > 0 || payments.length === 1);
+
+  return {
+    order: {
+      orderNumber: order.orderNumber,
+      storeName: order.storeName || storeName,
+      createdAtIso: new Date().toISOString(),
+      createdByName: order.createdByName,
+      customerName: order.customerName || null,
+      customerPhone: order.customerPhone || null,
+      orderType: order.orderType,
+      tableNumber: order.tableNumber || null,
+      subtotal: toFiniteNumber(order.subtotal) || 0,
+      discountPercent: toFiniteNumber(order.discountPercent) || 0,
+      discountAmount,
+      taxableAmount,
+      gstTotal,
+      grandTotal: toFiniteNumber(order.grandTotal) || 0,
+      paymentMethod: order.paymentMethod || receiptPayments[0]?.method || 'CASH',
+      isSplitPayment: order.isSplitPayment === true || receiptPayments.length > 1,
+      paymentStatus: order.paymentStatus || null,
+    },
+    items: items.map(item => {
+      const quantity = toFiniteNumber(item.quantity) || 0;
+      const unitPrice = toFiniteNumber(item.unitPrice) || 0;
+      return {
+        itemName: item.itemName,
+        quantity,
+        unitPrice,
+        lineTotal: toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
+      };
+    }),
+    payments: receiptPayments.length > 0
+      ? receiptPayments
+      : [{ method: order.paymentMethod || 'CASH', amount: toFiniteNumber(order.grandTotal) || 0 }],
+  };
+}
+
+function printReceiptElement() {
+  const content = document.getElementById('receipt-area')?.innerHTML;
+  if (!content) return;
+
+  const printWin = window.open('', '', 'width=400,height=600');
+  printWin?.document.write(`
+    <html>
+      <head>
+        <title>Print Receipt</title>
+        <style>
+          body { font-family: monospace; padding: 20px; color: #000; }
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          .text-center { text-align: center; }
+          .flex { display: flex; }
+          .justify-between { justify-content: space-between; }
+          .font-bold { font-weight: bold; }
+          .font-black { font-weight: 900; }
+          .uppercase { text-transform: uppercase; }
+          .mb-1 { margin-bottom: 4px; }
+          .mb-2 { margin-bottom: 8px; }
+          .mb-3 { margin-bottom: 12px; }
+          .mb-6 { margin-bottom: 24px; }
+          .pb-1 { padding-bottom: 4px; }
+          .pb-2 { padding-bottom: 8px; }
+          .pb-6 { padding-bottom: 24px; }
+          .pt-1 { padding-top: 4px; }
+          .pt-4 { padding-top: 16px; }
+          .mt-1 { margin-top: 4px; }
+          .mt-2 { margin-top: 8px; }
+          .mt-3 { margin-top: 12px; }
+          .text-xs { font-size: 10px; }
+          .text-sm { font-size: 12px; }
+          .text-lg { font-size: 18px; }
+          .text-xl { font-size: 20px; }
+          .border-b { border-bottom: 1px solid #ccc; }
+          .border-t { border-top: 1px solid #ccc; }
+          .border-dashed { border-style: dashed; }
+          .text-neutral-500 { color: #666; }
+          .text-neutral-600 { color: #444; }
+          .text-red-500 { color: red; }
+        </style>
+      </head>
+      <body>${content}</body>
+    </html>
+  `);
+  printWin?.document.close();
+  printWin?.focus();
+  printWin?.print();
+  printWin?.close();
 }
 
 function formatQuantity(value: number | undefined, unit?: string): string {
@@ -219,6 +450,20 @@ function buildCheckoutError(error: unknown): CheckoutError {
     };
   }
 
+  if (lower.includes('discount') && lower.includes('limit')) {
+    return {
+      message: details,
+      details,
+    };
+  }
+
+  if (lower.includes('split payment') || lower.includes('allocated')) {
+    return {
+      message: details,
+      details,
+    };
+  }
+
   if (lower.includes('permission') || lower.includes('permission-denied')) {
     return {
       message: 'This checkout could not be saved because your account does not have permission for this action. Please contact an Admin.',
@@ -230,6 +475,16 @@ function buildCheckoutError(error: unknown): CheckoutError {
     message: 'Checkout could not be completed. Please check the cart and try again.',
     details,
   };
+}
+
+function isExpectedCheckoutValidationError(error: unknown): boolean {
+  if (error instanceof CheckoutBlockerError) return true;
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || '').toLowerCase();
+  return (
+    (message.includes('discount') && message.includes('limit'))
+    || message.includes('split payment')
+    || message.includes('allocated')
+  );
 }
 
 export default function POSHome() {
@@ -259,9 +514,14 @@ export default function POSHome() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
+  const [isSplitPayment, setIsSplitPayment] = useState(false);
+  const [splitPayments, setSplitPayments] = useState<SplitPaymentRow[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
-  const [completedOrder, setCompletedOrder] = useState<{ order: Order, items: OrderItem[], payment: OrderPayment, storeName: string } | null>(null);
+  const [lastReceipt, setLastReceipt] = useState<ReceiptSnapshot | null>(null);
+  const [receiptView, setReceiptView] = useState<ReceiptSnapshot | null>(null);
+  const [receiptViewTitle, setReceiptViewTitle] = useState('Order Saved');
+  const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
 
   const posSource = 'FINISHED_GOODS' as const;
 
@@ -272,6 +532,11 @@ export default function POSHome() {
     fetchData();
     fetchMenuData();
     fetchTaxConfig();
+  }, []);
+
+  useEffect(() => {
+    setLastReceipt(readLocalStorageJson<ReceiptSnapshot | null>(LAST_RECEIPT_STORAGE_KEY, null));
+    setHeldBills(loadStoredHeldBills());
   }, []);
 
   useEffect(() => {
@@ -599,6 +864,8 @@ export default function POSHome() {
       setCheckoutError(null);
       setDiscountPercentStr('');
       setPaymentMethod('');
+      setIsSplitPayment(false);
+      setSplitPayments([]);
       setCustomerName('');
       setCustomerPhone('');
       setTableNumber('');
@@ -615,12 +882,144 @@ export default function POSHome() {
   }, [cart]);
 
   const cartIsMissingGstConfig = cart.length > 0 && !cartHasItemTaxRate && selectedStoreTaxConfig.rate <= 0;
+  const maxDiscountPercent = getMaxDiscountPercent(staffProfile?.role);
+  const discountExceedsLimit = cartTotals.discountPercent > maxDiscountPercent + 0.0001;
+  const splitAllocatedAmount = useMemo(() => paymentRowsAllocated(splitPayments), [splitPayments]);
+  const splitBalanceAmount = cartTotals.grandTotal - splitAllocatedAmount;
+  const splitPaymentBalanced = paymentRowsAreBalanced(cartTotals.grandTotal, splitAllocatedAmount);
+
+  const persistHeldBills = (nextHeldBills: HeldBill[]) => {
+    setHeldBills(nextHeldBills);
+    writeLocalStorageJson(HELD_BILLS_STORAGE_KEY, nextHeldBills);
+  };
+
+  const openLastReceipt = () => {
+    if (!lastReceipt) return;
+    setReceiptViewTitle('Last Order Receipt');
+    setReceiptView(lastReceipt);
+  };
+
+  const holdCurrentBill = () => {
+    if (cart.length === 0) {
+      alert('Cart is empty');
+      return;
+    }
+
+    const selectedStore = stores.find(s => s.id === selectedStoreId);
+    if (!selectedStore) {
+      alert('Please select a store before holding this bill.');
+      return;
+    }
+
+    const heldBill: HeldBill = {
+      id: crypto.randomUUID(),
+      storeId: selectedStore.id,
+      storeName: selectedStore.name,
+      orderType,
+      tableNumber,
+      customerName,
+      customerPhone,
+      cart: cart.map(item => ({ ...item })),
+      discountPercentStr,
+      isSplitPayment,
+      splitPayments: splitPayments.map(payment => ({ ...payment })),
+      heldAtIso: new Date().toISOString(),
+      itemCount: cart.reduce((sum, item) => sum + item.quantity, 0),
+      total: cartTotals.grandTotal,
+    };
+
+    persistHeldBills([heldBill, ...heldBills]);
+    clearCart(true);
+    setIsMobileCartOpen(false);
+  };
+
+  const recallHeldBill = (bill: HeldBill) => {
+    if (!stores.some(store => store.id === bill.storeId)) {
+      alert('This held bill belongs to a store that is not available for your account.');
+      return;
+    }
+
+    if (cart.length > 0 && !window.confirm('Recall this held bill and replace the current cart?')) {
+      return;
+    }
+
+    setSelectedStoreId(bill.storeId);
+    setOrderType(bill.orderType);
+    setTableNumber(bill.tableNumber);
+    setCustomerName(bill.customerName);
+    setCustomerPhone(bill.customerPhone);
+    setCart(bill.cart.map(item => ({ ...item })));
+    setDiscountPercentStr(bill.discountPercentStr);
+    setIsSplitPayment(bill.isSplitPayment === true);
+    setSplitPayments((bill.splitPayments || []).map(payment => ({ ...payment })));
+    setPaymentMethod('');
+    setCheckoutError(null);
+    persistHeldBills(heldBills.filter(held => held.id !== bill.id));
+    setIsMobileCartOpen(true);
+  };
+
+  const deleteHeldBill = (bill: HeldBill) => {
+    const label = bill.customerName || bill.tableNumber || bill.storeName;
+    if (!window.confirm(`Delete held bill for ${label}?`)) return;
+    persistHeldBills(heldBills.filter(held => held.id !== bill.id));
+  };
+
+  const setSplitPaymentMode = (enabled: boolean) => {
+    setIsSplitPayment(enabled);
+    setCheckoutError(null);
+
+    if (enabled) {
+      setPaymentMethod('');
+      if (splitPayments.length === 0) {
+        setSplitPayments([{
+          id: crypto.randomUUID(),
+          method: 'CASH',
+          amountStr: cartTotals.grandTotal > 0 ? cartTotals.grandTotal.toFixed(2) : '',
+        }]);
+      }
+    } else {
+      setSplitPayments([]);
+    }
+  };
+
+  const updateSplitPayment = (id: string, changes: Partial<SplitPaymentRow>) => {
+    setCheckoutError(null);
+    setSplitPayments(prev => prev.map(payment => (
+      payment.id === id ? { ...payment, ...changes } : payment
+    )));
+  };
+
+  const addSplitPaymentRow = () => {
+    const remaining = Math.max(0, splitBalanceAmount);
+    setCheckoutError(null);
+    setSplitPayments(prev => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        method: 'UPI',
+        amountStr: remaining > 0 ? remaining.toFixed(2) : '',
+      },
+    ]);
+  };
+
+  const removeSplitPaymentRow = (id: string) => {
+    setCheckoutError(null);
+    setSplitPayments(prev => prev.filter(payment => payment.id !== id));
+  };
+
+  const normalizedSplitPayments = (totalDue: number): ReceiptPaymentSnapshot[] => {
+    return splitPayments.map(payment => ({
+      method: payment.method,
+      amount: normalizePaymentAmount(payment.amountStr),
+    })).filter(payment => payment.amount > 0 || totalDue === 0);
+  };
 
   const handleCheckout = async () => {
     if (!staffProfile || !auth.currentUser) return;
     if (cart.length === 0) return alert("Cart is empty");
     if (!selectedStoreId) return alert("Please select a store");
-    if (!paymentMethod) return alert("Please select a payment method");
+    if (!isSplitPayment && !paymentMethod) return alert("Please select a payment method");
+    if (isSplitPayment && splitPayments.length === 0) return alert("Please add at least one payment row");
     if (orderType === 'DINE_IN' && !tableNumber.trim()) return alert("Table number is required for DINE IN");
 
     setIsSaving(true);
@@ -655,8 +1054,32 @@ export default function POSHome() {
       const trueTaxTotal = trueTotals.taxTotal;
       const trueGrandTotal = trueTotals.grandTotal;
       const trueDiscountRatio = trueSubtotal > 0 ? trueDiscount / trueSubtotal : 0;
+      const userMaxDiscount = getMaxDiscountPercent(staffProfile.role);
 
-      if (paymentMethod === 'COMPLIMENTARY' && trueGrandTotal > 0) {
+      if (trueDiscountPercent > userMaxDiscount + 0.0001) {
+        throw new Error(`Discount ${trueDiscountPercent.toFixed(2)}% exceeds the ${userMaxDiscount}% limit for your role.`);
+      }
+
+      const paymentRows: ReceiptPaymentSnapshot[] = isSplitPayment
+        ? normalizedSplitPayments(trueGrandTotal)
+        : [{
+          method: paymentMethod as PaymentMethod,
+          amount: paymentMethod === 'CREDIT' ? 0 : trueGrandTotal,
+        }];
+      const allocatedPaymentAmount = isSplitPayment
+        ? paymentRows.reduce((sum, payment) => sum + payment.amount, 0)
+        : trueGrandTotal;
+
+      if (isSplitPayment) {
+        if (paymentRows.length === 0) {
+          throw new Error('Split payment needs at least one payment row with an amount greater than zero.');
+        }
+        if (!paymentRowsAreBalanced(trueGrandTotal, allocatedPaymentAmount)) {
+          throw new Error(`Split payment must equal the total due. Allocated ₹${allocatedPaymentAmount.toFixed(2)} against ₹${trueGrandTotal.toFixed(2)}.`);
+        }
+      }
+
+      if (paymentRows.some(payment => payment.method === 'COMPLIMENTARY' && payment.amount > 0) && trueGrandTotal > 0) {
         if (!window.confirm(`This order is COMPLIMENTARY but has a total of ₹${trueGrandTotal.toFixed(2)}. Proceed?`)) {
           setIsSaving(false);
           return;
@@ -830,7 +1253,7 @@ export default function POSHome() {
         suggestedAdminAction,
       }));
 
-      const { sequence, savedOrder, savedItems, savedPayment } = await runTransaction(db, async (transaction) => {
+      const { savedOrder, savedItems, savedPayments } = await runTransaction(db, async (transaction) => {
         // --- READ PHASE ONLY ---
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get counter`);
         const counterDoc = await transaction.get(counterRef);
@@ -984,7 +1407,9 @@ export default function POSHome() {
           customerId = custRef.id;
         }
 
-        const paymentStatus = (paymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
+        const paymentStatus: Order['paymentStatus'] = isSplitPayment
+          ? splitPaymentStatus(paymentRows, trueGrandTotal)
+          : (paymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
 
         const orderData: Order = {
           orderNumber,
@@ -1009,7 +1434,12 @@ export default function POSHome() {
           discountTotal: trueDiscount,
           discount: trueDiscount,
           grandTotal: trueGrandTotal,
-          paymentMethod: paymentMethod as PaymentMethod,
+          paymentMethod: (paymentRows[0]?.method || paymentMethod) as PaymentMethod,
+          ...(isSplitPayment && {
+            isSplitPayment: true,
+            paymentMethodLabel: buildPaymentLabel(paymentRows),
+            paymentBreakdown: paymentRows,
+          }),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         };
@@ -1090,36 +1520,43 @@ export default function POSHome() {
 
         // Prep payment
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving payment data...`);
-        const paymentRef = doc(collection(newOrderRef, 'payments'));
-        const paymentData: OrderPayment = {
-          method: paymentMethod as PaymentMethod,
-          amount: paymentStatus === 'PAID' ? trueGrandTotal : 0,
-          reference: null,
-          createdAt: serverTimestamp()
-        };
-        transaction.set(paymentRef, paymentData);
+        const paymentsToWrite: ReceiptPaymentSnapshot[] = isSplitPayment
+          ? paymentRows
+          : [{
+            method: paymentMethod as PaymentMethod,
+            amount: paymentStatus === 'PAID' ? trueGrandTotal : 0,
+          }];
+        const newPayments: OrderPayment[] = [];
+        paymentsToWrite.forEach((payment, index) => {
+          const paymentRef = doc(collection(newOrderRef, 'payments'));
+          const paymentData: OrderPayment = {
+            method: payment.method,
+            amount: payment.amount,
+            reference: null,
+            paymentIndex: index,
+            createdAt: serverTimestamp()
+          };
+          transaction.set(paymentRef, paymentData);
+          newPayments.push({ id: paymentRef.id, ...paymentData });
+        });
 
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction write phase complete`);
 
-        return { sequence: seq, savedOrder: { id: newOrderRef.id, ...orderData }, savedItems: newItems, savedPayment: { id: paymentRef.id, ...paymentData } };
+        return { savedOrder: { id: newOrderRef.id, ...orderData }, savedItems: newItems, savedPayments: newPayments };
       });
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Success`);
 
       // Show receipt
-      setCompletedOrder({
-        order: savedOrder,
-        items: savedItems,
-        payment: savedPayment,
-        storeName: selectedStore.name
-      });
+      const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore.name);
+      setLastReceipt(receipt);
+      writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
+      setReceiptViewTitle('Order Saved');
+      setReceiptView(receipt);
       clearCart(true); // pass true to skip confirmation on submit
     } catch (err: any) {
-      if (err instanceof CheckoutBlockerError) {
-        console.warn(err.message);
-      } else {
-        console.error(err);
-      }
+      if (isExpectedCheckoutValidationError(err)) console.warn(err instanceof Error ? err.message : err);
+      else console.error(err);
       setCheckoutError(buildCheckoutError(err));
     } finally {
       setIsSaving(false);
@@ -1411,9 +1848,19 @@ export default function POSHome() {
 
         {/* Cart Header */}
         <div className="p-4 pl-4 pr-3 border-b border-neutral-100 bg-[#faf8f5] shrink-0 sticky lg:static top-0 z-20 w-full">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-xl font-black text-neutral-800">Current Order</h3>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2 flex-wrap">
+              {lastReceipt && (
+                <button onClick={openLastReceipt} className="text-xs font-bold text-[#5c4033] hover:bg-[#5c4033]/10 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
+                  Last Order
+                </button>
+              )}
+              {cart.length > 0 && (
+                <button onClick={holdCurrentBill} className="text-xs font-bold text-amber-700 hover:bg-amber-50 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
+                  Hold Bill
+                </button>
+              )}
               {cart.length > 0 && (
                 <button onClick={() => clearCart()} className="text-xs font-bold text-red-500 hover:bg-red-50 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
                   Clear Cart
@@ -1424,6 +1871,51 @@ export default function POSHome() {
               </button>
             </div>
           </div>
+
+          {heldBills.length > 0 && (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-widest text-amber-700">Recall Bill</p>
+                  <p className="text-[11px] text-amber-800">{heldBills.length} held {heldBills.length === 1 ? 'bill' : 'bills'} saved on this browser</p>
+                </div>
+                <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-black text-amber-900">{heldBills.length}</span>
+              </div>
+              <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+                {heldBills.map(bill => (
+                  <div key={bill.id} className="rounded-lg border border-amber-100 bg-white p-3 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-black text-neutral-800 break-words">{bill.customerName || 'Walk-in guest'}</p>
+                        <p className="mt-0.5 text-xs font-medium text-neutral-500 break-words">
+                          {bill.storeName}
+                          {bill.tableNumber ? ` • Table ${bill.tableNumber}` : ''}
+                          {` • ${bill.orderType.replace('_', ' ')}`}
+                        </p>
+                        <p className="mt-0.5 text-xs text-neutral-400">
+                          {new Date(bill.heldAtIso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {bill.itemCount} items • ₹{bill.total.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => recallHeldBill(bill)}
+                        className="rounded-lg bg-[#5c4033] px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-[#4a332a]"
+                      >
+                        Recall
+                      </button>
+                      <button
+                        onClick={() => deleteHeldBill(bill)}
+                        className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-black uppercase tracking-wider text-red-600 hover:bg-red-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Scrollable Body (Mobile) / Flex Container (Desktop) */}
@@ -1625,6 +2117,14 @@ export default function POSHome() {
                   placeholder="0"
                 />
               </div>
+              <div className={`rounded-lg border px-2 py-1 text-[11px] font-bold ${
+                discountExceedsLimit
+                  ? 'border-red-200 bg-red-50 text-red-700'
+                  : 'border-neutral-100 bg-white text-neutral-400'
+              }`}>
+                Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}%
+                {discountExceedsLimit && ` · Current discount ${cartTotals.discountPercent.toFixed(2)}% will be blocked`}
+              </div>
 
               <div className="flex justify-between text-sm font-medium text-neutral-500">
                 <span>Discount Amount</span>
@@ -1660,24 +2160,101 @@ export default function POSHome() {
             </div>
 
             <div className="px-4 pb-4">
-              <label className="block text-xs font-bold text-neutral-500 uppercase tracking-widest mb-2">Payment Method</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 lg:mb-4">
-                {(['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'] as PaymentMethod[]).map(method => (
-                  <button
-                    key={method}
-                    onClick={() => setPaymentMethod(method)}
-                    className={`py-3 lg:py-2 px-1 text-[11px] lg:text-[10px] font-bold uppercase rounded-xl lg:rounded-md border transition-all h-full min-h-[44px] ${
-                      paymentMethod === method
-                        ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm'
-                        : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
-                    }`}
-                  >
-                    <span className="truncate block mx-auto -tracking-wider uppercase">
-                      {method === 'COMPLIMENTARY' ? 'COMP' : method}
-                    </span>
-                  </button>
-                ))}
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label className="block text-xs font-bold text-neutral-500 uppercase tracking-widest">Payment</label>
+                <button
+                  onClick={() => setSplitPaymentMode(!isSplitPayment)}
+                  className={`rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wider border transition-colors ${
+                    isSplitPayment
+                      ? 'bg-[#5c4033] border-[#5c4033] text-white'
+                      : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                  }`}
+                >
+                  Split Payment
+                </button>
               </div>
+
+              {!isSplitPayment ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 lg:mb-4">
+                  {PAYMENT_METHODS.map(method => (
+                    <button
+                      key={method}
+                      onClick={() => setPaymentMethod(method)}
+                      className={`py-3 lg:py-2 px-1 text-[11px] lg:text-[10px] font-bold uppercase rounded-xl lg:rounded-md border transition-all h-full min-h-[44px] ${
+                        paymentMethod === method
+                          ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm'
+                          : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <span className="truncate block mx-auto -tracking-wider uppercase">
+                        {method === 'COMPLIMENTARY' ? 'COMP' : method}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-3 space-y-3">
+                  <div className="space-y-2">
+                    {splitPayments.map((payment, index) => (
+                      <div key={payment.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                        <select
+                          value={payment.method}
+                          onChange={event => updateSplitPayment(payment.id, { method: event.target.value as PaymentMethod })}
+                          className="min-w-0 rounded-lg border border-neutral-200 bg-white px-2 py-2 text-xs font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                          aria-label={`Payment method ${index + 1}`}
+                        >
+                          {PAYMENT_METHODS.map(method => (
+                            <option key={method} value={method}>{method}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={payment.amountStr}
+                          onChange={event => updateSplitPayment(payment.id, { amountStr: event.target.value })}
+                          className="min-w-0 rounded-lg border border-neutral-200 bg-white px-2 py-2 text-right text-xs font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                          placeholder="0.00"
+                          aria-label={`Payment amount ${index + 1}`}
+                        />
+                        <button
+                          onClick={() => removeSplitPaymentRow(payment.id)}
+                          disabled={splitPayments.length === 1}
+                          className={`rounded-lg border px-2 py-2 text-xs font-black ${
+                            splitPayments.length === 1
+                              ? 'border-neutral-100 bg-neutral-50 text-neutral-300 cursor-not-allowed'
+                              : 'border-red-100 bg-red-50 text-red-600 hover:bg-red-100'
+                          }`}
+                          aria-label={`Remove payment row ${index + 1}`}
+                          title="Remove payment row"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    onClick={addSplitPaymentRow}
+                    className="w-full rounded-lg border border-dashed border-[#5c4033]/40 bg-[#5c4033]/5 px-3 py-2 text-xs font-black uppercase tracking-wider text-[#5c4033] hover:bg-[#5c4033]/10"
+                  >
+                    Add Payment Row
+                  </button>
+                  <div className="space-y-1 rounded-lg bg-neutral-50 p-3 text-xs font-bold text-neutral-600">
+                    <div className="flex justify-between">
+                      <span>Total Due</span>
+                      <span className="font-mono">₹{cartTotals.grandTotal.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Amount Allocated</span>
+                      <span className="font-mono">₹{splitAllocatedAmount.toFixed(2)}</span>
+                    </div>
+                    <div className={`flex justify-between ${splitPaymentBalanced ? 'text-emerald-700' : 'text-red-700'}`}>
+                      <span>Balance Remaining</span>
+                      <span className="font-mono">₹{splitBalanceAmount.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Desktop ONLY Order button (Mobile has sticky footer) */}
               <div className="hidden lg:block">
@@ -1727,24 +2304,24 @@ export default function POSHome() {
         </div>
       )}
 
-      {completedOrder && (
+      {receiptView && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-[#5c4033] p-6 text-center text-white shrink-0 relative">
                <CheckCircle size={48} className="mx-auto mb-3 text-emerald-400" />
-               <h2 className="text-2xl font-black mb-1 tracking-tight">Order Saved</h2>
-               <p className="text-white/80 font-mono text-sm">{completedOrder.order.orderNumber}</p>
+               <h2 className="text-2xl font-black mb-1 tracking-tight">{receiptViewTitle}</h2>
+               <p className="text-white/80 font-mono text-sm">{receiptView.order.orderNumber}</p>
             </div>
 
             {/* Printable Receipt Area */}
             <div id="receipt-area" className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar text-neutral-800 text-sm">
                <div className="text-center mb-6 border-b border-dashed border-neutral-300 pb-6">
                  <h1 className="text-xl font-black uppercase tracking-widest mb-1">Coffee Bond</h1>
-                 <p className="font-bold text-neutral-600">{completedOrder.storeName}</p>
-                 <p className="text-neutral-500 mt-2 text-xs">{(completedOrder.order.createdAt?.toDate ? completedOrder.order.createdAt.toDate() : new Date()).toLocaleString()}</p>
-                 <p className="text-neutral-500 text-xs">Staff: {completedOrder.order.createdByName}</p>
-                 {completedOrder.order.customerName && <p className="text-neutral-500 text-xs mt-1">Guest: {completedOrder.order.customerName} {completedOrder.order.customerPhone ? `(${completedOrder.order.customerPhone})` : ''}</p>}
-                 <p className="font-bold mt-3 border border-neutral-200 inline-block px-3 py-1 rounded-md">{completedOrder.order.orderType.replace('_', ' ')} {completedOrder.order.tableNumber ? `- Table ${completedOrder.order.tableNumber}` : ''}</p>
+                 <p className="font-bold text-neutral-600">{receiptView.order.storeName}</p>
+                 <p className="text-neutral-500 mt-2 text-xs">{new Date(receiptView.order.createdAtIso).toLocaleString()}</p>
+                 <p className="text-neutral-500 text-xs">Staff: {receiptView.order.createdByName}</p>
+                 {receiptView.order.customerName && <p className="text-neutral-500 text-xs mt-1">Guest: {receiptView.order.customerName} {receiptView.order.customerPhone ? `(${receiptView.order.customerPhone})` : ''}</p>}
+                 <p className="font-bold mt-3 border border-neutral-200 inline-block px-3 py-1 rounded-md">{receiptView.order.orderType.replace('_', ' ')} {receiptView.order.tableNumber ? `- Table ${receiptView.order.tableNumber}` : ''}</p>
                </div>
 
                <div className="space-y-3 mb-6 border-b border-dashed border-neutral-300 pb-6">
@@ -1752,7 +2329,7 @@ export default function POSHome() {
                     <span>Item</span>
                     <span>Total</span>
                  </div>
-                 {completedOrder.items.map((item, i) => (
+                 {receiptView.items.map((item, i) => (
                    <div key={i} className="flex justify-between items-start text-sm">
                      <div>
                        <p className="font-bold leading-tight">{item.itemName}</p>
@@ -1766,31 +2343,43 @@ export default function POSHome() {
                <div className="space-y-2 mb-6 text-sm">
                  <div className="flex justify-between text-neutral-500">
                     <span>Subtotal</span>
-                    <span className="font-mono text-neutral-800">₹{completedOrder.order.subtotal.toFixed(2)}</span>
+                    <span className="font-mono text-neutral-800">₹{receiptView.order.subtotal.toFixed(2)}</span>
                  </div>
-                 {(completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0) > 0 && (
+                 {receiptView.order.discountAmount > 0 && (
                    <div className="flex justify-between text-red-500">
-                      <span>Discount ({(completedOrder.order.discountPercent || 0).toFixed(2)}%)</span>
-                      <span className="font-mono">-₹{(completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0).toFixed(2)}</span>
+                      <span>Discount ({receiptView.order.discountPercent.toFixed(2)}%)</span>
+                      <span className="font-mono">-₹{receiptView.order.discountAmount.toFixed(2)}</span>
                    </div>
                  )}
                  <div className="flex justify-between text-neutral-500">
                     <span>Taxable Amount</span>
-                    <span className="font-mono text-neutral-800">₹{(completedOrder.order.taxableAmount ?? (completedOrder.order.subtotal - (completedOrder.order.discountAmount || completedOrder.order.discountTotal || 0))).toFixed(2)}</span>
+                    <span className="font-mono text-neutral-800">₹{receiptView.order.taxableAmount.toFixed(2)}</span>
                  </div>
                  <div className="flex justify-between text-neutral-500 pb-2 border-b border-neutral-100">
                     <span>GST</span>
-                    <span className="font-mono text-neutral-800">₹{(completedOrder.order.gstTotal ?? completedOrder.order.taxTotal).toFixed(2)}</span>
+                    <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
                  </div>
                  <div className="flex justify-between font-black text-lg pt-1">
                     <span>Total Paid</span>
-                    <span className="font-mono">₹{completedOrder.order.grandTotal.toFixed(2)}</span>
+                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
                  </div>
                </div>
 
-               <div className="text-center text-xs font-bold text-neutral-500 mb-6">
-                 <p>Payment Method: {completedOrder.order.paymentMethod}</p>
-                 <p>{completedOrder.order.paymentStatus}</p>
+               <div className="text-xs font-bold text-neutral-500 mb-6">
+                 {receiptView.order.isSplitPayment ? (
+                   <div className="rounded-lg border border-neutral-100 p-3 space-y-1">
+                     <p className="text-center uppercase tracking-widest text-neutral-400 mb-2">Split Payment</p>
+                     {receiptView.payments.map((payment, index) => (
+                       <div key={`${payment.method}-${index}`} className="flex justify-between">
+                         <span>{payment.method}</span>
+                         <span className="font-mono">₹{payment.amount.toFixed(2)}</span>
+                       </div>
+                     ))}
+                   </div>
+                 ) : (
+                   <p className="text-center">Payment Method: {receiptView.order.paymentMethod}</p>
+                 )}
+                 <p className="text-center mt-2">{receiptView.order.paymentStatus || 'PAID'}</p>
                </div>
 
                <div className="text-center font-bold text-neutral-400 pt-4 border-t border-dashed border-neutral-300">
@@ -1800,62 +2389,13 @@ export default function POSHome() {
 
             <div className="p-4 bg-neutral-50 border-t border-neutral-200 grid grid-cols-2 gap-2 shrink-0">
                <button
-                 onClick={() => {
-                   const content = document.getElementById('receipt-area')?.innerHTML;
-                   if (content) {
-                     const printWin = window.open('', '', 'width=400,height=600');
-                     printWin?.document.write(`
-                       <html>
-                         <head>
-                           <title>Print Receipt</title>
-                           <style>
-                             body { font-family: monospace; padding: 20px; color: #000; }
-                             * { margin: 0; padding: 0; box-sizing: border-box; }
-                             .text-center { text-align: center; }
-                             .flex { display: flex; }
-                             .justify-between { justify-content: space-between; }
-                             .font-bold { font-weight: bold; }
-                             .font-black { font-weight: 900; }
-                             .uppercase { text-transform: uppercase; }
-                             .mb-1 { margin-bottom: 4px; }
-                             .mb-2 { margin-bottom: 8px; }
-                             .mb-3 { margin-bottom: 12px; }
-                             .mb-6 { margin-bottom: 24px; }
-                             .pb-1 { padding-bottom: 4px; }
-                             .pb-2 { padding-bottom: 8px; }
-                             .pb-6 { padding-bottom: 24px; }
-                             .pt-1 { padding-top: 4px; }
-                             .pt-4 { padding-top: 16px; }
-                             .mt-1 { margin-top: 4px; }
-                             .mt-2 { margin-top: 8px; }
-                             .mt-3 { margin-top: 12px; }
-                             .text-xs { font-size: 10px; }
-                             .text-sm { font-size: 12px; }
-                             .text-lg { font-size: 18px; }
-                             .text-xl { font-size: 20px; }
-                             .border-b { border-bottom: 1px solid #ccc; }
-                             .border-t { border-top: 1px solid #ccc; }
-                             .border-dashed { border-style: dashed; }
-                             .text-neutral-500 { color: #666; }
-                             .text-neutral-600 { color: #444; }
-                             .text-red-500 { color: red; }
-                           </style>
-                         </head>
-                         <body>${content}</body>
-                       </html>
-                     `);
-                     printWin?.document.close();
-                     printWin?.focus();
-                     printWin?.print();
-                     printWin?.close();
-                   }
-                 }}
+                 onClick={printReceiptElement}
                  className="flex items-center justify-center gap-2 bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-700 font-bold py-3 rounded-xl transition-colors"
                >
                  <Printer size={18} /> Print
                </button>
                <button
-                 onClick={() => setCompletedOrder(null)}
+                 onClick={() => setReceiptView(null)}
                  className="bg-[#5c4033] hover:bg-[#4a332a] text-white font-bold py-3 rounded-xl transition-colors"
                >
                  New Order

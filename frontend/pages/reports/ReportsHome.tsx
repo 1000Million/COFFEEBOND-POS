@@ -6,6 +6,11 @@ import { Order, OrderItem, KotItem, Store } from '../../types';
 import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+type ReportPaymentBreakdown = {
+  method: string;
+  amount: number;
+};
+
 function moneyNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -26,6 +31,37 @@ function orderDiscountTotal(order: Order): number {
 
 function orderTaxableAmount(order: Order): number {
   return moneyNumber(order.taxableAmount ?? (moneyNumber(order.subtotal) - orderDiscountTotal(order)));
+}
+
+function orderPaymentBreakdown(order: Order): ReportPaymentBreakdown[] {
+  const rawBreakdown = (order as Order & { paymentBreakdown?: ReportPaymentBreakdown[] }).paymentBreakdown;
+  if (Array.isArray(rawBreakdown) && rawBreakdown.length > 0) {
+    const normalized = rawBreakdown
+      .map(payment => ({
+        method: payment.method || 'UNKNOWN',
+        amount: moneyNumber(payment.amount),
+      }))
+      .filter(payment => payment.amount > 0);
+    if (normalized.length > 0) return normalized;
+  }
+
+  return [{
+    method: order.paymentMethod || 'UNKNOWN',
+    amount: moneyNumber(order.grandTotal),
+  }];
+}
+
+function orderPaymentLabel(order: Order): string {
+  const paymentLabel = (order as Order & { paymentMethodLabel?: string }).paymentMethodLabel;
+  if (paymentLabel) return paymentLabel;
+  const breakdown = orderPaymentBreakdown(order);
+  if (breakdown.length === 1) return breakdown[0].method;
+  return breakdown.map(payment => `${payment.method} ₹${payment.amount.toFixed(2)}`).join(' + ');
+}
+
+function orderHasPaymentMethod(order: Order, method: string): boolean {
+  if (method === 'ALL') return true;
+  return orderPaymentBreakdown(order).some(payment => payment.method === method);
 }
 
 export default function ReportsHome() {
@@ -200,7 +236,7 @@ export default function ReportsHome() {
   const filteredOrders = useMemo(() => {
     const fOrders = orders.filter(o => {
       if (selectedOrderType !== 'ALL' && o.orderType !== selectedOrderType) return false;
-      if (selectedPaymentMethod !== 'ALL' && o.paymentMethod !== selectedPaymentMethod) return false;
+      if (!orderHasPaymentMethod(o, selectedPaymentMethod)) return false;
       return true;
     });
 
@@ -230,8 +266,18 @@ export default function ReportsHome() {
   const totalDiscount = filteredOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
   
   const paidSales = filteredOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const unpaidSales = filteredOrders.filter(o => o.paymentMethod === 'CREDIT' || o.paymentStatus !== 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const compSales = filteredOrders.filter(o => o.paymentMethod === 'COMPLIMENTARY').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const unpaidSales = filteredOrders.reduce((sum, o) => {
+    const creditAmount = orderPaymentBreakdown(o)
+      .filter(payment => payment.method === 'CREDIT')
+      .reduce((creditSum, payment) => creditSum + payment.amount, 0);
+    if (creditAmount > 0) return sum + creditAmount;
+    return o.paymentStatus !== 'PAID' ? sum + (o.grandTotal || 0) : sum;
+  }, 0);
+  const compSales = filteredOrders.reduce((sum, o) => {
+    return sum + orderPaymentBreakdown(o)
+      .filter(payment => payment.method === 'COMPLIMENTARY')
+      .reduce((compSum, payment) => compSum + payment.amount, 0);
+  }, 0);
 
   const dineInCount = filteredOrders.filter(o => o.orderType === 'DINE_IN').length;
   const takeawayCount = filteredOrders.filter(o => o.orderType === 'TAKEAWAY').length;
@@ -240,10 +286,12 @@ export default function ReportsHome() {
   const paymentSummary = useMemo(() => {
     const summary: Record<string, { count: number, total: number }> = {};
     filteredOrders.forEach(o => {
-      const pm = o.paymentMethod || 'UNKNOWN';
-      if (!summary[pm]) summary[pm] = { count: 0, total: 0 };
-      summary[pm].count += 1;
-      summary[pm].total += o.grandTotal || 0;
+      orderPaymentBreakdown(o).forEach(payment => {
+        const pm = payment.method || 'UNKNOWN';
+        if (!summary[pm]) summary[pm] = { count: 0, total: 0 };
+        summary[pm].count += 1;
+        summary[pm].total += payment.amount;
+      });
     });
     return summary;
   }, [filteredOrders]);
@@ -366,7 +414,7 @@ export default function ReportsHome() {
           orderTaxableAmount(o),
           orderTaxTotal(o),
           o.grandTotal,
-          o.paymentMethod,
+          orderPaymentLabel(o),
           o.paymentStatus
         ].map(col => `"${col}"`).join(','));
       });

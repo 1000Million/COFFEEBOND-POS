@@ -101,6 +101,9 @@ export interface Order {
   discount?: number;
   grandTotal: number;
   paymentMethod: PaymentMethod;
+  paymentMethodLabel?: string;
+  isSplitPayment?: boolean;
+  paymentBreakdown?: { method: PaymentMethod; amount: number }[];
   createdAt: any;
   updatedAt: any;
 }
@@ -170,6 +173,7 @@ export interface OrderPayment {
   method: PaymentMethod;
   amount: number;
   reference: string | null;
+  paymentIndex?: number;
   createdAt: any;
 }
 
