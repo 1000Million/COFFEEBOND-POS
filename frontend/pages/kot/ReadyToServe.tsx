@@ -225,6 +225,17 @@ export default function ReadyToServe() {
 
       await runTransaction(db, async (t) => {
          const originalKotRef = doc(db, 'kotItems', returnModalItem.id!);
+         const remakeStockTargets = actionType === 'REMAKE'
+           ? recipeItems.map((rItem) => {
+               const stockId = `${storeId}_${rItem.inventoryItemCode || rItem.inventoryItemId}`;
+               return {
+                 rItem,
+                 stockRef: doc(db, 'storeInventory', stockId),
+               };
+             })
+           : [];
+         const remakeStockSnaps = await Promise.all(remakeStockTargets.map(target => t.get(target.stockRef)));
+
          const updates: any = {
            status: newStatus,
            returnedAt: serverTimestamp(),
@@ -245,14 +256,16 @@ export default function ReadyToServe() {
          // Handle Remake Stock & New KOT
          if (actionType === 'REMAKE') {
             // deduct stock
-            for (let rItem of recipeItems) {
-               const stockId = `${storeId}_${rItem.inventoryItemCode || rItem.inventoryItemId}`;
-               const stockRef = doc(db, 'storeInventory', stockId);
-               const snap = await t.get(stockRef);
+            remakeStockTargets.forEach((target, index) => {
+               const rItem = target.rItem;
+               const snap = remakeStockSnaps[index];
+               if (!snap.exists()) {
+                 throw new Error(`Item ${rItem.inventoryItemName} out of stock or missing inventory record.`);
+               }
                const currentStock = snap.data()?.currentStock || 0;
                const deduction = parseFloat(rItem.quantity) * qty;
 
-               t.update(stockRef, {
+               t.update(target.stockRef, {
                  currentStock: currentStock - deduction,
                  updatedAt: serverTimestamp()
                });
@@ -273,7 +286,7 @@ export default function ReadyToServe() {
                  createdByUserId: staffProfile.uid,
                  createdByName: staffProfile.name
                });
-            }
+            });
 
             // Create new PENDING kot item
             const newKotRef = doc(collection(db, 'kotItems'));
