@@ -223,6 +223,17 @@ function normalizePaymentAmount(value: unknown): number {
   return parsed !== null && parsed > 0 ? parsed : 0;
 }
 
+function createSafeClientId(prefix: string): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+
+  const randomPart = globalThis.crypto?.getRandomValues
+    ? globalThis.crypto.getRandomValues(new Uint32Array(2)).join('-')
+    : Math.random().toString(36).slice(2);
+
+  return `${prefix}-${Date.now()}-${randomPart}`;
+}
+
 function paymentRowsAllocated(rows: SplitPaymentRow[]): number {
   return rows.reduce((sum, row) => sum + normalizePaymentAmount(row.amountStr), 0);
 }
@@ -820,17 +831,35 @@ export default function POSHome() {
   // --- Cart Operations ---
   const addToCart = (item: any) => {
     setCheckoutError(null);
+    const itemId = String(item?.id || item?.code || item?.finishedGoodCode || '').trim();
+    const itemCode = String(item?.code || item?.finishedGoodCode || itemId).trim();
+    const itemName = String(item?.name || itemCode || '').trim();
+    const itemPrice = toFiniteNumber(item?.price);
+
+    if (!itemId || !itemCode || !itemName || itemPrice === null || itemPrice < 0) {
+      setCheckoutError({
+        message: 'This item cannot be added because its billing setup is incomplete.',
+        details: [
+          `Name: ${item?.name || 'missing'}`,
+          `Code: ${item?.code || item?.finishedGoodCode || 'missing'}`,
+          `Price: ${item?.price ?? 'missing'}`,
+          'Suggested action: ask an Admin or Store Manager to check Menu Management for this item.',
+        ].join('\n'),
+      });
+      return;
+    }
+
     setCart(prev => {
-      const existing = prev.find(ci => ci.menuItemId === item.id);
+      const existing = prev.find(ci => ci.menuItemId === itemId);
       if (existing) {
-        return prev.map(ci => ci.menuItemId === item.id ? { ...ci, quantity: ci.quantity + 1 } : ci);
+        return prev.map(ci => ci.menuItemId === itemId ? { ...ci, quantity: ci.quantity + 1 } : ci);
       }
       return [...prev, {
-        id: crypto.randomUUID(),
-        menuItemId: item.id,
-        menuItemCode: item.code,
-        name: item.name,
-        price: item.price,
+        id: createSafeClientId('cart-item'),
+        menuItemId: itemId,
+        menuItemCode: itemCode,
+        name: itemName,
+        price: itemPrice,
         taxRate: item.taxRate,
         prepStation: item.prepStation,
         quantity: 1,
@@ -912,7 +941,7 @@ export default function POSHome() {
     }
 
     const heldBill: HeldBill = {
-      id: crypto.randomUUID(),
+      id: createSafeClientId('held-bill'),
       storeId: selectedStore.id,
       storeName: selectedStore.name,
       orderType,
@@ -972,7 +1001,7 @@ export default function POSHome() {
       setPaymentMethod('');
       if (splitPayments.length === 0) {
         setSplitPayments([{
-          id: crypto.randomUUID(),
+          id: createSafeClientId('split-payment'),
           method: 'CASH',
           amountStr: cartTotals.grandTotal > 0 ? cartTotals.grandTotal.toFixed(2) : '',
         }]);
@@ -995,7 +1024,7 @@ export default function POSHome() {
     setSplitPayments(prev => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: createSafeClientId('split-payment'),
         method: 'UPI',
         amountStr: remaining > 0 ? remaining.toFixed(2) : '',
       },
