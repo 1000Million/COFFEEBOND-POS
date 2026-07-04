@@ -16,9 +16,10 @@ function formatDate(value: any): string {
 }
 
 function statusLabel(status: OnlineOrderStatus): string {
-  if (status === 'CONVERTED' || status === 'ACCEPTED') return 'ACCEPTED';
-  if (status === 'NEEDS_ATTENTION') return 'REVIEWING';
-  return status;
+  if (status === 'CONVERTED' || status === 'ACCEPTED') return 'Accepted';
+  if (status === 'NEEDS_ATTENTION') return 'Reviewing';
+  if (status === 'REJECTED') return 'Not accepted';
+  return 'Request sent';
 }
 
 function statusMessage(order: OnlineOrder): string {
@@ -44,15 +45,15 @@ function statusIcon(status: OnlineOrderStatus) {
   return <Clock size={24} className="text-blue-700" />;
 }
 
-function stepState(orderStatus: OnlineOrderStatus, step: 'RECEIVED' | 'ACCEPTED' | 'READY_SOON' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
-  if (orderStatus === 'REJECTED') return step === 'REJECTED' ? 'rejected' : step === 'RECEIVED' ? 'done' : 'pending';
+function stepState(orderStatus: OnlineOrderStatus, step: 'SENT' | 'CONFIRMED' | 'PREPARING' | 'READY_SOON' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
+  if (orderStatus === 'REJECTED') return step === 'REJECTED' ? 'rejected' : (step === 'SENT' || step === 'CONFIRMED') ? 'done' : 'pending';
   if (orderStatus === 'CONVERTED' || orderStatus === 'ACCEPTED') {
-    if (step === 'RECEIVED' || step === 'ACCEPTED') return 'done';
-    if (step === 'READY_SOON') return 'active';
+    if (step === 'SENT' || step === 'CONFIRMED') return 'done';
+    if (step === 'PREPARING') return 'active';
     return 'pending';
   }
-  if (orderStatus === 'NEEDS_ATTENTION') return step === 'RECEIVED' ? 'done' : step === 'ACCEPTED' ? 'active' : 'pending';
-  return step === 'RECEIVED' ? 'active' : 'pending';
+  if (orderStatus === 'NEEDS_ATTENTION') return step === 'SENT' ? 'done' : step === 'CONFIRMED' ? 'active' : 'pending';
+  return step === 'SENT' ? 'active' : 'pending';
 }
 
 function stepClass(state: ReturnType<typeof stepState>): string {
@@ -102,13 +103,13 @@ export default function CustomerOrderStatus() {
   const tone = useMemo(() => order ? statusTone(order.status) : 'border-neutral-200 bg-white text-neutral-900', [order]);
 
   return (
-    <div className="min-h-[100dvh] bg-[#f9f5f0] px-4 py-6 font-sans text-neutral-900">
+    <div className="min-h-[100dvh] bg-[#f7efe5] px-4 py-6 font-sans text-neutral-900">
       <div className="mx-auto max-w-2xl">
         <header className="mb-5 flex items-center gap-3">
           <img src={coffeeBondLogo} alt="Coffee Bond" className="h-12 w-12 rounded-2xl bg-white object-contain p-1 shadow-sm" />
           <div>
             <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Coffee Bond</p>
-            <h1 className="text-2xl font-black text-[#3e2723]">Track Order</h1>
+            <h1 className="text-2xl font-black text-[#2d2019]">Track your order</h1>
           </div>
         </header>
 
@@ -129,29 +130,39 @@ export default function CustomerOrderStatus() {
             </Link>
           </div>
         ) : order ? (
-          <div className="rounded-3xl border border-neutral-100 bg-white p-5 shadow-sm md:p-7">
-            <div className={`rounded-2xl border p-5 ${tone}`}>
+          <div className="rounded-[2rem] border border-[#ead8c7] bg-white p-5 shadow-sm md:p-7">
+            <div className={`rounded-[1.5rem] border p-5 ${tone}`}>
               <div className="flex items-start gap-3">
                 <div className="shrink-0">{statusIcon(order.status)}</div>
                 <div>
                   <p className="text-xs font-black uppercase tracking-widest opacity-70">Current Status</p>
-                  <h2 className="mt-1 text-2xl font-black">{statusLabel(order.status)}</h2>
+                  <h2 className="mt-1 text-3xl font-black">{statusLabel(order.status)}</h2>
                   <p className="mt-2 text-sm font-medium">{statusMessage(order)}</p>
                   {(order.status === 'CONVERTED' || order.status === 'ACCEPTED') && order.linkedOrderNumber && (
                     <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm font-black">
-                      POS order number: {order.linkedOrderNumber}
+                      Store order number: {order.linkedOrderNumber}
                     </p>
                   )}
                 </div>
               </div>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              {[
-                { key: 'RECEIVED' as const, label: 'Request received', description: 'We have your order request.' },
-                { key: 'ACCEPTED' as const, label: 'Accepted / Preparing', description: 'Store confirms and starts preparation.' },
-                { key: order.status === 'REJECTED' ? 'REJECTED' as const : 'READY_SOON' as const, label: order.status === 'REJECTED' ? 'Rejected' : 'Ready soon', description: order.status === 'REJECTED' ? 'Store could not accept this request.' : 'Please collect when the store calls.' },
-              ].map(step => {
+            <div className="mt-5 rounded-[1.5rem] bg-[#fbf5ee] p-4">
+              <p className="mb-3 text-xs font-black uppercase tracking-[0.22em] text-amber-700">Progress</p>
+              <div className="grid gap-3 sm:grid-cols-4">
+              {(order.status === 'REJECTED'
+                ? [
+                    { key: 'SENT' as const, label: 'Request sent', description: 'We received your basket.' },
+                    { key: 'CONFIRMED' as const, label: 'Store reviewed', description: 'The team checked your request.' },
+                    { key: 'REJECTED' as const, label: 'Not accepted', description: 'Sorry, the store could not accept this request.' },
+                  ]
+                : [
+                    { key: 'SENT' as const, label: 'Request sent', description: 'We received your basket.' },
+                    { key: 'CONFIRMED' as const, label: 'Store confirmed', description: 'The team accepts it.' },
+                    { key: 'PREPARING' as const, label: 'Preparing', description: 'Freshly made at store.' },
+                    { key: 'READY_SOON' as const, label: 'Ready soon', description: 'Please collect when the store calls.' },
+                  ]
+              ).map(step => {
                 const state = stepState(order.status, step.key);
                 return (
                   <div key={step.label} className={`rounded-2xl border p-4 ${stepClass(state)}`}>
@@ -163,6 +174,7 @@ export default function CustomerOrderStatus() {
                   </div>
                 );
               })}
+              </div>
             </div>
 
             <div className="mt-5 grid gap-3 text-sm md:grid-cols-2">
