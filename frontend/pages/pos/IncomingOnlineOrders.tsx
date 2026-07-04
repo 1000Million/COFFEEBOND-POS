@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
-import { AlertCircle, CheckCircle2, Clock, Loader2, RefreshCw, ShoppingBag, Store as StoreIcon, XCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, Loader2, Phone, RefreshCw, ShoppingBag, StickyNote, Store as StoreIcon, XCircle } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { OnlineOrder, Store } from '../../types';
@@ -13,6 +13,21 @@ function formatMoney(value: number): string {
 function formatTime(value: any): string {
   const date = value?.toDate ? value.toDate() : null;
   return date ? date.toLocaleString() : 'Just now';
+}
+
+function minutesSince(value: any, now: Date): number {
+  const date = value?.toDate ? value.toDate() : null;
+  if (!date) return 0;
+  return Math.max(0, Math.floor((now.getTime() - date.getTime()) / 60000));
+}
+
+function elapsedLabel(value: any, now: Date): string {
+  const minutes = minutesSince(value, now);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return `${hours}h ${remaining}m ago`;
 }
 
 function allowedStoreIds(staffProfile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
@@ -38,6 +53,7 @@ export default function IncomingOnlineOrders() {
   const [error, setError] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<Record<string, OnlineOrderAcceptBlocker[]>>({});
   const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
+  const [now, setNow] = useState(new Date());
 
   const accessibleStores = useMemo(() => {
     if (!staffProfile) return [];
@@ -103,6 +119,11 @@ export default function IncomingOnlineOrders() {
       setLoading(false);
     });
   }, [selectedStoreId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleAccept = async (order: OnlineOrder) => {
     if (!staffProfile || !order.id) return;
@@ -221,18 +242,35 @@ export default function IncomingOnlineOrders() {
           {orders.map(order => {
             const orderBlockers = order.id ? blockers[order.id] || [] : [];
             const isBusy = actioningId === order.id;
+            const ageMinutes = minutesSince(order.createdAt, now);
+            const isNew = ageMinutes < 5;
             return (
-              <article key={order.id} className="rounded-3xl border border-neutral-100 bg-white p-5 shadow-sm">
+              <article key={order.id} className={`rounded-3xl border bg-white p-5 shadow-sm ${isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="text-xl font-black text-neutral-900">{order.customerName}</h2>
+                      {isNew && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">NEW</span>}
                       <span className={`rounded-full px-3 py-1 text-xs font-black ${order.status === 'NEEDS_ATTENTION' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                         {order.status.replace('_', ' ')}
                       </span>
                     </div>
-                    <p className="mt-1 text-sm text-neutral-500">{order.customerPhone} · {order.orderType.replace('_', ' ')} · {formatTime(order.createdAt)}</p>
-                    {order.notes && <p className="mt-2 rounded-xl bg-neutral-50 p-3 text-sm text-neutral-700">Notes: {order.notes}</p>}
+                    <div className="mt-2 flex flex-wrap gap-2 text-sm font-bold text-neutral-600">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1">
+                        <Phone size={14} /> {order.customerPhone}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1">
+                        <Clock size={14} /> {elapsedLabel(order.createdAt, now)}
+                      </span>
+                      <span className="rounded-full bg-neutral-100 px-3 py-1">{order.orderType.replace('_', ' ')}</span>
+                    </div>
+                    <p className="mt-2 text-xs font-bold uppercase tracking-widest text-neutral-400">Submitted {formatTime(order.createdAt)}</p>
+                    {order.notes && (
+                      <p className="mt-3 flex gap-2 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
+                        <StickyNote size={16} className="mt-0.5 shrink-0" />
+                        <span>{order.notes}</span>
+                      </p>
+                    )}
                     {order.attentionReason && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Needs attention: {order.attentionReason}</p>}
                   </div>
                   <div className="text-left md:text-right">
@@ -264,7 +302,7 @@ export default function IncomingOnlineOrders() {
                   </div>
                 )}
 
-                <div className="mt-5 grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+                <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
                   <label className="text-sm font-bold text-neutral-700">
                     Reject reason
                     <input
@@ -277,14 +315,14 @@ export default function IncomingOnlineOrders() {
                   <button
                     onClick={() => handleReject(order)}
                     disabled={isBusy}
-                    className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-black text-red-700 disabled:opacity-60"
+                    className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
                   >
                     Reject
                   </button>
                   <button
                     onClick={() => handleAccept(order)}
                     disabled={isBusy}
-                    className="rounded-xl bg-[#5c4033] px-4 py-2 text-sm font-black text-white disabled:opacity-60"
+                    className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
                   >
                     {isBusy ? (
                       <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>

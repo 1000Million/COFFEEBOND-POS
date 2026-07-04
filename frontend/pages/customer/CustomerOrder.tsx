@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
-import { AlertCircle, CheckCircle2, Coffee, Minus, Plus, Search, ShoppingBag, Store as StoreIcon, Trash2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, Copy, Minus, Plus, Search, ShoppingBag, Store as StoreIcon, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { OnlineOrder, OnlineOrderItem, OnlineOrderType, Store } from '../../types';
 import { FinishedGood } from '../../types/menu-management';
+import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
@@ -25,6 +26,11 @@ type ConfirmationState = {
 type GstConfig = {
   defaultRate: number;
   storeOverrides: Record<string, number>;
+};
+
+type ItemAvailability = {
+  available: boolean;
+  reason: string;
 };
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
@@ -71,10 +77,46 @@ function isStoreAvailable(item: CustomerMenuItem, storeId: string): boolean {
   return Array.isArray(item.availableStoreIds) && item.availableStoreIds.includes(storeId);
 }
 
-function isClearlyUnavailable(item: CustomerMenuItem, storeId: string): boolean {
-  if (!item.isActive || !item.isSellable || item.isAvailable === false || !isStoreAvailable(item, storeId)) return true;
-  if (item.itemType !== 'NO_STOCK' && item.itemType !== 'DIRECT_STOCK' && (!Array.isArray(item.bom) || item.bom.length === 0)) return true;
-  return false;
+function isStoreOnlineEnabled(store: Store | null): boolean {
+  return !!store && store.onlineOrderingEnabled !== false;
+}
+
+function storeOnlineMessage(store: Store | null): string {
+  if (!store) return 'Select a store to start your order.';
+  if (!isStoreOnlineEnabled(store)) return 'Online ordering is currently unavailable for this store.';
+  if (store.onlineOrderingMessage?.trim()) return store.onlineOrderingMessage.trim();
+  if (store.estimatedPrepMinutes && store.estimatedPrepMinutes > 0) {
+    const min = Math.max(5, store.estimatedPrepMinutes - 5);
+    return `Pickup available in ${min}-${store.estimatedPrepMinutes} minutes`;
+  }
+  return 'Pickup available soon after store confirmation.';
+}
+
+function getItemAvailability(item: CustomerMenuItem, storeId: string): ItemAvailability {
+  const itemRecord = item as CustomerMenuItem & Record<string, unknown>;
+  if (!storeId || !isStoreAvailable(item, storeId)) {
+    return { available: false, reason: 'Not available at this store' };
+  }
+  if (!item.isActive || !item.isSellable || item.isAvailable === false) {
+    return { available: false, reason: 'Currently unavailable' };
+  }
+  if (itemRecord.onlineOrderingEnabled === false || itemRecord.customerOrderingEnabled === false) {
+    return { available: false, reason: 'Not available for online ordering' };
+  }
+  if (toNumber(item.salePrice) <= 0) {
+    return { available: false, reason: 'Price setup incomplete' };
+  }
+  if (item.itemType !== 'NO_STOCK' && item.itemType !== 'DIRECT_STOCK' && (!Array.isArray(item.bom) || item.bom.length === 0)) {
+    return { available: false, reason: 'Recipe/BOM setup incomplete' };
+  }
+  if (!['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation)) {
+    return { available: false, reason: 'Preparation station setup incomplete' };
+  }
+  const explicitReason = itemRecord.customerUnavailableReason;
+  if (typeof explicitReason === 'string' && explicitReason.trim()) {
+    return { available: false, reason: explicitReason.trim() };
+  }
+  return { available: true, reason: '' };
 }
 
 function formatMoney(value: number): string {
@@ -96,6 +138,7 @@ export default function CustomerOrder() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copyMessage, setCopyMessage] = useState('');
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   useEffect(() => {
@@ -147,25 +190,34 @@ export default function CustomerOrder() {
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
+  const selectedStoreOnline = isStoreOnlineEnabled(selectedStore);
+  const selectedStoreMessage = storeOnlineMessage(selectedStore);
 
-  const availableItems = useMemo(() => {
+  const storeItems = useMemo(() => {
     if (!selectedStoreId) return [];
-    return items.filter(item => !isClearlyUnavailable(item, selectedStoreId));
+    return items.filter(item => isStoreAvailable(item, selectedStoreId));
   }, [items, selectedStoreId]);
 
+  const itemAvailability = useMemo(() => {
+    return storeItems.reduce<Record<string, ItemAvailability>>((acc, item) => {
+      acc[item.code] = getItemAvailability(item, selectedStoreId);
+      return acc;
+    }, {});
+  }, [storeItems, selectedStoreId]);
+
   const categories = useMemo(() => {
-    const names = Array.from(new Set(availableItems.map(item => item.posCategoryName || 'Other')));
+    const names = Array.from(new Set(storeItems.map(item => item.posCategoryName || 'Other')));
     return ['ALL', ...names.sort((a, b) => a.localeCompare(b))];
-  }, [availableItems]);
+  }, [storeItems]);
 
   const visibleItems = useMemo(() => {
     const searchText = search.trim().toLowerCase();
-    return availableItems.filter(item => {
+    return storeItems.filter(item => {
       const matchesCategory = category === 'ALL' || (item.posCategoryName || 'Other') === category;
       const name = `${item.displayName || item.name} ${item.code} ${item.description || ''}`.toLowerCase();
       return matchesCategory && (!searchText || name.includes(searchText));
     });
-  }, [availableItems, category, search]);
+  }, [storeItems, category, search]);
 
   const totals = useMemo(() => {
     const subtotal = cart.reduce((sum, line) => sum + toNumber(line.item.salePrice) * line.quantity, 0);
@@ -184,6 +236,11 @@ export default function CustomerOrder() {
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   const setCartQuantity = (item: CustomerMenuItem, quantity: number) => {
+    const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
+    if (quantity > 0 && !availability.available) {
+      setError(`${item.displayName || item.name} is currently unavailable: ${availability.reason}.`);
+      return;
+    }
     const nextQty = Math.max(0, quantity);
     setCart(prev => {
       if (nextQty === 0) return prev.filter(line => line.item.code !== item.code);
@@ -197,9 +254,15 @@ export default function CustomerOrder() {
 
   const submitOrder = async () => {
     if (!selectedStore) return setError('Please select a store.');
+    if (!selectedStoreOnline) return setError(selectedStoreMessage);
     if (cart.length === 0) return setError('Please add at least one item.');
     if (!customerName.trim()) return setError('Please enter your name.');
     if (!customerPhone.trim()) return setError('Please enter your phone number.');
+    const blockedLine = cart.find(line => !(itemAvailability[line.item.code] || getItemAvailability(line.item, selectedStore.id)).available);
+    if (blockedLine) {
+      const availability = itemAvailability[blockedLine.item.code] || getItemAvailability(blockedLine.item, selectedStore.id);
+      return setError(`${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
+    }
 
     setSaving(true);
     setError(null);
@@ -263,14 +326,31 @@ export default function CustomerOrder() {
     }
   };
 
+  const copyTrackingLink = async (onlineOrderId: string) => {
+    const trackingUrl = `${window.location.origin}/order/status/${onlineOrderId}`;
+    try {
+      await navigator.clipboard.writeText(trackingUrl);
+      setCopyMessage('Tracking link copied.');
+    } catch {
+      setCopyMessage(trackingUrl);
+    }
+  };
+
   if (confirmation) {
     return (
-      <div className="min-h-[100dvh] bg-[#f9f5f0] px-4 py-8 font-sans text-neutral-900">
-        <div className="mx-auto max-w-lg rounded-3xl border border-emerald-200 bg-white p-8 shadow-sm text-center">
+      <div className="min-h-[100dvh] bg-[#f9f5f0] px-4 py-6 font-sans text-neutral-900">
+        <div className="mx-auto mb-5 flex max-w-lg items-center gap-3">
+          <img src={coffeeBondLogo} alt="Coffee Bond" className="h-14 w-14 rounded-2xl bg-white object-contain p-1 shadow-sm" />
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Coffee Bond</p>
+            <h1 className="text-2xl font-black text-[#3e2723]">Order Confirmation</h1>
+          </div>
+        </div>
+        <div className="mx-auto max-w-lg rounded-3xl border border-emerald-200 bg-white p-6 text-center shadow-sm sm:p-8">
           <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
             <CheckCircle2 size={30} />
           </div>
-          <h1 className="text-2xl font-black text-[#3e2723]">Order request received</h1>
+          <h2 className="text-2xl font-black text-[#3e2723]">Order request received</h2>
           <p className="mt-3 text-sm text-neutral-600">Store will confirm your order shortly. Please pay at the counter when requested.</p>
           <div className="mt-6 rounded-2xl bg-neutral-50 p-4 text-left text-sm">
             <p><span className="font-bold">Reference:</span> {confirmation.id}</p>
@@ -290,14 +370,27 @@ export default function CustomerOrder() {
             </div>
             <p><span className="font-bold">Total:</span> {formatMoney(confirmation.total)}</p>
           </div>
-          <Link
-            to={`/order/status/${confirmation.id}`}
-            className="mt-6 block w-full rounded-xl bg-[#5c4033] px-4 py-3 text-sm font-black text-white"
-          >
-            Track Order
-          </Link>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <Link
+              to={`/order/status/${confirmation.id}`}
+              className="rounded-xl bg-[#5c4033] px-4 py-3 text-sm font-black text-white"
+            >
+              Track Order
+            </Link>
+            <button
+              onClick={() => copyTrackingLink(confirmation.id)}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm font-black text-[#5c4033]"
+            >
+              <Copy size={16} />
+              Copy Link
+            </button>
+          </div>
+          {copyMessage && <p className="mt-3 break-all rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">{copyMessage}</p>}
           <button
-            onClick={() => setConfirmation(null)}
+            onClick={() => {
+              setConfirmation(null);
+              setCopyMessage('');
+            }}
             className="mt-3 w-full rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm font-black text-[#5c4033]"
           >
             Place another order
@@ -312,23 +405,21 @@ export default function CustomerOrder() {
       <header className="border-b border-amber-100 bg-white/90 px-4 py-4 sticky top-0 z-20 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#5c4033] text-white">
-              <Coffee size={22} />
-            </div>
+            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-12 w-12 rounded-2xl bg-[#f9f5f0] object-contain p-1 shadow-sm" />
             <div>
-              <h1 className="text-xl font-black text-[#3e2723]">Coffee Bond Order</h1>
-              <p className="text-xs font-bold uppercase tracking-widest text-amber-700">Pickup and dine-in requests</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.24em] text-amber-700">Coffee Bond</p>
+              <h1 className="text-xl font-black text-[#3e2723]">Order ahead</h1>
             </div>
           </div>
-          <div className="rounded-full bg-amber-50 px-4 py-2 text-sm font-black text-[#5c4033]">
-            {itemCount} items
+          <div className="rounded-full bg-amber-50 px-3 py-2 text-xs font-black text-[#5c4033] sm:px-4 sm:text-sm">
+            {itemCount} item{itemCount === 1 ? '' : 's'}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-6xl gap-5 px-4 py-5 lg:grid-cols-[1fr_360px]">
+      <main className="mx-auto grid max-w-6xl gap-5 px-3 py-4 sm:px-4 lg:grid-cols-[1fr_380px]">
         <section className="space-y-4">
-          <div className="grid gap-3 rounded-3xl border border-amber-100 bg-white p-4 shadow-sm md:grid-cols-[240px_1fr]">
+          <div className="grid gap-3 rounded-3xl border border-amber-100 bg-white p-4 shadow-sm md:grid-cols-[260px_1fr]">
             <label className="text-sm font-bold">
               Store
               <span className="mt-1 flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
@@ -360,7 +451,19 @@ export default function CustomerOrder() {
             </label>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          {selectedStore && (
+            <div className={`flex gap-3 rounded-3xl border p-4 text-sm shadow-sm ${
+              selectedStoreOnline ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-900'
+            }`}>
+              {selectedStoreOnline ? <Clock size={19} className="mt-0.5 shrink-0" /> : <AlertCircle size={19} className="mt-0.5 shrink-0" />}
+              <div>
+                <p className="font-black">{selectedStore.name}</p>
+                <p className="font-medium">{selectedStoreMessage}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-0">
             {categories.map(cat => (
               <button
                 key={cat}
@@ -392,16 +495,23 @@ export default function CustomerOrder() {
             <div className="grid gap-3 md:grid-cols-2">
               {visibleItems.map(item => {
                 const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
+                const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
+                const canOrder = selectedStoreOnline && availability.available;
                 return (
-                  <article key={item.code} className="rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm">
+                  <article key={item.code} className={`rounded-2xl border bg-white p-4 shadow-sm ${canOrder ? 'border-neutral-100' : 'border-neutral-200 opacity-80'}`}>
                     <div className="flex items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <h2 className="font-black text-neutral-900">{item.displayName || item.name}</h2>
                         <p className="mt-1 text-xs font-bold uppercase tracking-wider text-amber-700">{item.posCategoryName || 'Other'}</p>
                         {item.description && <p className="mt-2 text-sm text-neutral-500">{item.description}</p>}
                       </div>
                       <span className="shrink-0 rounded-full bg-neutral-50 px-3 py-1 text-sm font-black">{formatMoney(toNumber(item.salePrice))}</span>
                     </div>
+                    {!canOrder && (
+                      <div className="mt-3 rounded-xl bg-neutral-100 px-3 py-2 text-xs font-black text-neutral-600">
+                        Currently unavailable: {selectedStoreOnline ? availability.reason : selectedStoreMessage}
+                      </div>
+                    )}
                     <div className="mt-4 flex items-center justify-between">
                       {qty > 0 ? (
                         <div className="flex items-center gap-2">
@@ -410,7 +520,13 @@ export default function CustomerOrder() {
                           <button onClick={() => setCartQuantity(item, qty + 1)} className="rounded-full border border-neutral-200 p-2 text-neutral-700"><Plus size={14} /></button>
                         </div>
                       ) : (
-                        <button onClick={() => setCartQuantity(item, 1)} className="rounded-xl bg-[#5c4033] px-4 py-2 text-sm font-black text-white">Add</button>
+                        <button
+                          onClick={() => setCartQuantity(item, 1)}
+                          disabled={!canOrder}
+                          className="rounded-xl bg-[#5c4033] px-4 py-2 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
+                        >
+                          {canOrder ? 'Add' : 'Unavailable'}
+                        </button>
                       )}
                     </div>
                   </article>
@@ -420,7 +536,7 @@ export default function CustomerOrder() {
           )}
         </section>
 
-        <aside className="h-fit rounded-3xl border border-amber-100 bg-white p-5 shadow-sm lg:sticky lg:top-24">
+        <aside className="sticky bottom-0 z-30 -mx-3 max-h-[78dvh] overflow-y-auto rounded-t-3xl border border-amber-100 bg-white p-5 shadow-[0_-12px_30px_rgba(62,39,35,0.12)] sm:mx-0 lg:top-24 lg:h-fit lg:max-h-[calc(100dvh-7rem)] lg:rounded-3xl lg:shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <ShoppingBag size={18} className="text-[#5c4033]" />
             <h2 className="text-lg font-black text-[#3e2723]">Your Cart</h2>
@@ -465,7 +581,7 @@ export default function CustomerOrder() {
 
           <button
             onClick={submitOrder}
-            disabled={saving || loading || cart.length === 0}
+            disabled={saving || loading || cart.length === 0 || !selectedStoreOnline}
             className="mt-5 w-full rounded-2xl bg-[#5c4033] px-4 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
             {saving ? 'Sending request...' : 'Submit order request'}

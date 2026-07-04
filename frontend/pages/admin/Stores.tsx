@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, doc, setDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { Store, Plus, Edit2, Check, X, Loader2 } from 'lucide-react';
+import { Store, Plus, Edit2, Check, X, Loader2, Clock, MessageSquare } from 'lucide-react';
 import { Store as StoreType } from '../../types';
 
 export default function Stores() {
@@ -15,6 +15,9 @@ export default function Stores() {
   const [code, setCode] = useState('');
   const [address, setAddress] = useState('');
   const [isActive, setIsActive] = useState(true);
+  const [onlineOrderingEnabled, setOnlineOrderingEnabled] = useState(true);
+  const [estimatedPrepMinutes, setEstimatedPrepMinutes] = useState('20');
+  const [onlineOrderingMessage, setOnlineOrderingMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -40,6 +43,9 @@ export default function Stores() {
     setCode('');
     setAddress('');
     setIsActive(true);
+    setOnlineOrderingEnabled(true);
+    setEstimatedPrepMinutes('20');
+    setOnlineOrderingMessage('');
     setIsFormOpen(true);
   };
 
@@ -49,6 +55,9 @@ export default function Stores() {
     setCode(store.code);
     setAddress(store.address);
     setIsActive(store.isActive);
+    setOnlineOrderingEnabled(store.onlineOrderingEnabled !== false);
+    setEstimatedPrepMinutes(String(store.estimatedPrepMinutes || 20));
+    setOnlineOrderingMessage(store.onlineOrderingMessage || '');
     setIsFormOpen(true);
   };
 
@@ -69,6 +78,9 @@ export default function Stores() {
         code,
         address,
         isActive,
+        onlineOrderingEnabled,
+        estimatedPrepMinutes: Math.max(0, Number(estimatedPrepMinutes) || 0),
+        onlineOrderingMessage: onlineOrderingMessage.trim(),
         updatedAt: now,
       };
 
@@ -131,6 +143,44 @@ export default function Stores() {
                 <input type="checkbox" id="isActive" checked={isActive} onChange={e => setIsActive(e.target.checked)} className="w-4 h-4 text-[#5c4033] rounded border-neutral-300" />
                 <label htmlFor="isActive" className="text-sm font-medium text-neutral-700">Store is Active</label>
               </div>
+              <div className="md:col-span-2 rounded-xl border border-amber-100 bg-amber-50/50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <MessageSquare size={16} className="text-[#5c4033]" />
+                  <h4 className="font-bold text-[#3e2723]">Customer Online Ordering</h4>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="onlineOrderingEnabled"
+                      checked={onlineOrderingEnabled}
+                      onChange={e => setOnlineOrderingEnabled(e.target.checked)}
+                      className="w-4 h-4 text-[#5c4033] rounded border-neutral-300"
+                    />
+                    <label htmlFor="onlineOrderingEnabled" className="text-sm font-medium text-neutral-700">Accept customer online orders</label>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Estimated Prep Minutes</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={estimatedPrepMinutes}
+                      onChange={e => setEstimatedPrepMinutes(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                      placeholder="20"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Store Message</label>
+                    <input
+                      value={onlineOrderingMessage}
+                      onChange={e => setOnlineOrderingMessage(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                      placeholder="Pickup available in 15-20 minutes"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
             
             <div className="flex justify-end gap-3 pt-4 border-t border-neutral-100">
@@ -151,6 +201,7 @@ export default function Stores() {
               <th className="px-6 py-4">Name</th>
               <th className="px-6 py-4">Code</th>
               <th className="px-6 py-4 hidden md:table-cell">Address</th>
+              <th className="px-6 py-4 hidden lg:table-cell">Online Orders</th>
               <th className="px-6 py-4">Status</th>
               <th className="px-6 py-4 w-16"></th>
             </tr>
@@ -161,6 +212,22 @@ export default function Stores() {
                  <td className="px-6 py-4 font-medium">{store.name}</td>
                  <td className="px-6 py-4 font-mono text-xs">{store.code}</td>
                  <td className="px-6 py-4 hidden md:table-cell text-neutral-500 truncate max-w-[200px]">{store.address}</td>
+                 <td className="px-6 py-4 hidden lg:table-cell">
+                   <div className="space-y-1">
+                     {store.onlineOrderingEnabled !== false ? (
+                       <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">
+                         <Check size={12} /> Accepting
+                       </span>
+                     ) : (
+                       <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold bg-red-50 text-red-700 px-2 py-0.5 rounded">
+                         <X size={12} /> Disabled
+                       </span>
+                     )}
+                     <p className="flex items-center gap-1 text-xs text-neutral-500">
+                       <Clock size={12} /> {store.estimatedPrepMinutes || 20} min
+                     </p>
+                   </div>
+                 </td>
                  <td className="px-6 py-4">
                    {store.isActive ? (
                      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded">
@@ -181,7 +248,7 @@ export default function Stores() {
             ))}
             {stores.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-neutral-500">
+                <td colSpan={6} className="px-6 py-8 text-center text-neutral-500">
                   No stores found. Set up your first store.
                 </td>
               </tr>

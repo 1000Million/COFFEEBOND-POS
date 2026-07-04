@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { Link, useParams } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, Clock, Coffee, Loader2, RefreshCw, XCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, Loader2, RefreshCw, XCircle } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { OnlineOrder, OnlineOrderStatus } from '../../types';
+import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -41,6 +42,24 @@ function statusIcon(status: OnlineOrderStatus) {
   if (status === 'REJECTED') return <XCircle size={24} className="text-red-700" />;
   if (status === 'NEEDS_ATTENTION') return <AlertCircle size={24} className="text-amber-700" />;
   return <Clock size={24} className="text-blue-700" />;
+}
+
+function stepState(orderStatus: OnlineOrderStatus, step: 'RECEIVED' | 'ACCEPTED' | 'READY_SOON' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
+  if (orderStatus === 'REJECTED') return step === 'REJECTED' ? 'rejected' : step === 'RECEIVED' ? 'done' : 'pending';
+  if (orderStatus === 'CONVERTED' || orderStatus === 'ACCEPTED') {
+    if (step === 'RECEIVED' || step === 'ACCEPTED') return 'done';
+    if (step === 'READY_SOON') return 'active';
+    return 'pending';
+  }
+  if (orderStatus === 'NEEDS_ATTENTION') return step === 'RECEIVED' ? 'done' : step === 'ACCEPTED' ? 'active' : 'pending';
+  return step === 'RECEIVED' ? 'active' : 'pending';
+}
+
+function stepClass(state: ReturnType<typeof stepState>): string {
+  if (state === 'done') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  if (state === 'active') return 'border-blue-200 bg-blue-50 text-blue-800';
+  if (state === 'rejected') return 'border-red-200 bg-red-50 text-red-800';
+  return 'border-neutral-200 bg-neutral-50 text-neutral-500';
 }
 
 export default function CustomerOrderStatus() {
@@ -86,12 +105,10 @@ export default function CustomerOrderStatus() {
     <div className="min-h-[100dvh] bg-[#f9f5f0] px-4 py-6 font-sans text-neutral-900">
       <div className="mx-auto max-w-2xl">
         <header className="mb-5 flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#5c4033] text-white">
-            <Coffee size={22} />
-          </div>
+          <img src={coffeeBondLogo} alt="Coffee Bond" className="h-12 w-12 rounded-2xl bg-white object-contain p-1 shadow-sm" />
           <div>
+            <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Coffee Bond</p>
             <h1 className="text-2xl font-black text-[#3e2723]">Track Order</h1>
-            <p className="text-xs font-bold uppercase tracking-widest text-amber-700">Coffee Bond customer ordering</p>
           </div>
         </header>
 
@@ -127,6 +144,25 @@ export default function CustomerOrderStatus() {
                   )}
                 </div>
               </div>
+            </div>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {[
+                { key: 'RECEIVED' as const, label: 'Request received', description: 'We have your order request.' },
+                { key: 'ACCEPTED' as const, label: 'Accepted / Preparing', description: 'Store confirms and starts preparation.' },
+                { key: order.status === 'REJECTED' ? 'REJECTED' as const : 'READY_SOON' as const, label: order.status === 'REJECTED' ? 'Rejected' : 'Ready soon', description: order.status === 'REJECTED' ? 'Store could not accept this request.' : 'Please collect when the store calls.' },
+              ].map(step => {
+                const state = stepState(order.status, step.key);
+                return (
+                  <div key={step.label} className={`rounded-2xl border p-4 ${stepClass(state)}`}>
+                    <div className="mb-2 flex items-center gap-2">
+                      {state === 'done' ? <CheckCircle2 size={18} /> : state === 'rejected' ? <XCircle size={18} /> : <Clock size={18} />}
+                      <p className="text-sm font-black">{step.label}</p>
+                    </div>
+                    <p className="text-xs font-medium opacity-80">{step.description}</p>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="mt-5 grid gap-3 text-sm md:grid-cols-2">

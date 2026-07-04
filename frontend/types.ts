@@ -28,6 +28,9 @@ export interface Store {
   code: string;
   address: string;
   isActive: boolean;
+  onlineOrderingEnabled?: boolean;
+  estimatedPrepMinutes?: number;
+  onlineOrderingMessage?: string;
   createdAt: any;
   updatedAt: any;
 }
