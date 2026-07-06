@@ -1,6 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
-import { AlertCircle, CheckCircle2, ChevronDown, Clock, Copy, Gift, Minus, Plus, Search, ShoppingBag, Sparkles, Store as StoreIcon, Trash2, X } from 'lucide-react';
+import {
+  AlertCircle,
+  CakeSlice,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Coffee,
+  Copy,
+  CupSoda,
+  Leaf,
+  Minus,
+  Plus,
+  Search,
+  ShoppingBag,
+  Sparkles,
+  Store as StoreIcon,
+  Trash2,
+  Utensils,
+  X,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db } from '../../lib/firebase';
 import { OnlineOrder, OnlineOrderItem, OnlineOrderType, Store } from '../../types';
@@ -34,6 +53,8 @@ type ItemAvailability = {
   available: boolean;
   reason: string;
 };
+
+type IconComponent = React.ComponentType<{ size?: number; className?: string }>;
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
@@ -95,10 +116,14 @@ function storeOnlineMessage(store: Store | null): string {
   return 'Pickup available soon after store confirmation.';
 }
 
+function prepWindowLabel(minutes?: number | null): string {
+  const safeMinutes = minutes && minutes > 0 ? minutes : 20;
+  const min = Math.max(5, safeMinutes - 5);
+  return `${min}-${safeMinutes} min`;
+}
+
 function estimatedPrepLabel(store: Store | null): string {
-  const minutes = store?.estimatedPrepMinutes || 20;
-  const min = Math.max(5, minutes - 5);
-  return `${min}-${minutes} min`;
+  return prepWindowLabel(store?.estimatedPrepMinutes);
 }
 
 function categoryGroupName(item: CustomerMenuItem): string {
@@ -111,6 +136,12 @@ function categoryGroupName(item: CustomerMenuItem): string {
   return 'Food';
 }
 
+function categoryLabel(category: string): string {
+  if (category === 'ALL') return 'All';
+  if (category === 'Matcha & Tea') return 'Matcha';
+  return category;
+}
+
 function shortDescription(item: CustomerMenuItem): string {
   if (item.description?.trim()) return item.description.trim();
   const group = categoryGroupName(item);
@@ -120,6 +151,40 @@ function shortDescription(item: CustomerMenuItem): string {
   if (group === 'Food') return 'Made fresh for your order.';
   if (group === 'Desserts') return 'A sweet finish from Coffee Bond.';
   return 'Add it to your pickup basket.';
+}
+
+function getItemImage(item: CustomerMenuItem): string | null {
+  const record = item as CustomerMenuItem & Record<string, unknown>;
+  for (const key of ['imageUrl', 'image', 'photoUrl', 'photo', 'thumbnailUrl', 'thumbnail']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function visualMeta(item: CustomerMenuItem): {
+  label: string;
+  gradient: string;
+  iconColor: string;
+  icon: IconComponent;
+} {
+  const group = categoryGroupName(item);
+  if (group === 'Coffee') {
+    return { label: 'Coffee', gradient: 'from-[#f7eadc] to-[#ead0ad]', iconColor: 'text-[#6c4025]', icon: Coffee };
+  }
+  if (group === 'Cold Coffee') {
+    return { label: 'Cold coffee', gradient: 'from-[#eef6f1] to-[#cfe7dc]', iconColor: 'text-[#2f6b4b]', icon: CupSoda };
+  }
+  if (group === 'Matcha & Tea') {
+    return { label: 'Matcha', gradient: 'from-[#eef3e5] to-[#dce8cb]', iconColor: 'text-[#4d6b34]', icon: Leaf };
+  }
+  if (group === 'Desserts') {
+    return { label: 'Dessert', gradient: 'from-[#f9ece6] to-[#f2d2c4]', iconColor: 'text-[#8a4a38]', icon: CakeSlice };
+  }
+  if (group === 'Add Ons') {
+    return { label: 'Add on', gradient: 'from-[#f7efe9] to-[#e9dfd2]', iconColor: 'text-[#705748]', icon: Sparkles };
+  }
+  return { label: 'Food', gradient: 'from-[#f8efe8] to-[#ecd8c9]', iconColor: 'text-[#7f5136]', icon: Utensils };
 }
 
 function getItemAvailability(item: CustomerMenuItem, storeId: string): ItemAvailability {
@@ -260,11 +325,6 @@ export default function CustomerOrder() {
       .slice(0, 6);
   }, [orderableItems]);
 
-  const suggestedItems = useMemo(() => {
-    const cartCodes = new Set(cart.map(line => line.item.code));
-    return orderableItems.filter(item => !cartCodes.has(item.code)).slice(0, 4);
-  }, [orderableItems, cart]);
-
   const totals = useMemo(() => {
     const subtotal = cart.reduce((sum, line) => sum + toNumber(line.item.salePrice) * line.quantity, 0);
     const gstTotal = cart.reduce((sum, line) => {
@@ -287,6 +347,7 @@ export default function CustomerOrder() {
       setError(`${item.displayName || item.name} is currently unavailable: ${availability.reason}.`);
       return;
     }
+
     const nextQty = Math.max(0, quantity);
     setCart(prev => {
       if (nextQty === 0) return prev.filter(line => line.item.code !== item.code);
@@ -304,6 +365,7 @@ export default function CustomerOrder() {
     if (cart.length === 0) return setError('Please add at least one item.');
     if (!customerName.trim()) return setError('Please enter your name.');
     if (!customerPhone.trim()) return setError('Please enter your phone number.');
+
     const blockedLine = cart.find(line => !(itemAvailability[line.item.code] || getItemAvailability(line.item, selectedStore.id)).available);
     if (blockedLine) {
       const availability = itemAvailability[blockedLine.item.code] || getItemAvailability(blockedLine.item, selectedStore.id);
@@ -385,55 +447,86 @@ export default function CustomerOrder() {
     }
   };
 
-  const renderProductCard = (item: CustomerMenuItem, featured = false) => {
+  const renderItemThumb = (item: CustomerMenuItem, sizeClass = 'h-20 w-20') => {
+    const meta = visualMeta(item);
+    const Icon = meta.icon;
+    const imageUrl = getItemImage(item);
+
+    return (
+      <div className={`${sizeClass} shrink-0 overflow-hidden rounded-2xl bg-[#f5eadf]`}>
+        {imageUrl ? (
+          <img src={imageUrl} alt={item.displayName || item.name} className="h-full w-full object-cover" />
+        ) : (
+          <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${meta.gradient}`}>
+            <Icon size={24} className={meta.iconColor} />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderPopularCard = (item: CustomerMenuItem) => {
     const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = selectedStoreOnline && availability.available;
-    const groupName = categoryGroupName(item);
 
     return (
-      <article
-        key={`${featured ? 'popular' : 'menu'}-${item.code}`}
-        className={`group relative flex h-full flex-col rounded-[1.75rem] border bg-white p-4 shadow-sm transition-all ${
-          canOrder ? 'border-[#efe3d4] hover:-translate-y-0.5 hover:shadow-md' : 'border-neutral-200 opacity-80'
-        } ${featured ? 'min-w-[260px] sm:min-w-[300px]' : ''}`}
-      >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-[#f8efe4] px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-[#8a5a33]">{groupName}</span>
-              {featured && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">Popular</span>}
-            </div>
-            <h3 className="text-lg font-black leading-tight text-[#2d2019]">{item.displayName || item.name}</h3>
-          </div>
-          <span className="shrink-0 rounded-full bg-[#2d2019] px-3 py-1.5 text-sm font-black text-white">{formatMoney(toNumber(item.salePrice))}</span>
+      <article key={`popular-${item.code}`} className="min-w-[144px] max-w-[144px] rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-[#eadfd2]">
+        {renderItemThumb(item, 'h-24 w-full')}
+        <div className="mt-2 min-h-[78px]">
+          <div className="mb-1 inline-flex rounded-full bg-[#ecf8ef] px-2 py-0.5 text-[10px] font-bold text-emerald-700">Popular</div>
+          <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{item.displayName || item.name}</h3>
+          <p className="mt-1 text-xs font-bold text-[#5c4033]">{formatMoney(toNumber(item.salePrice))}</p>
         </div>
+        <button
+          onClick={() => setCartQuantity(item, qty + 1)}
+          disabled={!canOrder}
+          className="mt-2 flex h-9 w-full items-center justify-center gap-1 rounded-full bg-[#3b261d] text-xs font-black text-white disabled:bg-neutral-300"
+        >
+          <Plus size={14} />
+          Add
+        </button>
+      </article>
+    );
+  };
 
-        <p className="min-h-10 flex-1 text-sm leading-relaxed text-neutral-600">{shortDescription(item)}</p>
+  const renderMenuCard = (item: CustomerMenuItem) => {
+    const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
+    const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
+    const canOrder = selectedStoreOnline && availability.available;
+    const meta = visualMeta(item);
 
-        {!canOrder && (
-          <div className="mt-4 rounded-2xl bg-neutral-100 px-3 py-2 text-xs font-black text-neutral-600">
-            Currently unavailable: {selectedStoreOnline ? availability.reason : selectedStoreMessage}
-          </div>
-        )}
-
-        <div className="mt-5 flex items-center justify-between">
-          {qty > 0 ? (
-            <div className="inline-flex items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-1">
-              <button onClick={() => setCartQuantity(item, qty - 1)} className="rounded-full p-2 text-[#5c4033] hover:bg-white"><Minus size={15} /></button>
-              <span className="min-w-8 text-center text-sm font-black text-[#3e2723]">{qty}</span>
-              <button onClick={() => setCartQuantity(item, qty + 1)} className="rounded-full p-2 text-[#5c4033] hover:bg-white"><Plus size={15} /></button>
+    return (
+      <article key={`menu-${item.code}`} className={`flex gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-[#eadfd2] ${canOrder ? '' : 'opacity-75'}`}>
+        {renderItemThumb(item)}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold text-[#a06f48]">{meta.label}</p>
+              <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{item.displayName || item.name}</h3>
             </div>
-          ) : (
-            <button
-              onClick={() => setCartQuantity(item, 1)}
-              disabled={!canOrder}
-              className="inline-flex items-center gap-2 rounded-full bg-[#5c4033] px-4 py-2.5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
-            >
-              <Plus size={16} />
-              Add
-            </button>
-          )}
+            {qty > 0 ? (
+              <div className="inline-flex shrink-0 items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-0.5">
+                <button onClick={() => setCartQuantity(item, qty - 1)} className="rounded-full p-1.5 text-[#5c4033]"><Minus size={13} /></button>
+                <span className="min-w-5 text-center text-xs font-black">{qty}</span>
+                <button onClick={() => setCartQuantity(item, qty + 1)} className="rounded-full p-1.5 text-[#5c4033]"><Plus size={13} /></button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setCartQuantity(item, 1)}
+                disabled={!canOrder}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#3b261d] text-white disabled:bg-neutral-300"
+                aria-label={`Add ${item.displayName || item.name}`}
+              >
+                <Plus size={16} />
+              </button>
+            )}
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500">{shortDescription(item)}</p>
+          <div className="mt-2 flex items-center justify-between">
+            <p className="text-sm font-black text-[#2d2019]">{formatMoney(toNumber(item.salePrice))}</p>
+            {!canOrder && <p className="text-[11px] font-bold text-red-700">{availability.reason}</p>}
+          </div>
         </div>
       </article>
     );
@@ -441,141 +534,142 @@ export default function CustomerOrder() {
 
   const basketPanel = (
     <div className="flex h-full flex-col">
-      <div className="mb-5 flex items-start justify-between gap-3">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Your Basket</p>
-          <h2 className="mt-1 text-2xl font-black text-[#2d2019]">{itemCount} item{itemCount === 1 ? '' : 's'}</h2>
+          <h2 className="text-xl font-black text-[#2d2019]">Your basket</h2>
+          <p className="text-sm font-medium text-neutral-500">{itemCount} item{itemCount === 1 ? '' : 's'} for pickup</p>
         </div>
-        <button onClick={() => setBasketOpen(false)} className="rounded-full bg-neutral-100 p-2 text-neutral-500 lg:hidden">
+        <button onClick={() => setBasketOpen(false)} className="rounded-full bg-[#f8efe6] p-2 text-[#5c4033] lg:hidden">
           <X size={18} />
         </button>
       </div>
 
       {cart.length === 0 ? (
-        <div className="rounded-[1.5rem] bg-[#fbf5ee] p-6 text-center">
-          <ShoppingBag className="mx-auto mb-3 text-[#b98b63]" size={34} />
-          <p className="font-black text-[#3e2723]">Your basket is empty</p>
-          <p className="mt-1 text-sm text-neutral-500">Add your favourites and send a request to the store.</p>
+        <div className="rounded-2xl bg-[#fbf5ee] p-4 text-center">
+          <ShoppingBag className="mx-auto mb-2 text-[#9b6a43]" size={28} />
+          <p className="font-black text-[#2d2019]">Basket is empty</p>
+          <p className="mt-1 text-sm text-neutral-500">Add your favourites to continue.</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {cart.map(line => (
-            <div key={line.item.code} className="rounded-2xl border border-[#f0e5d8] bg-white p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="font-black leading-tight text-[#2d2019]">{line.item.displayName || line.item.name}</p>
-                  <p className="mt-1 text-xs font-bold text-neutral-500">{formatMoney(toNumber(line.item.salePrice))} each</p>
+        <>
+          <div className="space-y-3">
+            {cart.map(line => (
+              <div key={line.item.code} className="flex gap-3 rounded-2xl bg-[#fffaf5] p-3">
+                {renderItemThumb(line.item, 'h-14 w-14')}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{line.item.displayName || line.item.name}</p>
+                      <p className="mt-1 text-xs font-bold text-neutral-500">{formatMoney(toNumber(line.item.salePrice))} each</p>
+                    </div>
+                    <button onClick={() => setCartQuantity(line.item, 0)} className="rounded-full bg-red-50 p-1.5 text-red-700">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <div className="inline-flex items-center rounded-full border border-[#ead8c7] bg-white p-0.5">
+                      <button onClick={() => setCartQuantity(line.item, line.quantity - 1)} className="rounded-full p-1.5"><Minus size={13} /></button>
+                      <span className="min-w-7 text-center text-xs font-black">{line.quantity}</span>
+                      <button onClick={() => setCartQuantity(line.item, line.quantity + 1)} className="rounded-full p-1.5"><Plus size={13} /></button>
+                    </div>
+                    <span className="text-sm font-black text-[#2d2019]">{formatMoney(toNumber(line.item.salePrice) * line.quantity)}</span>
+                  </div>
                 </div>
-                <button onClick={() => setCartQuantity(line.item, 0)} className="rounded-full bg-red-50 p-1.5 text-red-700">
-                  <Trash2 size={13} />
-                </button>
               </div>
-              <div className="mt-3 flex items-center justify-between">
-                <div className="inline-flex items-center rounded-full border border-neutral-200 p-1">
-                  <button onClick={() => setCartQuantity(line.item, line.quantity - 1)} className="rounded-full p-1.5"><Minus size={13} /></button>
-                  <span className="min-w-8 text-center text-sm font-black">{line.quantity}</span>
-                  <button onClick={() => setCartQuantity(line.item, line.quantity + 1)} className="rounded-full p-1.5"><Plus size={13} /></button>
-                </div>
-                <span className="font-black text-[#3e2723]">{formatMoney(toNumber(line.item.salePrice) * line.quantity)}</span>
-              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 rounded-2xl bg-[#fbf5ee] p-4 text-sm">
+            <div className="flex justify-between"><span>Subtotal</span><span className="font-black">{formatMoney(totals.subtotal)}</span></div>
+            <div className="mt-2 flex justify-between"><span>GST</span><span className="font-black">{formatMoney(totals.gstTotal)}</span></div>
+            <div className="mt-3 border-t border-[#ead8c7] pt-3 text-lg font-black text-[#2d2019]">
+              <div className="flex justify-between"><span>Total</span><span>{formatMoney(totals.grandTotal)}</span></div>
             </div>
-          ))}
-        </div>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+            <input value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Phone number" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+            <select value={orderType} onChange={(event) => setOrderType(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
+              <option value="PICKUP">Pickup</option>
+              <option value="DINE_IN">Dine in</option>
+            </select>
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Pickup note for the store" rows={3} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+          </div>
+
+          <button
+            onClick={submitOrder}
+            disabled={saving || loading || cart.length === 0 || !selectedStoreOnline}
+            className="mt-4 w-full rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
+          >
+            {saving ? 'Sending request...' : 'Send order request'}
+          </button>
+          <p className="mt-3 text-center text-xs font-medium text-neutral-500">The store will confirm your order shortly.</p>
+        </>
       )}
-
-      <div className="mt-5 space-y-3">
-        <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-        <input value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Phone number" className="w-full rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-        <select value={orderType} onChange={(event) => setOrderType(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
-          <option value="PICKUP">Pickup</option>
-          <option value="DINE_IN">Dine in</option>
-        </select>
-        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Pickup note for the store" rows={3} className="w-full rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-      </div>
-
-      <div className="mt-5 space-y-2 border-t border-neutral-100 pt-4 text-sm">
-        <div className="flex justify-between"><span>Subtotal</span><span className="font-black">{formatMoney(totals.subtotal)}</span></div>
-        <div className="flex justify-between"><span>GST</span><span className="font-black">{formatMoney(totals.gstTotal)}</span></div>
-        <div className="flex justify-between text-xl font-black text-[#2d2019]"><span>Total</span><span>{formatMoney(totals.grandTotal)}</span></div>
-      </div>
-
-      <button
-        onClick={submitOrder}
-        disabled={saving || loading || cart.length === 0 || !selectedStoreOnline}
-        className="mt-5 w-full rounded-2xl bg-[#5c4033] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
-      >
-        {saving ? 'Sending request...' : 'Send order request'}
-      </button>
-      <p className="mt-3 text-center text-xs font-medium text-neutral-500">The store will confirm your order shortly.</p>
     </div>
   );
 
   if (confirmation) {
     return (
-      <div className="min-h-[100dvh] bg-[#f7efe5] px-4 py-6 font-sans text-neutral-900">
-        <div className="mx-auto max-w-xl">
-          <div className="mb-6 flex items-center justify-center">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-20 w-20 rounded-[1.75rem] bg-white object-contain p-2 shadow-sm" />
-          </div>
-          <div className="rounded-[2rem] border border-emerald-200 bg-white p-6 text-center shadow-sm sm:p-8">
-            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
+      <div className="min-h-[100dvh] bg-[#f8efe6] px-4 py-5 font-sans text-neutral-900">
+        <div className="mx-auto max-w-md">
+          <header className="mb-4 flex items-center gap-3">
+            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
+            <div>
+              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
+              <h1 className="text-lg font-black text-[#2d2019]">Order ahead</h1>
+            </div>
+          </header>
+
+          <div className="rounded-3xl bg-white p-5 text-center shadow-sm ring-1 ring-[#eadfd2]">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
               <CheckCircle2 size={34} />
             </div>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Coffee Bond</p>
-            <h1 className="mt-2 text-3xl font-black text-[#2d2019]">Order request sent</h1>
-            <p className="mt-3 text-sm font-medium leading-relaxed text-neutral-600">We have sent your request to the store. Please pay at the counter after the team confirms it.</p>
+            <h2 className="text-2xl font-black text-[#2d2019]">Order request sent</h2>
+            <p className="mt-2 text-sm leading-relaxed text-neutral-600">Thank you. The store will review and confirm your order shortly.</p>
 
-            <div className="mt-6 rounded-[1.5rem] bg-[#fbf5ee] p-4 text-left text-sm">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-neutral-400">Reference</p>
-                  <p className="mt-1 break-all font-black text-[#2d2019]">{confirmation.id}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-neutral-400">Pickup from</p>
+            <div className="mt-5 space-y-3 rounded-2xl bg-[#fbf5ee] p-4 text-left">
+              <div>
+                <p className="text-xs font-bold text-neutral-500">Reference</p>
+                <p className="mt-1 break-all font-black text-[#2d2019]">{confirmation.id}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-xl bg-white p-3">
+                  <p className="text-xs font-bold text-neutral-500">Store</p>
                   <p className="mt-1 font-black text-[#2d2019]">{confirmation.storeName}</p>
                 </div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-neutral-400">Estimated prep</p>
-                  <p className="mt-1 font-black text-[#2d2019]">{confirmation.estimatedPrepMinutes ? estimatedPrepLabel({ estimatedPrepMinutes: confirmation.estimatedPrepMinutes } as Store) : 'Store will confirm shortly'}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-neutral-400">Total</p>
-                  <p className="mt-1 font-black text-[#2d2019]">{formatMoney(confirmation.total)}</p>
+                <div className="rounded-xl bg-white p-3">
+                  <p className="text-xs font-bold text-neutral-500">Prep time</p>
+                  <p className="mt-1 font-black text-[#2d2019]">{prepWindowLabel(confirmation.estimatedPrepMinutes)}</p>
                 </div>
               </div>
-              <div className="mt-4 border-t border-[#ead8c7] pt-4">
-                <p className="mb-2 font-black text-[#2d2019]">Basket</p>
-                <div className="space-y-2">
-                  {confirmation.items.map(item => (
-                    <div key={item.finishedGoodCode} className="flex justify-between gap-3">
-                      <span>{item.quantity} x {item.itemName}</span>
-                      <span className="font-black">{formatMoney(item.lineTotal)}</span>
-                    </div>
-                  ))}
-                </div>
+              <div className="flex justify-between rounded-xl bg-white p-3 text-sm">
+                <span className="font-bold text-neutral-600">Total</span>
+                <span className="font-black text-[#2d2019]">{formatMoney(confirmation.total)}</span>
               </div>
             </div>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              <Link to={`/order/status/${confirmation.id}`} className="rounded-2xl bg-[#5c4033] px-4 py-4 text-sm font-black text-white">
-                Track order
+            <div className="mt-5 grid gap-3">
+              <Link to={`/order/status/${confirmation.id}`} className="rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white">
+                Track your order
               </Link>
-              <button onClick={() => copyTrackingLink(confirmation.id)} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-neutral-200 bg-white px-4 py-4 text-sm font-black text-[#5c4033]">
+              <button onClick={() => copyTrackingLink(confirmation.id)} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[#e4d7c8] bg-white px-4 py-4 text-sm font-black text-[#5c4033]">
                 <Copy size={16} />
                 Copy tracking link
               </button>
+              <button
+                onClick={() => {
+                  setConfirmation(null);
+                  setCopyMessage('');
+                }}
+                className="rounded-2xl bg-[#fbf5ee] px-4 py-4 text-sm font-black text-[#5c4033]"
+              >
+                Start another order
+              </button>
             </div>
+
             {copyMessage && <p className="mt-3 break-all rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">{copyMessage}</p>}
-            <button
-              onClick={() => {
-                setConfirmation(null);
-                setCopyMessage('');
-              }}
-              className="mt-3 w-full rounded-2xl border border-neutral-200 bg-white px-4 py-4 text-sm font-black text-[#5c4033]"
-            >
-              Start another basket
-            </button>
           </div>
         </div>
       </div>
@@ -583,50 +677,34 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-[#f7efe5] pb-24 font-sans text-neutral-900 lg:pb-0">
-      <header className="sticky top-0 z-30 border-b border-[#ead8c7] bg-[#fffaf5]/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-12 w-12 rounded-2xl bg-white object-contain p-1 shadow-sm" />
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.26em] text-amber-700">Coffee Bond</p>
-              <h1 className="text-base font-black text-[#2d2019] sm:text-lg">Order your Coffee Bond favourites</h1>
-              <p className="hidden text-xs font-bold text-neutral-500 sm:block">Pickup from your nearest store</p>
+    <div className="min-h-[100dvh] bg-[#f8efe6] pb-24 font-sans text-neutral-900 lg:pb-8">
+      <header className="sticky top-0 z-30 border-b border-[#eadfd2] bg-[#fffaf5]/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-md items-center justify-between gap-3 lg:max-w-6xl">
+          <div className="flex min-w-0 items-center gap-3">
+            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
+            <div className="min-w-0">
+              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
+              <h1 className="truncate text-lg font-black text-[#2d2019]">Order ahead</h1>
             </div>
           </div>
           <button
             onClick={() => setBasketOpen(true)}
-            className="rounded-full bg-[#2d2019] px-4 py-2 text-xs font-black text-white shadow-sm sm:text-sm"
+            className="inline-flex items-center gap-2 rounded-full bg-[#3b261d] px-3 py-2 text-xs font-black text-white shadow-sm"
           >
-            Basket · {itemCount} item{itemCount === 1 ? '' : 's'}
+            <ShoppingBag size={15} />
+            {itemCount}
           </button>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-6 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_390px] lg:px-6">
-        <section className="min-w-0 space-y-6">
-          <div className="overflow-hidden rounded-[2rem] bg-[#2d2019] text-white shadow-sm">
-            <div className="grid gap-5 p-6 sm:p-8 md:grid-cols-[1fr_auto] md:items-center">
+      <main className="mx-auto grid max-w-md gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:px-6">
+        <section className="min-w-0 space-y-4">
+          <section className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-[#eadfd2]">
+            <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <p className="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-black uppercase tracking-[0.22em] text-[#f3d3a6]">Pickup ordering</p>
-                <h2 className="max-w-xl text-4xl font-black leading-none sm:text-5xl">Order your Coffee Bond favourites</h2>
-                <p className="mt-4 max-w-lg text-sm font-medium leading-relaxed text-[#ead8c7]">Choose your store, build your basket, and the team will confirm before preparing your pickup.</p>
-                <div className="mt-5 flex flex-wrap gap-2">
-                  <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-black"><Gift size={14} /> Rewards coming soon</span>
-                  <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-black"><Sparkles size={14} /> Freshly made</span>
-                </div>
-              </div>
-              <img src={coffeeBondLogo} alt="" className="hidden h-36 w-36 rounded-[2rem] bg-[#fffaf5] object-contain p-3 md:block" />
-            </div>
-          </div>
-
-          <div className="grid gap-4 rounded-[2rem] border border-[#ead8c7] bg-white p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_minmax(220px,320px)]">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Pickup from</p>
-              <label className="mt-3 block">
-                <span className="sr-only">Select pickup store</span>
-                <span className="flex items-center gap-3 rounded-[1.25rem] border border-[#ead8c7] bg-[#fffaf5] px-4 py-3">
-                  <StoreIcon size={18} className="text-[#8a5a33]" />
+                <p className="text-xs font-bold text-neutral-500">Pickup from</p>
+                <label className="mt-1 flex items-center gap-2">
+                  <StoreIcon size={16} className="text-[#9a6a45]" />
                   <select
                     value={selectedStoreId}
                     onChange={(event) => {
@@ -634,141 +712,118 @@ export default function CustomerOrder() {
                       setCart([]);
                       setCategory('ALL');
                     }}
-                    className="w-full appearance-none bg-transparent text-base font-black text-[#2d2019] outline-none"
+                    className="max-w-[210px] appearance-none bg-transparent text-base font-black text-[#2d2019] outline-none"
+                    aria-label="Select pickup store"
                   >
                     {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
                   </select>
-                  <ChevronDown size={18} className="text-neutral-400" />
-                </span>
-              </label>
-              {selectedStore && (
-                <div className={`mt-3 rounded-2xl px-4 py-3 text-sm ${
-                  selectedStoreOnline ? 'bg-emerald-50 text-emerald-900' : 'bg-red-50 text-red-900'
-                }`}>
-                  <p className="font-black">{selectedStoreOnline ? 'Accepting online orders' : 'Online ordering unavailable'}</p>
-                  <p className="mt-1 font-medium">{selectedStoreMessage}</p>
-                </div>
-              )}
-            </div>
-            <div className="rounded-[1.5rem] bg-[#fbf5ee] p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-[#5c4033] shadow-sm">
-                  <Clock size={20} />
-                </div>
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-neutral-400">Estimated prep</p>
-                  <p className="text-xl font-black text-[#2d2019]">{selectedStore ? estimatedPrepLabel(selectedStore) : '--'}</p>
-                </div>
+                  <ChevronDown size={16} className="text-neutral-400" />
+                </label>
               </div>
-              <p className="mt-4 text-sm font-medium text-neutral-600">You can add a pickup note before sending the request.</p>
+              <div className="rounded-full bg-[#fbf5ee] px-3 py-2 text-xs font-black text-[#5c4033]">
+                {selectedStore ? estimatedPrepLabel(selectedStore) : '--'}
+              </div>
             </div>
-          </div>
+            <div className="flex flex-wrap gap-2">
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black ${
+                selectedStoreOnline ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+              }`}>
+                <CheckCircle2 size={13} />
+                {selectedStoreOnline ? 'Accepting orders' : 'Unavailable'}
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fbf5ee] px-3 py-1.5 text-xs font-bold text-[#5c4033]">
+                <Clock size={13} />
+                Pickup
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-neutral-600">{selectedStoreMessage}</p>
+          </section>
+
+          <label className="flex h-12 items-center gap-2 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#eadfd2]">
+            <Search size={18} className="text-neutral-400" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              className="w-full bg-transparent text-sm outline-none"
+              placeholder="Search coffee, food, desserts..."
+            />
+          </label>
+
+          <nav className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setCategory(cat)}
+                className={`shrink-0 rounded-full px-4 py-2 text-sm font-black transition-colors ${
+                  category === cat ? 'bg-[#3b261d] text-white' : 'bg-white text-[#5c4033] ring-1 ring-[#eadfd2]'
+                }`}
+              >
+                {categoryLabel(cat)}
+              </button>
+            ))}
+          </nav>
 
           {error && (
-            <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">
+            <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
               <AlertCircle size={18} className="shrink-0" />
               {error}
             </div>
           )}
 
           <section>
-            <div className="mb-3 flex items-end justify-between gap-3">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Recommended</p>
-                <h2 className="text-2xl font-black text-[#2d2019]">Popular today</h2>
-              </div>
-              <p className="hidden text-sm font-medium text-neutral-500 sm:block">Start with a favourite</p>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xl font-black text-[#2d2019]">Popular today</h2>
+              <p className="text-xs font-bold text-neutral-500">Quick add</p>
             </div>
             {loading ? (
-              <div className="rounded-[2rem] bg-white p-8 text-center font-bold text-neutral-500">Loading favourites...</div>
+              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">Loading favourites...</div>
             ) : popularItems.length === 0 ? (
-              <div className="rounded-[2rem] bg-white p-8 text-center font-bold text-neutral-500">No popular items available for this store.</div>
+              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">No popular items available.</div>
             ) : (
-              <div className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
-                {popularItems.map(item => renderProductCard(item, true))}
+              <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2">
+                {popularItems.map(item => renderPopularCard(item))}
               </div>
             )}
           </section>
 
-          <section className="rounded-[2rem] border border-[#ead8c7] bg-white p-4 shadow-sm sm:p-5">
-            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Full menu</p>
-                <h2 className="text-2xl font-black text-[#2d2019]">What would you like?</h2>
-              </div>
-              <label className="flex items-center gap-2 rounded-full border border-[#ead8c7] bg-[#fffaf5] px-4 py-3 md:min-w-80">
-                <Search size={17} className="text-neutral-400" />
-                <input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  className="w-full bg-transparent text-sm outline-none"
-                  placeholder="Search coffee, food, dessert..."
-                />
-              </label>
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xl font-black text-[#2d2019]">Explore the menu</h2>
+              <p className="text-xs font-bold text-neutral-500">{visibleItems.length} items</p>
             </div>
-
-            <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
-              {categories.map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => setCategory(cat)}
-                  className={`whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-black transition-colors ${
-                    category === cat ? 'bg-[#5c4033] text-white shadow-sm' : 'border border-[#ead8c7] bg-white text-[#5c4033]'
-                  }`}
-                >
-                  {cat === 'ALL' ? 'All favourites' : cat}
-                </button>
-              ))}
-            </div>
-
             {loading ? (
-              <div className="rounded-[1.5rem] bg-[#fbf5ee] p-10 text-center font-bold text-neutral-500">Loading menu...</div>
+              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">Loading menu...</div>
             ) : visibleItems.length === 0 ? (
-              <div className="rounded-[1.5rem] bg-[#fbf5ee] p-10 text-center">
+              <div className="rounded-2xl bg-white p-5 text-center">
                 <p className="font-black text-neutral-800">Nothing found here</p>
                 <p className="text-sm text-neutral-500">Try another category or search.</p>
               </div>
             ) : (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {visibleItems.map(item => renderProductCard(item))}
+              <div className="grid gap-3 lg:grid-cols-2">
+                {visibleItems.map(item => renderMenuCard(item))}
               </div>
             )}
           </section>
-
-          {suggestedItems.length > 0 && (
-            <section className="rounded-[2rem] border border-[#ead8c7] bg-[#fffaf5] p-5">
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">You may also like</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {suggestedItems.map(item => (
-                  <button key={`suggested-${item.code}`} onClick={() => setCartQuantity(item, (cart.find(line => line.item.code === item.code)?.quantity || 0) + 1)} className="flex items-center justify-between rounded-2xl bg-white p-3 text-left shadow-sm">
-                    <span>
-                      <span className="block font-black text-[#2d2019]">{item.displayName || item.name}</span>
-                      <span className="text-xs font-bold text-neutral-500">{formatMoney(toNumber(item.salePrice))}</span>
-                    </span>
-                    <Plus size={18} className="text-[#5c4033]" />
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
         </section>
 
-        <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-[2rem] border border-[#ead8c7] bg-white p-5 shadow-sm lg:sticky lg:top-24 lg:block">
+        <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-sm ring-1 ring-[#eadfd2] lg:sticky lg:top-24 lg:block">
           {basketPanel}
         </aside>
       </main>
 
       <button
         onClick={() => setBasketOpen(true)}
-        className="fixed inset-x-4 bottom-4 z-40 rounded-2xl bg-[#2d2019] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.28)] lg:hidden"
+        className="fixed inset-x-4 bottom-4 z-40 flex items-center justify-between rounded-2xl bg-[#3b261d] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] lg:hidden"
       >
-        View Basket · {formatMoney(totals.grandTotal)}
+        <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
+        <span>{formatMoney(totals.grandTotal)}</span>
       </button>
 
       {basketOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 lg:hidden">
+        <div className="fixed inset-0 z-50 bg-black/35 lg:hidden">
           <button aria-label="Close basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[86dvh] overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-2xl">
+          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl">
+            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-neutral-200" />
             {basketPanel}
           </div>
         </div>
