@@ -35,6 +35,7 @@ import Phase7IBomAliasCorrection from './pages/admin/Phase7IBomAliasCorrection';
 import POSReadiness from './pages/admin/POSReadiness';
 import POSHome from './pages/pos/POSHome';
 import IncomingOnlineOrders from './pages/pos/IncomingOnlineOrders';
+import RunningOrders from './pages/pos/RunningOrders';
 
 import MenuManagementHub from './pages/admin/MenuManagementHub';
 
@@ -107,6 +108,7 @@ export default function App() {
 
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'CASHIER']} />}>
                 <Route path="/pos" element={<POSHome />} />
+                <Route path="/pos/running-orders" element={<RunningOrders />} />
                 <Route path="/pos/incoming-orders" element={<IncomingOnlineOrders />} />
                 <Route path="/reports" element={<ReportsHome />} />
                 <Route path="/reports/day-close" element={<DayClose />} />

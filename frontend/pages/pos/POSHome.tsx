@@ -1675,6 +1675,12 @@ export default function POSHome() {
           </div>
 
           <div className="flex items-center gap-3">
+            <Link
+              to="/pos/running-orders"
+              className="hidden sm:inline-flex items-center justify-center rounded-lg border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-[#5c4033] hover:bg-[#5c4033]/5"
+            >
+              Running Orders
+            </Link>
             <div className="flex bg-neutral-100 p-1 rounded-lg w-full sm:w-auto overflow-x-auto custom-scrollbar">
               {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (
                 <button

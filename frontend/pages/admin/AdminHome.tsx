@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -108,6 +108,18 @@ export default function AdminHome() {
               <div>
                 <h4 className="font-bold text-neutral-800">Online Orders</h4>
                 <p className="text-xs text-neutral-500">Accept or reject customer requests</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/pos/running-orders" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <ListChecks size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Running Orders</h4>
+                <p className="text-xs text-neutral-500">Live order, KOT, and payment board</p>
               </div>
             </Link>
           </motion.div>
