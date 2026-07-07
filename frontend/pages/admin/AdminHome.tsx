@@ -148,6 +148,18 @@ export default function AdminHome() {
           </motion.div>
 
           <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/reports/audit-control" className="bg-blue-50 p-5 rounded-2xl shadow-sm border border-blue-200 hover:border-blue-400 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-white text-blue-700 rounded-xl flex items-center justify-center shrink-0 border border-blue-200">
+                <FileSearch size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Audit Control</h4>
+                <p className="text-xs text-neutral-500">Owner checks after day close</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
             <Link to="/admin/pos-readiness" className="bg-emerald-50 p-5 rounded-2xl shadow-sm border border-emerald-200 hover:border-emerald-400 hover:shadow-md transition-all flex items-center gap-4 h-full">
               <div className="w-10 h-10 bg-white text-emerald-700 rounded-xl flex items-center justify-center shrink-0 border border-emerald-200">
                 <ShieldCheck size={20} />

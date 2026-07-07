@@ -3,7 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { auth, db } from '../../lib/firebase';
 import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
 import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
-import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft } from 'lucide-react';
+import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 type ReportPaymentBreakdown = {
@@ -677,6 +677,16 @@ export default function ReportsHome() {
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
+            {(staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER') && (
+              <Link
+                to="/reports/audit-control"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-black uppercase tracking-wider hover:bg-emerald-800 transition-colors"
+              >
+                <ShieldCheck size={16} />
+                Audit Control
+              </Link>
+            )}
+
             <Link
               to="/reports/day-close"
               className="px-4 py-2 rounded-lg bg-[#3e2723] text-white text-sm font-black uppercase tracking-wider hover:bg-[#2d1c19] transition-colors"

@@ -18,6 +18,7 @@ import { KOTBarista, KOTKitchen } from './pages/Placeholders';
 import ReadyToServe from './pages/kot/ReadyToServe';
 import ReportsHome from './pages/reports/ReportsHome';
 import DayClose from './pages/reports/DayClose';
+import AuditControl from './pages/reports/AuditControl';
 import AdminHome from './pages/admin/AdminHome';
 import Stores from './pages/admin/Stores';
 import Categories from './pages/admin/Categories';
@@ -113,6 +114,10 @@ export default function App() {
                 <Route path="/reports" element={<ReportsHome />} />
                 <Route path="/reports/day-close" element={<DayClose />} />
                 <Route path="/kot/ready" element={<ReadyToServe />} />
+              </Route>
+
+              <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>
+                <Route path="/reports/audit-control" element={<AuditControl />} />
               </Route>
               
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'BARISTA', 'CASHIER']} />}>
