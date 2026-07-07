@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
+import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store } from '../../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
@@ -99,6 +100,7 @@ type EspressoFixState = {
 const TARGET_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51'];
 const ESPRESSO_STOCK_CODE = 'ESPRESSO_DOUBLE_RISTRETTO';
 const ESPRESSO_FIX_CONFIRMATION = 'RESTORE ESPRESSO STOCK';
+const AVAILABILITY_REFRESH_CONFIRMATION = 'REFRESH CUSTOMER AVAILABILITY';
 const GST_CONFIG_DOC_ID = 'gstConfig';
 const GST_CONFIG_CONFIRMATION = 'SAVE GST CONFIG';
 const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettings', 'settings'];
@@ -622,9 +624,15 @@ export default function POSReadiness() {
   const [gstStoreRateInputs, setGstStoreRateInputs] = useState<Record<string, string>>({});
   const [gstConfirmationText, setGstConfirmationText] = useState('');
   const [isSavingGst, setIsSavingGst] = useState(false);
+  const [availabilityStoreId, setAvailabilityStoreId] = useState('');
+  const [availabilityConfirmationText, setAvailabilityConfirmationText] = useState('');
+  const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
+  const [availabilityResult, setAvailabilityResult] = useState<(PublicMenuAvailabilitySnapshot & { updatedAtLabel: string }) | null>(null);
   const [refreshedAt, setRefreshedAt] = useState('');
 
   const isAdmin = staffProfile?.role === 'ADMIN';
+  const isStoreManager = staffProfile?.role === 'STORE_MANAGER';
+  const canRefreshCustomerAvailability = isAdmin || isStoreManager;
   const readiness = useMemo(() => data ? buildStoreReadiness(data) : [], [data]);
   const espressoFix = useMemo(() => buildEspressoFixState(data), [data]);
 
@@ -648,6 +656,7 @@ export default function POSReadiness() {
 
   useEffect(() => {
     if (!data) return;
+    setAvailabilityStoreId(prev => prev || data.stores[0]?.id || '');
     setGstDefaultRateInput(data.gstConfig.defaultRate > 0 ? String(data.gstConfig.defaultRate) : '');
     setGstStoreRateInputs(data.stores.reduce<Record<string, string>>((acc, store) => {
       const rate = data.gstConfig.storeOverrides[store.id] || data.gstConfig.storeOverrides[store.code] || 0;
@@ -655,6 +664,89 @@ export default function POSReadiness() {
       return acc;
     }, {}));
   }, [data]);
+
+  const hasStaffStoreAccess = (storeId: string): boolean => {
+    if (isAdmin) return true;
+    const ids = new Set([...(staffProfile?.storeIds || []), ...(staffProfile?.assignedStoreIds || [])]);
+    return ids.has(storeId);
+  };
+
+  const selectedAvailabilityStore = useMemo(
+    () => data?.stores.find((store) => store.id === availabilityStoreId) || null,
+    [availabilityStoreId, data],
+  );
+  const availabilityStoreSelected = Boolean(selectedAvailabilityStore);
+  const availabilityRoleAllowed = canRefreshCustomerAvailability;
+  const availabilityConfirmationMatched = availabilityConfirmationText.trim() === AVAILABILITY_REFRESH_CONFIRMATION;
+  const availabilityRefreshDisabled = !availabilityStoreSelected
+    || !availabilityRoleAllowed
+    || !availabilityConfirmationMatched
+    || isRefreshingAvailability;
+
+  const refreshCustomerAvailabilitySnapshot = async () => {
+    if (!canRefreshCustomerAvailability) {
+      setError('Admin or Store Manager access is required to refresh customer menu availability.');
+      return;
+    }
+    if (!data) {
+      setError('Readiness data is still loading.');
+      return;
+    }
+    if (availabilityConfirmationText.trim() !== AVAILABILITY_REFRESH_CONFIRMATION) {
+      setError(`Type ${AVAILABILITY_REFRESH_CONFIRMATION} to confirm this public availability refresh.`);
+      return;
+    }
+
+    const store = data.stores.find((item) => item.id === availabilityStoreId);
+    if (!store) {
+      setError('Select a store before refreshing customer availability.');
+      return;
+    }
+    if (!hasStaffStoreAccess(store.id)) {
+      setError('You do not have access to refresh customer availability for this store.');
+      return;
+    }
+    if (!window.confirm(`Refresh public customer menu availability for ${store.name}? This writes only sanitized available/unavailable statuses.`)) {
+      return;
+    }
+
+    setIsRefreshingAvailability(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const snapshot = buildPublicMenuAvailabilitySnapshot({
+        store,
+        finishedGoods: data.finishedGoods,
+        storeStock: data.storeStock,
+        rawIngredients: data.rawIngredients,
+        prepItems: data.prepItems,
+      });
+      const staffName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Staff';
+
+      await setDoc(doc(db, 'publicMenuAvailability', store.code), {
+        ...snapshot,
+        updatedAt: serverTimestamp(),
+        updatedBy: staffProfile?.uid || '',
+        updatedByName: staffName,
+      }, { merge: true });
+
+      setAvailabilityResult({ ...snapshot, updatedAtLabel: new Date().toLocaleString() });
+      setAvailabilityConfirmationText('');
+      setSuccessMessage(
+        `Customer menu availability refreshed for ${store.name}. Total: ${snapshot.itemCount}, available: ${snapshot.availableCount}, unavailable: ${snapshot.unavailableCount}.`,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to refresh customer menu availability.';
+      if (message.toLowerCase().includes('missing or insufficient permissions')) {
+        setError('Firestore permissions blocked this refresh. Deploy the latest Firestore rules with firebase deploy --only firestore:rules, then try again.');
+      } else {
+        setError(message);
+      }
+    } finally {
+      setIsRefreshingAvailability(false);
+    }
+  };
 
   const saveGstConfig = async () => {
     if (!isAdmin) {
@@ -886,6 +978,92 @@ export default function POSReadiness() {
           <p>The billing screen uses Finished Goods, BOM, prep components, and storeStock for every Coffee Bond store.</p>
         </div>
       </div>
+
+      {canRefreshCustomerAvailability && data && (
+        <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div>
+              <h2 className="text-xl font-black text-neutral-900">Refresh Customer Menu Availability</h2>
+              <p className="text-sm text-neutral-600 mt-1">
+                Builds a public-safe snapshot for the customer app. It writes only item code, available/unavailable status, and customer-safe messages.
+              </p>
+              <p className="mt-2 text-xs font-bold text-neutral-500">
+                Private stock quantities, BOM components, raw ingredients, prep item codes, and blocker details are not written to the public document.
+              </p>
+            </div>
+
+            <div className="w-full lg:max-w-xl space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Store</span>
+                  <select
+                    value={availabilityStoreId}
+                    onChange={(event) => setAvailabilityStoreId(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                  >
+                    {data.stores
+                      .filter((store) => hasStaffStoreAccess(store.id))
+                      .map((store) => (
+                        <option key={store.id} value={store.id}>{store.name}</option>
+                      ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Confirmation</span>
+                  <input
+                    type="text"
+                    value={availabilityConfirmationText}
+                    onChange={(event) => setAvailabilityConfirmationText(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder={AVAILABILITY_REFRESH_CONFIRMATION}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={refreshCustomerAvailabilitySnapshot}
+                disabled={availabilityRefreshDisabled}
+                className="w-full md:w-auto px-4 py-3 bg-[#5c4033] text-white rounded-xl font-black hover:bg-[#4a332a] disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+              >
+                {isRefreshingAvailability ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                Refresh Customer Menu Availability
+              </button>
+
+              {isAdmin && (
+                <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600">
+                  <span className="mr-3">Store selected: {availabilityStoreSelected ? 'yes' : 'no'}</span>
+                  <span className="mr-3">Role allowed: {availabilityRoleAllowed ? 'yes' : 'no'}</span>
+                  <span className="mr-3">Confirmation matched: {availabilityConfirmationMatched ? 'yes' : 'no'}</span>
+                  <span>Refresh running: {isRefreshingAvailability ? 'yes' : 'no'}</span>
+                </div>
+              )}
+
+              {availabilityResult && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 rounded-xl bg-neutral-50 border border-neutral-200 p-3 text-sm">
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Store</p>
+                    <p className="font-black">{availabilityResult.storeName}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Available</p>
+                    <p className="font-black text-emerald-700">{availabilityResult.availableCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Unavailable</p>
+                    <p className="font-black text-red-700">{availabilityResult.unavailableCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Updated</p>
+                    <p className="font-bold">{availabilityResult.updatedAtLabel}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {isAdmin && data && (
         <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">

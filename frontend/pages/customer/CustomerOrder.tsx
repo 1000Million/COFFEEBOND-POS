@@ -52,9 +52,28 @@ type GstConfig = {
 type ItemAvailability = {
   available: boolean;
   reason: string;
+  fromSnapshot?: boolean;
 };
 
 type IconComponent = React.ComponentType<{ size?: number; className?: string }>;
+
+type PublicAvailabilityItem = {
+  itemCode?: string;
+  fgCode?: string;
+  available?: boolean;
+  publicStatus?: 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
+  publicMessage?: string;
+};
+
+type PublicAvailabilitySnapshot = {
+  storeId?: string;
+  storeCode?: string;
+  storeName?: string;
+  updatedAt?: unknown;
+  expiresAt?: unknown;
+  items?: Record<string, PublicAvailabilityItem>;
+  menuItems?: Record<string, CustomerMenuItem>;
+};
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
@@ -199,19 +218,35 @@ function getItemAvailability(item: CustomerMenuItem, storeId: string): ItemAvail
     return { available: false, reason: 'Not available for online ordering' };
   }
   if (toNumber(item.salePrice) <= 0) {
-    return { available: false, reason: 'Price setup incomplete' };
-  }
-  if (item.itemType !== 'NO_STOCK' && item.itemType !== 'DIRECT_STOCK' && (!Array.isArray(item.bom) || item.bom.length === 0)) {
-    return { available: false, reason: 'Recipe/BOM setup incomplete' };
+    return { available: false, reason: 'Currently unavailable' };
   }
   if (!['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation)) {
-    return { available: false, reason: 'Preparation station setup incomplete' };
+    return { available: false, reason: 'Currently unavailable' };
   }
   const explicitReason = itemRecord.customerUnavailableReason;
   if (typeof explicitReason === 'string' && explicitReason.trim()) {
     return { available: false, reason: explicitReason.trim() };
   }
   return { available: true, reason: '' };
+}
+
+function dateFromFirestoreValue(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') return new Date(value);
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  if (typeof value === 'object' && 'toDate' in value && typeof (value as { toDate: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  return null;
+}
+
+function isSnapshotStale(snapshot: PublicAvailabilitySnapshot | null): boolean {
+  const expiresAt = dateFromFirestoreValue(snapshot?.expiresAt);
+  return !!expiresAt && expiresAt.getTime() < Date.now();
 }
 
 function formatMoney(value: number): string {
@@ -230,6 +265,8 @@ export default function CustomerOrder() {
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
+  const [publicAvailability, setPublicAvailability] = useState<PublicAvailabilitySnapshot | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [basketOpen, setBasketOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -244,14 +281,8 @@ export default function CustomerOrder() {
       setLoading(true);
       setError(null);
       try {
-        const [storeSnap, itemSnap, gstSnap] = await Promise.all([
+        const [storeSnap, gstSnap] = await Promise.all([
           getDocs(query(collection(db, 'stores'), where('isActive', '==', true))),
-          getDocs(query(
-            collection(db, 'finishedGoods'),
-            where('isActive', '==', true),
-            where('isSellable', '==', true),
-            where('isAvailable', '==', true),
-          )),
           getDoc(doc(db, 'appSettings', 'gstConfig')),
         ]);
 
@@ -259,12 +290,9 @@ export default function CustomerOrder() {
 
         const loadedStores = storeSnap.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
           .sort((a, b) => a.name.localeCompare(b.name));
-        const loadedItems = itemSnap.docs.map(itemDoc => ({ id: itemDoc.id, ...itemDoc.data() } as CustomerMenuItem))
-          .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
         const gstData = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : {};
 
         setStores(loadedStores);
-        setItems(loadedItems);
         setSelectedStoreId(prev => prev || loadedStores[0]?.id || '');
         setGstConfig({
           defaultRate: pickTaxRate(gstData, APP_TAX_RATE_KEYS),
@@ -284,10 +312,56 @@ export default function CustomerOrder() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    const loadAvailability = async () => {
+      if (!selectedStoreId) {
+        setPublicAvailability(null);
+        return;
+      }
+
+      setAvailabilityLoading(true);
+      try {
+        const selectedStore = stores.find(store => store.id === selectedStoreId);
+        if (!selectedStore) {
+          setPublicAvailability(null);
+          setItems([]);
+          return;
+        }
+
+        const snap = await getDoc(doc(db, 'publicMenuAvailability', selectedStore.code));
+        if (!active) return;
+        const snapshot = snap.exists() ? snap.data() as PublicAvailabilitySnapshot : null;
+        setPublicAvailability(snapshot);
+        const publicItems = Object.values(snapshot?.menuItems || {})
+          .map(item => ({ ...item, bom: [], bomVersion: 0, recipeCost: 0, grossMargin: 0, cogsPercent: 0 } as CustomerMenuItem))
+          .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
+        setItems(publicItems);
+      } catch (err) {
+        console.warn('Customer menu availability snapshot is unavailable; the store will confirm availability.', err);
+        if (active) setPublicAvailability(null);
+        if (active) setItems([]);
+      } finally {
+        if (active) setAvailabilityLoading(false);
+      }
+    };
+
+    loadAvailability();
+    return () => {
+      active = false;
+    };
+  }, [selectedStoreId, stores]);
+
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
   const selectedStoreOnline = isStoreOnlineEnabled(selectedStore);
   const selectedStoreMessage = storeOnlineMessage(selectedStore);
+  const availabilitySnapshotMissing = !!selectedStoreId && !availabilityLoading && !publicAvailability;
+  const availabilitySnapshotStale = isSnapshotStale(publicAvailability);
+  const availabilityNotice = availabilitySnapshotMissing || availabilitySnapshotStale
+    ? 'Availability will be confirmed by the store.'
+    : '';
 
   const storeItems = useMemo(() => {
     if (!selectedStoreId) return [];
@@ -296,10 +370,20 @@ export default function CustomerOrder() {
 
   const itemAvailability = useMemo(() => {
     return storeItems.reduce<Record<string, ItemAvailability>>((acc, item) => {
-      acc[item.code] = getItemAvailability(item, selectedStoreId);
+      const baseAvailability = getItemAvailability(item, selectedStoreId);
+      const publicItem = publicAvailability?.items?.[item.code];
+      if (baseAvailability.available && publicItem?.available === false) {
+        acc[item.code] = {
+          available: false,
+          reason: publicItem.publicMessage || 'Currently unavailable',
+          fromSnapshot: true,
+        };
+      } else {
+        acc[item.code] = baseAvailability;
+      }
       return acc;
     }, {});
-  }, [storeItems, selectedStoreId]);
+  }, [storeItems, selectedStoreId, publicAvailability]);
 
   const categories = useMemo(() => {
     const names = Array.from(new Set(storeItems.map(item => categoryGroupName(item))));
@@ -343,7 +427,8 @@ export default function CustomerOrder() {
 
   const setCartQuantity = (item: CustomerMenuItem, quantity: number) => {
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-    if (quantity > 0 && !availability.available) {
+    const currentQty = cart.find(line => line.item.code === item.code)?.quantity || 0;
+    if (quantity > currentQty && !availability.available) {
       setError(`${item.displayName || item.name} is currently unavailable: ${availability.reason}.`);
       return;
     }
@@ -369,7 +454,9 @@ export default function CustomerOrder() {
     const blockedLine = cart.find(line => !(itemAvailability[line.item.code] || getItemAvailability(line.item, selectedStore.id)).available);
     if (blockedLine) {
       const availability = itemAvailability[blockedLine.item.code] || getItemAvailability(blockedLine.item, selectedStore.id);
-      return setError(`${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
+      return setError(availability.fromSnapshot
+        ? 'Some items are currently unavailable. Please remove them from your basket.'
+        : `${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
     }
 
     setSaving(true);
@@ -737,6 +824,15 @@ export default function CustomerOrder() {
               </span>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-neutral-600">{selectedStoreMessage}</p>
+            {availabilityLoading ? (
+              <p className="mt-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-xs font-bold text-[#7b5a42]">
+                Checking item availability...
+              </p>
+            ) : availabilityNotice ? (
+              <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+                {availabilityNotice}
+              </p>
+            ) : null}
           </section>
 
           <label className="flex h-12 items-center gap-2 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#eadfd2]">

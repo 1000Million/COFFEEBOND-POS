@@ -164,6 +164,15 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /publicMenuAvailability/{storeCode} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if (isAdmin() || isStoreManager())
+        && request.resource.data.storeCode == storeCode
+        && hasStoreAccess(request.resource.data.storeId);
+      allow delete: if isAdmin();
+    }
+
     match /dayClosings/{closingId} {
       allow get: if isCheckoutStaff() && (
         !exists(/databases/$(database)/documents/dayClosings/$(closingId))
@@ -254,12 +263,7 @@ service cloud.firestore {
     }
 
     match /finishedGoods/{itemId} {
-      allow read: if isActiveStaff()
-        || (
-          resource.data.isActive == true
-          && resource.data.isSellable == true
-          && resource.data.isAvailable == true
-        );
+      allow read: if isActiveStaff();
       allow write: if isAdmin();
     }
 
