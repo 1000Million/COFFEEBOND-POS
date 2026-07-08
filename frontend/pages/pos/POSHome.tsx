@@ -916,6 +916,8 @@ export default function POSHome() {
   const splitAllocatedAmount = useMemo(() => paymentRowsAllocated(splitPayments), [splitPayments]);
   const splitBalanceAmount = cartTotals.grandTotal - splitAllocatedAmount;
   const splitPaymentBalanced = paymentRowsAreBalanced(cartTotals.grandTotal, splitAllocatedAmount);
+  const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const selectedStore = stores.find(store => store.id === selectedStoreId);
 
   const persistHeldBills = (nextHeldBills: HeldBill[]) => {
     setHeldBills(nextHeldBills);
@@ -1613,178 +1615,145 @@ export default function POSHome() {
   }
 
   return (
-    <div className="flex-1 flex flex-col lg:flex-row gap-0 overflow-hidden relative w-full min-w-0 h-[100dvh] lg:h-[calc(100vh-64px)] pb-[env(safe-area-inset-bottom)] lg:pb-0">
-
-      {/* Desktop Category Rail (Hidden on Mobile) */}
-      <div className="hidden lg:flex flex-col w-[180px] shrink-0 bg-white border-r border-neutral-200 z-10">
-        <div className="p-4 border-b border-neutral-100 bg-[#faf8f5]">
-          <h2 className="font-black text-neutral-800 tracking-tight">Categories</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          <button
-            onClick={() => setSelectedCategoryId('ALL')}
-            className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-bold transition-colors flex items-center justify-between group ${selectedCategoryId === 'ALL' ? 'bg-[#5c4033] text-white shadow-sm' : 'text-neutral-600 hover:bg-neutral-100'}`}
-          >
-            <span>All Items</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded-md transition-colors ${selectedCategoryId === 'ALL' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-500 group-hover:bg-neutral-300'}`}>
-              {menuItems.filter(i => i.availableStoreIds?.includes(selectedStoreId)).length}
-            </span>
-          </button>
-          {displayCategories.map(cat => (
-            <button
-              key={cat.id}
-              onClick={() => setSelectedCategoryId(cat.id)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-bold transition-colors leading-snug flex items-center justify-between group ${selectedCategoryId === cat.id ? 'bg-[#5c4033] text-white shadow-sm' : 'text-neutral-600 hover:bg-neutral-100'}`}
-            >
-              <span className="flex-1 mr-2">{cat.name}</span>
-              {(cat as any).count !== undefined && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-md transition-colors shrink-0 ${selectedCategoryId === cat.id ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-500 group-hover:bg-neutral-300'}`}>
-                  {(cat as any).count}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Center Area: Menu & Navigation */}
-      <div className="flex flex-col bg-[#f9f5f0] overflow-hidden flex-1 w-full min-w-0">
-        {/* Top Header */}
-        <div className="bg-white border-b border-neutral-200 px-4 py-3 flex flex-wrap lg:flex-nowrap items-center justify-between gap-3 shadow-sm z-10 basis-auto shrink-0 relative">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 lg:hidden bg-[#5c4033] rounded-lg flex items-center justify-center text-[#f9f5f0] shrink-0">
-              <Coffee size={18} strokeWidth={2.5} />
+    <div className="relative flex h-[calc(100dvh-72px)] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f7f1e8] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0">
+      <div className="shrink-0 border-b border-[#eadfd4] bg-white/95 px-3 py-3 shadow-sm backdrop-blur sm:px-5">
+        <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#3e2723] text-[#f9f5f0] shadow-sm">
+              <Coffee size={23} strokeWidth={2.5} />
             </div>
-            <div className="flex flex-col gap-1">
-               <div className="flex items-center gap-2">
-                 <StoreIcon size={18} className="text-[#5c4033] hidden lg:block" />
-                 <select
-                   value={selectedStoreId}
-                   onChange={handleStoreChange}
-                   className="bg-neutral-50 border border-neutral-200 text-neutral-800 font-bold px-3 py-1.5 rounded-lg focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] outline-none text-sm max-w-[140px] sm:max-w-xs"
-                 >
-                   {stores.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-                 </select>
-               </div>
-               <div className="flex flex-col">
-                 <span className="text-[8px] sm:text-[9px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded self-start">
-                   POS V2 · Finished Goods Menu
-                 </span>
-               </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-black tracking-tight text-[#2d1c19] sm:text-xl">Coffee Bond POS</h1>
+              <p className="truncate text-xs font-semibold text-neutral-500">Tap items, review order, collect payment</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link
-              to="/pos/running-orders"
-              className="hidden sm:inline-flex items-center justify-center rounded-lg border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-[#5c4033] hover:bg-[#5c4033]/5"
-            >
-              Running Orders
-            </Link>
-            <div className="flex bg-neutral-100 p-1 rounded-lg w-full sm:w-auto overflow-x-auto custom-scrollbar">
+          <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-end">
+            <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-2">
+              <StoreIcon size={17} className="shrink-0 text-[#5c4033]" />
+              <select
+                value={selectedStoreId}
+                onChange={handleStoreChange}
+                className="min-w-0 flex-1 bg-transparent text-sm font-black text-[#2d1c19] outline-none lg:w-56"
+                aria-label="Select POS store"
+              >
+                {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+
+            <div className="flex min-w-0 max-w-full overflow-x-auto rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1 custom-scrollbar">
               {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (
                 <button
                   key={type}
                   onClick={() => setOrderType(type)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold whitespace-nowrap transition-all ${orderType === type ? 'bg-[#5c4033] text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50'}`}
+                  className={`min-h-[42px] whitespace-nowrap rounded-xl px-4 text-sm font-black transition-all ${
+                    orderType === type
+                      ? 'bg-[#3e2723] text-white shadow-sm'
+                      : 'text-neutral-600 hover:bg-white hover:text-[#2d1c19]'
+                  }`}
                 >
-                  {type === 'DINE_IN' ? 'DINE IN' : type === 'TAKEAWAY' ? 'TAKEAWAY' : 'DELIVERY'}
+                  {type === 'DINE_IN' ? 'Dine In' : type === 'TAKEAWAY' ? 'Takeaway' : 'Delivery'}
                 </button>
               ))}
             </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+              <Link
+                to="/pos/running-orders"
+                className="inline-flex min-h-[42px] items-center justify-center rounded-2xl border border-[#3e2723]/15 bg-white px-4 text-sm font-black text-[#3e2723] shadow-sm transition hover:bg-[#fff8ed]"
+              >
+                Running Orders
+              </Link>
+              {isAdmin && (
+                <Link
+                  to="/admin/pos-readiness"
+                  title={debugCounts ? `${debugCounts.mappedCount} menu items ready for POS checks` : 'Open POS readiness'}
+                  className="inline-flex min-h-[42px] items-center justify-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-4 text-sm font-bold text-neutral-600 transition hover:bg-white hover:text-[#3e2723]"
+                >
+                  POS Readiness
+                </Link>
+              )}
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Categories Mobile Dropdown */}
-        <div className="lg:hidden bg-white border-b border-neutral-200 px-4 py-3 flex items-center gap-3 shrink-0">
-          <label className="text-xs font-bold text-neutral-500 uppercase tracking-widest shrink-0">Category</label>
-          <select
-            value={selectedCategoryId}
-            onChange={e => setSelectedCategoryId(e.target.value)}
-            className="flex-1 bg-neutral-50 border border-neutral-200 text-neutral-800 font-bold px-3 py-2 rounded-lg focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] outline-none text-sm"
-          >
-            <option value="ALL">All Items ({menuItems.filter(i => i.availableStoreIds?.includes(selectedStoreId)).length})</option>
-            {displayCategories.map(cat => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name} {(cat as any).count !== undefined ? `(${(cat as any).count})` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* DEV Debug Panel */}
-        {import.meta.env.DEV && debugCounts && (
-          <div className="mx-4 mt-4 bg-blue-50 border border-blue-200 p-3 rounded-xl shadow-sm text-xs text-blue-900 grid grid-cols-2 md:grid-cols-4 gap-2 xl:grid-cols-6 items-center text-center">
-             <div className="flex flex-col"><span className="font-bold">Total Finished Goods</span><span>{debugCounts.total}</span></div>
-             <div className="flex flex-col"><span className="font-bold">Unique Categories</span><span>{displayCategories.length}</span></div>
-             <div className="flex flex-col"><span className="font-bold">Current Category</span><span className="truncate" title={selectedCategoryId}>{selectedCategoryId}</span></div>
-             <div className="flex flex-col"><span className="font-bold">Visible Items</span><span>{filteredMenuItems.length}</span></div>
-             <div className="flex flex-col"><span className="font-bold">Active/Sellable</span><span>{debugCounts.activeCount}/{debugCounts.sellableCount}</span></div>
-             <div className="flex flex-col"><span className="font-bold">Store Available</span><span>{menuItems.filter(i => i.availableStoreIds?.includes(selectedStoreId)).length}</span></div>
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
+      {/* Menu Area */}
+      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar sm:p-5 lg:p-6">
+          <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div className="relative min-w-0">
+              <Search size={19} className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search coffee, food, desserts..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="min-h-[52px] w-full rounded-2xl border border-[#eadfd4] bg-white pl-12 pr-4 text-base font-semibold text-neutral-800 shadow-sm outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
+              />
+            </div>
+            <div className="hidden rounded-2xl border border-[#eadfd4] bg-white px-4 py-2 text-sm font-bold text-neutral-500 shadow-sm lg:block">
+              {selectedStore?.name || 'Store'} · {filteredMenuItems.length} items
+            </div>
           </div>
-        )}
 
-        {/* Search & Items Grid */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col">
-          <div className="mb-3 shrink-0 overflow-x-auto custom-scrollbar">
-            <div className="flex gap-2 min-w-max pb-1">
+          <div className="mb-5 overflow-x-auto custom-scrollbar">
+            <div className="flex min-w-max gap-2 pb-1">
               <button
                 type="button"
                 onClick={() => setSelectedCategoryId('ALL')}
-                className={`px-3 py-2 rounded-full border text-xs font-black uppercase tracking-wide transition-colors ${
+                className={`min-h-[42px] rounded-full border px-4 text-sm font-black transition-colors ${
                   selectedCategoryId === 'ALL'
-                    ? 'bg-[#5c4033] border-[#5c4033] text-white'
-                    : 'bg-white border-neutral-200 text-neutral-600 hover:border-[#5c4033]/30'
+                    ? 'border-[#3e2723] bg-[#3e2723] text-white'
+                    : 'border-[#eadfd4] bg-white text-neutral-600 hover:border-[#5c4033]/30 hover:text-[#3e2723]'
                 }`}
               >
-                All ({availableMenuItems.length})
+                All
               </button>
               {displayCategories.map(cat => (
                 <button
                   key={cat.id}
                   type="button"
                   onClick={() => setSelectedCategoryId(cat.id)}
-                  className={`px-3 py-2 rounded-full border text-xs font-black uppercase tracking-wide whitespace-nowrap transition-colors ${
+                  className={`min-h-[42px] whitespace-nowrap rounded-full border px-4 text-sm font-black transition-colors ${
                     selectedCategoryId === cat.id
-                      ? 'bg-[#5c4033] border-[#5c4033] text-white'
-                      : 'bg-white border-neutral-200 text-neutral-600 hover:border-[#5c4033]/30'
+                      ? 'border-[#3e2723] bg-[#3e2723] text-white'
+                      : 'border-[#eadfd4] bg-white text-neutral-600 hover:border-[#5c4033]/30 hover:text-[#3e2723]'
                   }`}
                 >
-                  {cat.name} {(cat as any).count !== undefined ? `(${(cat as any).count})` : ''}
+                  {cat.name}
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="relative mb-4 shrink-0">
-            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="Search menu...  / to focus, Esc to clear"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 bg-white border border-neutral-200 rounded-xl shadow-sm focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] outline-none font-medium"
-            />
-          </div>
-
           {fastItems.length > 0 && (
-            <div className="mb-4 shrink-0">
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <h3 className="text-sm font-black text-neutral-700 uppercase tracking-wider">Popular / Fast Items</h3>
-                <span className="text-xs text-neutral-400 font-bold">Tap once to add</span>
+            <div className="mb-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-black tracking-tight text-[#2d1c19]">Popular today</h2>
+                  <p className="text-xs font-semibold text-neutral-500">Quick tap favourites</p>
+                </div>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-[#5c4033] shadow-sm">Tap to add</span>
               </div>
               <div className="overflow-x-auto custom-scrollbar">
-                <div className="flex gap-2 min-w-max pb-1">
+                <div className="flex min-w-max gap-3 pb-1">
                   {fastItems.map((item: any) => (
                     <button
                       key={`fast_${item.id}`}
                       type="button"
                       onClick={() => addToCart(item)}
-                      className="w-40 text-left bg-white border border-neutral-200 hover:border-[#5c4033]/40 hover:bg-[#fffaf4] rounded-xl p-3 shadow-sm transition-colors"
+                      className="group flex h-28 w-40 flex-col justify-between rounded-3xl border border-[#eadfd4] bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#5c4033]/30 hover:shadow-md active:scale-[0.98]"
                     >
-                      <p className="font-black text-sm text-neutral-800 line-clamp-2 leading-tight">{item.name}</p>
-                      <p className="font-mono font-bold text-[#5c4033] mt-2">₹{item.price}</p>
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d1c19] group-hover:text-[#5c4033]">{item.name}</p>
+                      <div className="flex items-end justify-between gap-2">
+                        <p className="font-mono text-base font-black text-[#3e2723]">₹{item.price}</p>
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f4eadf] text-[#3e2723]">
+                          <Plus size={16} strokeWidth={3} />
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -1792,7 +1761,7 @@ export default function POSHome() {
             </div>
           )}
 
-          <div className="flex-1">
+          <div>
             {menuItems.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-neutral-400 p-6 text-center">
                 <AlertCircle size={48} className="mb-4 opacity-30 text-amber-500" />
@@ -1806,7 +1775,7 @@ export default function POSHome() {
                 <Coffee size={48} className="mb-4 opacity-30 text-[#5c4033]" />
                 <p className="font-medium text-lg text-neutral-600 mb-2">No items found</p>
                 <p className="text-sm text-amber-700 bg-amber-50 p-4 border border-amber-200 rounded-xl max-w-md">
-                  No Finished Goods are available for this store. Check <strong>Menu Management &rarr; Sellable Items</strong> and store availability.
+                  No menu items are available for this store. An Admin can check POS Readiness.
                 </p>
               </div>
             ) : (
@@ -1815,23 +1784,32 @@ export default function POSHome() {
                   const renderMenuItem = (item: any) => (
                     <motion.button
                       key={item.id}
-                      whileHover={{ scale: 1.025, y: -2 }}
+                      whileHover={{ scale: 1.015, y: -2 }}
                       whileTap={{ scale: 0.975 }}
                       onClick={() => addToCart(item)}
-                      className="bg-white border border-neutral-200 hover:border-[#5c4033]/40 p-4 rounded-xl shadow-sm hover:shadow-md active:scale-95 transition-all text-left flex flex-col h-full cursor-pointer"
+                      className="group min-h-[132px] rounded-3xl border border-[#eadfd4] bg-white p-4 text-left shadow-sm transition-all hover:border-[#5c4033]/35 hover:bg-[#fffaf4] hover:shadow-md active:scale-[0.98]"
                     >
-                      <div className="flex justify-between items-start mb-2">
-                        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
-                          item.prepStation === 'BARISTA' ? 'bg-amber-100 text-amber-800' :
-                          item.prepStation === 'KITCHEN' ? 'bg-blue-100 text-blue-800' :
-                          item.prepStation === 'BOTH' ? 'bg-purple-100 text-purple-800' :
-                          'bg-neutral-100 text-neutral-500'
-                        }`}>
-                          {item.prepStation === 'NONE' ? 'NO KOT' : item.prepStation}
-                        </span>
+                      <div className="flex h-full min-w-0 flex-col justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                            <span className="truncate rounded-full bg-[#f4eadf] px-2.5 py-1 text-[11px] font-black text-[#6d4d3c]">
+                              {item.categoryName || 'Menu'}
+                            </span>
+                            {item.prepStation && item.prepStation !== 'NONE' && (
+                              <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-1 text-[10px] font-black text-neutral-500">
+                                {item.prepStation === 'BOTH' ? 'Bar + Kitchen' : item.prepStation === 'BARISTA' ? 'Barista' : 'Kitchen'}
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="line-clamp-2 text-base font-black leading-tight text-[#2d1c19]">{item.name}</h4>
+                        </div>
+                        <div className="flex items-end justify-between gap-3">
+                          <p className="font-mono text-xl font-black text-[#3e2723]">₹{item.price}</p>
+                          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#3e2723] text-white shadow-sm transition group-hover:bg-[#2d1c19]">
+                            <Plus size={20} strokeWidth={3} />
+                          </span>
+                        </div>
                       </div>
-                      <h4 className="font-bold text-neutral-800 leading-tight mb-auto">{item.name}</h4>
-                      <p className="text-[#5c4033] font-bold mt-3 text-lg font-mono">₹{item.price}</p>
                     </motion.button>
                   );
 
@@ -1857,9 +1835,9 @@ export default function POSHome() {
                     return sortedSubCodes.map(subCode => (
                       <div key={subCode} className="mb-6 last:mb-0">
                         {sortedSubcats.get(subCode)!.name && sortedSubcats.get(subCode)!.name !== 'Misc' && sortedSubcats.get(subCode)!.name !== 'Other' && (
-                          <h3 className="text-sm font-bold text-neutral-500 uppercase tracking-wider mb-3 px-1">{sortedSubcats.get(subCode)!.name}</h3>
+                          <h3 className="mb-3 px-1 text-sm font-black tracking-tight text-neutral-500">{sortedSubcats.get(subCode)!.name}</h3>
                         )}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-4">
                           {grouped.get(subCode)!.map(renderMenuItem)}
                         </div>
                       </div>
@@ -1867,7 +1845,7 @@ export default function POSHome() {
                   }
 
                   return (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-4">
                       {filteredMenuItems.map(renderMenuItem)}
                     </div>
                   );
@@ -1879,25 +1857,30 @@ export default function POSHome() {
       </div>
 
       {/* Right Area: Cart Panel */}
-      <div className={`lg:w-[360px] xl:w-[400px] shrink-0 bg-white border-l border-neutral-200 flex flex-col z-[100] lg:z-20 fixed lg:static inset-0 lg:inset-auto w-full h-[100dvh] lg:h-full transition-transform duration-300 transform overflow-hidden ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}`}>
+      <div className={`flex h-[100dvh] w-full max-w-full shrink-0 flex-col overflow-hidden border-l border-[#eadfd4] bg-white shadow-2xl transition-transform duration-300 lg:static lg:z-20 lg:h-full lg:w-[380px] lg:shadow-none xl:w-[420px] fixed inset-0 z-[100] lg:inset-auto transform ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}`}>
 
         {/* Cart Header */}
-        <div className="p-4 pl-4 pr-3 border-b border-neutral-100 bg-[#faf8f5] shrink-0 sticky lg:static top-0 z-20 w-full">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-xl font-black text-neutral-800">Current Order</h3>
-            <div className="flex items-center justify-end gap-2 flex-wrap">
+        <div className="sticky top-0 z-20 w-full shrink-0 border-b border-[#eadfd4] bg-white p-3 sm:p-4 lg:static">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="min-w-0 text-lg font-black tracking-tight text-[#2d1c19] sm:text-xl">Current Order</h3>
+              <p className="text-xs font-semibold text-neutral-500">
+                {cartItemCount > 0 ? `${cartItemCount} ${cartItemCount === 1 ? 'item' : 'items'} in cart` : 'No items yet'}
+              </p>
+            </div>
+            <div className="flex min-w-0 items-center justify-end gap-2 flex-wrap">
               {lastReceipt && (
-                <button onClick={openLastReceipt} className="text-xs font-bold text-[#5c4033] hover:bg-[#5c4033]/10 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
+                <button onClick={openLastReceipt} className="rounded-full bg-[#f4eadf] px-3 py-2 text-xs font-black text-[#5c4033] transition-colors hover:bg-[#ead8c6]">
                   Last Order
                 </button>
               )}
               {cart.length > 0 && (
-                <button onClick={holdCurrentBill} className="text-xs font-bold text-amber-700 hover:bg-amber-50 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
+                <button onClick={holdCurrentBill} className="rounded-full bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 transition-colors hover:bg-amber-100">
                   Hold Bill
                 </button>
               )}
               {cart.length > 0 && (
-                <button onClick={() => clearCart()} className="text-xs font-bold text-red-500 hover:bg-red-50 px-2 py-2 md:py-1 rounded transition-colors uppercase tracking-wider">
+                <button onClick={() => clearCart()} className="rounded-full bg-red-50 px-3 py-2 text-xs font-black text-red-500 transition-colors hover:bg-red-100">
                   Clear Cart
                 </button>
               )}
@@ -1907,20 +1890,20 @@ export default function POSHome() {
             </div>
           </div>
 
-          {heldBills.length > 0 && (
-            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-amber-700">Recall Bill</p>
-                  <p className="text-[11px] text-amber-800">{heldBills.length} held {heldBills.length === 1 ? 'bill' : 'bills'} saved on this browser</p>
-                </div>
+          {heldBills.length > 0 && cart.length === 0 && (
+            <details className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
+                <span>
+                  <span className="block text-xs font-black text-amber-700">Recall Bill</span>
+                  <span className="block text-[11px] text-amber-800">{heldBills.length} held {heldBills.length === 1 ? 'bill' : 'bills'} saved here</span>
+                </span>
                 <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-black text-amber-900">{heldBills.length}</span>
-              </div>
-              <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+              </summary>
+              <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
                 {heldBills.map(bill => (
                   <div key={bill.id} className="rounded-lg border border-amber-100 bg-white p-3 shadow-sm">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+                      <div className="min-w-0 max-w-full">
                         <p className="font-black text-neutral-800 break-words">{bill.customerName || 'Walk-in guest'}</p>
                         <p className="mt-0.5 text-xs font-medium text-neutral-500 break-words">
                           {bill.storeName}
@@ -1935,13 +1918,13 @@ export default function POSHome() {
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <button
                         onClick={() => recallHeldBill(bill)}
-                        className="rounded-lg bg-[#5c4033] px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-[#4a332a]"
+                        className="rounded-xl bg-[#5c4033] px-3 py-2 text-xs font-black text-white hover:bg-[#4a332a]"
                       >
                         Recall
                       </button>
                       <button
                         onClick={() => deleteHeldBill(bill)}
-                        className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-black uppercase tracking-wider text-red-600 hover:bg-red-100"
+                        className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"
                       >
                         Delete
                       </button>
@@ -1949,18 +1932,18 @@ export default function POSHome() {
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
         </div>
 
         {/* Scrollable Body (Mobile) / Flex Container (Desktop) */}
-        <div className="flex-1 overflow-y-auto lg:overflow-hidden flex flex-col w-full pb-28 lg:pb-0 custom-scrollbar min-h-0">
+        <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto pb-28 custom-scrollbar lg:pb-0">
 
           {/* Order Details Inputs */}
-          <div className="p-4 border-b border-neutral-100 bg-[#faf8f5] shrink-0">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+          <div className="shrink-0 border-b border-[#eadfd4] bg-[#fbf8f3] p-3 sm:p-4">
+            <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
               {orderType === 'DINE_IN' && (
-                <div className="col-span-1 sm:col-span-2 flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px]">
+                <div className="col-span-1 flex min-h-[48px] items-center gap-2 rounded-2xl border border-[#eadfd4] bg-white px-3 py-3 sm:col-span-2 lg:col-span-1 lg:py-2">
                   <MapPin size={16} className="text-neutral-400" />
                   <input
                     type="text"
@@ -1971,7 +1954,7 @@ export default function POSHome() {
                   />
                 </div>
               )}
-              <div className={`flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px] ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2' : ''}`}>
+              <div className={`flex min-h-[48px] items-center gap-2 rounded-2xl border border-[#eadfd4] bg-white px-3 py-3 lg:py-2 ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2 lg:col-span-3' : ''}`}>
                 <User size={16} className="text-neutral-400 shrink-0" />
                 <input
                   type="text"
@@ -1981,7 +1964,7 @@ export default function POSHome() {
                   className="bg-transparent outline-none w-full font-medium placeholder-neutral-400"
                 />
               </div>
-              <div className={`flex items-center gap-2 bg-white px-3 py-3 lg:py-2 border border-neutral-200 rounded-lg min-h-[44px] ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2' : ''}`}>
+              <div className={`flex min-h-[48px] items-center gap-2 rounded-2xl border border-[#eadfd4] bg-white px-3 py-3 lg:py-2 ${orderType !== 'DINE_IN' ? 'col-span-1 sm:col-span-2 lg:col-span-3' : ''}`}>
                 <Phone size={16} className="text-neutral-400 shrink-0" />
                 <input
                   type="tel"
@@ -2074,14 +2057,14 @@ export default function POSHome() {
           )}
 
           {/* Cart Items List */}
-          <div className="shrink-0 lg:flex-1 lg:overflow-y-auto custom-scrollbar p-4 space-y-3 min-h-max lg:min-h-0">
+          <div className="min-h-max shrink-0 space-y-3 p-4 custom-scrollbar lg:max-h-[190px] lg:min-h-0 lg:flex-none lg:overflow-y-auto">
             {cart.length === 0 ? (
-              <div className="h-full min-h-[200px] flex flex-col items-center justify-center text-center opacity-50 py-10">
-                <div className="w-16 h-16 border-2 border-dashed border-neutral-400 rounded-full flex items-center justify-center mb-3">
-                  <Coffee size={24} className="text-neutral-400" />
+              <div className="flex h-full min-h-[120px] flex-col items-center justify-center rounded-3xl border border-dashed border-[#eadfd4] bg-[#fbf8f3] px-6 py-6 text-center">
+                <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-white text-[#8a6a58] shadow-sm">
+                  <Coffee size={24} />
                 </div>
-                <p className="font-bold text-neutral-500">Cart is empty</p>
-                <p className="text-sm text-neutral-400">Select items to start order</p>
+                <p className="font-black text-[#2d1c19]">Cart is empty</p>
+                <p className="mt-1 text-sm font-medium text-neutral-500">Tap any menu tile to start billing.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -2094,10 +2077,10 @@ export default function POSHome() {
                       animate={{ opacity: 1, x: 0, height: "auto" }}
                       exit={{ opacity: 0, x: -20, height: 0 }}
                       transition={{ type: "spring" as const, stiffness: 500, damping: 40 }}
-                      className="flex justify-between items-center py-2 border-b border-neutral-100 last:border-0 group gap-3 min-w-0"
+                      className="group flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-[#eadfd4] bg-white p-3 shadow-sm"
                     >
                       <div className="flex flex-col flex-1 min-w-0">
-                        <span className="font-bold text-neutral-800 text-sm line-clamp-2 leading-snug break-words">{item.name}</span>
+                        <span className="line-clamp-2 break-words text-sm font-black leading-snug text-[#2d1c19]">{item.name}</span>
                         <p className="text-xs text-neutral-400 font-mono mt-0.5">₹{item.price} each</p>
                       </div>
                       <div className="flex flex-col items-end shrink-0">
@@ -2109,16 +2092,16 @@ export default function POSHome() {
                             onClick={() => updateQuantity(item.id, -1)}
                             aria-label={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
                             title={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
-                            className="p-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-md text-neutral-600 transition-colors flex items-center justify-center cursor-pointer"
+                            className="flex min-h-[34px] min-w-[34px] cursor-pointer items-center justify-center rounded-xl bg-neutral-100 p-1.5 text-neutral-600 transition-colors hover:bg-neutral-200"
                           >
                             {item.quantity === 1 ? <Trash2 size={14} className="text-red-500" /> : <Minus size={14} />}
                           </button>
-                          <span className="font-mono font-bold w-6 text-center text-sm">{item.quantity}</span>
+                          <span className="w-7 text-center font-mono text-sm font-black">{item.quantity}</span>
                           <button
                             onClick={() => updateQuantity(item.id, 1)}
                             aria-label={`Increase ${item.name}`}
                             title={`Increase ${item.name}`}
-                            className="p-1.5 bg-[#5c4033]/10 hover:bg-[#5c4033]/20 rounded-md text-[#5c4033] transition-colors flex items-center justify-center cursor-pointer"
+                            className="flex min-h-[34px] min-w-[34px] cursor-pointer items-center justify-center rounded-xl bg-[#5c4033]/10 p-1.5 text-[#5c4033] transition-colors hover:bg-[#5c4033]/20"
                           >
                             <Plus size={14} />
                           </button>
@@ -2130,10 +2113,11 @@ export default function POSHome() {
               </div>
             )}
           </div>
+        </div>
 
           {/* Cart Footer (Totals & Payments) */}
-          <div className="bg-white border-t border-neutral-200 flex flex-col shrink-0 lg:bg-neutral-50 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] lg:shadow-none mt-auto lg:mt-0">
-            <div className="px-4 lg:px-5 py-3 lg:py-4 space-y-2">
+          <div className="mt-auto flex shrink-0 flex-col border-t border-[#eadfd4] bg-white shadow-[0_-4px_15px_rgba(0,0,0,0.05)] lg:mt-0 lg:bg-[#fbf8f3] lg:shadow-none">
+            <div className="space-y-1.5 px-3 py-2 sm:px-4 lg:px-5">
               <div className="flex justify-between text-sm font-medium text-neutral-500">
                 <span>Subtotal</span>
                 <span className="font-mono">₹{cartTotals.subtotal.toFixed(2)}</span>
@@ -2148,18 +2132,15 @@ export default function POSHome() {
                   step="0.1"
                   value={discountPercentStr}
                   onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
-                  className="w-20 text-right bg-white lg:bg-white border border-neutral-200 rounded px-2 py-1 font-mono outline-none focus:border-[#5c4033]"
+                  className="w-20 rounded-xl border border-[#eadfd4] bg-white px-2 py-1 text-right font-mono outline-none focus:border-[#5c4033]"
                   placeholder="0"
                 />
               </div>
-              <div className={`rounded-lg border px-2 py-1 text-[11px] font-bold ${
-                discountExceedsLimit
-                  ? 'border-red-200 bg-red-50 text-red-700'
-                  : 'border-neutral-100 bg-white text-neutral-400'
-              }`}>
-                Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}%
-                {discountExceedsLimit && ` · Current discount ${cartTotals.discountPercent.toFixed(2)}% will be blocked`}
-              </div>
+              {discountExceedsLimit && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-bold text-red-700">
+                  Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
+                </div>
+              )}
 
               <div className="flex justify-between text-sm font-medium text-neutral-500">
                 <span>Discount Amount</span>
@@ -2180,13 +2161,7 @@ export default function POSHome() {
                   GST rate is not configured for this store/menu.
                 </p>
               )}
-              {canViewCheckoutDebug && selectedStoreTaxConfig.rate > 0 && (
-                <p className="text-[11px] text-neutral-400">
-                  GST fallback source: {selectedStoreTaxConfig.source} ({selectedStoreTaxConfig.rate}% when item tax is missing)
-                </p>
-              )}
-
-              <div className="h-px bg-neutral-200 my-2" />
+              <div className="h-px bg-[#eadfd4] my-2" />
 
               <div className="flex justify-between items-end gap-2">
                 <span className="font-black text-lg text-neutral-800 shrink-0">Total</span>
@@ -2194,12 +2169,12 @@ export default function POSHome() {
               </div>
             </div>
 
-            <div className="px-4 pb-4">
+            <div className="px-3 pb-3 sm:px-4">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <label className="block text-xs font-bold text-neutral-500 uppercase tracking-widest">Payment</label>
+                <label className="block text-xs font-black text-neutral-500">Payment</label>
                 <button
                   onClick={() => setSplitPaymentMode(!isSplitPayment)}
-                  className={`rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wider border transition-colors ${
+                  className={`rounded-full px-3 py-1 text-[11px] font-black border transition-colors ${
                     isSplitPayment
                       ? 'bg-[#5c4033] border-[#5c4033] text-white'
                       : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
@@ -2210,32 +2185,34 @@ export default function POSHome() {
               </div>
 
               {!isSplitPayment ? (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 lg:mb-4">
-                  {PAYMENT_METHODS.map(method => (
-                    <button
-                      key={method}
-                      onClick={() => setPaymentMethod(method)}
-                      className={`py-3 lg:py-2 px-1 text-[11px] lg:text-[10px] font-bold uppercase rounded-xl lg:rounded-md border transition-all h-full min-h-[44px] ${
-                        paymentMethod === method
-                          ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm'
-                          : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
-                      }`}
-                    >
-                      <span className="truncate block mx-auto -tracking-wider uppercase">
-                        {method === 'COMPLIMENTARY' ? 'COMP' : method}
-                      </span>
-                    </button>
-                  ))}
+                <div className="mb-3 overflow-x-auto custom-scrollbar">
+                  <div className="flex min-w-max gap-2 pb-1">
+                    {PAYMENT_METHODS.map(method => (
+                      <button
+                        key={method}
+                        onClick={() => setPaymentMethod(method)}
+                        className={`min-h-[40px] min-w-[72px] rounded-2xl border px-3 py-2 text-[11px] font-black transition-all ${
+                          paymentMethod === method
+                            ? 'bg-[#5c4033] border-[#5c4033] text-white shadow-sm'
+                            : 'bg-white border-[#eadfd4] text-neutral-600 hover:bg-neutral-50'
+                        }`}
+                      >
+                        <span className="truncate block mx-auto -tracking-wider uppercase">
+                          {method === 'COMPLIMENTARY' ? 'COMP' : method}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : (
-                <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-3 space-y-3">
+                <div className="mb-4 rounded-2xl border border-[#eadfd4] bg-white p-3 space-y-3">
                   <div className="space-y-2">
                     {splitPayments.map((payment, index) => (
-                      <div key={payment.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                      <div key={payment.id} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
                         <select
                           value={payment.method}
                           onChange={event => updateSplitPayment(payment.id, { method: event.target.value as PaymentMethod })}
-                          className="min-w-0 rounded-lg border border-neutral-200 bg-white px-2 py-2 text-xs font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                          className="min-w-0 rounded-xl border border-[#eadfd4] bg-white px-2 py-2 text-xs font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                           aria-label={`Payment method ${index + 1}`}
                         >
                           {PAYMENT_METHODS.map(method => (
@@ -2248,14 +2225,14 @@ export default function POSHome() {
                           step="0.01"
                           value={payment.amountStr}
                           onChange={event => updateSplitPayment(payment.id, { amountStr: event.target.value })}
-                          className="min-w-0 rounded-lg border border-neutral-200 bg-white px-2 py-2 text-right text-xs font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                          className="min-w-0 rounded-xl border border-[#eadfd4] bg-white px-2 py-2 text-right text-xs font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                           placeholder="0.00"
                           aria-label={`Payment amount ${index + 1}`}
                         />
                         <button
                           onClick={() => removeSplitPaymentRow(payment.id)}
                           disabled={splitPayments.length === 1}
-                          className={`rounded-lg border px-2 py-2 text-xs font-black ${
+                          className={`rounded-xl border px-2 py-2 text-xs font-black ${
                             splitPayments.length === 1
                               ? 'border-neutral-100 bg-neutral-50 text-neutral-300 cursor-not-allowed'
                               : 'border-red-100 bg-red-50 text-red-600 hover:bg-red-100'
@@ -2270,7 +2247,7 @@ export default function POSHome() {
                   </div>
                   <button
                     onClick={addSplitPaymentRow}
-                    className="w-full rounded-lg border border-dashed border-[#5c4033]/40 bg-[#5c4033]/5 px-3 py-2 text-xs font-black uppercase tracking-wider text-[#5c4033] hover:bg-[#5c4033]/10"
+                    className="w-full rounded-xl border border-dashed border-[#5c4033]/40 bg-[#5c4033]/5 px-3 py-2 text-xs font-black text-[#5c4033] hover:bg-[#5c4033]/10"
                   >
                     Add Payment Row
                   </button>
@@ -2295,27 +2272,27 @@ export default function POSHome() {
               <div className="hidden lg:block">
                 <button
                   disabled={cart.length === 0 || isSaving}
-                  className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all shadow-sm ${
+                  className={`w-full rounded-2xl py-3 text-sm font-black transition-all shadow-sm ${
                     (cart.length > 0 && !isSaving)
                       ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99]'
                       : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
                   }`}
                   onClick={handleCheckout}
                 >
-                  {isSaving ? <Loader2 size={20} className="animate-spin mx-auto text-[#5c4033]" /> : 'Order & Pay'}
+                  {isSaving ? <Loader2 size={20} className="animate-spin mx-auto text-[#5c4033]" /> : `Pay ₹${cartTotals.grandTotal.toFixed(2)}`}
                 </button>
               </div>
             </div>
           </div>
-        </div>
+      </div>
       </div>
 
       {/* Mobile ONLY Sticky Checkout Footer */}
       {isMobileCartOpen && (
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-neutral-200 z-[120] shadow-[0_-4px_15px_rgba(0,0,0,0.05)]" style={{ paddingBottom: 'calc(16px + env(safe-area-inset-bottom))' }}>
+        <div className="fixed bottom-0 left-0 right-0 z-[120] max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] sm:p-4 lg:hidden" style={{ paddingBottom: 'calc(16px + env(safe-area-inset-bottom))' }}>
           <button
             disabled={cart.length === 0 || isSaving}
-            className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-sm transition-all shadow-[0_4px_14px_rgba(0,0,0,0.15)] ${
+            className={`w-full rounded-2xl py-4 text-sm font-black transition-all shadow-[0_4px_14px_rgba(0,0,0,0.15)] ${
               (cart.length > 0 && !isSaving)
                 ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99] border border-[#2d1c19]'
                 : 'bg-neutral-200 text-neutral-400 cursor-not-allowed border border-neutral-300'
@@ -2329,18 +2306,19 @@ export default function POSHome() {
 
       {/* Sticky Mobile Cart Bar */}
       {!isMobileCartOpen && cart.length > 0 && (
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-neutral-200 p-4 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] z-30 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-           <button onClick={() => setIsMobileCartOpen(true)} className="w-full bg-[#3e2723] hover:bg-[#2d1c19] text-white py-3.5 rounded-xl font-black uppercase tracking-widest flex items-center justify-between px-5 shadow-sm transition-colors">
-              <span className="flex items-center gap-2">
-                <span className="bg-white/20 px-2.5 py-1 rounded-md text-xs">{cart.reduce((a,c)=>a+c.quantity, 0)} items</span>
+        <div className="fixed bottom-0 left-0 right-0 z-30 max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 lg:hidden">
+           <button onClick={() => setIsMobileCartOpen(true)} className="flex w-full items-center justify-between gap-3 rounded-2xl bg-[#3e2723] px-4 py-3.5 font-black text-white shadow-sm transition-colors hover:bg-[#2d1c19] sm:px-5">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
+                <span className="truncate text-sm">View Order</span>
               </span>
-              <span className="text-lg">Checkout ₹{cartTotals.grandTotal.toFixed(2)}</span>
+              <span className="min-w-0 truncate text-base sm:text-lg">₹{cartTotals.grandTotal.toFixed(2)}</span>
            </button>
         </div>
       )}
 
       {receiptView && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-[#5c4033] p-6 text-center text-white shrink-0 relative">
                <CheckCircle size={48} className="mx-auto mb-3 text-emerald-400" />
