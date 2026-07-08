@@ -444,10 +444,10 @@ export default function AuditControl() {
   if (!staffProfile) return null;
 
   return (
-    <div className="min-h-screen bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
+    <div className="min-h-screen min-w-0 bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
       <div className="sticky top-0 z-30 border-b border-neutral-200 bg-white shadow-sm">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-8">
-          <div className="flex items-center gap-4">
+        <div className="mx-auto flex max-w-7xl min-w-0 flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-8">
+          <div className="flex min-w-0 items-center gap-4">
             <Link to="/reports" className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-100 text-neutral-600 transition-colors hover:bg-neutral-200">
               <ArrowLeft size={20} />
             </Link>
@@ -458,7 +458,7 @@ export default function AuditControl() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
               <input
@@ -504,7 +504,7 @@ export default function AuditControl() {
           </div>
         ) : (
           <>
-            <section className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <SummaryCard label="Day Close" value={dayClosing ? 'Closed' : 'Not Closed'} tone={dayClosing ? 'green' : 'red'} />
               <SummaryCard label="Completed Bills" value={completedOrders.length} />
               <SummaryCard label="Voided Bills" value={voidedOrders.length} tone={voidedOrders.length > 0 ? 'red' : 'neutral'} />
@@ -569,7 +569,7 @@ export default function AuditControl() {
               <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
                 <h2 className="font-black text-neutral-900">Payment Breakdown</h2>
                 <p className="mt-1 text-sm font-medium text-neutral-500">Completed orders only. Voided orders are excluded.</p>
-                <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {PAYMENT_METHODS.map(method => (
                     <div key={method} className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
                       <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">{method}</p>

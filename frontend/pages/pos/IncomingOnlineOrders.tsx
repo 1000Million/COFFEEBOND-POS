@@ -182,8 +182,8 @@ export default function IncomingOnlineOrders() {
   if (!staffProfile) return null;
 
   return (
-    <div className="mx-auto w-full max-w-6xl pb-20">
-      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div className="mx-auto w-full max-w-6xl min-w-0 pb-20">
+      <div className="mb-6 flex min-w-0 flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-black text-[#3e2723]">Incoming Online Orders</h1>
           <p className="text-sm text-neutral-500">Customer requests stay pending until staff accepts them into POS V2.</p>
@@ -200,7 +200,7 @@ export default function IncomingOnlineOrders() {
       <div className="mb-5 rounded-2xl border border-amber-100 bg-white p-4 shadow-sm">
         <label className="text-sm font-bold text-neutral-700">
           Store
-          <span className="mt-2 flex max-w-sm items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
+          <span className="mt-2 flex w-full max-w-sm items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
             <StoreIcon size={16} className="text-neutral-400" />
             <select
               value={selectedStoreId}
@@ -245,9 +245,9 @@ export default function IncomingOnlineOrders() {
             const ageMinutes = minutesSince(order.createdAt, now);
             const isNew = ageMinutes < 5;
             return (
-              <article key={order.id} className={`rounded-3xl border bg-white p-5 shadow-sm ${isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
-                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                  <div>
+              <article key={order.id} className={`rounded-3xl border bg-white p-4 shadow-sm sm:p-5 ${isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
+                <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="text-xl font-black text-neutral-900">{order.customerName}</h2>
                       {isNew && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">NEW</span>}
@@ -281,8 +281,8 @@ export default function IncomingOnlineOrders() {
 
                 <div className="mt-4 grid gap-2">
                   {order.items.map(item => (
-                    <div key={`${order.id}-${item.finishedGoodCode}`} className="flex items-center justify-between rounded-xl bg-neutral-50 px-3 py-2 text-sm">
-                      <span className="font-bold text-neutral-800">{item.quantity} x {item.itemName}</span>
+                    <div key={`${order.id}-${item.finishedGoodCode}`} className="flex min-w-0 items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 py-2 text-sm">
+                      <span className="min-w-0 break-words font-bold text-neutral-800">{item.quantity} x {item.itemName}</span>
                       <span className="font-black">{formatMoney(item.lineTotal)}</span>
                     </div>
                   ))}

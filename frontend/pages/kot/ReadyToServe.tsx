@@ -351,9 +351,9 @@ export default function ReadyToServe() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto p-4 md:p-8">
-      <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-        <div className="flex items-center gap-3">
+    <div className="max-w-7xl mx-auto w-full min-w-0 p-4 md:p-8">
+      <div className="flex min-w-0 flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+        <div className="flex min-w-0 items-center gap-3">
           <Bell size={32} className="text-[#5c4033]" />
           <div>
             <h1 className="text-3xl font-black tracking-tight text-neutral-900">Ready to Serve</h1>
@@ -361,12 +361,12 @@ export default function ReadyToServe() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
           {(staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER') && (
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <StoreIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={18} />
               <select
-                 className="pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow min-w-[160px]"
+                 className="w-full pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow sm:w-auto sm:min-w-[160px]"
                  value={selectedStoreId}
                  onChange={e => setSelectedStoreId(e.target.value)}
               >
@@ -413,7 +413,7 @@ export default function ReadyToServe() {
                           animate={{ opacity: 1, scale: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.95, y: -10 }}
                           transition={{ duration: 0.25 }}
-                          className="bg-white shadow-sm border border-green-500 rounded-xl p-4 flex flex-col relative overflow-hidden"
+                          className="bg-white shadow-sm border border-green-500 rounded-xl p-4 flex min-w-0 flex-col relative overflow-hidden"
                         >
                           <div className="flex justify-between items-start mb-2">
                             <h3 className="text-lg font-black font-mono tracking-tight text-neutral-900">{item.orderNumber.split('-').slice(2).join('-')}</h3>
@@ -426,7 +426,7 @@ export default function ReadyToServe() {
                             <p className="text-xs font-bold text-neutral-500 uppercase">{item.storeName} • {item.station}</p>
                             <div className="flex items-center gap-2">
                               <span className="font-mono text-lg font-black text-green-700">{item.quantity}x</span>
-                              <span className="text-lg font-bold text-neutral-800 leading-tight">{item.itemName}</span>
+                              <span className="min-w-0 break-words text-lg font-bold text-neutral-800 leading-tight">{item.itemName}</span>
                             </div>
 
                             <div className="flex flex-wrap gap-2 mt-2">
@@ -508,15 +508,15 @@ export default function ReadyToServe() {
 
       {/* Return Modal */}
       {returnModalItem && (
-        <div className="fixed inset-0 z-[100] bg-neutral-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-[100] bg-neutral-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+           <div className="flex max-h-[94dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200">
               <div className="p-6 border-b border-neutral-100">
                  <h2 className="text-xl font-black text-neutral-900">Return / Remake</h2>
                  <p className="text-neutral-500 text-sm mt-1">Order {returnModalItem.orderNumber} • {returnModalItem.quantity}x {returnModalItem.itemName}</p>
                  {returnModalItem.remakeCount ? <p className="text-xs font-bold text-red-500 mt-1">Warning: This item is already a remake.</p> : null}
               </div>
 
-              <div className="p-6 space-y-4 bg-neutral-50/50">
+              <div className="space-y-4 overflow-y-auto bg-neutral-50/50 p-4 sm:p-6">
                  {returnError && (
                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-start gap-2">
                      <AlertCircle size={16} className="mt-0.5 shrink-0" />
@@ -547,7 +547,7 @@ export default function ReadyToServe() {
                  </div>
               </div>
 
-              <div className="p-4 bg-neutral-100 border-t border-neutral-200 flex flex-col sm:flex-row gap-3">
+              <div className="p-3 sm:p-4 bg-neutral-100 border-t border-neutral-200 flex flex-col sm:flex-row gap-3">
                  <button 
                    onClick={() => setReturnModalItem(null)} 
                    disabled={returnLoading}
@@ -556,7 +556,7 @@ export default function ReadyToServe() {
                    Cancel
                  </button>
 
-                 <div className="flex gap-2 w-full sm:ml-auto">
+                 <div className="flex flex-col gap-2 w-full sm:ml-auto sm:flex-row">
                     <button 
                        onClick={() => executeReturn('WASTAGE')}
                        disabled={returnLoading}

@@ -138,8 +138,8 @@ export default function CustomerOrderStatus() {
   };
 
   return (
-    <div className="min-h-[100dvh] bg-[#f8efe6] px-4 py-4 font-sans text-neutral-900">
-      <div className="mx-auto max-w-md lg:max-w-4xl">
+    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] px-4 py-4 font-sans text-neutral-900">
+      <div className="mx-auto max-w-md min-w-0 lg:max-w-4xl">
         <header className="mb-4 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />

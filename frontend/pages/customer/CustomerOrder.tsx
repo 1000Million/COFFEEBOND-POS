@@ -764,9 +764,9 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-[#f8efe6] pb-24 font-sans text-neutral-900 lg:pb-8">
+    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] pb-24 font-sans text-neutral-900 lg:pb-8">
       <header className="sticky top-0 z-30 border-b border-[#eadfd2] bg-[#fffaf5]/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-md items-center justify-between gap-3 lg:max-w-6xl">
+        <div className="mx-auto flex max-w-md min-w-0 items-center justify-between gap-3 lg:max-w-6xl">
           <div className="flex min-w-0 items-center gap-3">
             <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
             <div className="min-w-0">
@@ -784,7 +784,7 @@ export default function CustomerOrder() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-md gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:px-6">
+      <main className="mx-auto grid max-w-md min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:px-6">
         <section className="min-w-0 space-y-4">
           <section className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-[#eadfd2]">
             <div className="mb-3 flex items-center justify-between gap-3">
@@ -918,7 +918,7 @@ export default function CustomerOrder() {
       {basketOpen && (
         <div className="fixed inset-0 z-50 bg-black/35 lg:hidden">
           <button aria-label="Close basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl">
+          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:p-5">
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-neutral-200" />
             {basketPanel}
           </div>

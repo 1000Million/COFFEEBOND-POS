@@ -277,10 +277,10 @@ export default function DayClose() {
   if (!staffProfile) return null;
 
   return (
-    <div className="min-h-screen bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
+    <div className="min-h-screen min-w-0 bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
       <div className="bg-white border-b border-neutral-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 md:px-8 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+        <div className="max-w-6xl mx-auto px-4 md:px-8 py-4 flex min-w-0 flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-4">
             <Link to="/reports" className="w-10 h-10 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 rounded-full flex items-center justify-center transition-colors">
               <ArrowLeft size={20} />
             </Link>
@@ -290,7 +290,7 @@ export default function DayClose() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
               <input
@@ -344,7 +344,7 @@ export default function DayClose() {
           </div>
         ) : (
           <>
-            <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <section className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
               <SummaryCard label="Completed Bills" value={summary.completedBillCount.toString()} />
               <SummaryCard label="Voided Bills" value={summary.voidedBillCount.toString()} tone={summary.voidedBillCount > 0 ? 'red' : 'neutral'} />
               <SummaryCard label="Gross Completed Sales" value={formatMoney(summary.grossSales)} />

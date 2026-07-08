@@ -26,7 +26,7 @@ export default function AdminHome() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto w-full pb-20">
+    <div className="max-w-4xl mx-auto w-full min-w-0 pb-20">
       <motion.h2 
         initial={{ opacity: 0, x: -10 }}
         animate={{ opacity: 1, x: 0 }}
@@ -46,7 +46,7 @@ export default function AdminHome() {
           <div className="absolute top-0 right-0 bg-amber-100 text-amber-800 text-xs font-bold px-3 py-1 rounded-bl-xl border-b border-l border-amber-200">
             New operating system
           </div>
-          <div className="flex items-start gap-4 md:gap-6">
+          <div className="flex min-w-0 items-start gap-4 md:gap-6">
             <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
               <DatabaseZap size={32} />
             </div>

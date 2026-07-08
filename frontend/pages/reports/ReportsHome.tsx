@@ -662,11 +662,11 @@ export default function ReportsHome() {
   if (!staffProfile) return null;
 
   return (
-    <div className="min-h-screen bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
+    <div className="min-h-screen min-w-0 bg-[#fcf9f5] pb-24 font-sans text-neutral-800">
       
       <div className="bg-white border-b border-neutral-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex min-w-0 flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-4">
             <Link to="/pos" className="w-10 h-10 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 rounded-full flex items-center justify-center transition-colors">
               <ArrowLeft size={20} />
             </Link>
@@ -676,7 +676,7 @@ export default function ReportsHome() {
             </div>
           </div>
           
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
             {(staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER') && (
               <Link
                 to="/reports/audit-control"
@@ -775,7 +775,7 @@ export default function ReportsHome() {
           <div className="space-y-6">
             
             {/* KPI Row 1 */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4">
                <div className="col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-neutral-200 relative overflow-hidden group">
                  <div className="absolute inset-0 bg-gradient-to-r from-[#5c4033]/5 to-transparent pointer-events-none" />
                  <p className="text-xs font-bold text-[#5c4033] uppercase tracking-widest mb-1 opacity-80">Net Sales</p>
@@ -800,7 +800,7 @@ export default function ReportsHome() {
             </div>
 
             {/* Sub-KPIs */}
-            <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-7 gap-4">
               <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
                  <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Completed Bills</div>
                  <div className="text-xl font-bold font-mono">{totalBills}</div>
@@ -1052,7 +1052,7 @@ export default function ReportsHome() {
                           <p className="text-3xl font-black font-mono text-blue-900">{kotItems.filter(k => k.station === 'KITCHEN').length}</p>
                         </div>
                      </div>
-                     <div className="grid grid-cols-4 gap-2 pt-4">
+                     <div className="grid grid-cols-2 gap-2 pt-4 sm:grid-cols-4">
                        <div className="bg-neutral-50 rounded-lg p-2 text-center border border-neutral-100">
                           <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1">Pending</div>
                           <div className="font-mono font-bold">{kotItems.filter(k => k.status === 'PENDING').length}</div>

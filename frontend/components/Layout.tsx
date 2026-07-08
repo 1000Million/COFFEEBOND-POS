@@ -38,9 +38,9 @@ export default function Layout() {
   const showAdmin = role === 'ADMIN';
 
   return (
-    <div className="min-h-[100dvh] bg-[#f9f5f0] flex flex-col font-sans text-neutral-800">
-      <header className={`bg-white border-b border-neutral-200 px-4 md:px-6 py-3 flex items-center justify-between sticky top-0 z-50 ${isPos ? 'hidden lg:flex' : ''}`}>
-        <div className="flex items-center gap-3">
+    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f9f5f0] flex flex-col font-sans text-neutral-800">
+      <header className={`bg-white border-b border-neutral-200 px-4 md:px-6 py-3 flex items-center justify-between gap-3 sticky top-0 z-50 min-w-0 ${isPos ? 'hidden lg:flex' : ''}`}>
+        <div className="flex min-w-0 items-center gap-3">
           <div className="md:hidden">
              <button 
                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -59,7 +59,7 @@ export default function Layout() {
         </div>
 
         {/* Center Nav - Desktop */}
-        <nav className="hidden md:flex items-center gap-1 bg-neutral-50 p-1 rounded-full border border-neutral-200 mx-4">
+        <nav className="hidden md:flex min-w-0 max-w-full items-center gap-1 overflow-x-auto bg-neutral-50 p-1 rounded-full border border-neutral-200 mx-4 custom-scrollbar">
           {navLinks.map((link) => (
             <NavLink 
               key={link.to} 
@@ -77,7 +77,7 @@ export default function Layout() {
         </nav>
 
         {/* Right Section */}
-        <div className="flex items-center gap-4">
+        <div className="flex min-w-0 shrink-0 items-center gap-3 md:gap-4">
           {showAdmin && (
             <NavLink 
               to="/admin"
@@ -92,8 +92,8 @@ export default function Layout() {
             </NavLink>
           )}
 
-          <div className="flex flex-col items-end">
-            <span className="text-[13px] font-bold text-neutral-800 leading-tight">{staffProfile.name}</span>
+          <div className="flex min-w-0 flex-col items-end">
+            <span className="max-w-[120px] truncate text-[13px] font-bold text-neutral-800 leading-tight sm:max-w-[180px]">{staffProfile.name}</span>
             <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-[1px] rounded uppercase tracking-wider">
               {staffProfile.role.replace('_', ' ')}
             </span>
@@ -111,7 +111,7 @@ export default function Layout() {
 
       {/* Mobile Nav Menu */}
       {mobileMenuOpen && (
-        <nav className="md:hidden flex flex-col bg-white border-b border-neutral-200 px-4 py-2 absolute top-[61px] left-0 right-0 z-40 shadow-lg">
+        <nav className="md:hidden flex flex-col bg-white border-b border-neutral-200 px-4 py-2 absolute top-[61px] left-0 right-0 z-40 max-h-[calc(100dvh-61px)] overflow-y-auto shadow-lg">
           {navLinks.map((link) => (
             <NavLink 
               key={link.to} 
@@ -147,7 +147,7 @@ export default function Layout() {
         </nav>
       )}
 
-      <main className={`flex-1 flex flex-col w-full min-w-0 h-full max-w-[1600px] mx-auto ${isPos ? 'p-0 lg:p-4 lg:md:p-6' : 'p-4 md:p-6'}`}>
+      <main className={`flex-1 flex flex-col w-full min-w-0 h-full max-w-[1600px] mx-auto overflow-x-hidden ${isPos ? 'p-0 lg:p-4 lg:md:p-6' : 'p-4 md:p-6'}`}>
         <Outlet />
       </main>
       

@@ -224,9 +224,9 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
   };
 
   return (
-    <div className="max-w-7xl mx-auto p-4 md:p-8">
-       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-         <div className="flex items-center gap-3">
+    <div className="max-w-7xl mx-auto w-full min-w-0 p-4 md:p-8">
+       <div className="flex min-w-0 flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+         <div className="flex min-w-0 items-center gap-3">
            {station === 'BARISTA' ? <Coffee size={32} className="text-[#5c4033]" /> : <ChefHat size={32} className="text-[#5c4033]" />}
            <div>
              <h1 className="text-3xl font-black tracking-tight text-neutral-900">{station === 'BARISTA' ? 'Barista Station' : 'Kitchen KOT'}</h1>
@@ -234,20 +234,20 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
            </div>
          </div>
 
-         <div className="flex flex-wrap items-center gap-3">
-           <div className="relative">
+         <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
+           <div className="relative w-full sm:w-auto">
              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={18} />
              <input
                 type="text"
                 placeholder="Search order or item..."
-                className="pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none font-medium shadow-sm transition-shadow w-48"
+                className="w-full pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none font-medium shadow-sm transition-shadow sm:w-48"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
              />
            </div>
 
            <select
-              className="px-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow min-w-[120px]"
+              className="w-full px-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow sm:w-auto sm:min-w-[120px]"
               value={selectedStatus}
               onChange={e => setSelectedStatus(e.target.value)}
            >
@@ -258,10 +258,10 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
            </select>
 
            {(staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER') && (
-             <div className="relative">
+             <div className="relative w-full sm:w-auto">
                <StoreIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={18} />
                <select
-                  className="pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow min-w-[160px]"
+                  className="w-full pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow sm:w-auto sm:min-w-[160px]"
                   value={selectedStoreId}
                   onChange={e => setSelectedStoreId(e.target.value)}
                >
@@ -291,10 +291,10 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                const timeCreated = first.createdAt?.toDate ? first.createdAt.toDate() : new Date();
                
                return (
-                 <div key={orderNumber} className="bg-white border-t-8 border-t-[#5c4033] border-neutral-200 rounded-xl overflow-hidden flex flex-col shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 transform-gpu">
+                 <div key={orderNumber} className="bg-white border-t-8 border-t-[#5c4033] border-neutral-200 rounded-xl overflow-hidden flex min-w-0 flex-col shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 transform-gpu">
                     <div className="p-4 border-b border-dashed border-neutral-200 bg-neutral-50/50">
                        <div className="flex justify-between items-start mb-2">
-                         <h3 className="text-lg font-black font-mono tracking-tight text-neutral-900">{orderNumber.split('-').slice(2).join('-')}</h3>
+                         <h3 className="min-w-0 break-words text-lg font-black font-mono tracking-tight text-neutral-900">{orderNumber.split('-').slice(2).join('-')}</h3>
                          <span className="flex items-center gap-1 text-xs font-bold text-neutral-500 bg-neutral-200 px-2 py-1 rounded">
                            <Clock size={12} /> {timeSince(timeCreated)}
                          </span>
@@ -314,7 +314,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                           return (
                             <div key={item.id} className={`p-4 ${idx !== ticketItems.length - 1 ? 'border-b border-neutral-100' : ''}`}>
                                <div className="flex justify-between items-start mb-2">
-                                  <div className="flex-1 pr-2">
+                                  <div className="min-w-0 flex-1 pr-2">
                                     <div className="flex items-baseline gap-2">
                                       <span className="font-mono font-black text-sm text-[#5c4033]">{item.quantity}x</span>
                                       <span className="font-bold text-sm text-neutral-800">{item.itemName}</span>

@@ -889,8 +889,8 @@ export default function POSReadiness() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto w-full pb-20 space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="max-w-7xl mx-auto w-full min-w-0 pb-20 space-y-6">
+        <div className="flex min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <p className="text-sm font-bold text-emerald-700 uppercase tracking-wide">Phase 8A</p>
           <h1 className="text-3xl font-black text-[#5c4033]">POS Go-Live Readiness</h1>
@@ -930,15 +930,15 @@ export default function POSReadiness() {
       )}
 
       <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-          <div className="flex items-start gap-4">
+        <div className="flex min-w-0 flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-4">
             <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-700 border border-amber-200 flex items-center justify-center shrink-0">
               <Wrench size={24} />
             </div>
             <div>
               <h2 className="text-xl font-black text-neutral-900">Uday Park Espresso Stock Fix</h2>
               <p className="text-sm text-neutral-600 mt-1">{espressoFix.message}</p>
-              <div className="mt-3 grid grid-cols-1 sm:grid-cols-4 gap-3 text-sm">
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
                 <div><span className="font-bold text-neutral-500">Item</span><p className="font-mono">{ESPRESSO_STOCK_CODE}</p></div>
                 <div><span className="font-bold text-neutral-500">Opening</span><p className="font-mono">{espressoFix.openingStock}</p></div>
                 <div><span className="font-bold text-neutral-500">Current</span><p className="font-mono">{espressoFix.currentStock}</p></div>
@@ -1041,7 +1041,7 @@ export default function POSReadiness() {
               )}
 
               {availabilityResult && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 rounded-xl bg-neutral-50 border border-neutral-200 p-3 text-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 rounded-xl bg-neutral-50 border border-neutral-200 p-3 text-sm">
                   <div>
                     <p className="text-[11px] font-black uppercase text-neutral-500">Store</p>
                     <p className="font-black">{availabilityResult.storeName}</p>
@@ -1158,7 +1158,7 @@ export default function POSReadiness() {
                 </div>
               </div>
 
-              <div className="mt-5 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">
+              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">
                 <Stat label="Active Finished Goods" value={store.activePosMenuItemCount} tone={store.activePosMenuItemCount ? 'green' : 'red'} />
                 <Stat label="Finished Goods Menu" value={store.finishedGoodsAvailableCount} />
                 <Stat label="Stock Blockers" value={store.stockBlockers.length} tone={store.stockBlockers.length ? 'red' : 'green'} />
@@ -1173,7 +1173,7 @@ export default function POSReadiness() {
               <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <div className="bg-white/70 border border-white/70 rounded-xl p-4">
                   <p className="text-sm font-black mb-2">KOT Station Coverage</p>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2 text-sm">
                     <span>Barista: <strong>{store.kotCoverage.barista}</strong></span>
                     <span>Kitchen: <strong>{store.kotCoverage.kitchen}</strong></span>
                     <span>Both: <strong>{store.kotCoverage.both}</strong></span>

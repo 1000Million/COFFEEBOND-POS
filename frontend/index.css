@@ -120,11 +120,36 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    box-sizing: border-box;
     }
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
   body {
     @apply bg-background text-foreground;
     }
   html {
     @apply font-sans;
     }
+  img,
+  video,
+  canvas,
+  svg {
+    max-width: 100%;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    min-width: 0;
+  }
 }
