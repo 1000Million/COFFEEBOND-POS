@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment } from '../../types';
-import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
+import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 type CheckoutError = {
@@ -164,6 +164,8 @@ const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTax
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 const LAST_RECEIPT_STORAGE_KEY = 'coffeeBondPos:lastReceipt:v1';
 const HELD_BILLS_STORAGE_KEY = 'coffeeBondPos:heldBills:v1';
+const RECENT_ITEMS_STORAGE_KEY = 'coffeeBondPos:recentItems:v1';
+const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
 
@@ -302,6 +304,11 @@ function writeLocalStorageJson<T>(key: string, value: T) {
 function loadStoredHeldBills(): HeldBill[] {
   const bills = readLocalStorageJson<HeldBill[]>(HELD_BILLS_STORAGE_KEY, []);
   return Array.isArray(bills) ? bills : [];
+}
+
+function loadStoredRecentItems(): Record<string, string[]> {
+  const recentItems = readLocalStorageJson<Record<string, string[]>>(RECENT_ITEMS_STORAGE_KEY, {});
+  return recentItems && typeof recentItems === 'object' && !Array.isArray(recentItems) ? recentItems : {};
 }
 
 function buildReceiptSnapshot(
@@ -533,6 +540,8 @@ export default function POSHome() {
   const [receiptView, setReceiptView] = useState<ReceiptSnapshot | null>(null);
   const [receiptViewTitle, setReceiptViewTitle] = useState('Order Saved');
   const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
+  const [recentItemIdsByStore, setRecentItemIdsByStore] = useState<Record<string, string[]>>({});
+  const [lastAddedItemId, setLastAddedItemId] = useState<string | null>(null);
 
   const posSource = 'FINISHED_GOODS' as const;
 
@@ -548,6 +557,7 @@ export default function POSHome() {
   useEffect(() => {
     setLastReceipt(readLocalStorageJson<ReceiptSnapshot | null>(LAST_RECEIPT_STORAGE_KEY, null));
     setHeldBills(loadStoredHeldBills());
+    setRecentItemIdsByStore(loadStoredRecentItems());
   }, []);
 
   useEffect(() => {
@@ -558,27 +568,9 @@ export default function POSHome() {
   }, [loading, selectedStoreId]);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const tagName = target?.tagName || '';
-      const isTyping = target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName);
-
-      if (event.key === '/' && !isTyping) {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
-
-      if (event.key === 'Escape' && (document.activeElement === searchInputRef.current || searchQuery)) {
-        event.preventDefault();
-        setSearchQuery('');
-        searchInputRef.current?.blur();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [searchQuery]);
+    const recentIds = recentItemIdsByStore[selectedStoreId] || [];
+    setLastAddedItemId(prev => (prev && recentIds.includes(prev)) ? prev : (recentIds[0] || null));
+  }, [recentItemIdsByStore, selectedStoreId]);
 
   const fetchMenuData = async () => {
     setLoading(true);
@@ -828,6 +820,44 @@ export default function POSHome() {
       .slice(0, 8);
   }, [availableMenuItems]);
 
+  const recentMenuItems = useMemo(() => {
+    const recentIds = recentItemIdsByStore[selectedStoreId] || [];
+    return recentIds
+      .map(itemId => availableMenuItems.find(item => item.id === itemId || item.code === itemId || (item as any).finishedGoodCode === itemId))
+      .filter((item): item is MenuItem => Boolean(item))
+      .slice(0, RECENT_ITEMS_LIMIT);
+  }, [availableMenuItems, recentItemIdsByStore, selectedStoreId]);
+
+  const lastAddedMenuItem = useMemo(() => {
+    if (lastAddedItemId) {
+      const item = availableMenuItems.find(menuItem => (
+        menuItem.id === lastAddedItemId
+        || menuItem.code === lastAddedItemId
+        || (menuItem as any).finishedGoodCode === lastAddedItemId
+      ));
+      if (item) return item;
+    }
+    return recentMenuItems[0] || null;
+  }, [availableMenuItems, lastAddedItemId, recentMenuItems]);
+
+  const rememberRecentItem = (itemId: string) => {
+    if (!selectedStoreId || !itemId) return;
+
+    setLastAddedItemId(itemId);
+    setRecentItemIdsByStore(prev => {
+      const currentStoreItems = prev[selectedStoreId] || [];
+      const nextStoreItems = [itemId, ...currentStoreItems.filter(id => id !== itemId)].slice(0, RECENT_ITEMS_LIMIT);
+      const next = { ...prev, [selectedStoreId]: nextStoreItems };
+      writeLocalStorageJson(RECENT_ITEMS_STORAGE_KEY, next);
+      return next;
+    });
+  };
+
+  const repeatLastItem = () => {
+    if (!lastAddedMenuItem) return;
+    addToCart(lastAddedMenuItem);
+  };
+
   // --- Cart Operations ---
   const addToCart = (item: any) => {
     setCheckoutError(null);
@@ -848,6 +878,8 @@ export default function POSHome() {
       });
       return;
     }
+
+    rememberRecentItem(itemId);
 
     setCart(prev => {
       const existing = prev.find(ci => ci.menuItemId === itemId);
@@ -1045,11 +1077,13 @@ export default function POSHome() {
     })).filter(payment => payment.amount > 0 || totalDue === 0);
   };
 
-  const handleCheckout = async () => {
+  const handleCheckout = async (paymentMethodOverride?: PaymentMethod) => {
+    const selectedPaymentMethod = !isSplitPayment && paymentMethodOverride ? paymentMethodOverride : paymentMethod;
+
     if (!staffProfile || !auth.currentUser) return;
     if (cart.length === 0) return alert("Cart is empty");
     if (!selectedStoreId) return alert("Please select a store");
-    if (!isSplitPayment && !paymentMethod) return alert("Please select a payment method");
+    if (!isSplitPayment && !selectedPaymentMethod) return alert("Please select a payment method");
     if (isSplitPayment && splitPayments.length === 0) return alert("Please add at least one payment row");
     if (orderType === 'DINE_IN' && !tableNumber.trim()) return alert("Table number is required for DINE IN");
 
@@ -1094,8 +1128,8 @@ export default function POSHome() {
       const paymentRows: ReceiptPaymentSnapshot[] = isSplitPayment
         ? normalizedSplitPayments(trueGrandTotal)
         : [{
-          method: paymentMethod as PaymentMethod,
-          amount: paymentMethod === 'CREDIT' ? 0 : trueGrandTotal,
+          method: selectedPaymentMethod as PaymentMethod,
+          amount: selectedPaymentMethod === 'CREDIT' ? 0 : trueGrandTotal,
         }];
       const allocatedPaymentAmount = isSplitPayment
         ? paymentRows.reduce((sum, payment) => sum + payment.amount, 0)
@@ -1440,7 +1474,7 @@ export default function POSHome() {
 
         const paymentStatus: Order['paymentStatus'] = isSplitPayment
           ? splitPaymentStatus(paymentRows, trueGrandTotal)
-          : (paymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
+          : (selectedPaymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
 
         const orderData: Order = {
           orderNumber,
@@ -1554,7 +1588,7 @@ export default function POSHome() {
         const paymentsToWrite: ReceiptPaymentSnapshot[] = isSplitPayment
           ? paymentRows
           : [{
-            method: paymentMethod as PaymentMethod,
+            method: selectedPaymentMethod as PaymentMethod,
             amount: paymentStatus === 'PAID' ? trueGrandTotal : 0,
           }];
         const newPayments: OrderPayment[] = [];
@@ -1593,6 +1627,83 @@ export default function POSHome() {
       setIsSaving(false);
     }
   };
+
+  const quickPayExact = (method: PaymentMethod) => {
+    if (cart.length === 0 || isSaving || isSplitPayment) return;
+    setPaymentMethod(method);
+    void handleCheckout(method);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName || '';
+      const isTyping = target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName);
+
+      if (event.key === 'Escape') {
+        if (receiptView) {
+          event.preventDefault();
+          setReceiptView(null);
+          return;
+        }
+        if (isMobileCartOpen) {
+          event.preventDefault();
+          setIsMobileCartOpen(false);
+          return;
+        }
+        if (document.activeElement === searchInputRef.current || searchQuery) {
+          event.preventDefault();
+          setSearchQuery('');
+          searchInputRef.current?.blur();
+        }
+        return;
+      }
+
+      if (event.key === '/' && !isTyping) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (event.key === 'Enter' && document.activeElement === searchInputRef.current && filteredMenuItems.length > 0 && searchQuery.trim()) {
+        event.preventDefault();
+        addToCart(filteredMenuItems[0]);
+        setSearchQuery('');
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'r' && !isTyping && !event.metaKey && !event.ctrlKey && !event.altKey && lastAddedMenuItem) {
+        event.preventDefault();
+        repeatLastItem();
+        return;
+      }
+
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isTyping && cart.length > 0 && !isSaving) {
+        event.preventDefault();
+        if (isSplitPayment) {
+          void handleCheckout();
+        } else {
+          const method = paymentMethod || 'CASH';
+          setPaymentMethod(method);
+          void handleCheckout(method);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    cart.length,
+    filteredMenuItems,
+    isMobileCartOpen,
+    isSaving,
+    isSplitPayment,
+    lastAddedMenuItem,
+    paymentMethod,
+    receiptView,
+    searchQuery,
+  ]);
 
   if (loading) {
     return (
@@ -1682,25 +1793,47 @@ export default function POSHome() {
       {/* Menu Area */}
       <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
         <div className="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar sm:p-5 lg:p-6">
-          <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="relative min-w-0">
-              <Search size={19} className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder="Search coffee, food, desserts..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="min-h-[52px] w-full rounded-2xl border border-[#eadfd4] bg-white pl-12 pr-4 text-base font-semibold text-neutral-800 shadow-sm outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
-              />
+          <div className="mb-5 -mx-3 border-b border-[#eadfd4]/80 bg-[#f7f1e8] px-3 pb-3 pt-1 sm:-mx-5 sm:px-5 lg:-mx-6 lg:px-6">
+            <div className="mb-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div className="relative min-w-0">
+                <Search size={19} className="absolute left-4 top-[26px] -translate-y-1/2 text-neutral-400" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  placeholder="Search coffee, food, desserts..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="min-h-[52px] w-full rounded-2xl border border-[#eadfd4] bg-white pl-12 pr-4 text-base font-semibold text-neutral-800 shadow-sm outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
+                />
+                <p className="mt-2 px-1 text-xs font-bold text-neutral-500">
+                  {searchQuery.trim() && filteredMenuItems[0]
+                    ? `Press Enter to add first result: ${filteredMenuItems[0].name}`
+                    : 'Press / to search · Press R to repeat last item'}
+                </p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:flex lg:items-start">
+                <button
+                  type="button"
+                  onClick={repeatLastItem}
+                  disabled={!lastAddedMenuItem}
+                  className={`inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black shadow-sm transition ${
+                    lastAddedMenuItem
+                      ? 'border-[#5c4033]/20 bg-white text-[#3e2723] hover:bg-[#fff8ed]'
+                      : 'cursor-not-allowed border-[#eadfd4] bg-white/70 text-neutral-300'
+                  }`}
+                  title={lastAddedMenuItem ? `Repeat ${lastAddedMenuItem.name}` : 'Add an item first'}
+                >
+                  <RotateCcw size={16} />
+                  Repeat last item
+                </button>
+                <div className="hidden rounded-2xl border border-[#eadfd4] bg-white px-4 py-2 text-sm font-bold text-neutral-500 shadow-sm lg:block">
+                  {selectedStore?.name || 'Store'} · {filteredMenuItems.length} items
+                </div>
+              </div>
             </div>
-            <div className="hidden rounded-2xl border border-[#eadfd4] bg-white px-4 py-2 text-sm font-bold text-neutral-500 shadow-sm lg:block">
-              {selectedStore?.name || 'Store'} · {filteredMenuItems.length} items
-            </div>
-          </div>
 
-          <div className="mb-5 overflow-x-auto custom-scrollbar">
-            <div className="flex min-w-max gap-2 pb-1">
+            <div className="overflow-x-auto scroll-smooth custom-scrollbar">
+              <div className="flex min-w-max gap-2 pb-1">
               <button
                 type="button"
                 onClick={() => setSelectedCategoryId('ALL')}
@@ -1726,8 +1859,41 @@ export default function POSHome() {
                   {cat.name}
                 </button>
               ))}
+              </div>
             </div>
           </div>
+
+          {recentMenuItems.length > 0 && (
+            <div className="mb-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-black tracking-tight text-[#2d1c19]">Recently added</h2>
+                  <p className="text-xs font-semibold text-neutral-500">Current store quick picks</p>
+                </div>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-[#5c4033] shadow-sm">{recentMenuItems.length}</span>
+              </div>
+              <div className="overflow-x-auto scroll-smooth custom-scrollbar">
+                <div className="flex min-w-max gap-3 pb-1">
+                  {recentMenuItems.map((item: any) => (
+                    <button
+                      key={`recent_${item.id}`}
+                      type="button"
+                      onClick={() => addToCart(item)}
+                      className="group flex h-24 w-40 flex-col justify-between rounded-3xl border border-[#eadfd4] bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#5c4033]/30 hover:shadow-md active:scale-[0.98]"
+                    >
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d1c19] group-hover:text-[#5c4033]">{item.name}</p>
+                      <div className="flex items-end justify-between gap-2">
+                        <p className="font-mono text-sm font-black text-[#3e2723]">₹{item.price}</p>
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f4eadf] text-[#3e2723]">
+                          <Plus size={16} strokeWidth={3} />
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {fastItems.length > 0 && (
             <div className="mb-6">
@@ -1876,7 +2042,7 @@ export default function POSHome() {
               )}
               {cart.length > 0 && (
                 <button onClick={holdCurrentBill} className="rounded-full bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 transition-colors hover:bg-amber-100">
-                  Hold Bill
+                  Hold {heldBills.length > 0 ? `(${heldBills.length})` : 'Bill'}
                 </button>
               )}
               {cart.length > 0 && (
@@ -1973,6 +2139,50 @@ export default function POSHome() {
                   onChange={e => setCustomerPhone(e.target.value)}
                   className="bg-transparent outline-none w-full font-medium placeholder-neutral-400"
                 />
+              </div>
+            </div>
+            <div className="mt-3 overflow-x-auto custom-scrollbar">
+              <div className="flex min-w-max gap-2 pb-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomerName('Walk-in');
+                    setCustomerPhone('');
+                  }}
+                  className="rounded-full border border-[#eadfd4] bg-white px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
+                >
+                  Walk-in
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderType('DINE_IN');
+                    setTableNumber('1');
+                  }}
+                  className="rounded-full border border-[#eadfd4] bg-white px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
+                >
+                  Table 1
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderType('DINE_IN');
+                    setTableNumber('2');
+                  }}
+                  className="rounded-full border border-[#eadfd4] bg-white px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
+                >
+                  Table 2
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderType('TAKEAWAY');
+                    setTableNumber('');
+                  }}
+                  className="rounded-full border border-[#eadfd4] bg-white px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
+                >
+                  Takeaway
+                </button>
               </div>
             </div>
           </div>
@@ -2077,33 +2287,41 @@ export default function POSHome() {
                       animate={{ opacity: 1, x: 0, height: "auto" }}
                       exit={{ opacity: 0, x: -20, height: 0 }}
                       transition={{ type: "spring" as const, stiffness: 500, damping: 40 }}
-                      className="group flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-[#eadfd4] bg-white p-3 shadow-sm"
+                      className="group flex min-w-0 flex-col gap-3 rounded-2xl border border-[#eadfd4] bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                     >
-                      <div className="flex flex-col flex-1 min-w-0">
+                      <div className="flex min-w-0 flex-1 flex-col">
                         <span className="line-clamp-2 break-words text-sm font-black leading-snug text-[#2d1c19]">{item.name}</span>
                         <p className="text-xs text-neutral-400 font-mono mt-0.5">₹{item.price} each</p>
                       </div>
-                      <div className="flex flex-col items-end shrink-0">
-                        <span className="font-mono text-sm font-bold text-neutral-800 mb-1.5">
+                      <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:flex-col sm:items-end">
+                        <span className="font-mono text-sm font-bold text-neutral-800 sm:mb-1.5">
                           ₹{(item.price * item.quantity).toFixed(2)}
                         </span>
-                        <div className="flex items-center gap-1.5 flex-nowrap">
+                        <div className="flex items-center gap-2 flex-nowrap">
                           <button
                             onClick={() => updateQuantity(item.id, -1)}
                             aria-label={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
                             title={item.quantity === 1 ? `Remove ${item.name}` : `Decrease ${item.name}`}
-                            className="flex min-h-[34px] min-w-[34px] cursor-pointer items-center justify-center rounded-xl bg-neutral-100 p-1.5 text-neutral-600 transition-colors hover:bg-neutral-200"
+                            className="flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-xl bg-neutral-100 p-2 text-neutral-600 transition-colors hover:bg-neutral-200"
                           >
-                            {item.quantity === 1 ? <Trash2 size={14} className="text-red-500" /> : <Minus size={14} />}
+                            {item.quantity === 1 ? <Trash2 size={15} className="text-red-500" /> : <Minus size={15} />}
                           </button>
-                          <span className="w-7 text-center font-mono text-sm font-black">{item.quantity}</span>
+                          <span className="w-8 text-center font-mono text-sm font-black">{item.quantity}</span>
                           <button
                             onClick={() => updateQuantity(item.id, 1)}
                             aria-label={`Increase ${item.name}`}
                             title={`Increase ${item.name}`}
-                            className="flex min-h-[34px] min-w-[34px] cursor-pointer items-center justify-center rounded-xl bg-[#5c4033]/10 p-1.5 text-[#5c4033] transition-colors hover:bg-[#5c4033]/20"
+                            className="flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-xl bg-[#5c4033]/10 p-2 text-[#5c4033] transition-colors hover:bg-[#5c4033]/20"
                           >
-                            <Plus size={14} />
+                            <Plus size={15} />
+                          </button>
+                          <button
+                            onClick={() => updateQuantity(item.id, item.quantity)}
+                            aria-label={`Duplicate ${item.name}`}
+                            title={`Duplicate ${item.name}`}
+                            className="flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-xl border border-[#eadfd4] bg-white px-2 text-[11px] font-black text-[#5c4033] transition-colors hover:bg-[#fff8ed]"
+                          >
+                            x2
                           </button>
                         </div>
                       </div>
@@ -2185,8 +2403,9 @@ export default function POSHome() {
               </div>
 
               {!isSplitPayment ? (
-                <div className="mb-3 overflow-x-auto custom-scrollbar">
-                  <div className="flex min-w-max gap-2 pb-1">
+                <div className="mb-3 space-y-2">
+                  <div className="overflow-x-auto custom-scrollbar">
+                    <div className="flex min-w-max gap-2 pb-1">
                     {PAYMENT_METHODS.map(method => (
                       <button
                         key={method}
@@ -2202,7 +2421,41 @@ export default function POSHome() {
                         </span>
                       </button>
                     ))}
+                    </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <button
+                      type="button"
+                      onClick={() => quickPayExact('CASH')}
+                      className="rounded-2xl border border-[#eadfd4] bg-[#fff8ed] px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#f7ead8]"
+                    >
+                      Cash exact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => quickPayExact('UPI')}
+                      className="rounded-2xl border border-[#eadfd4] bg-[#fff8ed] px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#f7ead8]"
+                    >
+                      UPI exact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => quickPayExact('CARD')}
+                      className="rounded-2xl border border-[#eadfd4] bg-[#fff8ed] px-3 py-2 text-xs font-black text-[#5c4033] transition hover:bg-[#f7ead8]"
+                    >
+                      Card exact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => quickPayExact((paymentMethod || 'CASH') as PaymentMethod)}
+                      className="rounded-2xl border border-[#3e2723] bg-[#3e2723] px-3 py-2 text-xs font-black text-white transition hover:bg-[#2d1c19]"
+                    >
+                      Pay exact
+                    </button>
+                  </div>
+                  <p className="px-1 text-[11px] font-bold text-neutral-500">
+                    Ctrl/Cmd + Enter pays with the selected method when you are not typing.
+                  </p>
                 </div>
               ) : (
                 <div className="mb-4 rounded-2xl border border-[#eadfd4] bg-white p-3 space-y-3">
@@ -2277,7 +2530,7 @@ export default function POSHome() {
                       ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99]'
                       : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
                   }`}
-                  onClick={handleCheckout}
+                  onClick={() => void handleCheckout()}
                 >
                   {isSaving ? <Loader2 size={20} className="animate-spin mx-auto text-[#5c4033]" /> : `Pay ₹${cartTotals.grandTotal.toFixed(2)}`}
                 </button>
@@ -2297,7 +2550,7 @@ export default function POSHome() {
                 ? 'bg-[#3e2723] hover:bg-[#2d1c19] text-[#f9f5f0] hover:shadow-md active:scale-[0.99] border border-[#2d1c19]'
                 : 'bg-neutral-200 text-neutral-400 cursor-not-allowed border border-neutral-300'
             }`}
-            onClick={handleCheckout}
+            onClick={() => void handleCheckout()}
           >
             {isSaving ? <Loader2 size={20} className="animate-spin mx-auto text-[#5c4033]" /> : (cart.length > 0 ? `Pay ₹${cartTotals.grandTotal.toFixed(2)}` : 'Cart Empty')}
           </button>
