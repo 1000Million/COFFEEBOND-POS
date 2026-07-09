@@ -3,7 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { auth, db } from '../../lib/firebase';
 import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
 import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
-import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck } from 'lucide-react';
+import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 type ReportPaymentBreakdown = {
@@ -699,6 +699,14 @@ export default function ReportsHome() {
               className="px-4 py-2 rounded-lg bg-white border border-[#5c4033]/20 text-[#5c4033] text-sm font-black uppercase tracking-wider hover:bg-[#5c4033]/5 transition-colors"
             >
               Inventory Control
+            </Link>
+
+            <Link
+              to="/inventory/stock-correction"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-800 text-sm font-black uppercase tracking-wider hover:bg-emerald-50 transition-colors"
+            >
+              <Wrench size={16} />
+              Stock Correction
             </Link>
 
             <div className="relative">

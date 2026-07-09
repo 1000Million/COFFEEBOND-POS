@@ -37,7 +37,7 @@ import {
 } from '../../types/menu-management';
 
 type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
-type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK';
+type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
 type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 
@@ -165,6 +165,7 @@ const MOVEMENT_FILTERS: { value: MovementTypeFilter; label: string }[] = [
   { value: 'ORDER_VOID_REVERSAL', label: 'Void reversal' },
   { value: 'ADJUSTMENT', label: 'Manual adjustment' },
   { value: 'OPENING_STOCK', label: 'Opening stock' },
+  { value: 'STOCK_CORRECTION', label: 'Stock correction' },
 ];
 const ITEM_FILTERS: { value: ItemTypeFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
@@ -1355,7 +1356,7 @@ export default function InventoryControl() {
   const movementAuditRows = useMemo(() => buildMovementAuditRows(
     periodMovements.filter((movement) => {
       const movementTypeFilterMatch = movementTypeFilter === 'ALL'
-        || (movementTypeFilter === 'ADJUSTMENT' ? movement.movementType === 'ADJUSTMENT' : movement.movementType === movementTypeFilter);
+        || movement.movementType === movementTypeFilter;
       const itemTypeFilterMatch = itemTypeFilter === 'ALL' || movement.stockItemType === itemTypeFilter;
       return movementTypeFilterMatch && itemTypeFilterMatch;
     }),
@@ -1468,6 +1469,9 @@ export default function InventoryControl() {
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/reports" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm hover:bg-[#5c4033]/5">
               Open Reports
+            </Link>
+            <Link to="/inventory/stock-correction" className="rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm hover:bg-emerald-50">
+              Stock Correction
             </Link>
             <Link to="/pos/running-orders" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm hover:bg-[#5c4033]/5">
               Running Orders
@@ -1737,7 +1741,7 @@ export default function InventoryControl() {
                 row.orderNumber,
                 row.itemType,
                 row.itemName,
-                <span key="delta" className={`font-mono ${row.quantityDelta < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.quantityDelta.toFixed(2)}</span>,
+                <span key="delta" className={`font-mono ${row.quantityDelta < 0 ? 'text-red-700' : row.quantityDelta > 0 ? 'text-emerald-700' : 'text-neutral-700'}`}>{`${row.quantityDelta > 0 ? '+' : ''}${row.quantityDelta.toFixed(2)}`}</span>,
                 <span key="prev" className="font-mono">{row.previousQty.toFixed(2)}</span>,
                 <span key="new" className="font-mono">{row.newQty.toFixed(2)}</span>,
                 row.wentNegative ? <span key="neg" className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-black text-red-700">Yes</span> : 'No',

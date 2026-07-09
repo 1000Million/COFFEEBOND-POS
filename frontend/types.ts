@@ -338,7 +338,7 @@ export interface StockMovement {
   storeName: string;
   inventoryItemId: string;
   inventoryItemName: string;
-  movementType: "PURCHASE" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
+  movementType: "PURCHASE" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
   quantity: number;
   quantityDelta?: number;
   unit: string;

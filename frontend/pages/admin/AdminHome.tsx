@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -108,6 +108,18 @@ export default function AdminHome() {
               <div>
                 <h4 className="font-bold text-neutral-800">Inventory Control</h4>
                 <p className="text-xs text-neutral-500">Sales-first COGS and stock audit</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/inventory/stock-correction" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <Wrench size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Stock Correction</h4>
+                <p className="text-xs text-neutral-500">Fix counts and cost setup</p>
               </div>
             </Link>
           </motion.div>
@@ -335,6 +347,16 @@ export default function AdminHome() {
               <div>
                 <h4 className="font-bold text-sm text-neutral-800">Phase 7I BOM Alias Correction</h4>
                 <p className="text-xs text-neutral-500">Correct V2 BOM aliases</p>
+              </div>
+            </Link>
+
+            <Link to="/inventory/stock-correction" className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200 hover:border-emerald-400 transition-all flex items-center gap-3">
+              <div className="w-8 h-8 bg-emerald-50 text-emerald-700 rounded-lg flex items-center justify-center shrink-0">
+                <Wrench size={16} />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-neutral-800">Stock Correction</h4>
+                <p className="text-xs text-neutral-500">Correct counts and costs</p>
               </div>
             </Link>
 
