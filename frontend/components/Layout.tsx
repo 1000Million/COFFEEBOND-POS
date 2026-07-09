@@ -22,6 +22,10 @@ export default function Layout() {
     navLinks.push({ to: '/pos/incoming-orders', label: 'Online', title: 'Online Orders', icon: ShoppingBag });
     navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
   }
+
+  if (role === 'ADMIN' || role === 'STORE_MANAGER') {
+    navLinks.push({ to: '/inventory/control', label: 'Inventory', title: 'Inventory Control', icon: LayoutDashboard });
+  }
   
   if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'BARISTA') {
     navLinks.push({ to: '/kot/barista', label: 'Barista', title: 'Barista KOT', icon: Coffee });

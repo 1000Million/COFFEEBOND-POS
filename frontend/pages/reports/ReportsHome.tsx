@@ -694,6 +694,13 @@ export default function ReportsHome() {
               Day Close
             </Link>
 
+            <Link
+              to="/inventory/control"
+              className="px-4 py-2 rounded-lg bg-white border border-[#5c4033]/20 text-[#5c4033] text-sm font-black uppercase tracking-wider hover:bg-[#5c4033]/5 transition-colors"
+            >
+              Inventory Control
+            </Link>
+
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
               <input 

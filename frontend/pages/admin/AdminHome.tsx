@@ -101,6 +101,18 @@ export default function AdminHome() {
           </motion.div>
 
           <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/inventory/control" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <Package size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Inventory Control</h4>
+                <p className="text-xs text-neutral-500">Sales-first COGS and stock audit</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
             <Link to="/pos/incoming-orders" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
               <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
                 <ShoppingBag size={20} />
