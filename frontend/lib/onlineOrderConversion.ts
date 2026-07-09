@@ -2,6 +2,7 @@ import { collection, doc, runTransaction, serverTimestamp, updateDoc } from 'fir
 import { db } from './firebase';
 import { OnlineOrder, Order, OrderItem, OrderPayment, StaffProfile, Store } from '../types';
 import { FinishedGood } from '../types/menu-management';
+import { InventoryDeductionBlocker, planInventoryDeductionForSale } from './inventoryDeduction';
 
 type TaxConfig = {
   rate: number;
@@ -15,38 +16,7 @@ type AcceptResult = {
   kotCount: number;
 };
 
-export type OnlineOrderAcceptBlocker = {
-  itemName: string;
-  itemCode: string;
-  blockerType: string;
-  componentType?: string;
-  componentCode?: string;
-  componentName?: string;
-  requiredQuantity?: number;
-  availableQuantity?: number;
-  unit?: string;
-  suggestedAction: string;
-};
-
-type RequiredStockSource = {
-  itemName: string;
-  itemCode: string;
-  componentType: string;
-  componentCode: string;
-  componentName: string;
-  quantity: number;
-  unit: string;
-};
-
-type RequiredStock = {
-  id: string;
-  name: string;
-  unit: string;
-  qty: number;
-  type: string;
-  code: string;
-  sources: RequiredStockSource[];
-};
+export type OnlineOrderAcceptBlocker = InventoryDeductionBlocker;
 
 type CalculatedLine = {
   onlineItem: OnlineOrder['items'][number];
@@ -128,42 +98,6 @@ function calculateStoreTaxRate(store: Store, gstConfig: Record<string, unknown> 
   return appTax?.rate || 0;
 }
 
-function addStockRequirement(requirements: Record<string, RequiredStock>, stockId: string, source: RequiredStockSource) {
-  if (!requirements[stockId]) {
-    requirements[stockId] = {
-      id: stockId,
-      name: source.componentName,
-      unit: source.unit,
-      qty: 0,
-      type: source.componentType,
-      code: source.componentCode,
-      sources: [],
-    };
-  }
-  requirements[stockId].qty += source.quantity;
-  requirements[stockId].sources.push(source);
-}
-
-function buildStockBlockers(
-  requirement: RequiredStock,
-  blockerType: string,
-  availableQuantity: number,
-  suggestedAction: string,
-): OnlineOrderAcceptBlocker[] {
-  return requirement.sources.map(source => ({
-    itemName: source.itemName,
-    itemCode: source.itemCode,
-    blockerType,
-    componentType: source.componentType,
-    componentCode: source.componentCode,
-    componentName: source.componentName,
-    requiredQuantity: requirement.qty,
-    availableQuantity,
-    unit: source.unit,
-    suggestedAction,
-  }));
-}
-
 function buildOrderType(onlineOrder: OnlineOrder): Order['orderType'] {
   return onlineOrder.orderType === 'DINE_IN' ? 'DINE_IN' : 'TAKEAWAY';
 }
@@ -203,38 +137,19 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
           itemName: onlineOrder.items[index].itemName,
           itemCode: onlineOrder.items[index].finishedGoodCode,
           blockerType: 'Missing finished good',
-          suggestedAction: 'Check Menu Management and make sure the finished good still exists.',
+          storeId: store.id,
+          storeName: store.name,
+          suggestedAdminAction: 'Check Menu Management and make sure the finished good still exists.',
         }]);
       }
       return { id: snap.id, ...snap.data() } as FinishedGood & { id: string };
     });
 
-    const blockers: OnlineOrderAcceptBlocker[] = [];
     const calculatedLines: CalculatedLine[] = [];
 
     onlineOrder.items.forEach((onlineItem, index) => {
       const finishedGood = finishedGoods[index];
       const quantity = Number(onlineItem.quantity) || 0;
-      const itemName = finishedGood.displayName || finishedGood.name || onlineItem.itemName;
-
-      if (!finishedGood.isActive || !finishedGood.isSellable || finishedGood.isAvailable === false || !finishedGood.availableStoreIds?.includes(store.id)) {
-        blockers.push({
-          itemName,
-          itemCode: finishedGood.code,
-          blockerType: 'Finished good unavailable',
-          suggestedAction: 'Make the item active, sellable, available, and assigned to this store before accepting.',
-        });
-      }
-
-      if (quantity <= 0) {
-        blockers.push({
-          itemName,
-          itemCode: finishedGood.code,
-          blockerType: 'Invalid quantity',
-          suggestedAction: 'Reject this request and ask the customer to place it again.',
-        });
-      }
-
       const price = Number(finishedGood.salePrice) || Number(onlineItem.unitPrice) || 0;
       const lineSubtotal = price * quantity;
       const appliedTaxRate = getAppliedTaxRate(finishedGood as unknown as Record<string, unknown>, storeTaxRate);
@@ -253,134 +168,37 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       });
     });
 
-    const stockRequirements: Record<string, RequiredStock> = {};
-
-    calculatedLines.forEach(({ finishedGood, quantity }) => {
-      const itemType = finishedGood.itemType;
-      const bom = Array.isArray(finishedGood.bom) ? finishedGood.bom : [];
-      const itemName = finishedGood.displayName || finishedGood.name || finishedGood.code;
-
-      if (itemType === 'NO_STOCK') return;
-
-      if (itemType === 'MADE_TO_ORDER' || (itemType === 'DIRECT_STOCK' && bom.length > 0)) {
-        if (bom.length === 0) {
-          blockers.push({
-            itemName,
-            itemCode: finishedGood.code,
-            blockerType: 'Missing BOM',
-            suggestedAction: 'Add a BOM/recipe for this finished good in Menu Management before accepting.',
-          });
-          return;
-        }
-
-        bom.forEach(line => {
-          const componentCode = String(line.componentCode || '').trim();
-          const componentType = String(line.componentType || '').trim();
-          const componentQuantity = Number(line.quantity) || 0;
-          const unit = String(line.uom || '').trim();
-
-          if (!componentCode || !componentType || componentQuantity <= 0) {
-            blockers.push({
-              itemName,
-              itemCode: finishedGood.code,
-              blockerType: 'Missing prep/raw ingredient reference',
-              componentType: componentType || 'UNKNOWN',
-              componentCode: componentCode || 'UNKNOWN',
-              componentName: line.componentName || 'Missing component',
-              requiredQuantity: componentQuantity,
-              unit,
-              suggestedAction: 'Fix the BOM row so it has component type, code, quantity, and UOM.',
-            });
-            return;
-          }
-
-          addStockRequirement(stockRequirements, `${store.id}_${componentType}_${componentCode}`, {
-            itemName,
-            itemCode: finishedGood.code,
-            componentType,
-            componentCode,
-            componentName: line.componentName || componentCode,
-            quantity: componentQuantity * quantity,
-            unit,
-          });
-        });
-      } else if (itemType === 'DIRECT_STOCK') {
-        addStockRequirement(stockRequirements, `${store.id}_FINISHED_GOOD_${finishedGood.code}`, {
-          itemName,
-          itemCode: finishedGood.code,
-          componentType: 'FINISHED_GOOD',
-          componentCode: finishedGood.code,
-          componentName: itemName,
-          quantity,
-          unit: 'pcs',
-        });
-      }
-    });
-
-    if (blockers.length > 0) {
-      throw new OnlineOrderAcceptError(blockers);
-    }
-
-    const stockTargets = Object.keys(stockRequirements).map(stockKey => {
-      const requirement = stockRequirements[stockKey];
-      let stockRef = doc(db, 'storeStock', stockKey);
-      if (requirement.type === 'PACKAGING') {
-        stockRef = doc(db, 'storeStock', `${store.id}_PACKAGING_${requirement.code}`);
-      }
-      return { stockKey, requirement, stockRef };
-    });
-
-    const stockSnaps = await Promise.all(stockTargets.map(target => transaction.get(target.stockRef)));
-    const resolvedStockTargets = [];
-
-    for (let index = 0; index < stockTargets.length; index += 1) {
-      let stockSnap = stockSnaps[index];
-      let target = stockTargets[index];
-
-      if (!stockSnap.exists() && target.requirement.type === 'PACKAGING') {
-        const fallbackRef = doc(db, 'storeStock', `${store.id}_RAW_INGREDIENT_${target.requirement.code}`);
-        stockSnap = await transaction.get(fallbackRef);
-        target = { ...target, stockRef: fallbackRef };
-      }
-
-      if (!stockSnap.exists()) {
-        blockers.push(...buildStockBlockers(
-          target.requirement,
-          'Missing stock record',
-          0,
-          `Create a storeStock row for ${target.requirement.type} / ${target.requirement.code} at ${store.name}.`,
-        ));
-        continue;
-      }
-
-      const stockData = stockSnap.data() as Record<string, unknown>;
-      const currentStock = Number(stockData.currentStock) || 0;
-      const confirmedZero = stockData.confirmedZero === true;
-      if (currentStock < target.requirement.qty) {
-        const blockerType = currentStock <= 0
-          ? (confirmedZero ? 'Zero stock' : 'confirmedZero false')
-          : 'Insufficient stock';
-        blockers.push(...buildStockBlockers(
-          target.requirement,
-          blockerType,
-          currentStock,
-          `Load current stock or reduce the requested quantity. Required ${target.requirement.qty.toFixed(2)} ${target.requirement.unit}; available ${currentStock.toFixed(2)} ${target.requirement.unit}.`,
-        ));
-        continue;
-      }
-
-      resolvedStockTargets.push({ ...target, currentStock });
-    }
-
-    if (blockers.length > 0) {
-      throw new OnlineOrderAcceptError(blockers);
-    }
-
     const dateKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const counterRef = doc(db, 'counters', `${store.code}_${dateKey}`);
     const counterSnap = await transaction.get(counterRef);
     const sequence = counterSnap.exists() ? (Number(counterSnap.data().lastSequence) || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${sequence.toString().padStart(4, '0')}`;
+    const lineRefs = calculatedLines.map(() => doc(collection(newOrderRef, 'items')));
+    const deductionPlan = await planInventoryDeductionForSale({
+      transaction,
+      store,
+      orderId: newOrderRef.id,
+      orderNumber,
+      businessDate: dateKey,
+      source: 'CUSTOMER_WEB_ACCEPT',
+      staffProfile: {
+        uid: staffProfile.uid,
+        name: staffProfile.name,
+      },
+      lines: calculatedLines.map((line, index) => ({
+        lineKey: lineRefs[index].id,
+        quantity: line.quantity,
+        finishedGood: {
+          ...(line.finishedGood as FinishedGood & { id: string } & Record<string, unknown>),
+          code: line.finishedGood.code,
+          name: line.finishedGood.name,
+        },
+      })),
+    });
+
+    if (deductionPlan.blockers.length > 0) {
+      throw new OnlineOrderAcceptError(deductionPlan.blockers);
+    }
 
     const subtotal = calculatedLines.reduce((sum, line) => sum + line.lineSubtotal, 0);
     const taxableAmount = calculatedLines.reduce((sum, line) => sum + line.lineTaxable, 0);
@@ -391,32 +209,25 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const customerName = onlineOrder.customerName.trim() || 'Online Guest';
     const customerId = customerPhone ? newCustomerRef.id : null;
 
-    resolvedStockTargets.forEach(target => {
-      const deduction = target.requirement.qty;
-      transaction.update(target.stockRef, {
-        currentStock: target.currentStock - deduction,
+    deductionPlan.stockUpdates.forEach((update) => {
+      if (update.existed) {
+        transaction.update(update.stockRef, {
+          currentStock: update.newQty,
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
+
+      transaction.set(update.stockRef, {
+        ...update.seedData,
+        currentStock: update.newQty,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+    });
 
-      const movementRef = doc(collection(db, 'stockMovements'));
-      transaction.set(movementRef, {
-        storeId: store.id,
-        storeName: store.name,
-        inventoryItemId: target.requirement.code,
-        inventoryItemName: target.requirement.name,
-        movementType: 'SALE_DEDUCTION',
-        quantity: -deduction,
-        unit: target.requirement.unit,
-        referenceType: 'ORDER',
-        referenceId: newOrderRef.id,
-        notes: `Online order ${orderNumber}`,
-        createdByUserId: staffProfile.uid,
-        createdByName: staffProfile.name,
-        createdAt: serverTimestamp(),
-        stockSystem: 'MENU_MANAGEMENT',
-        stockItemType: target.requirement.type === 'PACKAGING' && target.stockRef.id.includes('RAW_INGREDIENT') ? 'RAW_INGREDIENT' : target.requirement.type,
-        stockItemCode: target.requirement.code,
-      });
+    deductionPlan.movementPayloads.forEach((movement) => {
+      transaction.set(doc(collection(db, 'stockMovements')), movement);
     });
 
     if (counterSnap.exists()) {
@@ -460,6 +271,10 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       discountTotal: 0,
       discount: 0,
       grandTotal,
+      cogsTotal: deductionPlan.totalCogs,
+      inventoryWarningCount: deductionPlan.warnings.length,
+      inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
+      stockMovementCount: deductionPlan.movementPayloads.length,
       paymentMethod: 'PAY_AT_COUNTER',
       paymentMethodLabel: 'PAY_AT_COUNTER',
       isSplitPayment: false,
@@ -476,8 +291,8 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     });
 
     let kotCount = 0;
-    calculatedLines.forEach(line => {
-      const lineRef = doc(collection(newOrderRef, 'items'));
+    calculatedLines.forEach((line, index) => {
+      const lineRef = lineRefs[index];
       const itemData: OrderItem = {
         menuItemId: line.finishedGood.code,
         itemName: line.finishedGood.displayName || line.finishedGood.name,
@@ -492,6 +307,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         lineTaxable: line.lineTaxable,
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
+        cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
         prepStation: line.finishedGood.prepStation,
         status: 'PENDING',
         createdAt: serverTimestamp(),
@@ -554,7 +370,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     return {
       orderId: newOrderRef.id,
       orderNumber,
-      stockMovementCount: resolvedStockTargets.length,
+      stockMovementCount: deductionPlan.movementPayloads.length,
       kotCount,
     };
     });

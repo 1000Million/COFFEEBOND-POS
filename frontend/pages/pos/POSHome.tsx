@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment } from '../../types';
+import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -13,52 +14,7 @@ type CheckoutError = {
   blockers?: CheckoutBlocker[];
 };
 
-type CheckoutBlockerType =
-  | 'Missing stock record'
-  | 'Zero stock'
-  | 'confirmedZero false'
-  | 'Missing BOM'
-  | 'Missing prep/raw ingredient reference'
-  | 'Insufficient stock';
-
-type CheckoutBlocker = {
-  itemName: string;
-  itemCode: string;
-  finishedGoodCode?: string;
-  blockerType: CheckoutBlockerType;
-  componentType?: string;
-  componentCode?: string;
-  componentName?: string;
-  requiredQuantity?: number;
-  availableQuantity?: number;
-  unit?: string;
-  confirmedZero?: boolean;
-  storeName: string;
-  storeId: string;
-  suggestedAdminAction: string;
-};
-
-type StockSource = {
-  itemName: string;
-  itemCode: string;
-  finishedGoodCode?: string;
-  lineQuantity: number;
-  componentType: string;
-  componentCode: string;
-  componentName: string;
-  quantity: number;
-  unit: string;
-};
-
-type RequiredStock = {
-  id: string;
-  name: string;
-  unit: string;
-  qty: number;
-  type: string;
-  code: string;
-  sources: StockSource[];
-};
+type CheckoutBlocker = InventoryDeductionBlocker;
 
 type TaxConfig = {
   rate: number;
@@ -1439,139 +1395,9 @@ export default function POSHome() {
       const counterId = `${selectedStore.code}_${dateKey}`;
       const counterRef = doc(db, 'counters', counterId);
       const newOrderRef = doc(collection(db, 'orders'));
+      const orderLineRefs = validatedCart.map(() => doc(collection(newOrderRef, 'items')));
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);
-
-      const reqStock: Record<string, RequiredStock> = {};
-      const setupBlockers: CheckoutBlocker[] = [];
-      const allowMissingRecipeCheckout = import.meta.env.DEV && import.meta.env.VITE_ALLOW_MISSING_RECIPE_CHECKOUT === 'true';
-
-      const addSetupBlocker = (blocker: Omit<CheckoutBlocker, 'storeName' | 'storeId'>) => {
-        setupBlockers.push({
-          ...blocker,
-          storeName: selectedStore.name,
-          storeId: selectedStore.id,
-        });
-      };
-
-      const addStockRequirement = (stockId: string, source: StockSource) => {
-        if (!reqStock[stockId]) {
-          reqStock[stockId] = {
-            id: stockId,
-            name: source.componentName,
-            unit: source.unit,
-            qty: 0,
-            type: source.componentType,
-            code: source.componentCode,
-            sources: [],
-          };
-        }
-        reqStock[stockId].qty += source.quantity;
-        reqStock[stockId].sources.push(source);
-      };
-
-      for (const { cartItem, liveItem } of validatedCart) {
-        const liveItemData = liveItem as any;
-        const itemType = liveItemData.itemType || cartItem.itemType;
-        const bom = Array.isArray(liveItemData.bom) ? liveItemData.bom : (Array.isArray(cartItem.bom) ? cartItem.bom : []);
-
-        if (itemType === 'NO_STOCK') continue;
-
-        if (itemType === 'MADE_TO_ORDER' || (itemType === 'DIRECT_STOCK' && bom.length > 0)) {
-          if (bom.length === 0) {
-            addSetupBlocker({
-              itemName: liveItem.name,
-              itemCode: liveItem.code,
-              finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
-              blockerType: 'Missing BOM',
-              requiredQuantity: cartItem.quantity,
-              availableQuantity: 0,
-              unit: 'BOM',
-              suggestedAdminAction: 'Add a BOM/recipe for this finished good in Menu Management, or mark it as No Stock only if it should never deduct inventory.',
-            });
-            continue;
-          }
-          bom.forEach((line: any) => {
-            const code = String(line.componentCode || '').trim();
-            const type = String(line.componentType || '').trim();
-            const quantity = Number(line.quantity) || 0;
-            const unit = String(line.uom || line.usageUOM || '').trim();
-
-            if (!code || !type || quantity <= 0) {
-              addSetupBlocker({
-                itemName: liveItem.name,
-                itemCode: liveItem.code,
-                finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
-                blockerType: 'Missing prep/raw ingredient reference',
-                componentType: type || 'UNKNOWN',
-                componentCode: code || 'UNKNOWN',
-                componentName: line.componentName || 'Missing component',
-                requiredQuantity: quantity,
-                availableQuantity: 0,
-                unit,
-                suggestedAdminAction: 'Fix the BOM row so it has a valid component type, component code, quantity, and UOM.',
-              });
-              return;
-            }
-
-            const stockId = `${selectedStoreId}_${type}_${code}`;
-            addStockRequirement(stockId, {
-              itemName: liveItem.name,
-              itemCode: liveItem.code,
-              finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
-              lineQuantity: cartItem.quantity,
-              componentType: type,
-              componentCode: code,
-              componentName: line.componentName || code,
-              quantity: quantity * cartItem.quantity,
-              unit,
-            });
-          });
-        } else if (itemType === 'DIRECT_STOCK') {
-          const stockId = `${selectedStoreId}_FINISHED_GOOD_${liveItem.code}`;
-          addStockRequirement(stockId, {
-            itemName: liveItem.name,
-            itemCode: liveItem.code,
-            finishedGoodCode: liveItemData.finishedGoodCode || liveItem.code,
-            lineQuantity: cartItem.quantity,
-            componentType: 'FINISHED_GOOD',
-            componentCode: liveItem.code,
-            componentName: liveItem.name,
-            quantity: cartItem.quantity,
-            unit: 'pcs',
-          });
-        }
-      }
-
-      if (setupBlockers.length > 0) {
-        if (!allowMissingRecipeCheckout || setupBlockers.some(blocker => blocker.blockerType !== 'Missing BOM')) {
-          throw new CheckoutBlockerError(setupBlockers);
-        }
-        console.warn(`[CHECKOUT DEV BYPASS] ${formatCheckoutBlockerDetails(setupBlockers)}`);
-      }
-
-      const buildStockBlockers = (
-        req: RequiredStock,
-        blockerType: CheckoutBlockerType,
-        availableQuantity: number,
-        confirmedZero: boolean | undefined,
-        suggestedAdminAction: string,
-      ): CheckoutBlocker[] => req.sources.map(source => ({
-        itemName: source.itemName,
-        itemCode: source.itemCode,
-        finishedGoodCode: source.finishedGoodCode,
-        blockerType,
-        componentType: source.componentType,
-        componentCode: source.componentCode,
-        componentName: source.componentName,
-        requiredQuantity: req.qty,
-        availableQuantity,
-        unit: source.unit,
-        confirmedZero,
-        storeName: selectedStore.name,
-        storeId: selectedStore.id,
-        suggestedAdminAction,
-      }));
 
       const { savedOrder, savedItems, savedPayments } = await runTransaction(db, async (transaction) => {
         // --- READ PHASE ONLY ---
@@ -1584,67 +1410,6 @@ export default function POSHome() {
           custDoc = await transaction.get(custRef);
         }
 
-        // Fetch current stock
-        const stockDocsMap: Record<string, any> = {};
-        const stockBlockers: CheckoutBlocker[] = [];
-        for (const stockKey of Object.keys(reqStock)) {
-           const req = reqStock[stockKey];
-
-           let stockRef;
-           if (req.type === 'PACKAGING') {
-              stockRef = doc(db, 'storeStock', `${selectedStoreId}_PACKAGING_${req.code}`);
-           } else {
-              stockRef = doc(db, 'storeStock', stockKey);
-           }
-
-           let stockDoc = await transaction.get(stockRef);
-
-           if (req.type === 'PACKAGING' && !stockDoc.exists()) {
-              stockRef = doc(db, 'storeStock', `${selectedStoreId}_RAW_INGREDIENT_${req.code}`);
-              stockDoc = await transaction.get(stockRef);
-           }
-
-           if (!stockDoc.exists()) {
-              stockBlockers.push(...buildStockBlockers(
-                req,
-                'Missing stock record',
-                0,
-                undefined,
-                `Create a storeStock row for ${req.type} / ${req.code} at ${selectedStore.name}, then load opening/current stock.`,
-              ));
-              continue;
-           }
-
-           const stockData = stockDoc.data() as any;
-           const currentStock = toFiniteNumber(stockData.currentStock) || 0;
-           const confirmedZero = stockData.confirmedZero === true;
-           if (currentStock < req.qty) {
-              const blockerType: CheckoutBlockerType = currentStock <= 0
-                ? (confirmedZero ? 'Zero stock' : 'confirmedZero false')
-                : 'Insufficient stock';
-              const suggestedAdminAction = currentStock <= 0
-                ? `Load current stock for ${req.type} / ${req.code}, or mark confirmedZero TRUE only if this item is intentionally unavailable.`
-                : `Adjust stock or reduce the cart quantity. Required total is ${req.qty.toFixed(2)} ${req.unit}; available is ${currentStock.toFixed(2)} ${req.unit}.`;
-              stockBlockers.push(...buildStockBlockers(
-                req,
-                blockerType,
-                currentStock,
-                confirmedZero,
-                suggestedAdminAction,
-              ));
-              continue;
-           }
-
-           stockDocsMap[stockKey] = { ref: stockRef, currentStock };
-        }
-
-        if (stockBlockers.length > 0) {
-          throw new CheckoutBlockerError(stockBlockers);
-        }
-
-        if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction read phase complete`);
-
-        // --- VALIDATION PHASE ---
         let seq = 1;
         if (counterDoc.exists()) {
           seq = (counterDoc.data()?.lastSequence || 0) + 1;
@@ -1652,45 +1417,67 @@ export default function POSHome() {
 
         const orderNumber = `CB-${selectedStore.code}-${dateKey}-${seq.toString().padStart(4, '0')}`;
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction validation complete - order number generated: ${orderNumber}`);
+        const deductionPlan = await planInventoryDeductionForSale({
+          transaction,
+          store: selectedStore,
+          orderId: newOrderRef.id,
+          orderNumber,
+          businessDate: dateKey,
+          source: 'POS',
+          staffProfile: {
+            uid: auth.currentUser!.uid,
+            name: staffProfile.name,
+          },
+          lines: validatedCart.map(({ cartItem, liveItem }, index) => {
+            const liveItemData = liveItem as unknown as Record<string, unknown>;
+            return {
+              lineKey: orderLineRefs[index].id,
+              quantity: cartItem.quantity,
+              finishedGood: {
+                ...liveItemData,
+                code: liveItem.code,
+                name: liveItem.name,
+                itemType: liveItemData.itemType || cartItem.itemType || 'DIRECT_STOCK',
+                bom: Array.isArray(liveItemData.bom)
+                  ? liveItemData.bom
+                  : (Array.isArray(cartItem.bom) ? cartItem.bom : []),
+                finishedGoodCode: liveItemData.finishedGoodCode || cartItem.finishedGoodCode || liveItem.code,
+              } as any,
+            };
+          }),
+        });
+
+        if (deductionPlan.blockers.length > 0) {
+          throw new CheckoutBlockerError(deductionPlan.blockers);
+        }
+
+        if (import.meta.env.DEV && deductionPlan.warnings.length > 0) {
+          console.warn('[CHECKOUT INVENTORY WARNINGS]', deductionPlan.warnings);
+        }
+
+        if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction read phase complete`);
 
         // --- WRITE PHASE ONLY ---
+        deductionPlan.stockUpdates.forEach((update) => {
+          if (update.existed) {
+            transaction.update(update.stockRef, {
+              currentStock: update.newQty,
+              updatedAt: serverTimestamp(),
+            });
+            return;
+          }
 
-        // Inventory Deduction Writes
-        for (const stockKey of Object.keys(reqStock)) {
-           const { ref, currentStock } = stockDocsMap[stockKey] as { ref: any, currentStock: number };
-           const req = reqStock[stockKey];
-           const deduction = req.qty;
+          transaction.set(update.stockRef, {
+            ...update.seedData,
+            currentStock: update.newQty,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        });
+        deductionPlan.movementPayloads.forEach((movement) => {
+          transaction.set(doc(collection(db, 'stockMovements')), movement);
+        });
 
-           transaction.update(ref, {
-              currentStock: currentStock - deduction,
-              updatedAt: serverTimestamp()
-           });
-
-           // movement record
-           const moveRef = doc(collection(db, 'stockMovements'));
-
-           const movementData: any = {
-              storeId: selectedStore.id,
-              storeName: selectedStore.name,
-              inventoryItemId: req.code,
-              inventoryItemName: req.name,
-              movementType: 'SALE_DEDUCTION',
-              quantity: -deduction,
-              unit: req.unit,
-              referenceType: 'ORDER',
-              referenceId: newOrderRef.id,
-              notes: `Order ${orderNumber}`,
-              createdByUserId: auth.currentUser!.uid,
-              createdByName: staffProfile.name,
-              createdAt: serverTimestamp()
-           };
-
-           movementData.stockSystem = 'MENU_MANAGEMENT';
-           movementData.stockItemType = req.type === 'PACKAGING' ? (ref.id.includes('RAW_INGREDIENT') ? 'RAW_INGREDIENT' : 'PACKAGING') : req.type;
-           movementData.stockItemCode = req.code;
-
-           transaction.set(moveRef, movementData);
-        }
         if (counterDoc.exists()) {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: updating counter to ${seq}`);
           transaction.update(counterRef, { lastSequence: seq, updatedAt: serverTimestamp() });
@@ -1754,6 +1541,10 @@ export default function POSHome() {
           discountTotal: trueDiscount,
           discount: trueDiscount,
           grandTotal: trueGrandTotal,
+          cogsTotal: deductionPlan.totalCogs,
+          inventoryWarningCount: deductionPlan.warnings.length,
+          inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
+          stockMovementCount: deductionPlan.movementPayloads.length,
           paymentMethod: (paymentRows[0]?.method || paymentMethod) as PaymentMethod,
           ...(isSplitPayment && {
             isSplitPayment: true,
@@ -1770,8 +1561,8 @@ export default function POSHome() {
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
         const newItems: OrderItem[] = [];
-        validatedCart.forEach(({ cartItem: item, liveItem }) => {
-          const lineRef = doc(collection(newOrderRef, 'items'));
+        validatedCart.forEach(({ cartItem: item, liveItem }, index) => {
+          const lineRef = orderLineRefs[index];
           const lineSub = liveItem.price * item.quantity;
           const lineDiscount = lineSub * trueDiscountRatio;
           const lineTaxable = Math.max(0, lineSub - lineDiscount);
@@ -1792,6 +1583,7 @@ export default function POSHome() {
             lineTaxable,
             lineTax: lineTax,
             lineTotal: lineTaxable + lineTax,
+            cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
             prepStation: liveItem.prepStation,
             status: 'PENDING',
             createdAt: serverTimestamp(),
@@ -1865,7 +1657,10 @@ export default function POSHome() {
         return { savedOrder: { id: newOrderRef.id, ...orderData }, savedItems: newItems, savedPayments: newPayments };
       });
 
-      if (import.meta.env.DEV) console.log(`[CHECKOUT] Success`);
+        if (import.meta.env.DEV) console.log(`[CHECKOUT] Success`);
+      if (savedOrder.inventoryWarnings?.length) {
+        console.warn('[CHECKOUT INVENTORY WARNINGS RECORDED]', savedOrder.inventoryWarnings);
+      }
 
       // Show receipt
       const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore.name);

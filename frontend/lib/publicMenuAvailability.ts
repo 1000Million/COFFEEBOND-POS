@@ -57,8 +57,51 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getStockDocId(storeId: string, stockItemType: string, stockItemCode: string): string {
-  return `${storeId}_${stockItemType}_${stockItemCode}`;
+const UOM_ALIASES: Record<string, string> = {
+  G: 'G',
+  GRAM: 'G',
+  GRAMS: 'G',
+  KG: 'KG',
+  KGS: 'KG',
+  KILOGRAM: 'KG',
+  KILOGRAMS: 'KG',
+  ML: 'ML',
+  MILLILITRE: 'ML',
+  MILLILITER: 'ML',
+  MILLILITRES: 'ML',
+  MILLILITERS: 'ML',
+  L: 'L',
+  LTR: 'L',
+  LTRS: 'L',
+  LITRE: 'L',
+  LITER: 'L',
+  LITRES: 'L',
+  LITERS: 'L',
+  PCS: 'PCS',
+  PC: 'PCS',
+  PIECE: 'PCS',
+  PIECES: 'PCS',
+};
+
+const UOM_FAMILY: Record<string, 'WEIGHT' | 'VOLUME' | 'COUNT'> = {
+  G: 'WEIGHT',
+  KG: 'WEIGHT',
+  ML: 'VOLUME',
+  L: 'VOLUME',
+  PCS: 'COUNT',
+};
+
+function normalizeUom(value: unknown): string {
+  const raw = String(value || '').trim().toUpperCase();
+  return UOM_ALIASES[raw] || raw;
+}
+
+function canConvertUom(fromUom: unknown, toUom: unknown): boolean {
+  const from = normalizeUom(fromUom);
+  const to = normalizeUom(toUom);
+  if (!from || !to) return false;
+  if (from === to) return true;
+  return !!UOM_FAMILY[from] && UOM_FAMILY[from] === UOM_FAMILY[to];
 }
 
 function isStockItemType(value: string): value is StockItemType {
@@ -84,10 +127,6 @@ function usesBom(item: FinishedGood): boolean {
     || item.productionMode === 'ASSEMBLED_TO_ORDER';
 }
 
-function usesFinishedGoodStock(item: FinishedGood): boolean {
-  return item.itemType === 'DIRECT_STOCK' || item.productionMode === 'BOUGHT_AND_SOLD';
-}
-
 function noStockRequired(item: FinishedGood): boolean {
   return item.itemType === 'NO_STOCK' || item.productionMode === 'NO_STOCK';
 }
@@ -102,6 +141,112 @@ function componentMasterExists(
   if (line.componentType === 'PREP_ITEM') return prepByCode.has(line.componentCode);
   if (line.componentType === 'FINISHED_GOOD') return finishedByCode.has(line.componentCode);
   return true;
+}
+
+type StructureValidationResult = {
+  ok: boolean;
+  status: PublicMenuAvailabilityStatus;
+  message: string;
+};
+
+function validBomLine(line: BOMComponent): boolean {
+  return !!String(line.componentCode || '').trim()
+    && !!String(line.componentType || '').trim()
+    && !!String(line.uom || '').trim()
+    && toNumber(line.quantity) > 0;
+}
+
+function componentUomIsCompatible(
+  line: BOMComponent,
+  rawByCode: Map<string, RawIngredient>,
+  prepByCode: Map<string, PrepItem>,
+): boolean {
+  if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
+    const rawIngredient = rawByCode.get(line.componentCode);
+    return canConvertUom(line.uom, rawIngredient?.usageUOM || line.uom);
+  }
+
+  if (line.componentType === 'PREP_ITEM') {
+    const prepItem = prepByCode.get(line.componentCode);
+    return canConvertUom(line.uom, prepItem?.yieldUOM || prepItem?.outputUOM || line.uom);
+  }
+
+  return true;
+}
+
+function validatePrepStructure(
+  prepItem: PrepItem,
+  rawByCode: Map<string, RawIngredient>,
+  prepByCode: Map<string, PrepItem>,
+  finishedByCode: Map<string, FinishedGood>,
+  visited: Set<string>,
+): StructureValidationResult {
+  if (visited.has(prepItem.code)) {
+    return {
+      ok: false,
+      status: 'SETUP_INCOMPLETE',
+      message: 'Currently unavailable',
+    };
+  }
+
+  if (prepItem.isStockTracked) {
+    return { ok: true, status: 'AVAILABLE', message: 'Available' };
+  }
+
+  const yieldQuantity = toNumber(prepItem.yieldQuantity);
+  const yieldUom = String(prepItem.yieldUOM || prepItem.outputUOM || '').trim();
+  if (yieldQuantity <= 0 || !yieldUom || !Array.isArray(prepItem.bom) || prepItem.bom.length === 0) {
+    return {
+      ok: false,
+      status: 'SETUP_INCOMPLETE',
+      message: 'Currently unavailable',
+    };
+  }
+
+  const nextVisited = new Set(visited);
+  nextVisited.add(prepItem.code);
+
+  for (const line of prepItem.bom) {
+    if (!validBomLine(line) || !isStockItemType(line.componentType) || !componentMasterExists(line, rawByCode, prepByCode, finishedByCode)) {
+      return {
+        ok: false,
+        status: 'SETUP_INCOMPLETE',
+        message: 'Currently unavailable',
+      };
+    }
+
+    if (!componentUomIsCompatible(line, rawByCode, prepByCode)) {
+      return {
+        ok: false,
+        status: 'SETUP_INCOMPLETE',
+        message: 'Currently unavailable',
+      };
+    }
+
+    if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
+      continue;
+    }
+
+    if (line.componentType === 'PREP_ITEM') {
+      const nestedPrep = prepByCode.get(line.componentCode);
+      if (!nestedPrep) {
+        return {
+          ok: false,
+          status: 'SETUP_INCOMPLETE',
+          message: 'Currently unavailable',
+        };
+      }
+      const nestedResult = validatePrepStructure(nestedPrep, rawByCode, prepByCode, finishedByCode, nextVisited);
+      if (!nestedResult.ok) return nestedResult;
+      continue;
+    }
+  }
+
+  return {
+    ok: true,
+    status: 'AVAILABLE',
+    message: 'Available',
+  };
 }
 
 function publicItem(
@@ -147,25 +292,9 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
   };
 }
 
-function stockRowFor(
-  stockById: Map<string, StoreStock & { id?: string } & Record<string, unknown>>,
-  storeId: string,
-  stockItemType: string,
-  stockItemCode: string,
-) {
-  const directId = getStockDocId(storeId, stockItemType, stockItemCode);
-  const direct = stockById.get(directId);
-  if (direct) return direct;
-  if (stockItemType === 'PACKAGING') {
-    return stockById.get(getStockDocId(storeId, 'RAW_INGREDIENT', stockItemCode));
-  }
-  return undefined;
-}
-
 function evaluateItemAvailability(
   store: Store,
   item: FinishedGood,
-  stockById: Map<string, StoreStock & { id?: string } & Record<string, unknown>>,
   rawByCode: Map<string, RawIngredient>,
   prepByCode: Map<string, PrepItem>,
   finishedByCode: Map<string, FinishedGood>,
@@ -205,31 +334,29 @@ function evaluateItemAvailability(
         return publicItem(item, 'SETUP_INCOMPLETE', 'Currently unavailable');
       }
 
-      const stock = stockRowFor(stockById, store.id, componentType, componentCode);
-      if (!stock) {
+      if (!componentUomIsCompatible(line, rawByCode, prepByCode)) {
         return publicItem(item, 'SETUP_INCOMPLETE', 'Currently unavailable');
       }
 
-      if (toNumber(stock.currentStock) < componentQuantity) {
-        return publicItem(item, 'CURRENTLY_UNAVAILABLE', 'Currently unavailable');
+      if (componentType === 'PREP_ITEM') {
+        const prepItem = prepByCode.get(componentCode);
+        if (!prepItem) return publicItem(item, 'SETUP_INCOMPLETE', 'Currently unavailable');
+        const prepValidation = validatePrepStructure(prepItem, rawByCode, prepByCode, finishedByCode, new Set());
+        if (!prepValidation.ok) {
+          return publicItem(item, prepValidation.status, prepValidation.message);
+        }
+        continue;
       }
     }
 
     return publicItem(item, 'AVAILABLE', 'Available');
   }
 
-  if (usesFinishedGoodStock(item)) {
-    const stock = stockRowFor(stockById, store.id, 'FINISHED_GOOD', item.code);
-    if (!stock) return publicItem(item, 'SETUP_INCOMPLETE', 'Currently unavailable');
-    if (toNumber(stock.currentStock) < 1) return publicItem(item, 'CURRENTLY_UNAVAILABLE', 'Currently unavailable');
-  }
-
   return publicItem(item, 'AVAILABLE', 'Available');
 }
 
 export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): PublicMenuAvailabilitySnapshot {
-  const { store, finishedGoods, storeStock, rawIngredients = [], prepItems = [] } = input;
-  const stockById = new Map(storeStock.map((stock) => [stock.id || getStockDocId(stock.storeId, stock.stockItemType, stock.stockItemCode), stock]));
+  const { store, finishedGoods, rawIngredients = [], prepItems = [] } = input;
   const rawByCode = new Map(rawIngredients.map((item) => [item.code, item]));
   const prepByCode = new Map(prepItems.map((item) => [item.code, item]));
   const finishedByCode = new Map(finishedGoods.map((item) => [item.code, item]));
@@ -239,7 +366,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
   const items = visibleItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
-    acc[item.code] = evaluateItemAvailability(store, item, stockById, rawByCode, prepByCode, finishedByCode);
+    acc[item.code] = evaluateItemAvailability(store, item, rawByCode, prepByCode, finishedByCode);
     return acc;
   }, {});
   const menuItems = visibleItems.reduce<Record<string, PublicMenuDisplayItem>>((acc, item) => {

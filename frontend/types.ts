@@ -103,6 +103,10 @@ export interface Order {
   discountTotal: number;
   discount?: number;
   grandTotal: number;
+  cogsTotal?: number;
+  inventoryWarningCount?: number;
+  inventoryWarnings?: string[];
+  stockMovementCount?: number;
   paymentMethod: PaymentMethod;
   paymentMethodLabel?: string;
   isSplitPayment?: boolean;
@@ -131,6 +135,7 @@ export interface OrderItem {
   lineTaxable?: number;
   lineTax: number;
   lineTotal: number;
+  cogsAmount?: number;
   prepStation: PrepStation;
   status: "PENDING" | "PREPARING" | "READY" | "SERVED" | "CANCELLED";
   createdAt: any;
@@ -329,14 +334,19 @@ export interface Recipe {
 export interface StockMovement {
   id?: string;
   storeId: string;
+  storeCode?: string;
   storeName: string;
   inventoryItemId: string;
   inventoryItemName: string;
-  movementType: "PURCHASE" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT";
+  movementType: "PURCHASE" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
   quantity: number;
+  quantityDelta?: number;
   unit: string;
   referenceType: "ORDER" | "MANUAL" | "TRANSFER" | "PREP_PRODUCTION";
   referenceId: string | null;
+  orderId?: string;
+  orderNumber?: string;
+  businessDate?: string;
   notes: string | null;
   createdByUserId: string;
   createdByName: string;
@@ -344,4 +354,12 @@ export interface StockMovement {
   stockSystem?: string;
   stockItemType?: string;
   stockItemCode?: string;
+  previousQty?: number;
+  newQty?: number;
+  wentNegative?: boolean;
+  cogsAmount?: number;
+  finishedGoodCode?: string;
+  finishedGoodName?: string;
+  source?: string;
+  orderLineKey?: string;
 }

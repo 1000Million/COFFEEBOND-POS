@@ -43,6 +43,59 @@ service cloud.firestore {
       return isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
     }
 
+    function isSaleCreatedStoreStock(stockId) {
+      return request.resource.data.keys().hasOnly([
+        'storeId',
+        'storeCode',
+        'storeName',
+        'stockItemType',
+        'stockItemCode',
+        'stockItemName',
+        'uom',
+        'openingStock',
+        'currentStock',
+        'minimumStock',
+        'costPerUnit',
+        'createdAt',
+        'updatedAt'
+      ])
+      && request.resource.data.storeId is string
+      && exists(/databases/$(database)/documents/stores/$(request.resource.data.storeId))
+      && hasStoreAccess(request.resource.data.storeId)
+      && request.resource.data.storeCode == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.code
+      && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
+      && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM']
+      && request.resource.data.stockItemCode is string
+      && request.resource.data.stockItemCode.size() > 0
+      && stockId == request.resource.data.storeId + '_' + request.resource.data.stockItemType + '_' + request.resource.data.stockItemCode
+      && request.resource.data.stockItemName is string
+      && request.resource.data.stockItemName.size() > 0
+      && request.resource.data.uom is string
+      && request.resource.data.uom.size() > 0
+      && request.resource.data.openingStock == 0
+      && request.resource.data.minimumStock == 0
+      && request.resource.data.costPerUnit is number
+      && request.resource.data.currentStock is number
+      && request.resource.data.currentStock <= 0;
+    }
+
+    function isSaleDeductionMovement() {
+      return request.resource.data.movementType == 'SALE_DEDUCTION'
+      && request.resource.data.referenceType == 'ORDER'
+      && request.resource.data.storeId is string
+      && hasStoreAccess(request.resource.data.storeId)
+      && request.resource.data.stockSystem == 'MENU_MANAGEMENT'
+      && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM', 'FINISHED_GOOD', 'PACKAGING', 'BOUGHT_COMPONENT']
+      && request.resource.data.quantity is number
+      && request.resource.data.quantity <= 0
+      && request.resource.data.quantityDelta is number
+      && request.resource.data.quantityDelta <= 0
+      && request.resource.data.newQty is number
+      && request.resource.data.previousQty is number
+      && request.resource.data.newQty <= request.resource.data.previousQty
+      && request.resource.data.createdByUserId == request.auth.uid;
+    }
+
     function canReadKot(data) {
       return isAdmin()
         || (isStoreManager() && hasStoreAccess(data.storeId))
@@ -245,7 +298,7 @@ service cloud.firestore {
       allow read: if isActiveStaff();
       allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId) && (
           (isAdmin() || isStoreManager()) || 
-          (request.resource.data.movementType in ['SALE_DEDUCTION', 'WASTAGE'])
+          isSaleDeductionMovement()
       );
       allow delete: if false; // no deletions
       allow update: if false; // no modifications
@@ -269,7 +322,8 @@ service cloud.firestore {
 
     match /storeStock/{stockId} {
       allow read: if isActiveStaff();
-      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow create: if ((isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId))
+                    || (isCashier() && isSaleCreatedStoreStock(stockId));
       allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId)
                     || (isCheckoutStaff() && hasStoreAccess(resource.data.storeId) && request.resource.data.currentStock <= resource.data.currentStock);
       allow delete: if isAdmin();

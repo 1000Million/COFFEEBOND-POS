@@ -39,7 +39,7 @@ function blockerSummary(blocker: OnlineOrderAcceptBlocker): string {
   const quantities = blocker.requiredQuantity !== undefined
     ? ` Required ${Number(blocker.requiredQuantity).toFixed(2)} ${blocker.unit || ''}; available ${Number(blocker.availableQuantity || 0).toFixed(2)} ${blocker.unit || ''}.`
     : '';
-  return `${blocker.itemName}: ${blocker.blockerType} (${component}).${quantities} ${blocker.suggestedAction}`;
+  return `${blocker.itemName}: ${blocker.blockerType} (${component}).${quantities} ${blocker.suggestedAdminAction}`;
 }
 
 export default function IncomingOnlineOrders() {
