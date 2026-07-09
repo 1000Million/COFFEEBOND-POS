@@ -1144,10 +1144,6 @@ export default function POSHome() {
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
   const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
-  const productGridHeading = searchQuery.trim() ? 'Search results' : (selectedProductFilter?.label || 'All items');
-  const productGridSubheading = searchQuery.trim()
-    ? `${filteredMenuItems.length} ${filteredMenuItems.length === 1 ? 'item' : 'items'} match "${searchQuery.trim()}"`
-    : `${filteredMenuItems.length} ${filteredMenuItems.length === 1 ? 'item' : 'items'} ready to bill`;
   const featuredHeading = isUsingTopSellerData ? 'Top sellers last 7 days' : 'Top picks';
   const featuredSubheading = isUsingTopSellerData
     ? 'Based on completed sales for this store'
@@ -1908,14 +1904,6 @@ export default function POSHome() {
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between gap-3 px-1">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-black tracking-tight text-[#2d1c19]">{productGridHeading}</h2>
-                    <p className="truncate text-[11px] font-semibold text-neutral-500">{productGridSubheading}</p>
-                  </div>
-                  <span className="text-[11px] font-bold text-neutral-400">{filteredMenuItems.length}</span>
-                </div>
-
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {filteredMenuItems.map((item: any) => {
                     const categoryGroup = normalizePosCategoryGroupName(item);
@@ -2330,13 +2318,13 @@ export default function POSHome() {
             </div>
           )}
 
-          <div className="mt-3 space-y-1.5 border-t border-[#eadfd4] pt-3">
-            <div className="flex justify-between text-[13px] font-medium text-neutral-500">
+          <div className="mt-2 space-y-0.5 border-t border-[#eadfd4] pt-2">
+            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Subtotal</span>
-              <span className="font-mono">₹{cartTotals.subtotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{cartTotals.subtotal.toFixed(2)}</span>
             </div>
 
-            <div className="flex items-center justify-between gap-3 text-[13px] font-medium text-neutral-500">
+            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Discount (%)</span>
               <input
                 type="number"
@@ -2345,48 +2333,48 @@ export default function POSHome() {
                 step="0.1"
                 value={discountPercentStr}
                 onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
-                className="w-18 rounded-full border border-[#eadfd4] bg-white px-3 py-1.5 text-right font-mono text-[13px] outline-none focus:border-[#5c4033]"
+                className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
                 placeholder="0"
               />
             </div>
             {discountExceedsLimit && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] font-bold text-red-700">
+              <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold leading-snug text-red-700">
                 Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
               </div>
             )}
 
-            <div className="flex justify-between text-[13px] font-medium text-neutral-500">
+            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Discount Amount</span>
-              <span className="font-mono">-₹{cartTotals.discountAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">-₹{cartTotals.discountAmount.toFixed(2)}</span>
             </div>
 
-            <div className="flex justify-between text-[13px] font-medium text-neutral-500">
+            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Taxable Amount</span>
-              <span className="font-mono">₹{cartTotals.taxableAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{cartTotals.taxableAmount.toFixed(2)}</span>
             </div>
 
-            <div className="flex justify-between text-[13px] font-medium text-neutral-500">
+            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>GST</span>
-              <span className="font-mono">₹{cartTotals.taxTotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{cartTotals.taxTotal.toFixed(2)}</span>
             </div>
             {canViewCheckoutDebug && cartIsMissingGstConfig && (
-              <p className="rounded-lg border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-700">
+              <p className="rounded-lg border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold leading-snug text-amber-700">
                 GST rate is not configured for this store/menu.
               </p>
             )}
 
-            <div className="mt-2 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-2.5">
-              <span className="shrink-0 text-base font-black text-neutral-800">Total</span>
-              <span className="break-all text-right font-mono text-2xl font-black text-[#3e2723]">₹{cartTotals.grandTotal.toFixed(2)}</span>
+            <div className="mt-1.5 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-1.5">
+              <span className="shrink-0 text-[15px] font-black text-neutral-800">Total</span>
+              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{cartTotals.grandTotal.toFixed(2)}</span>
             </div>
           </div>
 
-          <div className="mt-3 space-y-3 border-t border-[#eadfd4] pt-3">
-            <div className="flex items-center justify-between gap-3">
-              <label className="block text-[11px] font-black uppercase tracking-[0.16em] text-neutral-500">Payment</label>
+          <div className="mt-2 space-y-2 border-t border-[#eadfd4] pt-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="block text-[10px] font-black uppercase tracking-[0.14em] text-neutral-500">Payment</label>
               <button
                 onClick={() => setSplitPaymentMode(!isSplitPayment)}
-                className={`rounded-full border px-3 py-1.5 text-[11px] font-black transition-colors ${
+                className={`rounded-full border px-2.5 py-1 text-[10px] font-black transition-colors ${
                   isSplitPayment
                     ? 'border-[#5c4033] bg-[#5c4033] text-white'
                     : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50'
@@ -2398,12 +2386,12 @@ export default function POSHome() {
 
             {!isSplitPayment ? (
               <div className="overflow-x-auto custom-scrollbar">
-                <div className="flex min-w-max gap-2 pb-1">
+                <div className="flex min-w-max gap-1.5 pb-0.5">
                   {PAYMENT_METHODS.map(method => (
                     <button
                       key={method}
                       onClick={() => setPaymentMethod(method)}
-                      className={`min-h-[34px] min-w-[64px] rounded-full border px-3 py-1.5 text-[10px] font-black transition-all ${
+                      className={`min-h-[30px] min-w-[58px] rounded-full border px-2.5 py-1 text-[9px] font-black transition-all ${
                         paymentMethod === method
                           ? 'border-[#5c4033] bg-[#5c4033] text-white shadow-sm'
                           : 'border-[#eadfd4] bg-white text-neutral-600 hover:bg-neutral-50'
@@ -2417,14 +2405,14 @@ export default function POSHome() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="space-y-2">
+              <div className="space-y-2">
+                <div className="space-y-1.5">
                   {splitPayments.map((payment, index) => (
-                    <div key={payment.id} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
+                    <div key={payment.id} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
                       <select
                         value={payment.method}
                         onChange={event => updateSplitPayment(payment.id, { method: event.target.value as PaymentMethod })}
-                        className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-3 py-2 text-xs font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                        className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-2.5 py-1.5 text-[11px] font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                         aria-label={`Payment method ${index + 1}`}
                       >
                         {PAYMENT_METHODS.map(method => (
@@ -2437,14 +2425,14 @@ export default function POSHome() {
                         step="0.01"
                         value={payment.amountStr}
                         onChange={event => updateSplitPayment(payment.id, { amountStr: event.target.value })}
-                        className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-3 py-2 text-right text-xs font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
+                        className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-2.5 py-1.5 text-right text-[11px] font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                         placeholder="0.00"
                         aria-label={`Payment amount ${index + 1}`}
                       />
                       <button
                         onClick={() => removeSplitPaymentRow(payment.id)}
                         disabled={splitPayments.length === 1}
-                        className={`rounded-2xl border px-2 py-2 text-xs font-black ${
+                        className={`rounded-2xl border px-2 py-1.5 text-[11px] font-black ${
                           splitPayments.length === 1
                             ? 'cursor-not-allowed border-neutral-100 bg-neutral-50 text-neutral-300'
                             : 'border-red-100 bg-red-50 text-red-600 hover:bg-red-100'
@@ -2459,11 +2447,11 @@ export default function POSHome() {
                 </div>
                 <button
                   onClick={addSplitPaymentRow}
-                  className="w-full rounded-2xl border border-dashed border-[#5c4033]/40 bg-[#5c4033]/5 px-3 py-2.5 text-xs font-black text-[#5c4033] hover:bg-[#5c4033]/10"
+                  className="w-full rounded-2xl border border-dashed border-[#5c4033]/40 bg-[#5c4033]/5 px-3 py-2 text-[11px] font-black text-[#5c4033] hover:bg-[#5c4033]/10"
                 >
                   Add Payment Row
                 </button>
-                <div className="space-y-1 rounded-2xl bg-white px-3 py-3 text-xs font-bold text-neutral-600">
+                <div className="space-y-0.5 rounded-2xl bg-white px-3 py-2 text-[11px] font-bold text-neutral-600">
                   <div className="flex justify-between">
                     <span>Total Due</span>
                     <span className="font-mono">₹{cartTotals.grandTotal.toFixed(2)}</span>
@@ -2482,7 +2470,7 @@ export default function POSHome() {
 
             <button
               disabled={cart.length === 0 || isSaving}
-              className={`mt-1 w-full rounded-2xl py-3 text-sm font-black transition-all shadow-sm ${
+              className={`mt-0.5 w-full rounded-2xl py-2.5 text-sm font-black transition-all shadow-sm ${
                 cart.length > 0 && !isSaving
                   ? 'border border-[#2d1c19] bg-[#3e2723] text-[#f9f5f0] hover:bg-[#2d1c19] hover:shadow-md active:scale-[0.99]'
                   : 'cursor-not-allowed border border-neutral-300 bg-neutral-200 text-neutral-400'
