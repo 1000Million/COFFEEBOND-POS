@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Menu, X, ShoppingBag, ListChecks, Wrench, PackagePlus } from 'lucide-react';
+import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Menu, X, ShoppingBag, ListChecks, Wrench, PackagePlus, ShieldCheck } from 'lucide-react';
 
 export default function Layout() {
   const { staffProfile, logout } = useAuth();
@@ -20,6 +20,9 @@ export default function Layout() {
     navLinks.push({ to: '/pos', label: 'POS', title: 'POS', icon: Calculator });
     navLinks.push({ to: '/pos/running-orders', label: 'Running', title: 'Running Orders', icon: ListChecks });
     navLinks.push({ to: '/pos/incoming-orders', label: 'Online', title: 'Online Orders', icon: ShoppingBag });
+  }
+
+  if (role === 'ADMIN' || role === 'STORE_MANAGER') {
     navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
   }
 
@@ -27,17 +30,12 @@ export default function Layout() {
     navLinks.push({ to: '/inventory/control', label: 'Inventory', title: 'Inventory Control', icon: LayoutDashboard });
     navLinks.push({ to: '/inventory/stock-correction', label: 'Stock', title: 'Stock Correction', icon: Wrench });
     navLinks.push({ to: '/inventory/purchase-entry', label: 'Purchases', title: 'Purchase Entry', icon: PackagePlus });
+    navLinks.push({ to: '/admin/go-live-readiness', label: 'Go Live', title: 'Go-Live Readiness', icon: ShieldCheck });
   }
   
-  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'BARISTA') {
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER' || role === 'BARISTA' || role === 'KITCHEN') {
     navLinks.push({ to: '/kot/barista', label: 'Barista', title: 'Barista KOT', icon: Coffee });
-  }
-  
-  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'KITCHEN') {
     navLinks.push({ to: '/kot/kitchen', label: 'Kitchen', title: 'Kitchen KOT', icon: ChefHat });
-  }
-  
-  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
     navLinks.push({ to: '/kot/ready', label: 'Ready', title: 'Ready to Serve', icon: Coffee });
   }
 

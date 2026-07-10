@@ -28,7 +28,35 @@ const EMPTY_FORM: StaffFormState = {
   assignedStoreIds: [],
 };
 
-const roleLabel = (role: Role) => role.replace('_', ' ');
+const ROLE_LABELS: Record<Role, string> = {
+  ADMIN: 'Admin',
+  STORE_MANAGER: 'Store Manager',
+  CASHIER: 'POS User / Cashier',
+  BARISTA: 'KOT User / Barista',
+  KITCHEN: 'KOT User / Kitchen',
+  TRAINEE: 'Trainee / No live access',
+};
+
+const ROLE_CATEGORY_LABELS: Record<Role, string> = {
+  ADMIN: 'Admin',
+  STORE_MANAGER: 'Store Manager',
+  CASHIER: 'POS + KOT',
+  BARISTA: 'KOT only',
+  KITCHEN: 'KOT only',
+  TRAINEE: 'Setup only',
+};
+
+const ROLE_MODULES: Record<Role, string> = {
+  ADMIN: 'All stores and all modules.',
+  STORE_MANAGER: 'Assigned stores: POS, Running Orders, Online Orders, Reports, Inventory, Purchases, Stock Correction, Day Close, KOT.',
+  CASHIER: 'Assigned stores: POS billing, Running Orders, Online Orders, Reprint/Hold/Recall, Pay-at-counter settlement, all KOT views.',
+  BARISTA: 'Assigned stores: Barista, Kitchen, and Ready KOT only.',
+  KITCHEN: 'Assigned stores: Barista, Kitchen, and Ready KOT only.',
+  TRAINEE: 'No live operational workspace until promoted.',
+};
+
+const roleLabel = (role: Role) => ROLE_LABELS[role] || role.replace('_', ' ');
+const roleCategoryLabel = (role: Role) => ROLE_CATEGORY_LABELS[role] || 'Setup only';
 
 const normalizeStoreIds = (value: unknown) => {
   if (!Array.isArray(value)) return [];
@@ -326,6 +354,9 @@ export default function StaffManagement() {
                     <option key={role} value={role}>{roleLabel(role)}</option>
                   ))}
                 </select>
+                <p className="mt-2 rounded-xl bg-neutral-50 px-3 py-2 text-xs font-semibold text-neutral-600">
+                  {roleCategoryLabel(form.role)}: {ROLE_MODULES[form.role]}
+                </p>
               </label>
 
               <label className="block">
@@ -403,55 +434,86 @@ export default function StaffManagement() {
           ) : staff.length === 0 ? (
             <div className="p-8 text-center text-neutral-500">No staff profiles found.</div>
           ) : (
-            <div className="divide-y divide-neutral-100">
-              {staff.map((person) => {
-                const assignedStores = stores.filter((store) => person.assignedStoreIds.includes(store.id));
-                return (
-                  <div key={person.uid} className="p-4 md:p-5 flex flex-col xl:flex-row xl:items-center gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2 mb-1">
-                        <h4 className="font-black text-neutral-900">{person.displayName || 'Unnamed staff'}</h4>
-                        <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full ${
-                          person.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
-                        }`}>
-                          {person.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                        <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-amber-50 text-amber-700">
-                          {roleLabel(person.role)}
-                        </span>
-                      </div>
-                      <p className="text-sm text-neutral-600 break-all">{person.email}</p>
-                      <p className="text-xs font-mono text-neutral-400 break-all mt-1">{person.uid}</p>
-                      <div className="flex flex-wrap gap-1.5 mt-3">
-                        {assignedStores.length > 0 ? assignedStores.map((store) => (
-                          <span key={store.id} className="text-[10px] font-bold bg-neutral-100 text-neutral-600 px-2 py-1 rounded-full">
-                            {store.name}
+            <div className="overflow-x-auto">
+              <table className="min-w-[920px] w-full text-left text-sm">
+                <thead className="bg-neutral-50 text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                  <tr>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Email / UID</th>
+                    <th className="px-4 py-3">Role</th>
+                    <th className="px-4 py-3">Assigned stores</th>
+                    <th className="px-4 py-3">User category</th>
+                    <th className="px-4 py-3">Active</th>
+                    <th className="px-4 py-3">Last updated</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {staff.map((person) => {
+                    const assignedStores = stores.filter((store) => person.assignedStoreIds.includes(store.id));
+                    return (
+                      <tr key={person.id} className="align-top">
+                        <td className="px-4 py-4">
+                          <p className="font-black text-neutral-900">{person.displayName || 'Unnamed staff'}</p>
+                        </td>
+                        <td className="px-4 py-4">
+                          <p className="text-neutral-700 break-all">{person.email || 'No email'}</p>
+                          <p className="mt-1 text-xs font-mono text-neutral-400 break-all">{person.uid}</p>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-amber-50 text-amber-700">
+                            {roleLabel(person.role)}
                           </span>
-                        )) : (
-                          <span className="text-[10px] font-bold bg-neutral-100 text-neutral-500 px-2 py-1 rounded-full">No stores assigned</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2 shrink-0">
-                      <button
-                        onClick={() => startEdit(person)}
-                        className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-neutral-200 text-sm font-bold text-neutral-700 hover:bg-neutral-50 transition-colors"
-                      >
-                        <Edit3 size={15} />
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => deactivateStaff(person)}
-                        disabled={!person.isActive || person.uid === firebaseUser?.uid || saving}
-                        className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-red-200 text-sm font-bold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white transition-colors"
-                      >
-                        Deactivate
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-wrap gap-1.5">
+                            {assignedStores.length > 0 ? assignedStores.map((store) => (
+                              <span key={store.id} className="text-[10px] font-bold bg-neutral-100 text-neutral-600 px-2 py-1 rounded-full">
+                                {store.name}
+                              </span>
+                            )) : (
+                              <span className="text-[10px] font-bold bg-neutral-100 text-neutral-500 px-2 py-1 rounded-full">No stores assigned</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-[#5c4033]/10 text-[#5c4033]">
+                            {roleCategoryLabel(person.role)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full ${
+                            person.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+                          }`}>
+                            {person.isActive ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4 text-xs font-semibold text-neutral-500">
+                          {formatDate(person.updatedAt)}
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-2">
+                            <button
+                              onClick={() => startEdit(person)}
+                              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-neutral-200 text-sm font-bold text-neutral-700 hover:bg-neutral-50 transition-colors"
+                            >
+                              <Edit3 size={15} />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deactivateStaff(person)}
+                              disabled={!person.isActive || person.uid === firebaseUser?.uid || saving}
+                              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-red-200 text-sm font-bold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white transition-colors"
+                            >
+                              Deactivate
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </section>

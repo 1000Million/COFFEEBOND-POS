@@ -33,6 +33,7 @@ import Seed from './pages/admin/Seed';
 import MenuImport from './pages/admin/MenuImport';
 import DataManagement from './pages/admin/DataManagement';
 import StaffManagement from './pages/admin/StaffManagement';
+import GoLiveReadiness from './pages/admin/GoLiveReadiness';
 import Phase7AValidation from './pages/admin/Phase7AValidation';
 import Phase7HStockCosting from './pages/admin/Phase7HStockCosting';
 import Phase7IBomAliasCorrection from './pages/admin/Phase7IBomAliasCorrection';
@@ -108,30 +109,28 @@ export default function App() {
                 <Route path="/admin/menu" element={<MenuItems />} />
                 <Route path="/admin/store-inventory" element={<StoreInventory />} />
                 <Route path="/admin/menu-management" element={<MenuManagementHub />} />
+                <Route path="/admin/go-live-readiness" element={<GoLiveReadiness />} />
               </Route>
 
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'CASHIER']} />}>
                 <Route path="/pos" element={<POSHome />} />
                 <Route path="/pos/running-orders" element={<RunningOrders />} />
                 <Route path="/pos/incoming-orders" element={<IncomingOnlineOrders />} />
-                <Route path="/reports" element={<ReportsHome />} />
-                <Route path="/reports/day-close" element={<DayClose />} />
-                <Route path="/kot/ready" element={<ReadyToServe />} />
               </Route>
 
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>
+                <Route path="/reports" element={<ReportsHome />} />
+                <Route path="/reports/day-close" element={<DayClose />} />
                 <Route path="/reports/audit-control" element={<AuditControl />} />
                 <Route path="/inventory/control" element={<InventoryControl />} />
                 <Route path="/inventory/stock-correction" element={<StockCorrection />} />
                 <Route path="/inventory/purchase-entry" element={<PurchaseEntry />} />
               </Route>
               
-              <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'BARISTA', 'CASHIER']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'CASHIER', 'BARISTA', 'KITCHEN']} />}>
                 <Route path="/kot/barista" element={<KOTBarista />} />
-              </Route>
-              
-              <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'KITCHEN', 'CASHIER']} />}>
                 <Route path="/kot/kitchen" element={<KOTKitchen />} />
+                <Route path="/kot/ready" element={<ReadyToServe />} />
               </Route>
             </Route>
           </Route>
