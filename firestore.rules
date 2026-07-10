@@ -240,6 +240,15 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /purchaseEntries/{purchaseId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create: if (isAdmin() || isStoreManager())
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.status == 'POSTED';
+      allow update, delete: if false;
+    }
+
     // Orders Collection
     match /orders/{orderId} {
       allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));

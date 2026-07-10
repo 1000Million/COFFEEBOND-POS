@@ -338,11 +338,11 @@ export interface StockMovement {
   storeName: string;
   inventoryItemId: string;
   inventoryItemName: string;
-  movementType: "PURCHASE" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
+  movementType: "PURCHASE" | "PURCHASE_INWARD" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
   quantity: number;
   quantityDelta?: number;
   unit: string;
-  referenceType: "ORDER" | "MANUAL" | "TRANSFER" | "PREP_PRODUCTION";
+  referenceType: "ORDER" | "MANUAL" | "TRANSFER" | "PREP_PRODUCTION" | "PURCHASE_ENTRY";
   referenceId: string | null;
   orderId?: string;
   orderNumber?: string;
@@ -362,4 +362,9 @@ export interface StockMovement {
   finishedGoodName?: string;
   source?: string;
   orderLineKey?: string;
+  purchaseEntryId?: string;
+  supplierName?: string;
+  invoiceNumber?: string;
+  purchaseCostTotal?: number;
+  costPerUnitSnapshot?: number;
 }

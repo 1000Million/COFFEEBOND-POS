@@ -709,6 +709,13 @@ export default function ReportsHome() {
               Stock Correction
             </Link>
 
+            <Link
+              to="/inventory/purchase-entry"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-800 text-sm font-black uppercase tracking-wider hover:bg-emerald-50 transition-colors"
+            >
+              Purchase Entry
+            </Link>
+
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
               <input 

@@ -8,6 +8,7 @@ import {
   Clock,
   FileText,
   Loader2,
+  PackagePlus,
   Package,
   RefreshCw,
   ShieldAlert,
@@ -37,7 +38,7 @@ import {
 } from '../../types/menu-management';
 
 type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
-type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
+type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
 type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 
@@ -162,6 +163,7 @@ const RANGE_PRESETS: DatePreset[] = ['TODAY', 'LAST_7_DAYS', 'LAST_30_DAYS', 'CU
 const MOVEMENT_FILTERS: { value: MovementTypeFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
   { value: 'SALE_DEDUCTION', label: 'Sale deduction' },
+  { value: 'PURCHASE_INWARD', label: 'Purchase inward' },
   { value: 'ORDER_VOID_REVERSAL', label: 'Void reversal' },
   { value: 'ADJUSTMENT', label: 'Manual adjustment' },
   { value: 'OPENING_STOCK', label: 'Opening stock' },
@@ -1472,6 +1474,10 @@ export default function InventoryControl() {
             </Link>
             <Link to="/inventory/stock-correction" className="rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm hover:bg-emerald-50">
               Stock Correction
+            </Link>
+            <Link to="/inventory/purchase-entry" className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm hover:bg-emerald-50">
+              <PackagePlus size={14} />
+              Purchase Entry
             </Link>
             <Link to="/pos/running-orders" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm hover:bg-[#5c4033]/5">
               Running Orders

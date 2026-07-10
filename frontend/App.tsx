@@ -21,6 +21,7 @@ import DayClose from './pages/reports/DayClose';
 import AuditControl from './pages/reports/AuditControl';
 import InventoryControl from './pages/inventory/InventoryControl';
 import StockCorrection from './pages/inventory/StockCorrection';
+import PurchaseEntry from './pages/inventory/PurchaseEntry';
 import AdminHome from './pages/admin/AdminHome';
 import Stores from './pages/admin/Stores';
 import Categories from './pages/admin/Categories';
@@ -122,6 +123,7 @@ export default function App() {
                 <Route path="/reports/audit-control" element={<AuditControl />} />
                 <Route path="/inventory/control" element={<InventoryControl />} />
                 <Route path="/inventory/stock-correction" element={<StockCorrection />} />
+                <Route path="/inventory/purchase-entry" element={<PurchaseEntry />} />
               </Route>
               
               <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'BARISTA', 'CASHIER']} />}>

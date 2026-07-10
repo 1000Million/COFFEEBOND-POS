@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Loader2,
   Package,
+  PackagePlus,
   RefreshCw,
   Search,
   Store as StoreIcon,
@@ -607,6 +608,10 @@ export default function StockCorrection() {
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/inventory/control" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm hover:bg-[#5c4033]/5">
               Inventory Control
+            </Link>
+            <Link to="/inventory/purchase-entry" className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm hover:bg-emerald-50">
+              <PackagePlus size={14} />
+              Purchase Entry
             </Link>
             <Link to="/reports" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm hover:bg-[#5c4033]/5">
               Open Reports
