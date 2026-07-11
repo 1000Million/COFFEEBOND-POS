@@ -50,10 +50,16 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<string>('ALL');
   const [loading, setLoading] = useState(true);
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [now, setNow] = useState(new Date());
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
-  const [ageFilter, setAgeFilter] = useState<'ALL' | 'TODAY' | 'STALE'>('ALL');
+  const [ageFilter, setAgeFilter] = useState<'ALL' | 'TODAY' | 'STALE'>('TODAY');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTicketOrder, setSelectedTicketOrder] = useState<string | null>(null);
+  const [cancellingItem, setCancellingItem] = useState<KotItem | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
 
   // refresh time every minute
   useEffect(() => {
@@ -193,14 +199,23 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
   }, [displayedItems]);
 
 
-  const canUpdateStatus = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER' || staffProfile?.role === station;
-  const canCancel = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
+  const canUpdateStatus = staffProfile?.role === 'ADMIN'
+    || staffProfile?.role === 'STORE_MANAGER'
+    || staffProfile?.role === 'CASHIER'
+    || staffProfile?.role === station;
+  const canCancel = canUpdateStatus;
 
   // A simplified helper that handles the status change and attempts to sync the parent order item.
-  const handleStatusChange = async (item: KotItem, newStatus: KotStatus) => {
-    if (!canUpdateStatus) return alert("You don't have permission to update status.");
+  const handleStatusChange = async (item: KotItem, newStatus: KotStatus, reason?: string) => {
+    if (!canUpdateStatus) {
+      setError("You don't have permission to update this ticket.");
+      return;
+    }
     if (!item.id) return;
-    setLoading(true);
+    if (savingItemId) return;
+    setSavingItemId(item.id);
+    setFeedback('');
+    setError('');
 
     try {
       const itemRef = doc(db, 'kotItems', item.id);
@@ -211,6 +226,13 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
       
       if (newStatus === 'READY' && item.status !== 'READY') {
         updateData.readyAt = serverTimestamp();
+      }
+
+      if (newStatus === 'CANCELLED') {
+        updateData.cancelledAt = serverTimestamp();
+        updateData.cancelledBy = staffProfile?.uid || null;
+        updateData.cancelledByName = staffProfile?.name || staffProfile?.displayName || null;
+        updateData.cancellationReason = reason || 'No reason provided';
       }
 
       await updateDoc(itemRef, updateData);
@@ -250,11 +272,43 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
           await updateDoc(oItemRef, { status: nextItemStatus });
         }
       }
+
+      setFeedback(`${item.itemName} updated to ${newStatus.replace('_', ' ').toLowerCase()}.`);
+      if (newStatus === 'READY' && selectedTicketOrder === item.orderNumber) {
+        const remainingInTicket = items.filter(i => (
+          i.orderNumber === item.orderNumber
+          && i.id !== item.id
+          && i.status !== 'READY'
+          && i.status !== 'SERVED'
+          && i.status !== 'CANCELLED'
+        ));
+        if (remainingInTicket.length === 0) setSelectedTicketOrder(null);
+      }
     } catch (e: any) {
        console.error("Error updating KOT status", e);
+       setError(e.message || 'Failed to update KOT ticket.');
     } finally {
-       setLoading(false);
+       setSavingItemId(null);
     }
+  };
+
+  const openCancelDialog = (item: KotItem) => {
+    setCancellingItem(item);
+    setCancelReason('');
+    setError('');
+    setFeedback('');
+  };
+
+  const executeCancel = async () => {
+    if (!cancellingItem) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setError('Cancellation reason is required.');
+      return;
+    }
+    await handleStatusChange(cancellingItem, 'CANCELLED', reason);
+    setCancellingItem(null);
+    setCancelReason('');
   };
 
   const nextStatusInfo = (status: KotStatus): { label: string, next: KotStatus, color: string } | null => {
@@ -262,6 +316,18 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     if (status === 'PREPARING') return { label: 'Mark Ready', next: 'READY', color: 'bg-emerald-600 hover:bg-emerald-700' };
     return null;
   };
+
+  const selectedTicketItems = useMemo(() => {
+    if (!selectedTicketOrder) return [];
+    return items
+      .filter(item => item.orderNumber === selectedTicketOrder && item.station === station)
+      .sort((a, b) => {
+        const aTime = toDate(a.createdAt)?.getTime() || 0;
+        const bTime = toDate(b.createdAt)?.getTime() || 0;
+        return aTime - bTime;
+      });
+  }, [items, selectedTicketOrder, station]);
+  const selectedTicketFirst = selectedTicketItems[0];
 
   return (
     <div className="max-w-7xl mx-auto w-full min-w-0 p-4 md:p-8">
@@ -341,6 +407,14 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
          </div>
        </div>
 
+       {(feedback || error) && (
+         <div className={`mb-5 rounded-2xl px-4 py-3 text-sm font-bold ${
+           error ? 'border border-red-200 bg-red-50 text-red-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+         }`}>
+           {error || feedback}
+         </div>
+       )}
+
        {loading && displayedItems.length === 0 ? (
          <div className="flex items-center justify-center p-12">
             <Loader2 size={32} className="animate-spin text-[#5c4033]" />
@@ -362,7 +436,18 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                const preparingCount = ticketItems.filter(item => item.status === 'PREPARING').length;
                
                return (
-                 <div key={orderNumber} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-white shadow-sm transition-all duration-200 ${
+                 <div
+                   key={orderNumber}
+                   role="button"
+                   tabIndex={0}
+                   onClick={() => setSelectedTicketOrder(orderNumber)}
+                   onKeyDown={event => {
+                     if (event.key === 'Enter' || event.key === ' ') {
+                       event.preventDefault();
+                       setSelectedTicketOrder(orderNumber);
+                     }
+                   }}
+                   className={`flex min-w-0 cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#5c4033] ${
                    ticketIsStale ? 'border-red-300 ring-2 ring-red-100' : 'border-[#eadfd2]'
                  }`}>
                     <div className="border-b border-dashed border-[#eadfd2] bg-[#fffaf5] p-3">
@@ -388,6 +473,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                          <p className="truncate">{first.storeName}</p>
                          {first.customerName && <p className="truncate">Guest: {first.customerName}</p>}
                          <p className="text-neutral-500">{pendingCount} pending · {preparingCount} preparing</p>
+                         <p className="text-[11px] font-black uppercase tracking-wide text-[#9a6a3a]">Tap ticket for actions</p>
                        </div>
                     </div>
 
@@ -395,6 +481,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                        {ticketItems.map((item, idx) => {
                           const action = nextStatusInfo(item.status);
                           const itemIsStale = isStaleKot(item, now);
+                          const isSaving = savingItemId === item.id;
                           return (
                             <div key={item.id} className={`p-3 ${idx !== ticketItems.length - 1 ? 'border-b border-neutral-100' : ''}`}>
                                <div className="mb-2 flex items-start justify-between gap-2">
@@ -419,25 +506,26 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                                <div className="flex gap-2 mt-3">
                                  {action && canUpdateStatus && (
                                    <button 
-                                     onClick={() => handleStatusChange(item, action.next)}
-                                     disabled={loading}
+                                     onClick={event => {
+                                       event.stopPropagation();
+                                       handleStatusChange(item, action.next);
+                                     }}
+                                     disabled={Boolean(savingItemId)}
                                      className={`min-h-[44px] flex-1 rounded-xl px-3 py-2 text-sm font-black text-white transition-colors ${action.color} disabled:opacity-50`}
                                    >
-                                      {action.label}
+                                      {isSaving ? 'Saving...' : action.label}
                                     </button>
                                  )}
                                  {canCancel && item.status !== 'CANCELLED' && item.status !== 'SERVED' && (
                                     <button 
-                                      onClick={() => {
-                                        if (confirm(`Cancel ${item.itemName}?`)) {
-                                          handleStatusChange(item, 'CANCELLED');
-                                        }
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        openCancelDialog(item);
                                       }}
-                                      disabled={loading}
-                                      className="min-h-[44px] rounded-xl bg-red-400 px-3 py-2 text-white transition-colors hover:bg-red-500 disabled:opacity-50"
-                                      title="Cancel Item"
+                                      disabled={Boolean(savingItemId)}
+                                      className="min-h-[44px] rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-100 disabled:opacity-50"
                                     >
-                                       <X size={14} />
+                                       Cancel
                                     </button>
                                  )}
                                </div>
@@ -448,6 +536,147 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                  </div>
                );
             })}
+         </div>
+       )}
+
+       {selectedTicketFirst && (
+         <div className="fixed inset-0 z-50 flex items-end bg-black/35 p-0 sm:items-center sm:justify-center sm:p-4">
+           <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white shadow-2xl sm:max-w-2xl sm:rounded-3xl">
+             <div className="sticky top-0 z-10 border-b border-[#eadfd2] bg-[#fffaf5] p-4">
+               <div className="flex items-start justify-between gap-3">
+                 <div className="min-w-0">
+                   <p className="text-xs font-black uppercase tracking-[0.2em] text-[#9a6a3a]">{station === 'BARISTA' ? 'Barista Actions' : 'Kitchen Actions'}</p>
+                   <h2 className="break-words font-mono text-2xl font-black text-neutral-950">{shortOrderNumber(selectedTicketFirst.orderNumber)}</h2>
+                   <p className="text-sm font-bold text-neutral-600">
+                     {selectedTicketFirst.orderType.replace('_', ' ')}
+                     {selectedTicketFirst.tableNumber ? ` · Table ${selectedTicketFirst.tableNumber}` : ''}
+                     {selectedTicketFirst.customerName ? ` · ${selectedTicketFirst.customerName}` : ''}
+                   </p>
+                 </div>
+                 <button
+                   type="button"
+                   onClick={() => setSelectedTicketOrder(null)}
+                   className="rounded-full bg-white p-2 text-neutral-500 ring-1 ring-[#eadfd2] hover:bg-[#f6eee6]"
+                   aria-label="Close ticket actions"
+                 >
+                   <X size={18} />
+                 </button>
+               </div>
+               <div className="mt-3 flex flex-wrap gap-2 text-xs font-black uppercase tracking-wide">
+                 <span className="rounded-full bg-white px-2.5 py-1 text-[#5c4033] ring-1 ring-[#eadfd2]">{selectedTicketFirst.storeName}</span>
+                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-neutral-600">{selectedTicketItems.length} routed item{selectedTicketItems.length === 1 ? '' : 's'}</span>
+                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-neutral-600">
+                   {timeSince(toDate(selectedTicketFirst.createdAt) || new Date())} old
+                 </span>
+               </div>
+             </div>
+
+             <div className="space-y-3 p-4">
+               {selectedTicketItems.map(item => {
+                 const action = nextStatusInfo(item.status);
+                 const itemIsStale = isStaleKot(item, now);
+                 const isSaving = savingItemId === item.id;
+                 return (
+                   <div key={item.id} className="rounded-2xl border border-[#eadfd2] bg-white p-4">
+                     <div className="flex items-start justify-between gap-3">
+                       <div className="min-w-0">
+                         <div className="flex items-start gap-2">
+                           <span className="rounded-lg bg-[#3b2418] px-2 py-1 font-mono text-sm font-black text-white">{item.quantity}x</span>
+                           <div className="min-w-0">
+                             <p className="break-words text-lg font-black text-neutral-950">{item.itemName}</p>
+                             <p className="break-words text-xs font-bold uppercase tracking-wide text-neutral-400">{item.itemCode}</p>
+                           </div>
+                         </div>
+                       </div>
+                       <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-black ${
+                         item.status === 'PENDING' ? 'bg-neutral-100 text-neutral-600' :
+                         item.status === 'PREPARING' ? 'bg-yellow-100 text-yellow-700' :
+                         'bg-emerald-100 text-emerald-700'
+                       }`}>
+                         {item.status}
+                       </span>
+                     </div>
+                     {itemIsStale && (
+                       <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+                         STALE: this ticket is older than 2 hours. Resolve manually; it was not auto-completed.
+                       </p>
+                     )}
+                     <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                       {action && canUpdateStatus && (
+                         <button
+                           type="button"
+                           onClick={() => handleStatusChange(item, action.next)}
+                           disabled={Boolean(savingItemId)}
+                           className={`min-h-[52px] flex-1 rounded-2xl px-4 py-3 text-base font-black text-white transition-colors ${action.color} disabled:opacity-50`}
+                         >
+                           {isSaving ? 'Saving...' : action.label}
+                         </button>
+                       )}
+                       {canCancel && item.status !== 'CANCELLED' && item.status !== 'SERVED' && (
+                         <button
+                           type="button"
+                           onClick={() => openCancelDialog(item)}
+                           disabled={Boolean(savingItemId)}
+                           className="min-h-[52px] rounded-2xl bg-red-50 px-4 py-3 text-base font-black text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-100 disabled:opacity-50 sm:w-36"
+                         >
+                           Cancel
+                         </button>
+                       )}
+                     </div>
+                   </div>
+                 );
+               })}
+             </div>
+           </div>
+         </div>
+       )}
+
+       {cancellingItem && (
+         <div className="fixed inset-0 z-[60] flex items-end bg-black/40 p-0 sm:items-center sm:justify-center sm:p-4">
+           <div className="w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl">
+             <div className="mb-4 flex items-start justify-between gap-3">
+               <div>
+                 <p className="text-xs font-black uppercase tracking-[0.2em] text-red-600">Cancel Ticket</p>
+                 <h2 className="text-xl font-black text-neutral-950">{cancellingItem.itemName}</h2>
+                 <p className="text-sm font-bold text-neutral-500">{shortOrderNumber(cancellingItem.orderNumber)} · {cancellingItem.station}</p>
+               </div>
+               <button
+                 type="button"
+                 onClick={() => setCancellingItem(null)}
+                 className="rounded-full bg-neutral-100 p-2 text-neutral-500 hover:bg-neutral-200"
+                 aria-label="Close cancellation"
+               >
+                 <X size={18} />
+               </button>
+             </div>
+             <label className="mb-2 block text-sm font-black text-neutral-700" htmlFor="kot-cancel-reason">
+               Cancellation reason
+             </label>
+             <textarea
+               id="kot-cancel-reason"
+               value={cancelReason}
+               onChange={event => setCancelReason(event.target.value)}
+               className="min-h-28 w-full rounded-2xl border border-[#eadfd2] p-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-[#5c4033]"
+               placeholder="Example: duplicate ticket, customer cancelled, item unavailable..."
+             />
+             <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+               <button
+                 type="button"
+                 onClick={() => setCancellingItem(null)}
+                 className="min-h-[48px] rounded-2xl px-4 py-3 font-black text-neutral-600 hover:bg-neutral-100"
+               >
+                 Keep Ticket
+               </button>
+               <button
+                 type="button"
+                 onClick={executeCancel}
+                 disabled={Boolean(savingItemId)}
+                 className="min-h-[48px] rounded-2xl bg-red-600 px-4 py-3 font-black text-white hover:bg-red-700 disabled:opacity-50"
+               >
+                 {savingItemId ? 'Cancelling...' : 'Cancel Ticket'}
+               </button>
+             </div>
+           </div>
          </div>
        )}
     </div>

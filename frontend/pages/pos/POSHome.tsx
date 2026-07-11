@@ -3,7 +3,7 @@ import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp
 import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment } from '../../types';
+import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation } from '../../types';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -380,10 +380,19 @@ function menuTileTone(category: string): { badge: string; panel: string; icon: s
 }
 
 function prepStationLabel(prepStation?: string | null): string {
-  if (prepStation === 'BARISTA') return 'Barista';
-  if (prepStation === 'KITCHEN') return 'Kitchen';
-  if (prepStation === 'BOTH') return 'Bar + Kitchen';
+  const normalized = normalizePrepStation(prepStation);
+  if (normalized === 'BARISTA') return 'Barista';
+  if (normalized === 'KITCHEN') return 'Kitchen';
+  if (normalized === 'BOTH') return 'Bar + Kitchen';
   return 'Ready to bill';
+}
+
+function normalizePrepStation(value: unknown): PrepStation {
+  const normalized = String(value || 'NONE').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (normalized === 'BARISTA' || normalized === 'BAR') return 'BARISTA';
+  if (normalized === 'KITCHEN' || normalized === 'KITCHEN_KOT') return 'KITCHEN';
+  if (normalized === 'BOTH' || normalized === 'BARISTA_KITCHEN' || normalized === 'BAR_AND_KITCHEN') return 'BOTH';
+  return 'NONE';
 }
 
 function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
@@ -765,7 +774,7 @@ export default function POSHome() {
            description: data.description || '',
            price: data.salePrice || 0,
            taxRate: pickItemTaxRate(data),
-           prepStation: data.prepStation || 'NONE',
+           prepStation: normalizePrepStation(data.prepStation),
            isActive: data.isActive,
            availableStoreIds: data.availableStoreIds || [],
            itemType: data.itemType,
@@ -1084,7 +1093,7 @@ export default function POSHome() {
         name: itemName,
         price: itemPrice,
         taxRate: item.taxRate,
-        prepStation: item.prepStation,
+        prepStation: normalizePrepStation(item.prepStation),
         quantity: 1,
         sourceSystem: posSource,
         itemType: item.itemType,
@@ -1564,6 +1573,7 @@ export default function POSHome() {
           const lineTaxable = Math.max(0, lineSub - lineDiscount);
           const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);
           const lineTax = lineTaxable * (appliedTaxRate / 100);
+          const linePrepStation = normalizePrepStation(liveItem.prepStation);
 
           const itemData: OrderItem = {
             menuItemId: liveItem.id,
@@ -1580,7 +1590,7 @@ export default function POSHome() {
             lineTax: lineTax,
             lineTotal: lineTaxable + lineTax,
             cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
-            prepStation: liveItem.prepStation,
+            prepStation: linePrepStation,
             status: 'PENDING',
             createdAt: serverTimestamp(),
             sourceSystem: 'FINISHED_GOODS',
@@ -1618,10 +1628,10 @@ export default function POSHome() {
             });
           };
 
-          if (liveItem.prepStation === "BARISTA" || liveItem.prepStation === "BOTH") {
+          if (linePrepStation === "BARISTA" || linePrepStation === "BOTH") {
             createKotItem("BARISTA");
           }
-          if (liveItem.prepStation === "KITCHEN" || liveItem.prepStation === "BOTH") {
+          if (linePrepStation === "KITCHEN" || linePrepStation === "BOTH") {
             createKotItem("KITCHEN");
           }
         });

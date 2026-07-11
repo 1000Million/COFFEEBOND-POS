@@ -1,6 +1,6 @@
 import { collection, doc, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
-import { OnlineOrder, Order, OrderItem, OrderPayment, StaffProfile, Store } from '../types';
+import { OnlineOrder, Order, OrderItem, OrderPayment, PrepStation, StaffProfile, Store } from '../types';
 import { FinishedGood } from '../types/menu-management';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from './inventoryDeduction';
 
@@ -79,6 +79,14 @@ function normalizeStoreOverrides(value: unknown): Record<string, number> {
 
 function pickItemTaxRate(item: Record<string, unknown>): number {
   return pickTaxConfig(item, 'item', ITEM_TAX_RATE_KEYS)?.rate || 0;
+}
+
+function normalizePrepStation(value: unknown): PrepStation {
+  const normalized = String(value || 'NONE').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (normalized === 'BARISTA' || normalized === 'BAR') return 'BARISTA';
+  if (normalized === 'KITCHEN' || normalized === 'KITCHEN_KOT') return 'KITCHEN';
+  if (normalized === 'BOTH' || normalized === 'BARISTA_KITCHEN' || normalized === 'BAR_AND_KITCHEN') return 'BOTH';
+  return 'NONE';
 }
 
 function getAppliedTaxRate(item: Record<string, unknown>, fallbackTaxRate: number): number {
@@ -293,6 +301,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     let kotCount = 0;
     calculatedLines.forEach((line, index) => {
       const lineRef = lineRefs[index];
+      const linePrepStation = normalizePrepStation(line.finishedGood.prepStation);
       const itemData: OrderItem = {
         menuItemId: line.finishedGood.code,
         itemName: line.finishedGood.displayName || line.finishedGood.name,
@@ -308,7 +317,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
         cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
-        prepStation: line.finishedGood.prepStation,
+        prepStation: linePrepStation,
         status: 'PENDING',
         createdAt: serverTimestamp(),
         sourceSystem: 'FINISHED_GOODS',
@@ -342,8 +351,8 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         });
       };
 
-      if (line.finishedGood.prepStation === 'BARISTA' || line.finishedGood.prepStation === 'BOTH') createKot('BARISTA');
-      if (line.finishedGood.prepStation === 'KITCHEN' || line.finishedGood.prepStation === 'BOTH') createKot('KITCHEN');
+      if (linePrepStation === 'BARISTA' || linePrepStation === 'BOTH') createKot('BARISTA');
+      if (linePrepStation === 'KITCHEN' || linePrepStation === 'BOTH') createKot('KITCHEN');
     });
 
     const paymentRef = doc(collection(newOrderRef, 'payments'));

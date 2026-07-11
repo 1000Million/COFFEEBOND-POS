@@ -345,7 +345,11 @@ export default function RunningOrders() {
         const [itemsSnap, paymentsSnap, kotSnap] = await Promise.all([
           getDocs(collection(db, 'orders', order.id, 'items')),
           getDocs(collection(db, 'orders', order.id, 'payments')),
-          getDocs(query(collection(db, 'kotItems'), where('orderId', '==', order.id))),
+          getDocs(query(
+            collection(db, 'kotItems'),
+            where('storeId', '==', order.storeId),
+            where('orderId', '==', order.id),
+          )),
         ]);
         return {
           order,
@@ -564,7 +568,11 @@ export default function RunningOrders() {
       const orderRef = doc(db, 'orders', voidBundle.order.id);
       const [movementSnap, kotSnap] = await Promise.all([
         getDocs(query(collection(db, 'stockMovements'), where('referenceId', '==', voidBundle.order.id))),
-        getDocs(query(collection(db, 'kotItems'), where('orderId', '==', voidBundle.order.id))),
+        getDocs(query(
+          collection(db, 'kotItems'),
+          where('storeId', '==', voidBundle.order.storeId),
+          where('orderId', '==', voidBundle.order.id),
+        )),
       ]);
       const movementDocs = movementSnap.docs.map(movementDoc => ({ id: movementDoc.id, ...movementDoc.data() } as StockMovementDoc));
       if (movementDocs.some(movement => movement.movementType === 'ORDER_VOID_REVERSAL')) {
