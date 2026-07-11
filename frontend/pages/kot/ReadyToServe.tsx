@@ -2,9 +2,33 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, runTransaction, getDoc, getDocs, addDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, KotItem, KotStatus, Recipe } from '../../types';
-import { Loader2, CheckCircle, Clock, X, Store as StoreIcon, Search, AlertCircle, RefreshCw, Trash2, Bell } from 'lucide-react';
+import { Store, KotItem } from '../../types';
+import { Loader2, CheckCircle, Clock, Store as StoreIcon, AlertCircle, RefreshCw, Trash2, Bell, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+
+const toDate = (value: any): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (value.toDate) return value.toDate();
+  return null;
+};
+
+const isToday = (date: Date | null) => {
+  if (!date) return false;
+  const today = new Date();
+  return date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+};
+
+const isReadyStale = (item: KotItem, now: Date) => {
+  const readyAt = toDate(item.readyAt) || toDate(item.createdAt);
+  return Boolean(readyAt && now.getTime() - readyAt.getTime() > STALE_THRESHOLD_MS);
+};
+
+const shortOrderNumber = (orderNumber: string) => orderNumber.split('-').slice(2).join('-') || orderNumber;
 
 const timeSince = (date: Date) => {
   if (!date) return '';
@@ -39,6 +63,7 @@ export default function ReadyToServe() {
   const [items, setItems] = useState<KotItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
+  const [readyFilter, setReadyFilter] = useState<'ALL' | 'TODAY' | 'STALE'>('ALL');
 
   const [returnModalItem, setReturnModalItem] = useState<KotItem | null>(null);
   const [returnReason, setReturnReason] = useState(RETURN_REASONS[0]);
@@ -142,12 +167,26 @@ export default function ReadyToServe() {
   }, [items, selectedStoreId]);
 
   const readyItems = useMemo(() => {
-    return displayedItems.filter(i => i.status === 'READY').sort((a,b) => {
+    let list = displayedItems.filter(i => i.status === 'READY');
+
+    if (readyFilter === 'TODAY') {
+      list = list.filter(item => isToday(toDate(item.readyAt) || toDate(item.createdAt)));
+    }
+
+    if (readyFilter === 'STALE') {
+      list = list.filter(item => isReadyStale(item, now));
+    }
+
+    return list.sort((a,b) => {
       const aTime = a.readyAt?.toDate ? a.readyAt.toDate().getTime() : 0;
       const bTime = b.readyAt?.toDate ? b.readyAt.toDate().getTime() : 0;
       return aTime - bTime;
     });
-  }, [displayedItems]);
+  }, [displayedItems, readyFilter, now]);
+
+  const staleReadyCount = useMemo(() => {
+    return displayedItems.filter(item => item.status === 'READY' && isReadyStale(item, now)).length;
+  }, [displayedItems, now]);
 
   const servedItems = useMemo(() => {
     return displayedItems.filter(i => i.status === 'SERVED').sort((a,b) => {
@@ -378,6 +417,35 @@ export default function ReadyToServe() {
         </div>
       </div>
 
+      <div className="mb-5 flex flex-col gap-3 rounded-2xl border border-[#eadfd2] bg-[#fffaf5] p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { id: 'ALL', label: 'All Active' },
+            { id: 'TODAY', label: 'Today' },
+            { id: 'STALE', label: 'Stale' },
+          ].map(filter => (
+            <button
+              key={filter.id}
+              type="button"
+              onClick={() => setReadyFilter(filter.id as 'ALL' | 'TODAY' | 'STALE')}
+              className={`rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-wide transition-colors ${
+                readyFilter === filter.id
+                  ? 'bg-[#3b2418] text-white shadow-sm'
+                  : 'bg-white text-[#5c4033] ring-1 ring-[#eadfd2] hover:bg-[#f6eee6]'
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+        <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-black ${
+          staleReadyCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+        }`}>
+          <AlertTriangle size={14} />
+          {staleReadyCount} stale ready item{staleReadyCount === 1 ? '' : 's'}
+        </div>
+      </div>
+
       {loading && items.length === 0 ? (
          <div className="flex items-center justify-center p-12">
             <Loader2 size={32} className="animate-spin text-[#5c4033]" />
@@ -401,9 +469,10 @@ export default function ReadyToServe() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   <AnimatePresence initial={false} mode="popLayout">
                     {readyItems.map(item => {
-                      const timeReady = item.readyAt?.toDate ? item.readyAt.toDate() : new Date();
+                      const timeReady = toDate(item.readyAt) || toDate(item.createdAt) || new Date();
                       const secondsWaiting = Math.floor((new Date().getTime() - timeReady.getTime()) / 1000);
                       const isLate = secondsWaiting > 300; // > 5 minutes
+                      const isStale = isReadyStale(item, now);
 
                       return (
                         <motion.div 
@@ -413,11 +482,13 @@ export default function ReadyToServe() {
                           animate={{ opacity: 1, scale: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.95, y: -10 }}
                           transition={{ duration: 0.25 }}
-                          className="bg-white shadow-sm border border-green-500 rounded-xl p-4 flex min-w-0 flex-col relative overflow-hidden"
+                          className={`relative flex min-w-0 flex-col overflow-hidden rounded-xl bg-white p-4 shadow-sm ${
+                            isStale ? 'border border-red-300 ring-2 ring-red-100' : 'border border-green-500'
+                          }`}
                         >
                           <div className="flex justify-between items-start mb-2">
-                            <h3 className="text-lg font-black font-mono tracking-tight text-neutral-900">{item.orderNumber.split('-').slice(2).join('-')}</h3>
-                            <span className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded ${isLate ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-green-100 text-green-800'}`}>
+                            <h3 className="min-w-0 break-words text-lg font-black font-mono tracking-tight text-neutral-900">{shortOrderNumber(item.orderNumber)}</h3>
+                            <span className={`flex shrink-0 items-center gap-1 text-xs font-bold px-2 py-1 rounded ${isStale || isLate ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-green-100 text-green-800'}`}>
                               <Clock size={12} /> {timeSince(timeReady)}
                             </span>
                           </div>
@@ -430,6 +501,7 @@ export default function ReadyToServe() {
                             </div>
 
                             <div className="flex flex-wrap gap-2 mt-2">
+                              {isStale && <span className="text-xs font-bold px-2 py-1 bg-red-600 text-white rounded uppercase tracking-wider">STALE</span>}
                               <span className="text-xs font-bold px-2 py-1 bg-[#f9f5f0] text-[#795C34] rounded uppercase tracking-wider">{item.orderType.replace('_', ' ')}</span>
                               {item.tableNumber && <span className="text-xs font-bold px-2 py-1 bg-yellow-100 text-yellow-800 rounded">Table {item.tableNumber}</span>}
                             </div>
