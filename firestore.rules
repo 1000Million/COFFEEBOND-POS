@@ -111,6 +111,7 @@ service cloud.firestore {
         'customerName',
         'customerPhone',
         'orderType',
+        'tableNumber',
         'notes',
         'items',
         'subtotal',
@@ -119,21 +120,40 @@ service cloud.firestore {
         'grandTotal',
         'status',
         'source',
+        'trackingToken',
+        'publicOrderReference',
         'createdAt',
         'updatedAt'
       ])
       && request.resource.data.status == 'PENDING'
       && request.resource.data.source == 'CUSTOMER_WEB'
+      && request.resource.data.trackingToken is string
+      && request.resource.data.trackingToken.size() >= 32
+      && request.resource.data.publicOrderReference is string
+      && request.resource.data.publicOrderReference.size() > 0
+      && request.resource.data.publicOrderReference.size() <= 32
       && request.resource.data.storeId is string
       && exists(/databases/$(database)/documents/stores/$(request.resource.data.storeId))
       && get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.isActive == true
+      && get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.onlineOrderingEnabled != false
       && request.resource.data.storeName is string
       && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
       && request.resource.data.customerName is string
       && request.resource.data.customerName.size() > 0
+      && request.resource.data.customerName.size() <= 80
       && request.resource.data.customerPhone is string
-      && request.resource.data.customerPhone.size() > 0
+      && request.resource.data.customerPhone.matches('^[6-9][0-9]{9}$')
       && request.resource.data.orderType in ['PICKUP', 'DINE_IN']
+      && (
+        (request.resource.data.orderType == 'DINE_IN'
+          && request.resource.data.tableNumber is string
+          && request.resource.data.tableNumber.size() > 0
+          && request.resource.data.tableNumber.size() <= 20)
+        || (request.resource.data.orderType == 'PICKUP'
+          && (!request.resource.data.keys().hasAny(['tableNumber']) || request.resource.data.tableNumber == null))
+      )
+      && request.resource.data.notes is string
+      && request.resource.data.notes.size() <= 200
       && request.resource.data.items is list
       && request.resource.data.items.size() > 0
       && request.resource.data.items.size() <= 30
@@ -145,6 +165,63 @@ service cloud.firestore {
       && request.resource.data.taxableAmount >= 0
       && request.resource.data.gstTotal >= 0
       && request.resource.data.grandTotal >= 0;
+    }
+
+    function isSafePublicTrackingDocument(data, trackingToken) {
+      return data.keys().hasOnly([
+        'trackingToken',
+        'publicOrderReference',
+        'storeName',
+        'orderType',
+        'tableNumber',
+        'items',
+        'subtotal',
+        'gstTotal',
+        'total',
+        'publicStatus',
+        'submittedAt',
+        'acceptedAt',
+        'readyAt',
+        'servedAt',
+        'publicOrderNumber',
+        'customerStatusMessage'
+      ])
+      && data.trackingToken == trackingToken
+      && data.trackingToken is string
+      && data.trackingToken.size() >= 32
+      && data.publicOrderReference is string
+      && data.publicOrderReference.size() > 0
+      && data.publicOrderReference.size() <= 32
+      && data.storeName is string
+      && data.storeName.size() > 0
+      && data.storeName.size() <= 80
+      && data.orderType in ['PICKUP', 'DINE_IN']
+      && (
+        (data.orderType == 'DINE_IN'
+          && data.tableNumber is string
+          && data.tableNumber.size() > 0
+          && data.tableNumber.size() <= 20)
+        || (data.orderType == 'PICKUP'
+          && (!data.keys().hasAny(['tableNumber']) || data.tableNumber == null))
+      )
+      && data.items is list
+      && data.items.size() > 0
+      && data.items.size() <= 30
+      && data.subtotal is number
+      && data.gstTotal is number
+      && data.total is number
+      && data.subtotal >= 0
+      && data.gstTotal >= 0
+      && data.total >= 0
+      && data.publicStatus in ['PENDING', 'ACCEPTED', 'CONVERTED', 'PREPARING', 'READY', 'SERVED', 'REJECTED', 'NEEDS_ATTENTION', 'CANCELLED']
+      && data.customerStatusMessage is string
+      && data.customerStatusMessage.size() > 0
+      && data.customerStatusMessage.size() <= 160
+      && data.submittedAt is timestamp
+      && (!data.keys().hasAny(['acceptedAt']) || data.acceptedAt is timestamp)
+      && (!data.keys().hasAny(['readyAt']) || data.readyAt is timestamp)
+      && (!data.keys().hasAny(['servedAt']) || data.servedAt is timestamp)
+      && (!data.keys().hasAny(['publicOrderNumber']) || (data.publicOrderNumber is string && data.publicOrderNumber.size() <= 80));
     }
 
     // Users Collection
@@ -209,11 +286,30 @@ service cloud.firestore {
 
     match /onlineOrders/{onlineOrderId} {
       allow create: if isValidPublicOnlineOrderCreate();
-      allow get: if true;
-      allow list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow get, list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       allow update: if isCheckoutStaff()
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
         && request.resource.data.storeId == resource.data.storeId;
+      allow delete: if isAdmin();
+    }
+
+    match /publicOrderTracking/{trackingToken} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSafePublicTrackingDocument(request.resource.data, trackingToken)
+        && request.resource.data.publicStatus == 'PENDING'
+        && !request.resource.data.keys().hasAny(['acceptedAt', 'readyAt', 'servedAt', 'publicOrderNumber']);
+      allow update: if isActiveStaff()
+        && isSafePublicTrackingDocument(request.resource.data, trackingToken)
+        && request.resource.data.trackingToken == resource.data.trackingToken
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'publicStatus',
+          'acceptedAt',
+          'readyAt',
+          'servedAt',
+          'publicOrderNumber',
+          'customerStatusMessage'
+        ]);
       allow delete: if isAdmin();
     }
 

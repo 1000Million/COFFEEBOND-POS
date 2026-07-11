@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Store, KotItem } from '../../types';
 import { Loader2, CheckCircle, Clock, Store as StoreIcon, AlertCircle, RefreshCw, Trash2, Bell, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -222,6 +223,19 @@ export default function ReadyToServe() {
       // Update parent orderItem sync logic as in prior code if required, but requirements specify don't change existing POS checkout. We should at least update order item to SERVED.
       const oItemRef = doc(db, 'orders', item.orderId, 'items', item.orderItemId);
       await updateDoc(oItemRef, { status: 'SERVED' });
+
+      if (item.onlineOrderTrackingToken) {
+        const orderKotSnap = await getDocs(query(collection(db, 'kotItems'), where('orderId', '==', item.orderId)));
+        const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
+        const allServed = relatedItems.length > 0
+          && relatedItems.every(related => ['SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? 'SERVED' : related.status));
+
+        await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
+          publicStatus: allServed ? 'SERVED' : 'READY',
+          customerStatusMessage: allServed ? publicStatusMessage('SERVED') : publicStatusMessage('READY'),
+          ...(allServed ? { servedAt: serverTimestamp() } : {}),
+        });
+      }
     } catch (e: any) {
       console.error(e);
       alert("Error marking served: " + e.message);

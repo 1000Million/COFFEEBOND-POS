@@ -161,6 +161,9 @@ export interface KotItem {
   orderType: OrderType;
   tableNumber: string | null;
   customerName: string | null;
+  onlineOrderId?: string | null;
+  onlineOrderTrackingToken?: string | null;
+  onlineOrderReference?: string | null;
   status: KotStatus;
   readyAt?: any;
   servedAt?: any;
@@ -192,6 +195,7 @@ export interface OrderPayment {
 
 export type OnlineOrderType = "PICKUP" | "DINE_IN";
 export type OnlineOrderStatus = "PENDING" | "ACCEPTED" | "CONVERTED" | "REJECTED" | "NEEDS_ATTENTION";
+export type PublicOrderStatus = OnlineOrderStatus | "PREPARING" | "READY" | "SERVED" | "CANCELLED";
 
 export interface OnlineOrderItem {
   finishedGoodCode: string;
@@ -216,6 +220,7 @@ export interface OnlineOrder {
   customerName: string;
   customerPhone: string;
   orderType: OnlineOrderType;
+  tableNumber?: string | null;
   notes: string;
   items: OnlineOrderItem[];
   subtotal: number;
@@ -224,6 +229,8 @@ export interface OnlineOrder {
   grandTotal: number;
   status: OnlineOrderStatus;
   source: "CUSTOMER_WEB";
+  trackingToken?: string | null;
+  publicOrderReference?: string | null;
   linkedOrderId?: string | null;
   linkedOrderNumber?: string | null;
   customerStatusMessage?: string | null;
@@ -237,6 +244,32 @@ export interface OnlineOrder {
   attentionReason?: string | null;
   createdAt: any;
   updatedAt: any;
+}
+
+export interface PublicOrderTrackingItem {
+  itemName: string;
+  quantity: number;
+  lineTotal: number;
+}
+
+export interface PublicOrderTracking {
+  id?: string;
+  trackingToken: string;
+  publicOrderReference: string;
+  storeName: string;
+  orderType: OnlineOrderType;
+  tableNumber?: string | null;
+  items: PublicOrderTrackingItem[];
+  subtotal: number;
+  gstTotal: number;
+  total: number;
+  publicStatus: PublicOrderStatus;
+  submittedAt: any;
+  acceptedAt?: any;
+  readyAt?: any;
+  servedAt?: any;
+  publicOrderNumber?: string | null;
+  customerStatusMessage: string;
 }
 
 export type DayClosingStatus = "CLOSED";

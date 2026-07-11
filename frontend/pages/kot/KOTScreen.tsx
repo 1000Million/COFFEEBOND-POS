@@ -4,6 +4,7 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store, KotItem, KotStatus } from '../../types';
 import { Loader2, Clock, X, ChefHat, Coffee, Store as StoreIcon, Search, AlertTriangle } from 'lucide-react';
+import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -205,6 +206,39 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     || staffProfile?.role === station;
   const canCancel = canUpdateStatus;
 
+  const syncPublicTrackingFromKotStatus = async (item: KotItem, newStatus: KotStatus) => {
+    if (!item.onlineOrderTrackingToken) return;
+
+    if (newStatus === 'CANCELLED') {
+      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
+        publicStatus: 'NEEDS_ATTENTION',
+        customerStatusMessage: publicStatusMessage('NEEDS_ATTENTION'),
+      });
+      return;
+    }
+
+    if (newStatus === 'PREPARING') {
+      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
+        publicStatus: 'PREPARING',
+        customerStatusMessage: publicStatusMessage('PREPARING'),
+      });
+      return;
+    }
+
+    if (newStatus === 'READY') {
+      const orderKotSnap = await getDocs(query(collection(db, 'kotItems'), where('orderId', '==', item.orderId)));
+      const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
+      const allDone = relatedItems.length > 0
+        && relatedItems.every(related => ['READY', 'SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? newStatus : related.status));
+
+      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
+        publicStatus: allDone ? 'READY' : 'PREPARING',
+        customerStatusMessage: allDone ? publicStatusMessage('READY') : publicStatusMessage('PREPARING'),
+        ...(allDone ? { readyAt: serverTimestamp() } : {}),
+      });
+    }
+  };
+
   // A simplified helper that handles the status change and attempts to sync the parent order item.
   const handleStatusChange = async (item: KotItem, newStatus: KotStatus, reason?: string) => {
     if (!canUpdateStatus) {
@@ -272,6 +306,8 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
           await updateDoc(oItemRef, { status: nextItemStatus });
         }
       }
+
+      await syncPublicTrackingFromKotStatus(item, newStatus);
 
       setFeedback(`${item.itemName} updated to ${newStatus.replace('_', ' ').toLowerCase()}.`);
       if (newStatus === 'READY' && selectedTicketOrder === item.orderNumber) {

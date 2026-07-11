@@ -5,6 +5,7 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { OnlineOrder, Store } from '../../types';
 import { acceptOnlineOrder, isOnlineOrderAcceptError, OnlineOrderAcceptBlocker } from '../../lib/onlineOrderConversion';
+import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -168,6 +169,10 @@ export default function IncomingOnlineOrders() {
         rejectedByName: staffProfile.name,
         rejectedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+      });
+      await updatePublicOrderTracking(order.trackingToken, {
+        publicStatus: 'REJECTED',
+        customerStatusMessage: publicStatusMessage('REJECTED'),
       });
       setMessage('Online order rejected. No POS order, KOT, or stock movement was created.');
       await loadOrders(order.storeId);

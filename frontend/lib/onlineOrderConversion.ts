@@ -1,8 +1,9 @@
-import { collection, doc, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { OnlineOrder, Order, OrderItem, OrderPayment, PrepStation, StaffProfile, Store } from '../types';
 import { FinishedGood } from '../types/menu-management';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from './inventoryDeduction';
+import { publicStatusMessage, publicTrackingDocRef, updatePublicOrderTracking } from './publicOrderTracking';
 
 type TaxConfig = {
   rate: number;
@@ -110,6 +111,11 @@ function buildOrderType(onlineOrder: OnlineOrder): Order['orderType'] {
   return onlineOrder.orderType === 'DINE_IN' ? 'DINE_IN' : 'TAKEAWAY';
 }
 
+function buildOnlineOrderTableNumber(onlineOrder: OnlineOrder): string | null {
+  if (onlineOrder.orderType !== 'DINE_IN') return null;
+  return onlineOrder.tableNumber?.trim() || 'ONLINE';
+}
+
 export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: StaffProfile): Promise<AcceptResult> {
   const onlineOrderRef = doc(db, 'onlineOrders', onlineOrderId);
   const newOrderRef = doc(collection(db, 'orders'));
@@ -213,6 +219,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const gstTotal = calculatedLines.reduce((sum, line) => sum + line.lineTax, 0);
     const grandTotal = taxableAmount + gstTotal;
     const orderType = buildOrderType(onlineOrder);
+    const tableNumber = buildOnlineOrderTableNumber(onlineOrder);
     const customerPhone = onlineOrder.customerPhone.trim();
     const customerName = onlineOrder.customerName.trim() || 'Online Guest';
     const customerId = customerPhone ? newCustomerRef.id : null;
@@ -269,7 +276,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       orderType,
       status: 'COMPLETED',
       paymentStatus: 'UNPAID',
-      tableNumber: orderType === 'DINE_IN' ? 'ONLINE' : null,
+      tableNumber,
       subtotal,
       taxTotal: gstTotal,
       gstTotal,
@@ -295,6 +302,8 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       ...orderData,
       source: 'CUSTOMER_WEB',
       onlineOrderId,
+      onlineOrderTrackingToken: onlineOrder.trackingToken || null,
+      onlineOrderReference: onlineOrder.publicOrderReference || null,
       notes: onlineOrder.notes || '',
     });
 
@@ -341,8 +350,11 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
           itemCode: line.finishedGood.code,
           quantity: line.quantity,
           orderType,
-          tableNumber: orderType === 'DINE_IN' ? 'ONLINE' : null,
+          tableNumber,
           customerName,
+          onlineOrderId,
+          onlineOrderTrackingToken: onlineOrder.trackingToken || null,
+          onlineOrderReference: onlineOrder.publicOrderReference || null,
           status: 'PENDING',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -376,6 +388,15 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       updatedAt: serverTimestamp(),
     });
 
+    if (onlineOrder.trackingToken) {
+      transaction.update(publicTrackingDocRef(onlineOrder.trackingToken), {
+        publicStatus: 'CONVERTED',
+        publicOrderNumber: orderNumber,
+        customerStatusMessage: publicStatusMessage('CONVERTED'),
+        acceptedAt: serverTimestamp(),
+      });
+    }
+
     return {
       orderId: newOrderRef.id,
       orderNumber,
@@ -385,11 +406,17 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     });
   } catch (error) {
     if (isOnlineOrderAcceptError(error)) {
+      const onlineOrderSnap = await getDoc(onlineOrderRef);
+      const trackingToken = onlineOrderSnap.exists() ? (onlineOrderSnap.data() as Partial<OnlineOrder>).trackingToken : null;
       await updateDoc(onlineOrderRef, {
         status: 'NEEDS_ATTENTION',
         attentionReason: error.blockers.map(blocker => `${blocker.itemName}: ${blocker.blockerType}`).join('; '),
         customerStatusMessage: 'The store is reviewing this order.',
         updatedAt: serverTimestamp(),
+      });
+      await updatePublicOrderTracking(trackingToken, {
+        publicStatus: 'NEEDS_ATTENTION',
+        customerStatusMessage: publicStatusMessage('NEEDS_ATTENTION'),
       });
     }
     throw error;

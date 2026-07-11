@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { onSnapshot } from 'firebase/firestore';
 import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Clock, Copy, Loader2, RefreshCw, ShoppingBag, Store as StoreIcon, XCircle } from 'lucide-react';
-import { db } from '../../lib/firebase';
-import { OnlineOrder, OnlineOrderStatus } from '../../types';
+import { PublicOrderStatus, PublicOrderTracking } from '../../types';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
+import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -15,37 +15,45 @@ function formatDate(value: any): string {
   return date ? date.toLocaleString() : 'Just now';
 }
 
-function statusLabel(status: OnlineOrderStatus): string {
+function statusLabel(status: PublicOrderStatus): string {
   if (status === 'CONVERTED' || status === 'ACCEPTED') return 'Order confirmed';
+  if (status === 'PREPARING') return 'Preparing';
+  if (status === 'READY') return 'Ready for pickup';
+  if (status === 'SERVED') return 'Completed';
+  if (status === 'CANCELLED') return 'Cancelled';
   if (status === 'NEEDS_ATTENTION') return 'Store reviewing';
   if (status === 'REJECTED') return 'Not accepted';
   return 'Request sent';
 }
 
-function statusMessage(order: OnlineOrder): string {
+function statusMessage(order: PublicOrderTracking): string {
   if (order.customerStatusMessage) return order.customerStatusMessage;
-  if (order.status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';
-  if (order.status === 'CONVERTED' || order.status === 'ACCEPTED') return 'Your order has been accepted and is being prepared.';
-  if (order.status === 'REJECTED') return 'Sorry, the store could not accept this order.';
-  if (order.status === 'NEEDS_ATTENTION') return 'The store is reviewing your order.';
-  return 'We are checking your order status.';
+  return publicStatusMessage(order.publicStatus);
 }
 
-function statusTone(status: OnlineOrderStatus): string {
-  if (status === 'CONVERTED' || status === 'ACCEPTED') return 'bg-emerald-50 text-emerald-900';
-  if (status === 'REJECTED') return 'bg-red-50 text-red-900';
+function statusTone(status: PublicOrderStatus): string {
+  if (status === 'CONVERTED' || status === 'ACCEPTED' || status === 'PREPARING') return 'bg-emerald-50 text-emerald-900';
+  if (status === 'READY' || status === 'SERVED') return 'bg-[#f0fdf4] text-emerald-950';
+  if (status === 'REJECTED' || status === 'CANCELLED') return 'bg-red-50 text-red-900';
   if (status === 'NEEDS_ATTENTION') return 'bg-amber-50 text-amber-900';
   return 'bg-blue-50 text-blue-900';
 }
 
-function stepState(orderStatus: OnlineOrderStatus, step: 'SENT' | 'CONFIRMED' | 'PREPARING' | 'READY_SOON' | 'READY_FOR_PICKUP' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
-  if (orderStatus === 'REJECTED') {
+function stepState(orderStatus: PublicOrderStatus, step: 'SENT' | 'CONFIRMED' | 'PREPARING' | 'READY_SOON' | 'READY_FOR_PICKUP' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
+  if (orderStatus === 'REJECTED' || orderStatus === 'CANCELLED') {
     if (step === 'REJECTED') return 'rejected';
     if (step === 'SENT' || step === 'CONFIRMED') return 'done';
     return 'pending';
   }
 
-  if (orderStatus === 'CONVERTED' || orderStatus === 'ACCEPTED') {
+  if (orderStatus === 'SERVED') return step === 'REJECTED' ? 'pending' : 'done';
+  if (orderStatus === 'READY') {
+    if (step === 'SENT' || step === 'CONFIRMED' || step === 'PREPARING' || step === 'READY_SOON') return 'done';
+    if (step === 'READY_FOR_PICKUP') return 'active';
+    return 'pending';
+  }
+
+  if (orderStatus === 'PREPARING' || orderStatus === 'CONVERTED' || orderStatus === 'ACCEPTED') {
     if (step === 'SENT' || step === 'CONFIRMED') return 'done';
     if (step === 'PREPARING') return 'active';
     return 'pending';
@@ -68,14 +76,14 @@ function stepDotClass(state: ReturnType<typeof stepState>): string {
 }
 
 export default function CustomerOrderStatus() {
-  const { onlineOrderId } = useParams();
-  const [order, setOrder] = useState<OnlineOrder | null>(null);
+  const { onlineOrderId: trackingToken } = useParams();
+  const [order, setOrder] = useState<PublicOrderTracking | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
 
   useEffect(() => {
-    if (!onlineOrderId) {
+    if (!trackingToken) {
       setError('Missing order reference.');
       setLoading(false);
       return undefined;
@@ -84,13 +92,13 @@ export default function CustomerOrderStatus() {
     setLoading(true);
     setError(null);
     const unsubscribe = onSnapshot(
-      doc(db, 'onlineOrders', onlineOrderId),
+      publicTrackingDocRef(trackingToken),
       (snapshot) => {
         if (!snapshot.exists()) {
           setOrder(null);
           setError('We could not find this order reference.');
         } else {
-          setOrder({ id: snapshot.id, ...snapshot.data() } as OnlineOrder);
+          setOrder({ id: snapshot.id, ...snapshot.data() } as PublicOrderTracking);
           setError(null);
         }
         setLoading(false);
@@ -103,17 +111,17 @@ export default function CustomerOrderStatus() {
     );
 
     return unsubscribe;
-  }, [onlineOrderId]);
+  }, [trackingToken]);
 
-  const tone = useMemo(() => order ? statusTone(order.status) : 'bg-white text-neutral-900', [order]);
+  const tone = useMemo(() => order ? statusTone(order.publicStatus) : 'bg-white text-neutral-900', [order]);
 
   const visibleSteps = useMemo(() => {
     if (!order) return [];
-    if (order.status === 'REJECTED') {
+    if (order.publicStatus === 'REJECTED' || order.publicStatus === 'CANCELLED') {
       return [
         { key: 'SENT' as const, title: 'Request sent', body: 'We received your basket.' },
         { key: 'CONFIRMED' as const, title: 'Store reviewed', body: 'The team checked your request.' },
-        { key: 'REJECTED' as const, title: 'Not accepted', body: 'The store could not accept it.' },
+        { key: 'REJECTED' as const, title: 'Not accepted', body: 'The store could not complete it.' },
       ];
     }
 
@@ -127,8 +135,8 @@ export default function CustomerOrderStatus() {
   }, [order]);
 
   const copyTrackingLink = async () => {
-    if (!onlineOrderId) return;
-    const trackingUrl = `${window.location.origin}/order/status/${onlineOrderId}`;
+    if (!trackingToken) return;
+    const trackingUrl = `${window.location.origin}/order/status/${trackingToken}`;
     try {
       await navigator.clipboard.writeText(trackingUrl);
       setCopyMessage('Tracking link copied.');
@@ -181,11 +189,11 @@ export default function CustomerOrderStatus() {
             <section className={`rounded-3xl p-5 shadow-sm ring-1 ring-[#eadfd2] ${tone}`}>
               <div className="flex items-start gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/75">
-                  {order.status === 'REJECTED' ? (
+                  {order.publicStatus === 'REJECTED' || order.publicStatus === 'CANCELLED' ? (
                     <XCircle size={24} className="text-red-700" />
-                  ) : order.status === 'CONVERTED' || order.status === 'ACCEPTED' ? (
+                  ) : order.publicStatus === 'CONVERTED' || order.publicStatus === 'ACCEPTED' || order.publicStatus === 'PREPARING' || order.publicStatus === 'READY' || order.publicStatus === 'SERVED' ? (
                     <CheckCircle2 size={24} className="text-emerald-700" />
-                  ) : order.status === 'NEEDS_ATTENTION' ? (
+                  ) : order.publicStatus === 'NEEDS_ATTENTION' ? (
                     <AlertCircle size={24} className="text-amber-700" />
                   ) : (
                     <Clock size={24} className="text-blue-700" />
@@ -193,11 +201,11 @@ export default function CustomerOrderStatus() {
                 </div>
                 <div className="min-w-0">
                   <p className="text-xs font-bold opacity-70">Current status</p>
-                  <h2 className="mt-1 text-2xl font-black">{statusLabel(order.status)}</h2>
+                  <h2 className="mt-1 text-2xl font-black">{statusLabel(order.publicStatus)}</h2>
                   <p className="mt-2 text-sm leading-relaxed">{statusMessage(order)}</p>
-                  {(order.status === 'CONVERTED' || order.status === 'ACCEPTED') && order.linkedOrderNumber && (
+                  {(order.publicStatus === 'CONVERTED' || order.publicStatus === 'ACCEPTED' || order.publicStatus === 'PREPARING' || order.publicStatus === 'READY' || order.publicStatus === 'SERVED') && order.publicOrderNumber && (
                     <p className="mt-3 inline-flex rounded-full bg-white/75 px-3 py-2 text-xs font-black">
-                      Store order number: {order.linkedOrderNumber}
+                      Store order number: {order.publicOrderNumber}
                     </p>
                   )}
                 </div>
@@ -208,11 +216,11 @@ export default function CustomerOrderStatus() {
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-bold text-neutral-500">Order reference</p>
-                  <p className="mt-1 break-all text-sm font-black text-[#2d2019]">{order.id}</p>
+                  <p className="mt-1 break-all text-sm font-black text-[#2d2019]">{order.publicOrderReference}</p>
                 </div>
                 <div className="rounded-2xl bg-[#fbf5ee] px-3 py-2 text-right">
                   <p className="text-xs font-bold text-neutral-500">Total</p>
-                  <p className="font-black text-[#2d2019]">{formatMoney(order.grandTotal)}</p>
+                  <p className="font-black text-[#2d2019]">{formatMoney(order.total)}</p>
                 </div>
               </div>
 
@@ -225,7 +233,7 @@ export default function CustomerOrderStatus() {
                 <div className="rounded-2xl bg-[#fbf5ee] p-3">
                   <Clock size={15} className="mb-2 text-[#9a6a45]" />
                   <p className="text-xs font-bold text-neutral-500">Submitted</p>
-                  <p className="mt-1 font-black text-[#2d2019]">{formatDate(order.createdAt)}</p>
+                  <p className="mt-1 font-black text-[#2d2019]">{formatDate(order.submittedAt)}</p>
                 </div>
               </div>
             </section>
@@ -234,7 +242,7 @@ export default function CustomerOrderStatus() {
               <h3 className="text-lg font-black text-[#2d2019]">Progress</h3>
               <div className="mt-4 space-y-3">
                 {visibleSteps.map(step => {
-                  const state = stepState(order.status, step.key);
+                  const state = stepState(order.publicStatus, step.key);
                   return (
                     <div key={step.title} className="flex gap-3">
                       <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${stepDotClass(state)}`}>
@@ -261,7 +269,7 @@ export default function CustomerOrderStatus() {
 
               <div className="space-y-2">
                 {order.items.map(item => (
-                  <div key={`${order.id}-${item.finishedGoodCode}`} className="flex justify-between gap-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-sm">
+                  <div key={`${order.id}-${item.itemName}`} className="flex justify-between gap-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-sm">
                     <span className="font-bold text-[#2d2019]">{item.quantity} x {item.itemName}</span>
                     <span className="font-black text-[#5c4033]">{formatMoney(item.lineTotal)}</span>
                   </div>
@@ -271,7 +279,7 @@ export default function CustomerOrderStatus() {
               <div className="mt-4 space-y-2 border-t border-[#eadfd2] pt-3 text-sm">
                 <div className="flex justify-between"><span>Subtotal</span><span className="font-black">{formatMoney(order.subtotal)}</span></div>
                 <div className="flex justify-between"><span>GST</span><span className="font-black">{formatMoney(order.gstTotal)}</span></div>
-                <div className="flex justify-between text-lg font-black text-[#2d2019]"><span>Total</span><span>{formatMoney(order.grandTotal)}</span></div>
+                <div className="flex justify-between text-lg font-black text-[#2d2019]"><span>Total</span><span>{formatMoney(order.total)}</span></div>
               </div>
             </section>
 

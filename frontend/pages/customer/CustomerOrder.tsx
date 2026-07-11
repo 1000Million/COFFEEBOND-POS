@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CakeSlice,
@@ -25,6 +25,7 @@ import { db } from '../../lib/firebase';
 import { OnlineOrder, OnlineOrderItem, OnlineOrderType, Store } from '../../types';
 import { FinishedGood } from '../../types/menu-management';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
+import { buildInitialPublicTrackingDoc, buildPublicOrderReference, generateTrackingToken, publicTrackingDocRef } from '../../lib/publicOrderTracking';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
@@ -35,11 +36,16 @@ type CartLine = {
 
 type ConfirmationState = {
   id: string;
+  publicOrderReference: string;
   storeName: string;
   estimatedPrepMinutes?: number;
   storeMessage: string;
   customerName: string;
+  orderType: OnlineOrderType;
+  tableNumber?: string | null;
   items: OnlineOrderItem[];
+  subtotal: number;
+  gstTotal: number;
   total: number;
   status: OnlineOrder['status'];
 };
@@ -79,6 +85,8 @@ const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRa
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 const CATEGORY_ORDER = ['ALL', 'Coffee', 'Cold Coffee', 'Matcha & Tea', 'Food', 'Desserts', 'Add Ons'];
+const MAX_NOTE_LENGTH = 200;
+const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 
 function toNumber(value: unknown): number {
   if (value === null || value === undefined || value === '') return 0;
@@ -253,6 +261,35 @@ function formatMoney(value: number): string {
   return `₹${value.toFixed(2)}`;
 }
 
+function normalizeIndianPhone(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+  return digits;
+}
+
+function isValidIndianPhone(value: string): boolean {
+  return /^[6-9]\d{9}$/.test(normalizeIndianPhone(value));
+}
+
+function cartSignature(storeId: string, customerPhone: string, orderType: OnlineOrderType, tableNumber: string, cart: CartLine[]): string {
+  const cartParts = cart
+    .map(line => `${line.item.code}:${line.quantity}`)
+    .sort()
+    .join('|');
+  return [
+    storeId,
+    normalizeIndianPhone(customerPhone),
+    orderType,
+    orderType === 'DINE_IN' ? tableNumber.trim().toUpperCase() : 'PICKUP',
+    cartParts,
+  ].join('::');
+}
+
+function submissionLockKey(signature: string): string {
+  return `coffeeBondOnlineOrder:${signature}`;
+}
+
 export default function CustomerOrder() {
   const [stores, setStores] = useState<Store[]>([]);
   const [items, setItems] = useState<CustomerMenuItem[]>([]);
@@ -263,6 +300,7 @@ export default function CustomerOrder() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
+  const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
   const [publicAvailability, setPublicAvailability] = useState<PublicAvailabilitySnapshot | null>(null);
@@ -273,6 +311,7 @@ export default function CustomerOrder() {
   const [error, setError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -393,11 +432,13 @@ export default function CustomerOrder() {
   const visibleItems = useMemo(() => {
     const searchText = search.trim().toLowerCase();
     return storeItems.filter(item => {
+      const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
+      if (!availability.available) return false;
       const matchesCategory = category === 'ALL' || categoryGroupName(item) === category;
       const name = `${item.displayName || item.name} ${item.code} ${item.description || ''}`.toLowerCase();
       return matchesCategory && (!searchText || name.includes(searchText));
     });
-  }, [storeItems, category, search]);
+  }, [storeItems, itemAvailability, selectedStoreId, category, search]);
 
   const orderableItems = useMemo(() => {
     return storeItems.filter(item => (itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)).available);
@@ -425,6 +466,25 @@ export default function CustomerOrder() {
 
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
+  const handleStoreChange = (nextStoreId: string) => {
+    if (nextStoreId === selectedStoreId) return;
+    if (cart.length > 0) {
+      const shouldSwitch = window.confirm('Changing store will clear your current basket so prices and availability stay correct. Continue?');
+      if (!shouldSwitch) return;
+    }
+    setSelectedStoreId(nextStoreId);
+    setCart([]);
+    setCategory('ALL');
+    setSearch('');
+    setBasketOpen(false);
+    setError(null);
+  };
+
+  const handleOrderTypeChange = (nextType: OnlineOrderType) => {
+    setOrderType(nextType);
+    if (nextType !== 'DINE_IN') setTableNumber('');
+  };
+
   const setCartQuantity = (item: CustomerMenuItem, quantity: number) => {
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const currentQty = cart.find(line => line.item.code === item.code)?.quantity || 0;
@@ -445,23 +505,57 @@ export default function CustomerOrder() {
   };
 
   const submitOrder = async () => {
+    if (saving || submittingRef.current) return;
     if (!selectedStore) return setError('Please select a store.');
     if (!selectedStoreOnline) return setError(selectedStoreMessage);
     if (cart.length === 0) return setError('Please add at least one item.');
-    if (!customerName.trim()) return setError('Please enter your name.');
-    if (!customerPhone.trim()) return setError('Please enter your phone number.');
+    const cleanCustomerName = customerName.trim().replace(/\s+/g, ' ');
+    const cleanPhone = normalizeIndianPhone(customerPhone);
+    const cleanTableNumber = tableNumber.trim().replace(/\s+/g, ' ');
+    const cleanNotes = notes.trim().slice(0, MAX_NOTE_LENGTH);
+    if (!cleanCustomerName) return setError('Please enter your name.');
+    if (!isValidIndianPhone(customerPhone)) return setError('Please enter a valid 10-digit Indian mobile number.');
+    if (orderType === 'DINE_IN' && !cleanTableNumber) return setError('Please enter your table number for dine in.');
 
-    const blockedLine = cart.find(line => !(itemAvailability[line.item.code] || getItemAvailability(line.item, selectedStore.id)).available);
+    const blockedLine = cart.find(line => {
+      const currentItem = storeItems.find(item => item.code === line.item.code);
+      if (!currentItem) return true;
+      return !(itemAvailability[line.item.code] || getItemAvailability(currentItem, selectedStore.id)).available;
+    });
     if (blockedLine) {
-      const availability = itemAvailability[blockedLine.item.code] || getItemAvailability(blockedLine.item, selectedStore.id);
+      const currentItem = storeItems.find(item => item.code === blockedLine.item.code);
+      const availability = currentItem
+        ? itemAvailability[blockedLine.item.code] || getItemAvailability(currentItem, selectedStore.id)
+        : { available: false, reason: 'Currently unavailable', fromSnapshot: true };
       return setError(availability.fromSnapshot
         ? 'Some items are currently unavailable. Please remove them from your basket.'
         : `${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
     }
 
+    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, cart);
+    const lockKey = submissionLockKey(signature);
+    try {
+      const rawLock = window.localStorage.getItem(lockKey);
+      if (rawLock) {
+        const lock = JSON.parse(rawLock) as { createdAt?: number; trackingToken?: string; status?: string };
+        if (lock.createdAt && Date.now() - lock.createdAt < SUBMISSION_LOCK_TTL_MS) {
+          setError(lock.trackingToken
+            ? 'This order was just submitted. Please use the tracking link instead of sending it again.'
+            : 'This order is already being sent. Please wait a moment.');
+          return;
+        }
+      }
+      window.localStorage.setItem(lockKey, JSON.stringify({ createdAt: Date.now(), status: 'SENDING' }));
+    } catch {
+      // localStorage can be unavailable in private modes; the in-memory guard still prevents double taps.
+    }
+
+    submittingRef.current = true;
     setSaving(true);
     setError(null);
     try {
+      const trackingToken = generateTrackingToken();
+      const publicOrderReference = buildPublicOrderReference(trackingToken);
       const onlineItems: OnlineOrderItem[] = cart.map(line => {
         const rate = itemTaxRate(line.item, selectedStoreTaxRate);
         const unitPrice = toNumber(line.item.salePrice);
@@ -487,10 +581,11 @@ export default function CustomerOrder() {
       const payload: Omit<OnlineOrder, 'id'> = {
         storeId: selectedStore.id,
         storeName: selectedStore.name,
-        customerName: customerName.trim(),
-        customerPhone: customerPhone.trim(),
+        customerName: cleanCustomerName,
+        customerPhone: cleanPhone,
         orderType,
-        notes: notes.trim(),
+        ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : {}),
+        notes: cleanNotes,
         items: onlineItems,
         subtotal: totals.subtotal,
         taxableAmount: totals.taxableAmount,
@@ -498,34 +593,62 @@ export default function CustomerOrder() {
         grandTotal: totals.grandTotal,
         status: 'PENDING',
         source: 'CUSTOMER_WEB',
+        trackingToken,
+        publicOrderReference,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
-      const orderRef = await addDoc(collection(db, 'onlineOrders'), payload);
+      const orderRef = doc(collection(db, 'onlineOrders'));
+      const batch = writeBatch(db);
+      batch.set(orderRef, payload);
+      batch.set(publicTrackingDocRef(trackingToken), buildInitialPublicTrackingDoc({
+        onlineOrder: payload,
+        trackingToken,
+        publicOrderReference,
+      }));
+      await batch.commit();
+
       setConfirmation({
-        id: orderRef.id,
+        id: trackingToken,
+        publicOrderReference,
         storeName: selectedStore.name,
         estimatedPrepMinutes: selectedStore.estimatedPrepMinutes || 20,
         storeMessage: selectedStoreMessage,
         customerName: payload.customerName,
+        orderType,
+        tableNumber: payload.tableNumber,
         items: onlineItems,
+        subtotal: totals.subtotal,
+        gstTotal: totals.gstTotal,
         total: totals.grandTotal,
         status: 'PENDING',
       });
+      try {
+        window.localStorage.setItem(lockKey, JSON.stringify({ createdAt: Date.now(), status: 'SUBMITTED', trackingToken }));
+      } catch {
+        // Ignore lock persistence failures after a successful Firestore write.
+      }
       setCart([]);
       setNotes('');
+      setTableNumber('');
       setBasketOpen(false);
     } catch (err) {
       console.error('Failed to submit online order', err);
+      try {
+        window.localStorage.removeItem(lockKey);
+      } catch {
+        // Ignore localStorage cleanup failures.
+      }
       setError('We could not send your order request. Please try again or call the store.');
     } finally {
+      submittingRef.current = false;
       setSaving(false);
     }
   };
 
-  const copyTrackingLink = async (onlineOrderId: string) => {
-    const trackingUrl = `${window.location.origin}/order/status/${onlineOrderId}`;
+  const copyTrackingLink = async (trackingToken: string) => {
+    const trackingUrl = `${window.location.origin}/order/status/${trackingToken}`;
     try {
       await navigator.clipboard.writeText(trackingUrl);
       setCopyMessage('Tracking link copied.');
@@ -676,12 +799,35 @@ export default function CustomerOrder() {
 
           <div className="mt-4 space-y-3">
             <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-            <input value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Phone number" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-            <select value={orderType} onChange={(event) => setOrderType(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
-              <option value="PICKUP">Pickup</option>
+            <input
+              value={customerPhone}
+              onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
+              placeholder="10-digit mobile number"
+              inputMode="numeric"
+              autoComplete="tel"
+              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+            />
+            <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
+              <option value="PICKUP">Takeaway / pickup</option>
               <option value="DINE_IN">Dine in</option>
             </select>
-            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Pickup note for the store" rows={3} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+            {orderType === 'DINE_IN' && (
+              <input
+                value={tableNumber}
+                onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
+                placeholder="Table number"
+                className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+              />
+            )}
+            <textarea
+              value={notes}
+              onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
+              placeholder="Pickup note for the store"
+              rows={3}
+              maxLength={MAX_NOTE_LENGTH}
+              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+            />
+            <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
           </div>
 
           <button
@@ -719,7 +865,7 @@ export default function CustomerOrder() {
             <div className="mt-5 space-y-3 rounded-2xl bg-[#fbf5ee] p-4 text-left">
               <div>
                 <p className="text-xs font-bold text-neutral-500">Reference</p>
-                <p className="mt-1 break-all font-black text-[#2d2019]">{confirmation.id}</p>
+                <p className="mt-1 break-all font-black text-[#2d2019]">{confirmation.publicOrderReference}</p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-xl bg-white p-3">
@@ -731,9 +877,38 @@ export default function CustomerOrder() {
                   <p className="mt-1 font-black text-[#2d2019]">{prepWindowLabel(confirmation.estimatedPrepMinutes)}</p>
                 </div>
               </div>
-              <div className="flex justify-between rounded-xl bg-white p-3 text-sm">
-                <span className="font-bold text-neutral-600">Total</span>
-                <span className="font-black text-[#2d2019]">{formatMoney(confirmation.total)}</span>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-xl bg-white p-3">
+                  <p className="text-xs font-bold text-neutral-500">Customer</p>
+                  <p className="mt-1 font-black text-[#2d2019]">{confirmation.customerName}</p>
+                </div>
+                <div className="rounded-xl bg-white p-3">
+                  <p className="text-xs font-bold text-neutral-500">Order type</p>
+                  <p className="mt-1 font-black text-[#2d2019]">
+                    {confirmation.orderType === 'DINE_IN' ? `Dine in${confirmation.tableNumber ? ` · ${confirmation.tableNumber}` : ''}` : 'Takeaway'}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-xl bg-white p-3">
+                <p className="mb-2 text-xs font-bold text-neutral-500">Items</p>
+                <div className="space-y-2">
+                  {confirmation.items.map(item => (
+                    <div key={`${confirmation.id}-${item.finishedGoodCode}`} className="flex justify-between gap-3 text-sm">
+                      <span className="font-bold text-neutral-700">{item.quantity} x {item.itemName}</span>
+                      <span className="font-black text-[#2d2019]">{formatMoney(item.lineTotal)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-xl bg-white p-3 text-sm">
+                <div className="flex justify-between"><span className="font-bold text-neutral-600">Subtotal</span><span className="font-black text-[#2d2019]">{formatMoney(confirmation.subtotal)}</span></div>
+                <div className="mt-2 flex justify-between"><span className="font-bold text-neutral-600">GST</span><span className="font-black text-[#2d2019]">{formatMoney(confirmation.gstTotal)}</span></div>
+                <div className="mt-3 border-t border-[#ead8c7] pt-3 text-base font-black text-[#2d2019]">
+                  <div className="flex justify-between"><span>Total</span><span>{formatMoney(confirmation.total)}</span></div>
+                </div>
+              </div>
+              <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
+                Payment: Pay at counter after the store accepts your request.
               </div>
             </div>
 
@@ -794,11 +969,7 @@ export default function CustomerOrder() {
                   <StoreIcon size={16} className="text-[#9a6a45]" />
                   <select
                     value={selectedStoreId}
-                    onChange={(event) => {
-                      setSelectedStoreId(event.target.value);
-                      setCart([]);
-                      setCategory('ALL');
-                    }}
+                    onChange={(event) => handleStoreChange(event.target.value)}
                     className="max-w-[210px] appearance-none bg-transparent text-base font-black text-[#2d2019] outline-none"
                     aria-label="Select pickup store"
                   >
