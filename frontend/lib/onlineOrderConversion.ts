@@ -293,7 +293,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       paymentMethod: 'PAY_AT_COUNTER',
       paymentMethodLabel: 'PAY_AT_COUNTER',
       isSplitPayment: false,
-      paymentBreakdown: [{ method: 'PAY_AT_COUNTER', amount: grandTotal }],
+      paymentBreakdown: [{ method: 'PAY_AT_COUNTER', amount: 0 }],
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -370,8 +370,8 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const paymentRef = doc(collection(newOrderRef, 'payments'));
     const paymentData: OrderPayment = {
       method: 'PAY_AT_COUNTER',
-      amount: grandTotal,
-      reference: 'ONLINE_ORDER_REQUEST',
+      amount: 0,
+      reference: 'PAY_AT_COUNTER_PLACEHOLDER',
       paymentIndex: 0,
       createdAt: serverTimestamp(),
     };

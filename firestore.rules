@@ -285,7 +285,7 @@ service cloud.firestore {
     }
 
     match /onlineOrders/{onlineOrderId} {
-      allow create: if isValidPublicOnlineOrderCreate();
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
       allow get, list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       allow update: if isCheckoutStaff()
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
@@ -296,9 +296,8 @@ service cloud.firestore {
     match /publicOrderTracking/{trackingToken} {
       allow get: if true;
       allow list: if false;
-      allow create: if isSafePublicTrackingDocument(request.resource.data, trackingToken)
-        && request.resource.data.publicStatus == 'PENDING'
-        && !request.resource.data.keys().hasAny(['acceptedAt', 'readyAt', 'servedAt', 'publicOrderNumber']);
+      allow create: if isAdmin()
+        && isSafePublicTrackingDocument(request.resource.data, trackingToken);
       allow update: if isActiveStaff()
         && isSafePublicTrackingDocument(request.resource.data, trackingToken)
         && request.resource.data.trackingToken == resource.data.trackingToken

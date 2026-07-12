@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, getDoc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import {
   AlertCircle,
   CakeSlice,
@@ -21,11 +22,10 @@ import {
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { db } from '../../lib/firebase';
-import { OnlineOrder, OnlineOrderItem, OnlineOrderType, Store } from '../../types';
+import { db, functions } from '../../lib/firebase';
+import { OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { FinishedGood } from '../../types/menu-management';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
-import { buildInitialPublicTrackingDoc, buildPublicOrderReference, generateTrackingToken, publicTrackingDocRef } from '../../lib/publicOrderTracking';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
@@ -43,11 +43,11 @@ type ConfirmationState = {
   customerName: string;
   orderType: OnlineOrderType;
   tableNumber?: string | null;
-  items: OnlineOrderItem[];
+  items: PublicOrderTrackingItem[];
   subtotal: number;
   gstTotal: number;
   total: number;
-  status: OnlineOrder['status'];
+  status: PublicOrderStatus;
 };
 
 type GstConfig = {
@@ -80,6 +80,48 @@ type PublicAvailabilitySnapshot = {
   items?: Record<string, PublicAvailabilityItem>;
   menuItems?: Record<string, CustomerMenuItem>;
 };
+
+type SubmissionLock = {
+  createdAt?: number;
+  clientIdempotencyKey?: string;
+  trackingToken?: string;
+  status?: 'SENDING' | 'SUBMITTED';
+};
+
+type SubmitCustomerOrderRequest = {
+  storeCode: string;
+  customerName: string;
+  customerPhone: string;
+  orderType: OnlineOrderType;
+  tableNumber?: string | null;
+  notes: string;
+  items: Array<{
+    itemCode: string;
+    quantity: number;
+  }>;
+  clientIdempotencyKey: string;
+};
+
+type SubmitCustomerOrderResponse = {
+  trackingToken: string;
+  publicOrderReference: string;
+  storeName: string;
+  orderType: OnlineOrderType;
+  tableNumber?: string | null;
+  items: PublicOrderTrackingItem[];
+  subtotal: number;
+  gstTotal: number;
+  total: number;
+  status: PublicOrderStatus;
+  customerStatusMessage: string;
+  estimatedPrepMinutes?: number;
+  storeMessage: string;
+};
+
+const submitCustomerOrderCallable = httpsCallable<SubmitCustomerOrderRequest, SubmitCustomerOrderResponse>(
+  functions,
+  'submitCustomerOrder',
+);
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
@@ -288,6 +330,28 @@ function cartSignature(storeId: string, customerPhone: string, orderType: Online
 
 function submissionLockKey(signature: string): string {
   return `coffeeBondOnlineOrder:${signature}`;
+}
+
+function createClientIdempotencyKey(): string {
+  if (globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function customerSubmitErrorMessage(err: unknown): string {
+  const error = err as { code?: string; message?: string };
+  const code = error?.code || '';
+  const message = error?.message || '';
+  if (code.includes('invalid-argument') || code.includes('failed-precondition') || code.includes('already-exists')) {
+    return message || 'Please review your order details and try again.';
+  }
+  if (code.includes('unavailable') || code.includes('deadline-exceeded')) {
+    return 'The store connection is busy right now. Please try again in a moment.';
+  }
+  return 'We could not send your order request. Please try again or call the store.';
 }
 
 export default function CustomerOrder() {
@@ -534,18 +598,22 @@ export default function CustomerOrder() {
 
     const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, cart);
     const lockKey = submissionLockKey(signature);
+    let clientIdempotencyKey = createClientIdempotencyKey();
     try {
       const rawLock = window.localStorage.getItem(lockKey);
       if (rawLock) {
-        const lock = JSON.parse(rawLock) as { createdAt?: number; trackingToken?: string; status?: string };
+        const lock = JSON.parse(rawLock) as SubmissionLock;
         if (lock.createdAt && Date.now() - lock.createdAt < SUBMISSION_LOCK_TTL_MS) {
-          setError(lock.trackingToken
-            ? 'This order was just submitted. Please use the tracking link instead of sending it again.'
-            : 'This order is already being sent. Please wait a moment.');
-          return;
+          if (lock.trackingToken) {
+            setError('This order was just submitted. Please use the tracking link instead of sending it again.');
+            return;
+          }
+          if (lock.clientIdempotencyKey) {
+            clientIdempotencyKey = lock.clientIdempotencyKey;
+          }
         }
       }
-      window.localStorage.setItem(lockKey, JSON.stringify({ createdAt: Date.now(), status: 'SENDING' }));
+      window.localStorage.setItem(lockKey, JSON.stringify({ createdAt: Date.now(), status: 'SENDING', clientIdempotencyKey }));
     } catch {
       // localStorage can be unavailable in private modes; the in-memory guard still prevents double taps.
     }
@@ -554,93 +622,50 @@ export default function CustomerOrder() {
     setSaving(true);
     setError(null);
     try {
-      const trackingToken = generateTrackingToken();
-      const publicOrderReference = buildPublicOrderReference(trackingToken);
-      const onlineItems: OnlineOrderItem[] = cart.map(line => {
-        const rate = itemTaxRate(line.item, selectedStoreTaxRate);
-        const unitPrice = toNumber(line.item.salePrice);
-        const lineSubtotal = unitPrice * line.quantity;
-        const lineTax = lineSubtotal * rate / 100;
-        return {
-          finishedGoodCode: line.item.code,
-          itemName: line.item.displayName || line.item.name,
-          categoryId: line.item.posCategoryCode || 'MISC',
-          categoryName: line.item.posCategoryName || 'Other',
-          quantity: line.quantity,
-          unitPrice,
-          taxRate: rate,
-          lineSubtotal,
-          lineTaxable: lineSubtotal,
-          lineTax,
-          lineTotal: lineSubtotal + lineTax,
-          prepStation: line.item.prepStation,
-          itemType: line.item.itemType,
-        };
-      });
-
-      const payload: Omit<OnlineOrder, 'id'> = {
-        storeId: selectedStore.id,
-        storeName: selectedStore.name,
+      const result = await submitCustomerOrderCallable({
+        storeCode: selectedStore.code,
         customerName: cleanCustomerName,
         customerPhone: cleanPhone,
         orderType,
-        ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : {}),
+        ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : { tableNumber: null }),
         notes: cleanNotes,
-        items: onlineItems,
-        subtotal: totals.subtotal,
-        taxableAmount: totals.taxableAmount,
-        gstTotal: totals.gstTotal,
-        grandTotal: totals.grandTotal,
-        status: 'PENDING',
-        source: 'CUSTOMER_WEB',
-        trackingToken,
-        publicOrderReference,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-
-      const orderRef = doc(collection(db, 'onlineOrders'));
-      const batch = writeBatch(db);
-      batch.set(orderRef, payload);
-      batch.set(publicTrackingDocRef(trackingToken), buildInitialPublicTrackingDoc({
-        onlineOrder: payload,
-        trackingToken,
-        publicOrderReference,
-      }));
-      await batch.commit();
+        items: cart.map(line => ({ itemCode: line.item.code, quantity: line.quantity })),
+        clientIdempotencyKey,
+      });
+      const submittedOrder = result.data;
 
       setConfirmation({
-        id: trackingToken,
-        publicOrderReference,
-        storeName: selectedStore.name,
-        estimatedPrepMinutes: selectedStore.estimatedPrepMinutes || 20,
-        storeMessage: selectedStoreMessage,
-        customerName: payload.customerName,
-        orderType,
-        tableNumber: payload.tableNumber,
-        items: onlineItems,
-        subtotal: totals.subtotal,
-        gstTotal: totals.gstTotal,
-        total: totals.grandTotal,
-        status: 'PENDING',
+        id: submittedOrder.trackingToken,
+        publicOrderReference: submittedOrder.publicOrderReference,
+        storeName: submittedOrder.storeName,
+        estimatedPrepMinutes: submittedOrder.estimatedPrepMinutes || selectedStore.estimatedPrepMinutes || 20,
+        storeMessage: submittedOrder.storeMessage || selectedStoreMessage,
+        customerName: cleanCustomerName,
+        orderType: submittedOrder.orderType,
+        tableNumber: submittedOrder.tableNumber,
+        items: submittedOrder.items,
+        subtotal: submittedOrder.subtotal,
+        gstTotal: submittedOrder.gstTotal,
+        total: submittedOrder.total,
+        status: submittedOrder.status,
       });
       try {
-        window.localStorage.setItem(lockKey, JSON.stringify({ createdAt: Date.now(), status: 'SUBMITTED', trackingToken }));
+        window.localStorage.setItem(lockKey, JSON.stringify({
+          createdAt: Date.now(),
+          status: 'SUBMITTED',
+          trackingToken: submittedOrder.trackingToken,
+          clientIdempotencyKey,
+        }));
       } catch {
-        // Ignore lock persistence failures after a successful Firestore write.
+        // Ignore lock persistence failures after a successful server submission.
       }
       setCart([]);
       setNotes('');
       setTableNumber('');
       setBasketOpen(false);
     } catch (err) {
-      console.error('Failed to submit online order', err);
-      try {
-        window.localStorage.removeItem(lockKey);
-      } catch {
-        // Ignore localStorage cleanup failures.
-      }
-      setError('We could not send your order request. Please try again or call the store.');
+      if (import.meta.env.DEV) console.error('Failed to submit online order', err);
+      setError(customerSubmitErrorMessage(err));
     } finally {
       submittingRef.current = false;
       setSaving(false);
@@ -747,7 +772,9 @@ export default function CustomerOrder() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-black text-[#2d2019]">Your basket</h2>
-          <p className="text-sm font-medium text-neutral-500">{itemCount} item{itemCount === 1 ? '' : 's'} for pickup</p>
+          <p className="text-sm font-medium text-neutral-500">
+            {itemCount} item{itemCount === 1 ? '' : 's'} for {orderType === 'DINE_IN' ? 'dine in' : 'pickup'}
+          </p>
         </div>
         <button onClick={() => setBasketOpen(false)} className="rounded-full bg-[#f8efe6] p-2 text-[#5c4033] lg:hidden">
           <X size={18} />
@@ -822,7 +849,7 @@ export default function CustomerOrder() {
             <textarea
               value={notes}
               onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
-              placeholder="Pickup note for the store"
+              placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
               rows={3}
               maxLength={MAX_NOTE_LENGTH}
               className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
@@ -892,8 +919,8 @@ export default function CustomerOrder() {
               <div className="rounded-xl bg-white p-3">
                 <p className="mb-2 text-xs font-bold text-neutral-500">Items</p>
                 <div className="space-y-2">
-                  {confirmation.items.map(item => (
-                    <div key={`${confirmation.id}-${item.finishedGoodCode}`} className="flex justify-between gap-3 text-sm">
+                  {confirmation.items.map((item, index) => (
+                    <div key={`${confirmation.id}-${index}-${item.itemName}`} className="flex justify-between gap-3 text-sm">
                       <span className="font-bold text-neutral-700">{item.quantity} x {item.itemName}</span>
                       <span className="font-black text-[#2d2019]">{formatMoney(item.lineTotal)}</span>
                     </div>
@@ -964,7 +991,7 @@ export default function CustomerOrder() {
           <section className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-[#eadfd2]">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-bold text-neutral-500">Pickup from</p>
+                <p className="text-xs font-bold text-neutral-500">{orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}</p>
                 <label className="mt-1 flex items-center gap-2">
                   <StoreIcon size={16} className="text-[#9a6a45]" />
                   <select
@@ -991,10 +1018,12 @@ export default function CustomerOrder() {
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fbf5ee] px-3 py-1.5 text-xs font-bold text-[#5c4033]">
                 <Clock size={13} />
-                Pickup
+                {orderType === 'DINE_IN' ? 'Dine in' : 'Pickup'}
               </span>
             </div>
-            <p className="mt-3 text-sm leading-relaxed text-neutral-600">{selectedStoreMessage}</p>
+            <p className="mt-3 text-sm leading-relaxed text-neutral-600">
+              {orderType === 'DINE_IN' ? 'Your table order will be sent after store confirmation.' : selectedStoreMessage}
+            </p>
             {availabilityLoading ? (
               <p className="mt-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-xs font-bold text-[#7b5a42]">
                 Checking item availability...

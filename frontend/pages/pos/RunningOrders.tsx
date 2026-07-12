@@ -66,6 +66,11 @@ type StockMovementDoc = {
   stockItemCode?: string;
 };
 
+type SettlementRow = {
+  method: PaymentMethod | '';
+  amount: string;
+};
+
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
 const FILTER_TABS: { id: RunningTab; label: string }[] = [
   { id: 'ALL', label: 'All' },
@@ -149,6 +154,10 @@ function isPayAtCounter(order: Order, payments: OrderPayment[]): boolean {
   return order.paymentMethod === 'PAY_AT_COUNTER'
     || (order.paymentBreakdown || []).some(payment => payment.method === 'PAY_AT_COUNTER')
     || payments.some(payment => payment.method === 'PAY_AT_COUNTER');
+}
+
+function settledTenderRows(payments: OrderPayment[]): OrderPayment[] {
+  return payments.filter(payment => payment.method !== 'PAY_AT_COUNTER' && money(payment.amount) > 0);
 }
 
 function sourceLabel(order: Order): 'CUSTOMER_WEB' | 'POS' {
@@ -263,9 +272,10 @@ export default function RunningOrders() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBundle, setSelectedBundle] = useState<OrderBundle | null>(null);
   const [settleBundle, setSettleBundle] = useState<OrderBundle | null>(null);
-  const [settleMethod, setSettleMethod] = useState<PaymentMethod>('CASH');
-  const [settleRows, setSettleRows] = useState<Array<{ method: PaymentMethod; amount: string }>>([{ method: 'CASH', amount: '' }]);
+  const [settleMethod, setSettleMethod] = useState<PaymentMethod | ''>('');
+  const [settleRows, setSettleRows] = useState<SettlementRow[]>([{ method: '', amount: '' }]);
   const [isSplitSettlement, setIsSplitSettlement] = useState(false);
+  const [cashReceived, setCashReceived] = useState('');
   const [settling, setSettling] = useState(false);
   const [voidBundle, setVoidBundle] = useState<OrderBundle | null>(null);
   const [voidReason, setVoidReason] = useState('');
@@ -433,22 +443,42 @@ export default function RunningOrders() {
   }, [bundles]);
 
   const openSettleModal = (bundle: OrderBundle) => {
-    const amount = money(bundle.order.grandTotal).toFixed(2);
     setSettleBundle(bundle);
-    setSettleMethod('CASH');
+    setSettleMethod('');
     setIsSplitSettlement(false);
-    setSettleRows([{ method: 'CASH', amount }]);
+    setSettleRows([{ method: '', amount: '' }]);
+    setCashReceived('');
+    setError('');
+    setSuccess('');
   };
 
-  const settlementRows = isSplitSettlement
-    ? settleRows
-    : [{ method: settleMethod, amount: settleBundle ? money(settleBundle.order.grandTotal).toFixed(2) : '0' }];
-  const settlementTotal = settlementRows.reduce((sum, row) => sum + money(row.amount), 0);
+  const settlementAlreadyPaid = settleBundle
+    ? settledTenderRows(settleBundle.payments).reduce((sum, payment) => sum + money(payment.amount), 0)
+    : 0;
   const settlementDue = money(settleBundle?.order.grandTotal);
-  const settlementBalance = settlementDue - settlementTotal;
-  const settlementReady = settleBundle
+  const settlementOutstanding = Math.max(0, Number((settlementDue - settlementAlreadyPaid).toFixed(2)));
+  const proposedSettlementRows: SettlementRow[] = isSplitSettlement
+    ? settleRows
+    : settleMethod
+      ? [{ method: settleMethod, amount: settlementOutstanding.toFixed(2) }]
+      : [];
+  const settlementTotal = proposedSettlementRows.reduce((sum, row) => sum + money(row.amount), 0);
+  const settlementBalance = settlementOutstanding - settlementTotal;
+  const cashReceivedAmount = settleMethod === 'CASH' && cashReceived.trim()
+    ? money(cashReceived)
+    : settlementOutstanding;
+  const cashChangeDue = settleMethod === 'CASH'
+    ? Math.max(0, cashReceivedAmount - settlementOutstanding)
+    : 0;
+  const cashReceivedValid = settleMethod !== 'CASH'
+    || !cashReceived.trim()
+    || cashReceivedAmount + 0.01 >= settlementOutstanding;
+  const settlementReady = !!settleBundle
+    && settlementOutstanding > 0
     && Math.abs(settlementBalance) <= 0.01
-    && settlementRows.every(row => money(row.amount) >= 0 && row.method !== 'PAY_AT_COUNTER');
+    && proposedSettlementRows.length > 0
+    && proposedSettlementRows.every(row => row.method && row.method !== 'PAY_AT_COUNTER' && money(row.amount) > 0)
+    && cashReceivedValid;
 
   const settlePayment = async () => {
     if (!settleBundle?.order.id || !staffProfile || !settlementReady) return;
@@ -457,47 +487,71 @@ export default function RunningOrders() {
       return;
     }
 
+    const cleanRows = proposedSettlementRows.map((row, index) => {
+      if (!row.method) throw new Error('Select a payment method before settling.');
+      return {
+        method: row.method,
+        amount: Number(money(row.amount).toFixed(2)),
+        reference: null,
+        paymentIndex: settledTenderRows(settleBundle.payments).length + index,
+        createdAt: serverTimestamp(),
+        settledBy: staffProfile.uid,
+        settledByName: staffProfile.displayName || staffProfile.name,
+        ...(row.method === 'CASH' && !isSplitSettlement ? {
+          amountReceived: Number(cashReceivedAmount.toFixed(2)),
+          changeDue: Number(cashChangeDue.toFixed(2)),
+        } : {}),
+      };
+    });
+    const existingPaidRows = settledTenderRows(settleBundle.payments).map(payment => ({
+      method: payment.method,
+      amount: Number(money(payment.amount).toFixed(2)),
+    }));
+    const nextBreakdown = [
+      ...existingPaidRows,
+      ...cleanRows.map(row => ({ method: row.method, amount: row.amount })),
+    ];
+
     setSettling(true);
     setError('');
     setSuccess('');
     try {
       const orderRef = doc(db, 'orders', settleBundle.order.id);
-      const batch = writeBatch(db);
-      const cleanRows = settlementRows.map((row, index) => ({
-        method: row.method,
-        amount: Number(money(row.amount).toFixed(2)),
-        reference: null,
-        paymentIndex: index,
-        createdAt: serverTimestamp(),
-      }));
+      await runTransaction(db, async transaction => {
+        const freshOrderSnap = await transaction.get(orderRef);
+        if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
+        const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
+        if (effectiveOrderStatus(freshOrder) === 'VOIDED') throw new Error('Voided orders cannot be settled.');
+        if (freshOrder.paymentStatus === 'PAID') throw new Error('This order is already settled.');
 
-      settleBundle.payments.forEach(payment => {
-        if (payment.id) batch.update(doc(db, 'orders', settleBundle.order.id!, 'payments', payment.id), {
-          amount: 0,
-          reference: payment.reference || null,
+        settleBundle.payments.forEach(payment => {
+          if (payment.id && payment.method === 'PAY_AT_COUNTER') {
+            transaction.update(doc(db, 'orders', settleBundle.order.id!, 'payments', payment.id), {
+              amount: 0,
+              reference: payment.reference || 'PAY_AT_COUNTER_PLACEHOLDER',
+            });
+          }
+        });
+
+        cleanRows.forEach(row => {
+          const paymentRef = doc(collection(db, 'orders', settleBundle.order.id!, 'payments'));
+          transaction.set(paymentRef, row);
+        });
+
+        transaction.update(orderRef, {
+          paymentStatus: 'PAID',
+          paymentMethod: nextBreakdown[0]?.method || cleanRows[0].method,
+          isSplitPayment: nextBreakdown.length > 1,
+          paymentMethodLabel: nextBreakdown.length > 1
+            ? nextBreakdown.map(row => `${row.method} ₹${row.amount.toFixed(2)}`).join(' + ')
+            : nextBreakdown[0]?.method || cleanRows[0].method,
+          paymentBreakdown: nextBreakdown,
+          settledAt: serverTimestamp(),
+          settledBy: staffProfile.uid,
+          settledByName: staffProfile.displayName || staffProfile.name,
+          updatedAt: serverTimestamp(),
         });
       });
-
-      cleanRows.forEach(row => {
-        const paymentRef = doc(collection(db, 'orders', settleBundle.order.id!, 'payments'));
-        batch.set(paymentRef, row);
-      });
-
-      batch.update(orderRef, {
-        paymentStatus: 'PAID',
-        paymentMethod: cleanRows[0]?.method || 'CASH',
-        isSplitPayment: cleanRows.length > 1,
-        paymentMethodLabel: cleanRows.length > 1
-          ? cleanRows.map(row => `${row.method} ₹${row.amount.toFixed(2)}`).join(' + ')
-          : cleanRows[0]?.method || 'CASH',
-        paymentBreakdown: cleanRows.map(row => ({ method: row.method, amount: row.amount })),
-        settledAt: serverTimestamp(),
-        settledBy: staffProfile.uid,
-        settledByName: staffProfile.displayName || staffProfile.name,
-        updatedAt: serverTimestamp(),
-      });
-
-      await batch.commit();
       setSuccess(`Settled ${settleBundle.order.orderNumber} without changing KOT or stock.`);
       setSettleBundle(null);
       await loadOrders();
@@ -889,9 +943,12 @@ export default function RunningOrders() {
                 <input
                   type="checkbox"
                   checked={isSplitSettlement}
+                  disabled={settling}
                   onChange={event => {
                     setIsSplitSettlement(event.target.checked);
-                    setSettleRows([{ method: 'CASH', amount: settlementDue.toFixed(2) }]);
+                    setSettleMethod('');
+                    setCashReceived('');
+                    setSettleRows([{ method: '', amount: settlementOutstanding.toFixed(2) }]);
                   }}
                 />
                 Split payment
@@ -904,8 +961,10 @@ export default function RunningOrders() {
                       <select
                         value={row.method}
                         onChange={event => setSettleRows(prev => prev.map((item, itemIndex) => itemIndex === index ? { ...item, method: event.target.value as PaymentMethod } : item))}
+                        disabled={settling}
                         className="rounded-xl border border-neutral-200 px-3 py-2 text-sm font-bold"
                       >
+                        <option value="">Select method...</option>
                         {PAYMENT_METHODS.map(method => <option key={method} value={method}>{method}</option>)}
                       </select>
                       <input
@@ -914,11 +973,12 @@ export default function RunningOrders() {
                         step="0.01"
                         value={row.amount}
                         onChange={event => setSettleRows(prev => prev.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))}
+                        disabled={settling}
                         className="rounded-xl border border-neutral-200 px-3 py-2 text-sm font-bold"
                       />
                       <button
                         onClick={() => setSettleRows(prev => prev.filter((_, itemIndex) => itemIndex !== index))}
-                        disabled={settleRows.length === 1}
+                        disabled={settleRows.length === 1 || settling}
                         className="rounded-xl border border-neutral-200 px-3 py-2 text-sm font-black text-neutral-600 disabled:opacity-40"
                       >
                         Remove
@@ -926,7 +986,8 @@ export default function RunningOrders() {
                     </div>
                   ))}
                   <button
-                    onClick={() => setSettleRows(prev => [...prev, { method: 'UPI', amount: Math.max(0, settlementBalance).toFixed(2) }])}
+                    onClick={() => setSettleRows(prev => [...prev, { method: '', amount: Math.max(0, settlementBalance).toFixed(2) }])}
+                    disabled={settling}
                     className="rounded-xl border border-neutral-200 px-3 py-2 text-sm font-black text-neutral-700"
                   >
                     Add Payment Row
@@ -938,17 +999,46 @@ export default function RunningOrders() {
                   <select
                     value={settleMethod}
                     onChange={event => setSettleMethod(event.target.value as PaymentMethod)}
+                    disabled={settling}
                     className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm font-black"
                   >
+                    <option value="">Select payment method...</option>
                     {PAYMENT_METHODS.map(method => <option key={method} value={method}>{method}</option>)}
                   </select>
                 </label>
               )}
 
+              {!isSplitSettlement && settleMethod === 'CASH' && (
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Cash received optional</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cashReceived}
+                    onChange={event => setCashReceived(event.target.value)}
+                    disabled={settling}
+                    placeholder={settlementOutstanding.toFixed(2)}
+                    className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm font-black"
+                  />
+                  {!cashReceivedValid && (
+                    <span className="mt-1 block text-xs font-bold text-red-700">Cash received must cover the outstanding amount.</span>
+                  )}
+                </label>
+              )}
+
               <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm">
                 <Row label="Total due" value={formatMoney(settlementDue)} />
+                <Row label="Already paid" value={formatMoney(settlementAlreadyPaid)} />
+                <Row label="Outstanding" value={formatMoney(settlementOutstanding)} bold />
                 <Row label="Allocated" value={formatMoney(settlementTotal)} />
                 <Row label="Balance" value={formatMoney(settlementBalance)} bold tone={Math.abs(settlementBalance) <= 0.01 ? 'text-emerald-700' : 'text-red-700'} />
+                {!isSplitSettlement && settleMethod === 'CASH' && (
+                  <>
+                    <Row label="Cash received" value={formatMoney(cashReceivedAmount)} />
+                    <Row label="Change due" value={formatMoney(cashChangeDue)} bold />
+                  </>
+                )}
               </div>
 
               <button
@@ -957,7 +1047,7 @@ export default function RunningOrders() {
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#5c4033] px-4 py-3 font-black text-white disabled:bg-neutral-200 disabled:text-neutral-500"
               >
                 {settling ? <Loader2 size={18} className="animate-spin" /> : <Banknote size={18} />}
-                Settle Payment
+                Confirm Payment
               </button>
             </div>
           </div>
