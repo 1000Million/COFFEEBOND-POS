@@ -6,6 +6,7 @@ import {
   ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench, PackagePlus
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { APP_BUILD_TIME, APP_ENVIRONMENT, APP_VERSION, FIREBASE_PROJECT_ID } from '../../lib/appVersion';
 
 export default function AdminHome() {
   const [showHistoricalTools, setShowHistoricalTools] = useState(false);
@@ -253,6 +254,43 @@ export default function AdminHome() {
           </motion.div>
         </motion.div>
       </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+        className="mb-10 rounded-3xl border border-emerald-100 bg-emerald-50/60 p-5"
+      >
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-emerald-700 shadow-sm">
+              <ShieldCheck size={20} />
+            </div>
+            <div>
+              <h3 className="font-bold text-neutral-800">Production Diagnostics</h3>
+              <p className="text-sm text-neutral-600">Use this before go-live to confirm the browser is on the expected Firebase project and build.</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs md:min-w-[360px]">
+            <div className="rounded-2xl bg-white px-3 py-2 shadow-sm">
+              <p className="font-semibold uppercase tracking-wide text-neutral-400">Project</p>
+              <p className="mt-1 break-words font-bold text-neutral-800">{FIREBASE_PROJECT_ID}</p>
+            </div>
+            <div className="rounded-2xl bg-white px-3 py-2 shadow-sm">
+              <p className="font-semibold uppercase tracking-wide text-neutral-400">Version</p>
+              <p className="mt-1 font-bold text-neutral-800">{APP_VERSION}</p>
+            </div>
+            <div className="rounded-2xl bg-white px-3 py-2 shadow-sm">
+              <p className="font-semibold uppercase tracking-wide text-neutral-400">Environment</p>
+              <p className="mt-1 font-bold text-neutral-800">{APP_ENVIRONMENT}</p>
+            </div>
+            <div className="rounded-2xl bg-white px-3 py-2 shadow-sm">
+              <p className="font-semibold uppercase tracking-wide text-neutral-400">Build</p>
+              <p className="mt-1 break-words font-bold text-neutral-800">{APP_BUILD_TIME}</p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
 
       {/* Historical Setup Tools Overlay */}
       <motion.div 

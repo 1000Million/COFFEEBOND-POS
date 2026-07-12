@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "tsc --noEmit",
+    "deploy:preview": "npm run build && firebase hosting:channel:deploy go-live-preview --project coffee-bond-pos --expires 7d",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting --project coffee-bond-pos",
     "provision:go-live-users": "node scripts/provision-go-live-users.mjs"
   },
   "dependencies": {

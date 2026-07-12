@@ -10,6 +10,7 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import EntryRedirect from './components/EntryRedirect';
 import AppLoading from './components/AppLoading';
+import ConnectionStatusBanner from './components/ConnectionStatusBanner';
 import MissingProfile from './pages/MissingProfile';
 import InactiveProfile from './pages/InactiveProfile';
 import CustomerOrder from './pages/customer/CustomerOrder';
@@ -79,6 +80,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <ConnectionStatusBanner />
         <Routes>
           <Route path="/order" element={<CustomerOrder />} />
           <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
@@ -122,6 +124,7 @@ export default function App() {
                 <Route path="/reports" element={<ReportsHome />} />
                 <Route path="/reports/day-close" element={<DayClose />} />
                 <Route path="/reports/audit-control" element={<AuditControl />} />
+                <Route path="/inventory" element={<Navigate to="/inventory/control" replace />} />
                 <Route path="/inventory/control" element={<InventoryControl />} />
                 <Route path="/inventory/stock-correction" element={<StockCorrection />} />
                 <Route path="/inventory/purchase-entry" element={<PurchaseEntry />} />
