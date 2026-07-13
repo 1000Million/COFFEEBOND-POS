@@ -1,0 +1,703 @@
+{
+  "version": 4,
+  "phase": "PHASE_11A_3_1",
+  "description": "Owner-approved kitchen BOM component mappings with explicit replacement outputs, stable workbook IDs, split-line corrections, unit overrides, and planned raw material setup records.",
+  "mappings": [
+    {
+      "componentName": "Avocado Slice",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "AVOCADO",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Slice descriptor only; quantity is already in grams."
+    },
+    {
+      "componentName": "Basil Leaves",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BASIL",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Leaf descriptor maps to existing Basil master."
+    },
+    {
+      "componentName": "Cherry Tomato",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "CHERRY_TOMATOES",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Singular/plural spelling alias."
+    },
+    {
+      "componentName": "Chia Seed",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "CHIA_SEEDS",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Singular/plural spelling alias."
+    },
+    {
+      "componentName": "Eggs",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "EGG",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Plural spelling alias."
+    },
+    {
+      "componentName": "Frozen Blueberry",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BLUEBERRY_FROZEN",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Word-order alias for existing frozen blueberry master."
+    },
+    {
+      "componentName": "Garli",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "GARLIC",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Workbook typo for Garlic."
+    },
+    {
+      "componentName": "Granola",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "HOUSE_GRANOLA",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Workbook generic granola maps to existing House Granola master."
+    },
+    {
+      "componentName": "Hen Fruit Eggs",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "EGG",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Operational egg naming alias."
+    },
+    {
+      "componentName": "Mozzarella Chesse",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "MOZZARELLA_CHEESE",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Workbook typo for Mozzarella Cheese."
+    },
+    {
+      "componentName": "Sushi Rice(uncooked)",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SUSHI_RICE",
+      "mappingSource": "DETERMINISTIC_ALIAS",
+      "approvalStatus": "APPROVED_DETERMINISTIC",
+      "notes": "Uncooked descriptor matches existing Sushi Rice master."
+    },
+    {
+      "componentName": "Sourdough Bread",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SOURDOUGH_BREAD",
+      "uomOverride": "PCS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 1 SLICE = 1 PCS."
+    },
+    {
+      "componentName": "Sourdough",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SOURDOUGH_BREAD",
+      "uomOverride": "PCS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 1 SLICE = 1 PCS."
+    },
+    {
+      "componentName": "Sour Dough Bread",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SOURDOUGH_BREAD",
+      "uomOverride": "PCS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 1 SLICE = 1 PCS."
+    },
+    {
+      "componentName": "Sourdough Slice",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SOURDOUGH_BREAD",
+      "uomOverride": "PCS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 1 SLICE = 1 PCS."
+    },
+    {
+      "componentName": "Maple Syrup",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "MAPLE_SYRUP",
+      "quantityOverride": 40,
+      "uomOverride": "ML",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved correction: workbook 40 G should be 40 ML."
+    },
+    {
+      "componentName": "Lemon Slice",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Do not map to whole Lemon. Owner-approved setup item tracked in slices.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "LEMON_SLICE",
+          "targetName": "Lemon Slice",
+          "quantity": 1,
+          "unit": "SLICE",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Replace workbook 5 ML line with 1 SLICE"
+        }
+      ]
+    },
+    {
+      "componentName": "Milk Bread",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "MILK_BREAD_SLICE",
+      "uomOverride": "SLICE",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved new raw material tracked as individual slices."
+    },
+    {
+      "componentName": "Pepper",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved Pepper to Black Pepper mapping.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-014",
+          "targetName": "Black Pepper",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Pepper means Black Pepper"
+        }
+      ]
+    },
+    {
+      "componentName": "Red Lettuce",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved mapping to workbook raw material Lollo Rosso.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-045",
+          "targetName": "Lollo Rosso",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Red Lettuce means Lollo Rosso"
+        }
+      ]
+    },
+    {
+      "componentName": "Peanut Crush Garnish",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved garnish quantity tracked as peanut consumption.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-057",
+          "targetName": "Peanut",
+          "quantity": 5,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Peanut Crush Garnish consumes Peanut 5 G"
+        }
+      ]
+    },
+    {
+      "componentName": "Dill Leaf",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 1 sprig = 1 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-032",
+          "targetName": "Dill Leaf",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "1 sprig = 1 G"
+        }
+      ]
+    },
+    {
+      "componentName": "Clove",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved conversion: 5 cloves = 1 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-024",
+          "targetName": "Clove",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "5 cloves = 1 G"
+        }
+      ]
+    },
+    {
+      "componentName": "Spinach Handful",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SPINACH",
+      "quantityOverride": 15,
+      "uomOverride": "G",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Approved mapping to raw Spinach with 15 G quantity."
+    },
+    {
+      "componentName": "Soya",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "SOYA_CHUNKS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner confirmed exact raw ingredient is Soya Chunks."
+    },
+    {
+      "componentName": "Apple",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "APPLE",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Orange",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "ORANGE",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material. Does not map to Orange Juice."
+    },
+    {
+      "componentName": "Pumpkin Seed",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "PUMPKIN_SEEDS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Pumpkin Seeds",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "PUMPKIN_SEEDS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Rocket Leave",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "ROCKET_LEAVES",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Micro Green",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "MICROGREENS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Microgreen",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "MICROGREENS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Edible Flower",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "EDIBLE_FLOWERS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material tracked in PCS."
+    },
+    {
+      "componentName": "Edible Flowers",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "EDIBLE_FLOWERS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material tracked in PCS."
+    },
+    {
+      "componentName": "Cream Cheese",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "CREAM_CHEESE",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Bocconcini",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BOCCONCINI",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Bocconcini Cheese",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BOCCONCINI",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Black Olives",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BLACK_OLIVES",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Black Sesame Seeds.",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "BLACK_SESAME_SEEDS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Roasted Seasme Seed",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "ROASTED_SESAME_SEEDS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material. Workbook spelling retained for alias."
+    },
+    {
+      "componentName": "Green Peas",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "GREEN_PEAS",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Coconut Sugar",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "COCONUT_SUGAR",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material."
+    },
+    {
+      "componentName": "Garlic Powder",
+      "targetType": "RAW_INGREDIENT",
+      "targetCode": "GARLIC_POWDER",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_2",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Owner-approved new raw material. Does not map to fresh Garlic."
+    },
+    {
+      "componentName": "Salt & Pepper",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Split total 2 G seasoning into Salt 1 G and Black Pepper 1 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-061",
+          "targetName": "Salt",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Salt portion"
+        },
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-014",
+          "targetName": "Black Pepper",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Pepper portion"
+        }
+      ]
+    },
+    {
+      "componentName": "Salt + Pepper",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Split total 2 G seasoning into Salt 1 G and Black Pepper 1 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-061",
+          "targetName": "Salt",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Salt portion"
+        },
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-014",
+          "targetName": "Black Pepper",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Pepper portion"
+        }
+      ]
+    },
+    {
+      "componentName": "Black Pepper+ Salt",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Split total 2 G seasoning into Black Pepper 1 G and Salt 1 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-014",
+          "targetName": "Black Pepper",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Black Pepper portion"
+        },
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-061",
+          "targetName": "Salt",
+          "quantity": 1,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Salt portion"
+        }
+      ]
+    },
+    {
+      "componentName": "Chilli Flakes + Oregano",
+      "mappingSource": "OWNER_APPROVED_PHASE_11A_3_1",
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Split total 5 G seasoning into Chilli Flakes 2.5 G and Oregano 2.5 G.",
+      "outputs": [
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-022",
+          "targetName": "Chilli Flakes",
+          "quantity": 2.5,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Chilli Flakes portion"
+        },
+        {
+          "targetType": "RAW_MATERIAL",
+          "targetId": "RAW-054",
+          "targetName": "Oregano",
+          "quantity": 2.5,
+          "unit": "G",
+          "approvalStatus": "OWNER_APPROVED",
+          "reason": "Split Oregano portion"
+        }
+      ]
+    }
+  ],
+  "rawMaterialDefinitions": [
+    {
+      "code": "APPLE",
+      "name": "Apple",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "ORANGE",
+      "name": "Orange",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "PUMPKIN_SEEDS",
+      "name": "Pumpkin Seeds",
+      "category": "NUTS_SEEDS",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "ROCKET_LEAVES",
+      "name": "Rocket Leaves",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "MICROGREENS",
+      "name": "Microgreens",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "EDIBLE_FLOWERS",
+      "name": "Edible Flowers",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "PCS",
+      "purchaseUOM": "PCS",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "CREAM_CHEESE",
+      "name": "Cream Cheese",
+      "category": "DAIRY",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "BOCCONCINI",
+      "name": "Bocconcini",
+      "category": "DAIRY",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "BLACK_OLIVES",
+      "name": "Black Olives",
+      "category": "PANTRY",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "BLACK_SESAME_SEEDS",
+      "name": "Black Sesame Seeds",
+      "category": "NUTS_SEEDS",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "ROASTED_SESAME_SEEDS",
+      "name": "Roasted Sesame Seeds",
+      "category": "NUTS_SEEDS",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "GREEN_PEAS",
+      "name": "Green Peas",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "COCONUT_SUGAR",
+      "name": "Coconut Sugar",
+      "category": "SWEETENER",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "GARLIC_POWDER",
+      "name": "Garlic Powder",
+      "category": "SPICES",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Cost remains report-only."
+    },
+    {
+      "code": "SPINACH",
+      "name": "Spinach",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.3 owner-approved raw material setup record."
+    },
+    {
+      "code": "SOYA_CHUNKS",
+      "name": "Soya Chunks",
+      "category": "PANTRY",
+      "baseUOM": "G",
+      "purchaseUOM": "G",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.3 owner-approved raw material setup record. Boiled Soya remains blocked until its prep recipe and yield exist."
+    },
+    {
+      "code": "MILK_BREAD_SLICE",
+      "name": "Milk Bread Slice",
+      "category": "BAKERY",
+      "baseUOM": "SLICE",
+      "purchaseUOM": "SLICE",
+      "conversionFactor": 1,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.2 owner-approved raw material setup record. Tracked as individual slices."
+    },
+    {
+      "code": "LEMON_SLICE",
+      "name": "Lemon Slice",
+      "category": "FRESH_PRODUCE",
+      "baseUOM": "SLICE",
+      "purchaseUOM": "SLICE",
+      "conversionFactor": 1,
+      "isInventoryTracked": true,
+      "approvalStatus": "OWNER_APPROVED",
+      "notes": "Phase 11A.3.1 owner-approved raw material setup record. Tracked as individual lemon slices."
+    }
+  ],
+  "prepItemDefinitions": [],
+  "blockedPrepDefinitionNotes": [
+    "Vanilla Ice Cream is approved as a house-made stock-tracked PREP_ITEM with output unit G, but no complete recipe and batch yield exist in the workbook. Pancake and the standalone Vanilla Ice Cream product must consume prep-item stock only after that recipe exists.",
+    "Boiled Soya is approved as a stock-tracked PREP_ITEM produced from SOYA_CHUNKS, but no complete recipe and batch yield exist in the workbook.",
+    "No empty prep recipes should be created for the other missing prep components until recipe, yield and production unit exist."
+  ]
+}

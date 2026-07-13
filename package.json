@@ -11,7 +11,8 @@
     "deploy:hosting": "npm run build && firebase deploy --only hosting --project coffee-bond-pos",
     "provision:go-live-users": "node scripts/provision-go-live-users.mjs",
     "provision:golden-i": "node scripts/provision-golden-i-store.mjs",
-    "bootstrap:golden-i-menu": "node scripts/bootstrap-golden-i-menu.mjs"
+    "bootstrap:golden-i-menu": "node scripts/bootstrap-golden-i-menu.mjs",
+    "import:kitchen-bom": "node scripts/import-kitchen-bom-master.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

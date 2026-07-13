@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "phase": "PHASE_11A_3",
+  "description": "Approved workbook finished-product to existing POS finishedGoods reconciliation mappings.",
+  "mappings": [
+    {
+      "workbookProductId": "MENU-007",
+      "workbookName": "Avacado & Quinoa Salad",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "AVOCADO_AND_QUINOA_SALAD",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-002",
+      "workbookName": "Fruit salad with granola & yogurt",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "FRUIT_SALAD_GRANOLA_YOGURT",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-005",
+      "workbookName": "Pancake",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "PANCAKES",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-011",
+      "workbookName": "SROOM Zaffle",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "SHROOM_ZAFFLE",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-013",
+      "workbookName": "Potato onion Zaffle",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "POTATO_ONION_ZAFFLE",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-017",
+      "workbookName": "Margherita Pizza",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "MARGHERITA",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-022",
+      "workbookName": "Fresh Mozzarella and Pesto",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "MOZZARELLA_PESTO",
+      "mappingSource": "USER_APPROVED_PHASE_11A_1",
+      "approvalStatus": "APPROVED"
+    }
+  ]
+}
