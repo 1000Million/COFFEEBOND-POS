@@ -8,3 +8,5 @@ coverage/
 !.env.example
 .firebaserc
 .firebase/
+data/imports/*.xlsx
+reports/
