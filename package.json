@@ -9,7 +9,9 @@
     "lint": "tsc --noEmit",
     "deploy:preview": "npm run build && firebase hosting:channel:deploy go-live-preview --project coffee-bond-pos --expires 7d",
     "deploy:hosting": "npm run build && firebase deploy --only hosting --project coffee-bond-pos",
-    "provision:go-live-users": "node scripts/provision-go-live-users.mjs"
+    "provision:go-live-users": "node scripts/provision-go-live-users.mjs",
+    "provision:golden-i": "node scripts/provision-golden-i-store.mjs",
+    "bootstrap:golden-i-menu": "node scripts/bootstrap-golden-i-menu.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
