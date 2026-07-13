@@ -731,16 +731,22 @@ function buildBomLine(row, resolved, parentLabel, sourceSheet, unresolved, unitB
   const uom = normalizeUom(resolved?.uomOverride) || (qtyInBase && linkedUnit ? linkedUnit : rowUom);
 
   if (!resolved || resolved.unresolved) {
+    const componentName = text(row['Standard Component'] || row['Ingredient (Source)'] || row['Component (Source)']);
+    const componentKey = componentReviewKey(componentName);
+    const isMissingPrepRecipe = PROPOSED_PREP_COMPONENTS.has(componentKey)
+      || /requires a complete recipe and yield/i.test(resolved?.reason || '');
     unresolved.push({
       parent: parentLabel,
-      componentName: text(row['Standard Component'] || row['Ingredient (Source)'] || row['Component (Source)']),
+      componentName,
       workbookRow: row.__rowNumber,
       sourceFile: sourceSheet,
       linkedId: text(row['Linked ID']),
       componentType: text(row['Component Type']),
       quantity: positiveNumber(resolved?.quantityOverride) ?? rawQty ?? '',
       requiredUnit: normalizeUom(resolved?.uomOverride) || rowUom,
-      reason: resolved?.reason || 'Component unresolved',
+      reason: isMissingPrepRecipe
+        ? 'Required PREP_ITEM has no approved recipe and batch yield'
+        : (resolved?.reason || 'Component unresolved'),
     });
     return null;
   }
