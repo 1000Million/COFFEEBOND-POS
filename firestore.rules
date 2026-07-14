@@ -125,69 +125,6 @@ service cloud.firestore {
         || (isKitchen() && data.station == 'KITCHEN' && hasStoreAccess(data.storeId));
     }
 
-    function isValidPublicOnlineOrderCreate() {
-      return request.resource.data.keys().hasOnly([
-        'storeId',
-        'storeName',
-        'customerName',
-        'customerPhone',
-        'orderType',
-        'tableNumber',
-        'notes',
-        'items',
-        'subtotal',
-        'taxableAmount',
-        'gstTotal',
-        'grandTotal',
-        'status',
-        'source',
-        'trackingToken',
-        'publicOrderReference',
-        'createdAt',
-        'updatedAt'
-      ])
-      && request.resource.data.status == 'PENDING'
-      && request.resource.data.source == 'CUSTOMER_WEB'
-      && request.resource.data.trackingToken is string
-      && request.resource.data.trackingToken.size() >= 32
-      && request.resource.data.publicOrderReference is string
-      && request.resource.data.publicOrderReference.size() > 0
-      && request.resource.data.publicOrderReference.size() <= 32
-      && request.resource.data.storeId is string
-      && exists(/databases/$(database)/documents/stores/$(request.resource.data.storeId))
-      && get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.isActive == true
-      && get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.onlineOrderingEnabled != false
-      && request.resource.data.storeName is string
-      && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
-      && request.resource.data.customerName is string
-      && request.resource.data.customerName.size() > 0
-      && request.resource.data.customerName.size() <= 80
-      && request.resource.data.customerPhone is string
-      && request.resource.data.customerPhone.matches('^[6-9][0-9]{9}$')
-      && request.resource.data.orderType in ['PICKUP', 'DINE_IN']
-      && (
-        (request.resource.data.orderType == 'DINE_IN'
-          && request.resource.data.tableNumber is string
-          && request.resource.data.tableNumber.size() > 0
-          && request.resource.data.tableNumber.size() <= 20)
-        || (request.resource.data.orderType == 'PICKUP'
-          && (!request.resource.data.keys().hasAny(['tableNumber']) || request.resource.data.tableNumber == null))
-      )
-      && request.resource.data.notes is string
-      && request.resource.data.notes.size() <= 200
-      && request.resource.data.items is list
-      && request.resource.data.items.size() > 0
-      && request.resource.data.items.size() <= 30
-      && request.resource.data.subtotal is number
-      && request.resource.data.taxableAmount is number
-      && request.resource.data.gstTotal is number
-      && request.resource.data.grandTotal is number
-      && request.resource.data.subtotal >= 0
-      && request.resource.data.taxableAmount >= 0
-      && request.resource.data.gstTotal >= 0
-      && request.resource.data.grandTotal >= 0;
-    }
-
     function isSafePublicTrackingDocument(data, trackingToken) {
       return data.keys().hasOnly([
         'trackingToken',

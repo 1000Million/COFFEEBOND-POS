@@ -54,7 +54,10 @@ const isAdminBody = extractFunction(rules, 'isAdmin');
 const hasRoleBody = extractFunction(rules, 'hasRole');
 const isActiveUserProfileBody = extractFunction(rules, 'isActiveUserProfile');
 const hasStoreAccessBody = extractFunction(rules, 'hasStoreAccess');
+const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocument');
 const usersBlock = extractMatchBlock(rules, 'match /users/{userId}');
+const onlineOrdersBlock = extractMatchBlock(rules, 'match /onlineOrders/{onlineOrderId}');
+const publicTrackingBlock = extractMatchBlock(rules, 'match /publicOrderTracking/{trackingToken}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
 const clientBootstrapTerms = [
   ['Initialize Root', ' Admin Profile'].join(''),
@@ -80,12 +83,47 @@ assert(/storeId in userData\(\)\.storeIds/.test(hasStoreAccessBody), 'Non-admin 
 assert(!missingProfile.includes(legacyRootAdminUid), 'MissingProfile must not contain the legacy hardcoded admin UID.');
 assert(clientBootstrapTerms.every((term) => !missingProfile.includes(term)) && !/setDoc\(doc\(db,\s*['"]users['"]/.test(missingProfile), 'MissingProfile must not expose a client-side admin bootstrap action.');
 
+assert(!/function\s+isValidPublicOnlineOrderCreate\s*\(/.test(rules), 'Unused legacy public online order create helper must stay removed.');
+assert(/allow\s+create:\s*if\s+isCheckoutStaff\(\)\s*&&\s*hasStoreAccess\(request\.resource\.data\.storeId\);/.test(onlineOrdersBlock), 'Direct onlineOrders creates must require authenticated checkout staff with store access.');
+assert(!/allow\s+create:\s*if\s+true/.test(onlineOrdersBlock), 'Unauthenticated direct onlineOrders creates must remain denied.');
+assert(!/isValidPublicOnlineOrderCreate\(\)/.test(onlineOrdersBlock), 'Legacy public onlineOrders create validation must not be reconnected.');
+
+assert(/allow\s+get:\s*if\s+true;/.test(publicTrackingBlock), 'Public order tracking should allow exact-token document reads.');
+assert(/allow\s+list:\s*if\s+false;/.test(publicTrackingBlock), 'Public order tracking collection listing must remain denied.');
+assert(/isSafePublicTrackingDocument\(request\.resource\.data,\s*trackingToken\)/.test(publicTrackingBlock), 'Public tracking writes must use the sanitized document validator.');
+
+const forbiddenPublicTrackingFields = [
+  'customerName',
+  'customerPhone',
+  'phone',
+  'notes',
+  'uid',
+  'createdBy',
+  'acceptedBy',
+  'rejectedBy',
+  'onlineOrderId',
+  'orderId',
+  'paymentId',
+  'payments',
+  'bom',
+  'stock',
+  'station'
+];
+
+for (const field of forbiddenPublicTrackingFields) {
+  assert(!safePublicTrackingBody.includes(`'${field}'`) && !safePublicTrackingBody.includes(`"${field}"`), `Public tracking documents must not allow ${field}.`);
+}
+
 const cases = [
   'active ADMIN allowed: isAdmin() is based on active users/{uid}.role == ADMIN',
   'inactive ADMIN denied: hasRole() requires isActive == true',
   'CASHIER denied from admin writes: users/{uid} write is guarded by isAdmin()',
   'user cannot promote themselves: self-profile rule is read-only',
-  'cross-store access denied: non-admin store access requires storeId in users/{uid}.storeIds'
+  'cross-store access denied: non-admin store access requires storeId in users/{uid}.storeIds',
+  'unauthenticated direct onlineOrders creation denied: create requires isCheckoutStaff()',
+  'authenticated CASHIER cannot create another-store online order: create requires hasStoreAccess(storeId)',
+  'customer tracking reads are exact-token only: get allowed, list denied',
+  'customer tracking writes remain sanitized: public fields exclude PII and internal IDs'
 ];
 
 if (failures.length > 0) {
