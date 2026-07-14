@@ -10,37 +10,49 @@ service cloud.firestore {
     function userData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isActiveUserProfile() {
+      return hasUserProfile() && userData().isActive == true;
+    }
+
+    function hasRole(role) {
+      return isActiveUserProfile() && userData().role == role;
+    }
     
     function isAdmin() {
-      return isSignedIn() && (request.auth.uid == '51eEH5q0wVXe5aIPERsqOO8zx8A2' || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'ADMIN'));
+      return hasRole('ADMIN');
     }
     
     function isStoreManager() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'STORE_MANAGER';
+      return hasRole('STORE_MANAGER');
     }
 
     function isCashier() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'CASHIER';
+      return hasRole('CASHIER');
     }
 
     function isBarista() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'BARISTA';
+      return hasRole('BARISTA');
     }
 
     function isKitchen() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role == 'KITCHEN';
+      return hasRole('KITCHEN');
     }
     
     function isActiveStaff() {
-      return isSignedIn() && (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().isActive == true));
+      return isActiveUserProfile();
     }
 
     function isCheckoutStaff() {
-      return isAdmin() || (isActiveStaff() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().role in ['STORE_MANAGER', 'CASHIER']);
+      return isAdmin() || (isActiveStaff() && userData().role in ['STORE_MANAGER', 'CASHIER']);
     }
 
     function hasStoreAccess(storeId) {
-      return isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
+      return isAdmin() || (isActiveUserProfile() && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
     }
 
     function isSaleCreatedStoreStock(stockId) {
