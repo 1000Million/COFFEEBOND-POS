@@ -100,6 +100,145 @@ service cloud.firestore {
         || isValidInventoryConsumptionStatus(data.inventoryConsumptionStatus);
     }
 
+    function isValidPaymentMethod(method) {
+      return method in ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
+    }
+
+    function isValidKotStatus(status) {
+      return status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'RETURNED', 'WASTAGE_RECORDED', 'REMAKE_REQUESTED', 'CANCELLED'];
+    }
+
+    function orderAfter(orderId) {
+      return getAfter(/databases/$(database)/documents/orders/$(orderId)).data;
+    }
+
+    function orderTotalsUnchanged() {
+      return request.resource.data.subtotal == resource.data.subtotal
+        && request.resource.data.taxTotal == resource.data.taxTotal
+        && request.resource.data.gstTotal == resource.data.gstTotal
+        && request.resource.data.taxableAmount == resource.data.taxableAmount
+        && request.resource.data.discountPercent == resource.data.discountPercent
+        && request.resource.data.discountAmount == resource.data.discountAmount
+        && request.resource.data.discountTotal == resource.data.discountTotal
+        && request.resource.data.discount == resource.data.discount
+        && request.resource.data.grandTotal == resource.data.grandTotal
+        && request.resource.data.cogsTotal == resource.data.cogsTotal;
+    }
+
+    function orderIdentityUnchanged() {
+      return request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.storeCode == resource.data.storeCode
+        && request.resource.data.storeName == resource.data.storeName
+        && request.resource.data.createdByUserId == resource.data.createdByUserId
+        && request.resource.data.createdByName == resource.data.createdByName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.orderNumber == resource.data.orderNumber;
+    }
+
+    function isValidOrderCreate() {
+      return isCheckoutStaff()
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.createdByUserId == request.auth.uid
+        && request.resource.data.status == 'COMPLETED'
+        && request.resource.data.paymentStatus in ['PAID', 'UNPAID', 'PARTIAL']
+        && isValidPaymentMethod(request.resource.data.paymentMethod)
+        && hasValidInventoryConsumptionStatus(request.resource.data);
+    }
+
+    function isOrderSettlementUpdate() {
+      return isCheckoutStaff()
+        && hasStoreAccess(resource.data.storeId)
+        && resource.data.status == 'COMPLETED'
+        && resource.data.paymentStatus in ['UNPAID', 'PARTIAL']
+        && request.resource.data.paymentStatus == 'PAID'
+        && orderIdentityUnchanged()
+        && orderTotalsUnchanged()
+        && request.resource.data.status == resource.data.status
+        && isValidPaymentMethod(request.resource.data.paymentMethod)
+        && request.resource.data.settledBy == request.auth.uid
+        && request.resource.data.settledAt is timestamp
+        && request.resource.data.paymentBreakdown is list
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paymentStatus',
+          'paymentMethod',
+          'isSplitPayment',
+          'paymentMethodLabel',
+          'paymentBreakdown',
+          'settledAt',
+          'settledBy',
+          'settledByName',
+          'updatedAt'
+        ]);
+    }
+
+    function isOrderVoidUpdate() {
+      return (isAdmin() || isStoreManager())
+        && hasStoreAccess(resource.data.storeId)
+        && resource.data.status != 'VOIDED'
+        && request.resource.data.status == 'VOIDED'
+        && orderIdentityUnchanged()
+        && orderTotalsUnchanged()
+        && request.resource.data.paymentStatus == resource.data.paymentStatus
+        && request.resource.data.voidedBy == request.auth.uid
+        && request.resource.data.voidedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'voidReason',
+          'voidedBy',
+          'voidedByName',
+          'voidedByEmail',
+          'voidedAt',
+          'updatedAt'
+        ]);
+    }
+
+    function isValidOrderItemCreate(orderId) {
+      return isCheckoutStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && request.resource.data.status == 'PENDING'
+        && hasValidInventoryConsumptionStatus(request.resource.data);
+    }
+
+    function isOrderItemStatusUpdate(orderId) {
+      return isActiveStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && request.resource.data.status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'CANCELLED']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+
+    function isValidPaymentCreate(orderId) {
+      return isCheckoutStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && orderAfter(orderId).status != 'VOIDED'
+        && request.resource.data.keys().hasOnly([
+          'method',
+          'amount',
+          'reference',
+          'paymentIndex',
+          'createdAt',
+          'settledBy',
+          'settledByName',
+          'amountReceived',
+          'changeDue'
+        ])
+        && isValidPaymentMethod(request.resource.data.method)
+        && request.resource.data.amount is number
+        && request.resource.data.amount >= 0
+        && (!request.resource.data.keys().hasAny(['settledBy']) || request.resource.data.settledBy == request.auth.uid)
+        && (!request.resource.data.keys().hasAny(['amountReceived']) || request.resource.data.amountReceived is number)
+        && (!request.resource.data.keys().hasAny(['changeDue']) || request.resource.data.changeDue is number);
+    }
+
+    function isPayAtCounterPlaceholderUpdate(orderId) {
+      return isCheckoutStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && resource.data.method == 'PAY_AT_COUNTER'
+        && request.resource.data.method == resource.data.method
+        && request.resource.data.amount == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'reference']);
+    }
+
     function isSaleDeductionMovement() {
       return request.resource.data.movementType == 'SALE_DEDUCTION'
       && request.resource.data.referenceType == 'ORDER'
@@ -115,6 +254,67 @@ service cloud.firestore {
       && request.resource.data.previousQty is number
       && request.resource.data.newQty <= request.resource.data.previousQty
       && request.resource.data.createdByUserId == request.auth.uid;
+    }
+
+    function isCheckoutStoreStockDeduction() {
+      return isCheckoutStaff()
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.currentStock is number
+        && request.resource.data.currentStock <= resource.data.currentStock
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'updatedAt']);
+    }
+
+    function isCheckoutStoreInventoryDeduction() {
+      return isCheckoutStaff()
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.currentStock is number
+        && request.resource.data.currentStock <= resource.data.currentStock
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'updatedAt']);
+    }
+
+    function isValidKotCreate() {
+      return isCheckoutStaff()
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.station in ['BARISTA', 'KITCHEN']
+        && request.resource.data.status == 'PENDING'
+        && request.resource.data.createdByUserId == request.auth.uid;
+    }
+
+    function isValidKotUpdate() {
+      return isActiveStaff()
+        && canReadKot(resource.data)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.orderId == resource.data.orderId
+        && request.resource.data.orderNumber == resource.data.orderNumber
+        && request.resource.data.orderItemId == resource.data.orderItemId
+        && request.resource.data.station == resource.data.station
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdByUserId == resource.data.createdByUserId
+        && isValidKotStatus(request.resource.data.status)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'updatedAt',
+          'readyAt',
+          'servedAt',
+          'cancelledAt',
+          'cancelledBy',
+          'cancelledByName',
+          'cancellationReason',
+          'handledByUserId',
+          'handledByName',
+          'voidReason',
+          'returnedAt',
+          'returnReason',
+          'wastageAt',
+          'wastageReason',
+          'remakeRequestedAt',
+          'remakeReason'
+        ])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['handledByUserId']) || request.resource.data.handledByUserId == request.auth.uid)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['cancelledBy']) || request.resource.data.cancelledBy == request.auth.uid);
     }
 
     function canReadKot(data) {
@@ -305,40 +505,31 @@ service cloud.firestore {
     // Orders Collection
     match /orders/{orderId} {
       allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
-      // Allow create only if POS staff, and they have access to the store they are creating for
-      allow create: if isCheckoutStaff()
-        && hasStoreAccess(request.resource.data.storeId)
-        && hasValidInventoryConsumptionStatus(request.resource.data);
-      // Allow update if Admin, or if they have access to the store
-      allow update: if isCheckoutStaff()
-        && (isAdmin() || hasStoreAccess(resource.data.storeId))
-        && hasValidInventoryConsumptionStatus(request.resource.data);
+      allow create: if isValidOrderCreate();
+      allow update: if isOrderSettlementUpdate() || isOrderVoidUpdate();
       allow delete: if isAdmin();
       
       // Order Subcollections
       match /items/{itemId} {
         allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
-        allow write: if isActiveStaff()
-          && hasValidInventoryConsumptionStatus(request.resource.data);
+        allow create: if isValidOrderItemCreate(orderId);
+        allow update: if isOrderItemStatusUpdate(orderId);
+        allow delete: if isAdmin();
       }
       match /payments/{paymentId} {
         allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
-        allow write: if isCheckoutStaff();
+        allow create: if isValidPaymentCreate(orderId);
+        allow update: if isPayAtCounterPlaceholderUpdate(orderId);
+        allow delete: if isAdmin();
       }
     }
 
     match /kotItems/{kotId} {
       allow read: if isActiveStaff() && canReadKot(resource.data);
       
-      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      allow create: if isValidKotCreate();
       
-      allow update: if isActiveStaff() && hasStoreAccess(resource.data.storeId) && (
-        isAdmin() || 
-        isStoreManager() ||
-        userData().role == 'CASHIER' ||
-        (userData().role == 'BARISTA' && resource.data.station == 'BARISTA') ||
-        (userData().role == 'KITCHEN' && resource.data.station == 'KITCHEN')
-      );
+      allow update: if isValidKotUpdate();
       
       allow delete: if isAdmin();
     }
@@ -352,7 +543,7 @@ service cloud.firestore {
       allow read: if isActiveStaff();
       allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
       allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId) 
-                    || (isCheckoutStaff() && hasStoreAccess(resource.data.storeId) && request.resource.data.currentStock <= resource.data.currentStock);
+                    || isCheckoutStoreInventoryDeduction();
       allow delete: if isAdmin();
     }
 
@@ -424,7 +615,7 @@ service cloud.firestore {
         && request.resource.data.appliedBomVersion == null
         && request.resource.data.inventoryMovementIds is list
         && request.resource.data.inventoryMovementIds.size() == 0;
-      allow update: if isCheckoutStaff()
+      allow update: if (isAdmin() || isStoreManager())
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
         && resource.data.status == 'PENDING_BOM'
         && request.resource.data.status == 'CANCELLED'
@@ -462,7 +653,7 @@ service cloud.firestore {
       allow create: if ((isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId))
                     || (isCashier() && isSaleCreatedStoreStock(stockId));
       allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId)
-                    || (isCheckoutStaff() && hasStoreAccess(resource.data.storeId) && request.resource.data.currentStock <= resource.data.currentStock);
+                    || isCheckoutStoreStockDeduction();
       allow delete: if isAdmin();
     }
 

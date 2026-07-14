@@ -55,9 +55,30 @@ const hasRoleBody = extractFunction(rules, 'hasRole');
 const isActiveUserProfileBody = extractFunction(rules, 'isActiveUserProfile');
 const hasStoreAccessBody = extractFunction(rules, 'hasStoreAccess');
 const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocument');
+const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
+const orderSettlementBody = extractFunction(rules, 'isOrderSettlementUpdate');
+const orderVoidBody = extractFunction(rules, 'isOrderVoidUpdate');
+const orderIdentityBody = extractFunction(rules, 'orderIdentityUnchanged');
+const orderTotalsBody = extractFunction(rules, 'orderTotalsUnchanged');
+const orderItemCreateBody = extractFunction(rules, 'isValidOrderItemCreate');
+const orderItemStatusBody = extractFunction(rules, 'isOrderItemStatusUpdate');
+const paymentCreateBody = extractFunction(rules, 'isValidPaymentCreate');
+const paymentUpdateBody = extractFunction(rules, 'isPayAtCounterPlaceholderUpdate');
+const kotCreateBody = extractFunction(rules, 'isValidKotCreate');
+const kotUpdateBody = extractFunction(rules, 'isValidKotUpdate');
+const storeStockDeductionBody = extractFunction(rules, 'isCheckoutStoreStockDeduction');
+const storeInventoryDeductionBody = extractFunction(rules, 'isCheckoutStoreInventoryDeduction');
 const usersBlock = extractMatchBlock(rules, 'match /users/{userId}');
 const onlineOrdersBlock = extractMatchBlock(rules, 'match /onlineOrders/{onlineOrderId}');
 const publicTrackingBlock = extractMatchBlock(rules, 'match /publicOrderTracking/{trackingToken}');
+const ordersBlock = extractMatchBlock(rules, 'match /orders/{orderId}');
+const orderItemsBlock = extractMatchBlock(rules, 'match /items/{itemId}');
+const orderPaymentsBlock = extractMatchBlock(rules, 'match /payments/{paymentId}');
+const kotItemsBlock = extractMatchBlock(rules, 'match /kotItems/{kotId}');
+const stockMovementsBlock = extractMatchBlock(rules, 'match /stockMovements/{movementId}');
+const storeStockBlock = extractMatchBlock(rules, 'match /storeStock/{stockId}');
+const storeInventoryBlock = extractMatchBlock(rules, 'match /storeInventory/{stockId}');
+const pendingConsumptionBlock = extractMatchBlock(rules, 'match /pendingInventoryConsumption/{pendingId}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
 const clientBootstrapTerms = [
   ['Initialize Root', ' Admin Profile'].join(''),
@@ -114,6 +135,70 @@ for (const field of forbiddenPublicTrackingFields) {
   assert(!safePublicTrackingBody.includes(`'${field}'`) && !safePublicTrackingBody.includes(`"${field}"`), `Public tracking documents must not allow ${field}.`);
 }
 
+assert(/allow\s+create:\s*if\s+isValidOrderCreate\(\);/.test(ordersBlock), 'Order creation must use the hardened order create helper.');
+assert(/allow\s+update:\s*if\s+isOrderSettlementUpdate\(\)\s*\|\|\s*isOrderVoidUpdate\(\);/.test(ordersBlock), 'Order updates must be limited to settlement or void helpers.');
+assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(ordersBlock), 'Only Admin may delete orders.');
+assert(/createdByUserId\s*==\s*request\.auth\.uid/.test(orderCreateBody), 'Order creation must bind createdByUserId to the caller.');
+assert(/hasStoreAccess\(request\.resource\.data\.storeId\)/.test(orderCreateBody), 'Order creation must require assigned-store access.');
+assert(/request\.resource\.data\.status\s*==\s*'COMPLETED'/.test(orderCreateBody), 'Checkout-created orders must use the completed operational status.');
+
+assert(/resource\.data\.paymentStatus in \['UNPAID', 'PARTIAL'\]/.test(orderSettlementBody), 'Settlement must start only from unpaid or partial orders.');
+assert(/request\.resource\.data\.paymentStatus\s*==\s*'PAID'/.test(orderSettlementBody), 'Settlement must only mark an order paid.');
+assert(/request\.resource\.data\.settledBy\s*==\s*request\.auth\.uid/.test(orderSettlementBody), 'Settlement must bind settledBy to the caller.');
+assert(/affectedKeys\(\)\.hasOnly\(\[/.test(orderSettlementBody) && /paymentBreakdown/.test(orderSettlementBody), 'Settlement updates must be field-limited to payment metadata.');
+assert(/orderIdentityUnchanged\(\)/.test(orderSettlementBody) && /orderTotalsUnchanged\(\)/.test(orderSettlementBody), 'Settlement must preserve order identity and totals.');
+
+assert(/\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(orderVoidBody), 'Void updates must be Admin or Store Manager only.');
+assert(/request\.resource\.data\.status\s*==\s*'VOIDED'/.test(orderVoidBody), 'Void helper must only move an order to VOIDED.');
+assert(/request\.resource\.data\.voidedBy\s*==\s*request\.auth\.uid/.test(orderVoidBody), 'Void helper must bind voidedBy to the caller.');
+assert(/orderIdentityUnchanged\(\)/.test(orderVoidBody) && /orderTotalsUnchanged\(\)/.test(orderVoidBody), 'Void must preserve order identity and totals.');
+for (const immutableField of ['storeId', 'createdByUserId', 'createdAt', 'orderNumber']) {
+  assert(orderIdentityBody.includes(`request.resource.data.${immutableField} == resource.data.${immutableField}`), `Order updates must preserve ${immutableField}.`);
+}
+for (const totalField of ['subtotal', 'taxTotal', 'gstTotal', 'taxableAmount', 'discountAmount', 'grandTotal', 'cogsTotal']) {
+  assert(orderTotalsBody.includes(`request.resource.data.${totalField} == resource.data.${totalField}`), `Order updates must preserve ${totalField}.`);
+}
+
+assert(/allow\s+create:\s*if\s+isValidOrderItemCreate\(orderId\);/.test(orderItemsBlock), 'Order item creation must use the order item create helper.');
+assert(/allow\s+update:\s*if\s+isOrderItemStatusUpdate\(orderId\);/.test(orderItemsBlock), 'Order item updates must be status-only.');
+assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(orderItemsBlock), 'Only Admin may delete order items.');
+assert(/hasStoreAccess\(orderAfter\(orderId\)\.storeId\)/.test(orderItemCreateBody), 'Order item create must use the parent order store.');
+assert(/affectedKeys\(\)\.hasOnly\(\['status'\]\)/.test(orderItemStatusBody), 'Order item updates must only affect status.');
+
+assert(/allow\s+create:\s*if\s+isValidPaymentCreate\(orderId\);/.test(orderPaymentsBlock), 'Payment creation must use the payment create helper.');
+assert(/allow\s+update:\s*if\s+isPayAtCounterPlaceholderUpdate\(orderId\);/.test(orderPaymentsBlock), 'Payment updates must be limited to PAY_AT_COUNTER placeholder settlement cleanup.');
+assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(orderPaymentsBlock), 'Only Admin may delete payment records.');
+assert(/hasStoreAccess\(orderAfter\(orderId\)\.storeId\)/.test(paymentCreateBody), 'Payment creation must use parent order store access.');
+assert(/isValidPaymentMethod\(request\.resource\.data\.method\)/.test(paymentCreateBody), 'Payment creation must validate payment methods.');
+assert(/request\.resource\.data\.settledBy\s*==\s*request\.auth\.uid/.test(paymentCreateBody), 'Settlement payment rows must bind settledBy to the caller when present.');
+assert(/resource\.data\.method\s*==\s*'PAY_AT_COUNTER'/.test(paymentUpdateBody), 'Payment updates must only touch PAY_AT_COUNTER placeholders.');
+assert(/affectedKeys\(\)\.hasOnly\(\['amount', 'reference'\]\)/.test(paymentUpdateBody), 'Payment placeholder updates must only affect amount/reference.');
+
+assert(/allow\s+create:\s*if\s+isValidKotCreate\(\);/.test(kotItemsBlock), 'KOT creation must use the KOT create helper.');
+assert(/allow\s+update:\s*if\s+isValidKotUpdate\(\);/.test(kotItemsBlock), 'KOT updates must use the KOT update helper.');
+assert(/request\.resource\.data\.status\s*==\s*'PENDING'/.test(kotCreateBody), 'KOT creation must start as PENDING.');
+assert(/request\.resource\.data\.createdByUserId\s*==\s*request\.auth\.uid/.test(kotCreateBody), 'KOT creation must bind createdByUserId to the caller.');
+assert(/canReadKot\(resource\.data\)/.test(kotUpdateBody), 'KOT updates must respect station/store role access.');
+assert(/request\.resource\.data\.storeId\s*==\s*resource\.data\.storeId/.test(kotUpdateBody), 'KOT updates must preserve storeId.');
+assert(/request\.resource\.data\.createdAt\s*==\s*resource\.data\.createdAt/.test(kotUpdateBody), 'KOT updates must preserve createdAt.');
+
+assert(/allow\s+delete:\s*if\s+false;/.test(stockMovementsBlock), 'Stock movements must not be deletable.');
+assert(/allow\s+update:\s*if\s+false;/.test(stockMovementsBlock), 'Stock movements must not be mutable.');
+assert(/isSaleDeductionMovement\(\)/.test(stockMovementsBlock), 'Checkout stock movements must use the sale deduction helper.');
+assert(/createdByUserId\s*==\s*request\.auth\.uid/.test(extractFunction(rules, 'isSaleDeductionMovement')), 'Sale deduction movements must bind createdByUserId to the caller.');
+
+assert(/isCheckoutStoreStockDeduction\(\)/.test(storeStockBlock), 'Checkout storeStock updates must use the narrowed deduction helper.');
+assert(/affectedKeys\(\)\.hasOnly\(\['currentStock', 'updatedAt'\]\)/.test(storeStockDeductionBody), 'Checkout storeStock updates must only affect currentStock and updatedAt.');
+assert(/request\.resource\.data\.storeId\s*==\s*resource\.data\.storeId/.test(storeStockDeductionBody), 'Checkout storeStock updates must preserve storeId.');
+assert(/request\.resource\.data\.currentStock\s*<=\s*resource\.data\.currentStock/.test(storeStockDeductionBody), 'Checkout storeStock updates must only deduct or keep stock level.');
+assert(/isCheckoutStoreInventoryDeduction\(\)/.test(storeInventoryBlock), 'Checkout storeInventory updates must use the narrowed legacy deduction helper.');
+assert(/affectedKeys\(\)\.hasOnly\(\['currentStock', 'updatedAt'\]\)/.test(storeInventoryDeductionBody), 'Checkout storeInventory updates must only affect currentStock and updatedAt.');
+assert(/request\.resource\.data\.storeId\s*==\s*resource\.data\.storeId/.test(storeInventoryDeductionBody), 'Checkout storeInventory updates must preserve storeId.');
+
+assert(/allow\s+update:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(pendingConsumptionBlock), 'Pending BOM client updates must be Admin or Store Manager only.');
+assert(/request\.resource\.data\.status\s*==\s*'CANCELLED'/.test(pendingConsumptionBlock), 'Pending BOM client updates must only cancel records.');
+assert(!/request\.resource\.data\.status\s*==\s*'APPLIED'/.test(pendingConsumptionBlock), 'Client rules must not allow marking pending BOM records APPLIED.');
+
 const cases = [
   'active ADMIN allowed: isAdmin() is based on active users/{uid}.role == ADMIN',
   'inactive ADMIN denied: hasRole() requires isActive == true',
@@ -123,7 +208,17 @@ const cases = [
   'unauthenticated direct onlineOrders creation denied: create requires isCheckoutStaff()',
   'authenticated CASHIER cannot create another-store online order: create requires hasStoreAccess(storeId)',
   'customer tracking reads are exact-token only: get allowed, list denied',
-  'customer tracking writes remain sanitized: public fields exclude PII and internal IDs'
+  'customer tracking writes remain sanitized: public fields exclude PII and internal IDs',
+  'Cashier creates orders only for assigned stores and as themselves',
+  'Cashier cannot edit PAID orders or change totals after creation',
+  'Settlement and void are the only order update paths',
+  'Order item updates are status-only for KOT sync',
+  'Payment records require parent-order store access and valid methods',
+  'KOT creates and status updates preserve immutable ticket fields',
+  'Stock movements cannot be updated or deleted',
+  'Checkout storeStock updates can only reduce currentStock',
+  'Checkout storeInventory updates can only reduce currentStock',
+  'Pending BOM client updates can only cancel, never apply'
 ];
 
 if (failures.length > 0) {
