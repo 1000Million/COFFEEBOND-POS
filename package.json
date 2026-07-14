@@ -13,7 +13,10 @@
     "provision:golden-i": "node scripts/provision-golden-i-store.mjs",
     "bootstrap:golden-i-menu": "node scripts/bootstrap-golden-i-menu.mjs",
     "import:kitchen-bom": "node scripts/import-kitchen-bom-master.mjs",
-    "import:missing-prep-recipes": "node scripts/import-missing-prep-recipes.mjs"
+    "import:missing-prep-recipes": "node scripts/import-missing-prep-recipes.mjs",
+    "backfill:pending-bom": "node scripts/backfill-pending-bom-consumption.mjs",
+    "test:packaging-applicability": "esbuild scripts/test-packaging-applicability.ts --bundle --platform=node --format=esm --outfile=/tmp/packaging-applicability-test.mjs && node /tmp/packaging-applicability-test.mjs",
+    "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

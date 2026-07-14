@@ -628,12 +628,17 @@ export default function RunningOrders() {
           where('orderId', '==', voidBundle.order.id),
         )),
       ]);
+      const pendingSnap = await getDocs(query(
+        collection(db, 'pendingInventoryConsumption'),
+        where('storeId', '==', voidBundle.order.storeId),
+        where('orderId', '==', voidBundle.order.id),
+      ));
       const movementDocs = movementSnap.docs.map(movementDoc => ({ id: movementDoc.id, ...movementDoc.data() } as StockMovementDoc));
       if (movementDocs.some(movement => movement.movementType === 'ORDER_VOID_REVERSAL')) {
         throw new Error('This order already has reversal stock movements. It cannot be voided again.');
       }
       const saleMovements = movementDocs.filter(movement => (
-        movement.movementType === 'SALE_DEDUCTION'
+        (movement.movementType === 'SALE_DEDUCTION' || movement.movementType === 'ORDER_BOM_BACKFILL')
         && (movement.referenceType === 'ORDER' || !movement.referenceType)
         && Number(movement.quantity) < 0
       ));
@@ -683,6 +688,7 @@ export default function RunningOrders() {
             referenceType: 'ORDER',
             referenceId: freshOrder.id,
             originalMovementId: target.movement.id,
+            originalMovementType: target.movement.movementType,
             notes: `Void order ${freshOrder.orderNumber}: ${voidReason.trim()}`,
             createdByUserId: auth.currentUser!.uid,
             createdByName: staffProfile.displayName || staffProfile.name,
@@ -690,6 +696,20 @@ export default function RunningOrders() {
             stockSystem: target.movement.stockSystem || 'MENU_MANAGEMENT',
             stockItemType: target.stockItemType,
             stockItemCode: target.stockItemCode,
+          });
+        });
+
+        pendingSnap.docs.forEach(pendingDoc => {
+          const pendingData = pendingDoc.data() as Record<string, unknown>;
+          if (pendingData.status !== 'PENDING_BOM') {
+            return;
+          }
+          transaction.update(pendingDoc.ref, {
+            status: 'CANCELLED',
+            reason: `Order voided before BOM backfill: ${voidReason.trim()}`,
+            resolvedAt: serverTimestamp(),
+            resolvedBy: auth.currentUser!.uid,
+            updatedAt: serverTimestamp(),
           });
         });
 

@@ -28,6 +28,7 @@ export interface Store {
   code: string;
   address: string;
   isActive: boolean;
+  inventoryPolicy?: "STRICT" | "ALLOW_NEGATIVE" | "ALLOW_NEGATIVE_DEFER_BOM";
   onlineOrderingEnabled?: boolean;
   estimatedPrepMinutes?: number;
   onlineOrderingMessage?: string;
@@ -106,6 +107,7 @@ export interface Order {
   cogsTotal?: number;
   inventoryWarningCount?: number;
   inventoryWarnings?: string[];
+  inventoryConsumptionStatus?: "APPLIED" | "PENDING_BOM" | "PARTIAL_PENDING_BOM" | "NOT_REQUIRED";
   stockMovementCount?: number;
   paymentMethod: PaymentMethod;
   paymentMethodLabel?: string;
@@ -136,6 +138,7 @@ export interface OrderItem {
   lineTax: number;
   lineTotal: number;
   cogsAmount?: number;
+  inventoryConsumptionStatus?: "APPLIED" | "PENDING_BOM" | "NOT_REQUIRED";
   prepStation: PrepStation;
   status: "PENDING" | "PREPARING" | "READY" | "SERVED" | "CANCELLED";
   createdAt: any;
@@ -371,7 +374,7 @@ export interface StockMovement {
   storeName: string;
   inventoryItemId: string;
   inventoryItemName: string;
-  movementType: "PURCHASE" | "PURCHASE_INWARD" | "SALE_DEDUCTION" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
+  movementType: "PURCHASE" | "PURCHASE_INWARD" | "SALE_DEDUCTION" | "ORDER_BOM_BACKFILL" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";
   quantity: number;
   quantityDelta?: number;
   unit: string;

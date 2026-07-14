@@ -15,6 +15,7 @@ export interface RawIngredient {
 }
 
 export type BOMComponentType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONENT' | 'FINISHED_GOOD' | 'PACKAGING';
+export type PackagingApplicability = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'ALL';
 
 export interface BOMComponent {
   componentType: BOMComponentType;
@@ -25,6 +26,10 @@ export interface BOMComponent {
   uom: string;
   costPerUnit: number;
   lineCost: number;
+  applicableOrderTypes?: PackagingApplicability[];
+  packagingApplicability?: PackagingApplicability | PackagingApplicability[];
+  orderTypes?: PackagingApplicability[];
+  serviceTypes?: PackagingApplicability[];
 }
 
 export interface PrepItem {

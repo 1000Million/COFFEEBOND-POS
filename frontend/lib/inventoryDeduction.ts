@@ -1,9 +1,12 @@
 import { collection, doc, serverTimestamp, Transaction } from 'firebase/firestore';
 import { db } from './firebase';
-import { StaffProfile, Store } from '../types';
+import { isPackagingComponentApplicable } from './packagingApplicability';
+import { OrderType, StaffProfile, Store } from '../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
 
 export type InventoryDeductionSource = 'POS' | 'CUSTOMER_WEB_ACCEPT';
+export type InventoryPolicy = 'STRICT' | 'ALLOW_NEGATIVE' | 'ALLOW_NEGATIVE_DEFER_BOM';
+export type InventoryConsumptionStatus = 'APPLIED' | 'PENDING_BOM' | 'NOT_REQUIRED';
 
 export type InventoryDeductionBlockerType =
   | 'Missing finished good'
@@ -36,7 +39,8 @@ export type InventoryDeductionWarningType =
   | 'MISSING_COST'
   | 'UNIT_NORMALIZED'
   | 'MISSING_STOCK_ROW_CREATED'
-  | 'STOCK_ROW_CREATED_NEGATIVE';
+  | 'STOCK_ROW_CREATED_NEGATIVE'
+  | 'PENDING_BOM_DEFERRED';
 
 export type InventoryDeductionWarning = {
   type: InventoryDeductionWarningType;
@@ -125,6 +129,29 @@ export type InventoryMovementPayload = {
   orderLineKey: string;
 };
 
+export type PendingInventoryConsumptionPayload = {
+  storeId: string;
+  storeCode: string;
+  storeName: string;
+  orderId: string;
+  orderNumber: string;
+  orderLineId: string;
+  finishedGoodId: string;
+  finishedGoodCode: string;
+  finishedGoodName: string;
+  quantitySold: number;
+  soldAt: ReturnType<typeof serverTimestamp>;
+  source: InventoryDeductionSource;
+  status: 'PENDING_BOM';
+  reason: string;
+  createdAt: ReturnType<typeof serverTimestamp>;
+  resolvedAt: null;
+  resolvedBy: null;
+  appliedBomVersion: null;
+  inventoryMovementIds: string[];
+  idempotencyKey: string;
+};
+
 export type InventoryStockUpdate = {
   stockDocId: string;
   stockRef: ReturnType<typeof doc>;
@@ -150,8 +177,10 @@ export type InventoryDeductionPlan = {
   warnings: InventoryDeductionWarning[];
   totalCogs: number;
   perLineCogs: Record<string, number>;
+  perLineConsumptionStatus: Record<string, InventoryConsumptionStatus>;
   stockUpdates: InventoryStockUpdate[];
   movementPayloads: InventoryMovementPayload[];
+  pendingConsumptionPayloads: PendingInventoryConsumptionPayload[];
 };
 
 type PlanInput = {
@@ -159,6 +188,7 @@ type PlanInput = {
   store: Store;
   orderId: string;
   orderNumber: string;
+  orderType: OrderType;
   businessDate: string;
   source: InventoryDeductionSource;
   staffProfile: Pick<StaffProfile, 'uid' | 'name'>;
@@ -283,14 +313,30 @@ function buildSaleNote(source: InventoryDeductionSource, orderNumber: string): s
     : `Order ${orderNumber}`;
 }
 
+function effectiveInventoryPolicy(store: Store): InventoryPolicy {
+  const policy = String((store as Store & Record<string, unknown>).inventoryPolicy || '').trim().toUpperCase();
+  if (policy === 'ALLOW_NEGATIVE_DEFER_BOM') return 'ALLOW_NEGATIVE_DEFER_BOM';
+  if (policy === 'ALLOW_NEGATIVE') return 'ALLOW_NEGATIVE';
+  if (store.id === 'GOLDEN_I' || store.code === 'GOLDEN_I') return 'ALLOW_NEGATIVE_DEFER_BOM';
+  return 'STRICT';
+}
+
+function pendingConsumptionDocId(storeId: string, orderId: string, orderLineId: string): string {
+  return `${storeId}_${orderId}_${orderLineId}`.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
 export async function planInventoryDeductionForSale(input: PlanInput): Promise<InventoryDeductionPlan> {
-  const { transaction, store, orderId, orderNumber, businessDate, source, staffProfile, lines } = input;
+  const { transaction, store, orderId, orderNumber, orderType, businessDate, source, staffProfile, lines } = input;
+  const inventoryPolicy = effectiveInventoryPolicy(store);
+  const allowDeferredBom = inventoryPolicy === 'ALLOW_NEGATIVE_DEFER_BOM';
 
   const blockers: InventoryDeductionBlocker[] = [];
   const warnings: InventoryDeductionWarning[] = [];
   const warningKeys = new Set<string>();
   const movementEntries: PlannedMovementEntry[] = [];
   const perLineCogs: Record<string, number> = {};
+  const perLineConsumptionStatus: Record<string, InventoryConsumptionStatus> = {};
+  const pendingConsumptionPayloads: PendingInventoryConsumptionPayload[] = [];
 
   const rawCache = new Map<string, RawIngredient | null>();
   const prepCache = new Map<string, PrepItem | null>();
@@ -318,6 +364,65 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       storeName: store.name,
       storeId: store.id,
     });
+  };
+
+  const deferLineBomIfAllowed = (
+    line: InventoryDeductionLineInput,
+    lineMeta: {
+      blockerStart: number;
+      movementStart: number;
+      finishedGoodCode: string;
+      finishedGoodName: string;
+      soldQuantity: number;
+      finishedGoodId: string;
+      bomVersion: number | null;
+    },
+  ): boolean => {
+    const lineBlockers = blockers.slice(lineMeta.blockerStart);
+    if (!allowDeferredBom || lineBlockers.length === 0) return false;
+
+    blockers.splice(lineMeta.blockerStart);
+    movementEntries.splice(lineMeta.movementStart);
+    perLineConsumptionStatus[line.lineKey] = 'PENDING_BOM';
+
+    const reason = lineBlockers
+      .map((blocker) => `${blocker.blockerType}${blocker.componentCode ? ` ${blocker.componentType || ''}/${blocker.componentCode}` : ''}`)
+      .join('; ');
+    const idempotencyKey = pendingConsumptionDocId(store.id, orderId, line.lineKey);
+
+    pendingConsumptionPayloads.push({
+      storeId: store.id,
+      storeCode: store.code,
+      storeName: store.name,
+      orderId,
+      orderNumber,
+      orderLineId: line.lineKey,
+      finishedGoodId: lineMeta.finishedGoodId,
+      finishedGoodCode: lineMeta.finishedGoodCode,
+      finishedGoodName: lineMeta.finishedGoodName,
+      quantitySold: lineMeta.soldQuantity,
+      soldAt: serverTimestamp(),
+      source,
+      status: 'PENDING_BOM',
+      reason: reason || 'Finished good BOM is incomplete or not approved for immediate inventory consumption.',
+      createdAt: serverTimestamp(),
+      resolvedAt: null,
+      resolvedBy: null,
+      appliedBomVersion: null,
+      inventoryMovementIds: [],
+      idempotencyKey,
+    });
+
+    pushWarning({
+      type: 'PENDING_BOM_DEFERRED',
+      message: `${lineMeta.finishedGoodName}: inventory will be reconciled after BOM completion.`,
+      storeId: store.id,
+      storeName: store.name,
+      finishedGoodCode: lineMeta.finishedGoodCode,
+      finishedGoodName: lineMeta.finishedGoodName,
+      unit: 'BOM',
+    });
+    return true;
   };
 
   const getRawIngredient = async (code: string): Promise<RawIngredient | null> => {
@@ -834,6 +939,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     const soldQuantity = toNumber(line.quantity, 0);
     const itemType = String(line.finishedGood.itemType || '');
     const bom = Array.isArray(line.finishedGood.bom) ? line.finishedGood.bom as BOMComponent[] : [];
+    const lineBlockerStart = blockers.length;
+    const lineMovementStart = movementEntries.length;
 
     if (!finishedGoodCode || !finishedGoodName || soldQuantity <= 0) {
       addBlocker({
@@ -869,6 +976,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     }
 
     if (isNoStockItem(line.finishedGood)) {
+      perLineConsumptionStatus[line.lineKey] = 'NOT_REQUIRED';
       continue;
     }
 
@@ -884,6 +992,17 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
           unit: 'BOM',
           suggestedAdminAction: 'Add a BOM/recipe for this finished good in Menu Management.',
         });
+        if (deferLineBomIfAllowed(line, {
+          blockerStart: lineBlockerStart,
+          movementStart: lineMovementStart,
+          finishedGoodCode,
+          finishedGoodName,
+          soldQuantity,
+          finishedGoodId: String((line.finishedGood as Record<string, unknown>).id || finishedGoodCode),
+          bomVersion: typeof line.finishedGood.bomVersion === 'number' ? line.finishedGood.bomVersion : null,
+        })) {
+          continue;
+        }
         continue;
       }
 
@@ -893,6 +1012,10 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         const componentName = String(bomLine.componentName || componentCode).trim();
         const componentQuantity = toNumber(bomLine.quantity, 0);
         const componentUnit = normalizeUom(bomLine.uom);
+
+        if (componentType === 'PACKAGING' && !isPackagingComponentApplicable(bomLine, orderType)) {
+          continue;
+        }
 
         if (!componentCode || !componentType || componentQuantity <= 0 || !componentUnit) {
           addBlocker({
@@ -926,6 +1049,18 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
           prepPath: [],
         });
       }
+      if (deferLineBomIfAllowed(line, {
+        blockerStart: lineBlockerStart,
+        movementStart: lineMovementStart,
+        finishedGoodCode,
+        finishedGoodName,
+        soldQuantity,
+        finishedGoodId: String((line.finishedGood as Record<string, unknown>).id || finishedGoodCode),
+        bomVersion: typeof line.finishedGood.bomVersion === 'number' ? line.finishedGood.bomVersion : null,
+      })) {
+        continue;
+      }
+      if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'APPLIED';
       continue;
     }
 
@@ -942,8 +1077,11 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         defaultCostPerUnit: toNumber(line.finishedGood.recipeCost),
         createMissingStockType: 'FINISHED_GOOD',
       });
+      if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'APPLIED';
       continue;
     }
+
+    if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'NOT_REQUIRED';
   }
 
   if (blockers.length > 0) {
@@ -952,8 +1090,10 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       warnings,
       totalCogs: 0,
       perLineCogs: {},
+      perLineConsumptionStatus: {},
       stockUpdates: [],
       movementPayloads: [],
+      pendingConsumptionPayloads: [],
     };
   }
 
@@ -1079,7 +1219,9 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     warnings,
     totalCogs,
     perLineCogs,
+    perLineConsumptionStatus,
     stockUpdates,
     movementPayloads,
+    pendingConsumptionPayloads,
   };
 }

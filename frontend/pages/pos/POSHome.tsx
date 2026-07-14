@@ -15,6 +15,11 @@ type CheckoutError = {
 };
 
 type CheckoutBlocker = InventoryDeductionBlocker;
+type CheckoutWriteTrace = {
+  step: string;
+  operation: 'create' | 'set' | 'update';
+  path: string;
+};
 
 type TaxConfig = {
   rate: number;
@@ -1305,6 +1310,12 @@ export default function POSHome() {
 
     setIsSaving(true);
     setCheckoutError(null);
+    const checkoutWriteTrace: CheckoutWriteTrace[] = [];
+    const traceCheckoutWrite = (step: string, operation: CheckoutWriteTrace['operation'], path: string) => {
+      const entry = { step, operation, path };
+      checkoutWriteTrace.push(entry);
+      if (import.meta.env.DEV) console.log('[CHECKOUT WRITE]', entry);
+    };
 
     try {
       const selectedStore = stores.find(s => s.id === selectedStoreId);
@@ -1427,6 +1438,7 @@ export default function POSHome() {
           store: selectedStore,
           orderId: newOrderRef.id,
           orderNumber,
+          orderType,
           businessDate: dateKey,
           source: 'POS',
           staffProfile: {
@@ -1465,6 +1477,7 @@ export default function POSHome() {
         // --- WRITE PHASE ONLY ---
         deductionPlan.stockUpdates.forEach((update) => {
           if (update.existed) {
+            traceCheckoutWrite('stock balance update', 'update', update.stockRef.path);
             transaction.update(update.stockRef, {
               currentStock: update.newQty,
               updatedAt: serverTimestamp(),
@@ -1472,6 +1485,7 @@ export default function POSHome() {
             return;
           }
 
+          traceCheckoutWrite('sale-created stock row', 'set', update.stockRef.path);
           transaction.set(update.stockRef, {
             ...update.seedData,
             currentStock: update.newQty,
@@ -1480,14 +1494,23 @@ export default function POSHome() {
           });
         });
         deductionPlan.movementPayloads.forEach((movement) => {
-          transaction.set(doc(collection(db, 'stockMovements')), movement);
+          const movementRef = doc(collection(db, 'stockMovements'));
+          traceCheckoutWrite('stock movement create', 'create', movementRef.path);
+          transaction.set(movementRef, movement);
+        });
+        deductionPlan.pendingConsumptionPayloads.forEach((pending) => {
+          const pendingRef = doc(db, 'pendingInventoryConsumption', pending.idempotencyKey);
+          traceCheckoutWrite('pending BOM create', 'set', pendingRef.path);
+          transaction.set(pendingRef, pending, { merge: true });
         });
 
         if (counterDoc.exists()) {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: updating counter to ${seq}`);
+          traceCheckoutWrite('counter update', 'update', counterRef.path);
           transaction.update(counterRef, { lastSequence: seq, updatedAt: serverTimestamp() });
         } else {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: creating counter at ${seq}`);
+          traceCheckoutWrite('counter create', 'set', counterRef.path);
           transaction.set(counterRef, { storeCode: selectedStore.code, dateKey, lastSequence: seq, updatedAt: serverTimestamp() });
         }
 
@@ -1496,6 +1519,7 @@ export default function POSHome() {
           if (custDoc && custDoc.exists()) {
              if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: update customer`);
             const data = custDoc.data();
+            traceCheckoutWrite('customer update', 'update', custRef.path);
             transaction.update(custRef, {
               visitCount: (data.visitCount || 0) + 1,
               totalSpend: (data.totalSpend || 0) + trueGrandTotal,
@@ -1506,6 +1530,7 @@ export default function POSHome() {
             if (!customerNameFinal && data.name) customerNameFinal = data.name;
           } else {
             if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: create customer`);
+            traceCheckoutWrite('customer create', 'set', custRef.path);
             transaction.set(custRef, {
               name: customerNameFinal || 'Unknown',
               phone: phoneToSearch,
@@ -1549,6 +1574,7 @@ export default function POSHome() {
           cogsTotal: deductionPlan.totalCogs,
           inventoryWarningCount: deductionPlan.warnings.length,
           inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
+          inventoryConsumptionStatus: deductionPlan.pendingConsumptionPayloads.length > 0 ? 'PENDING_BOM' : 'APPLIED',
           stockMovementCount: deductionPlan.movementPayloads.length,
           paymentMethod: (paymentRows[0]?.method || paymentMethod) as PaymentMethod,
           ...(isSplitPayment && {
@@ -1561,6 +1587,7 @@ export default function POSHome() {
         };
 
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving order data...`);
+        traceCheckoutWrite('order save', 'create', newOrderRef.path);
         transaction.set(newOrderRef, orderData);
 
         // Prep line items
@@ -1590,6 +1617,7 @@ export default function POSHome() {
             lineTax: lineTax,
             lineTotal: lineTaxable + lineTax,
             cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
+            inventoryConsumptionStatus: deductionPlan.perLineConsumptionStatus[lineRef.id] || 'APPLIED',
             prepStation: linePrepStation,
             status: 'PENDING',
             createdAt: serverTimestamp(),
@@ -1599,6 +1627,7 @@ export default function POSHome() {
           };
 
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set lineItem ${lineRef.id}`);
+          traceCheckoutWrite('order-line save', 'create', lineRef.path);
           transaction.set(lineRef, itemData);
           newItems.push({ id: lineRef.id, ...itemData });
 
@@ -1606,6 +1635,7 @@ export default function POSHome() {
           const createKotItem = (station: "BARISTA" | "KITCHEN") => {
             const kotRef = doc(collection(db, 'kotItems'));
             if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set kotItem ${kotRef.id} for station: ${station}`);
+            traceCheckoutWrite(`KOT save ${station}`, 'create', kotRef.path);
             transaction.set(kotRef, {
               orderId: newOrderRef.id,
               orderNumber,
@@ -1654,6 +1684,7 @@ export default function POSHome() {
             paymentIndex: index,
             createdAt: serverTimestamp()
           };
+          traceCheckoutWrite('payment save', 'create', paymentRef.path);
           transaction.set(paymentRef, paymentData);
           newPayments.push({ id: paymentRef.id, ...paymentData });
         });
@@ -1678,6 +1709,13 @@ export default function POSHome() {
     } catch (err: any) {
       if (isExpectedCheckoutValidationError(err)) console.warn(err instanceof Error ? err.message : err);
       else console.error(err);
+      if (String(err?.code || '').includes('permission') || String(err?.message || '').toLowerCase().includes('permission')) {
+        console.error('[CHECKOUT PERMISSION TRACE]', {
+          code: err?.code || null,
+          message: err?.message || String(err),
+          attemptedWrites: checkoutWriteTrace,
+        });
+      }
       setCheckoutError(buildCheckoutError(err));
     } finally {
       setIsSaving(false);

@@ -64,7 +64,7 @@ service cloud.firestore {
       && hasStoreAccess(request.resource.data.storeId)
       && request.resource.data.storeCode == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.code
       && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
-      && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM']
+      && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM', 'FINISHED_GOOD', 'PACKAGING', 'BOUGHT_COMPONENT']
       && request.resource.data.stockItemCode is string
       && request.resource.data.stockItemCode.size() > 0
       && stockId == request.resource.data.storeId + '_' + request.resource.data.stockItemType + '_' + request.resource.data.stockItemCode
@@ -77,6 +77,15 @@ service cloud.firestore {
       && request.resource.data.costPerUnit is number
       && request.resource.data.currentStock is number
       && request.resource.data.currentStock <= 0;
+    }
+
+    function isValidInventoryConsumptionStatus(status) {
+      return status in ['APPLIED', 'PENDING_BOM', 'NOT_REQUIRED'];
+    }
+
+    function hasValidInventoryConsumptionStatus(data) {
+      return !data.keys().hasAny(['inventoryConsumptionStatus'])
+        || isValidInventoryConsumptionStatus(data.inventoryConsumptionStatus);
     }
 
     function isSaleDeductionMovement() {
@@ -348,15 +357,20 @@ service cloud.firestore {
     match /orders/{orderId} {
       allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       // Allow create only if POS staff, and they have access to the store they are creating for
-      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      allow create: if isCheckoutStaff()
+        && hasStoreAccess(request.resource.data.storeId)
+        && hasValidInventoryConsumptionStatus(request.resource.data);
       // Allow update if Admin, or if they have access to the store
-      allow update: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow update: if isCheckoutStaff()
+        && (isAdmin() || hasStoreAccess(resource.data.storeId))
+        && hasValidInventoryConsumptionStatus(request.resource.data);
       allow delete: if isAdmin();
       
       // Order Subcollections
       match /items/{itemId} {
         allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
-        allow write: if isActiveStaff(); 
+        allow write: if isActiveStaff()
+          && hasValidInventoryConsumptionStatus(request.resource.data);
       }
       match /payments/{paymentId} {
         allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
@@ -406,6 +420,76 @@ service cloud.firestore {
       );
       allow delete: if false; // no deletions
       allow update: if false; // no modifications
+    }
+
+    match /pendingInventoryConsumption/{pendingId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create: if isCheckoutStaff()
+        && request.resource.data.keys().hasOnly([
+          'storeId',
+          'storeCode',
+          'storeName',
+          'orderId',
+          'orderNumber',
+          'orderLineId',
+          'finishedGoodId',
+          'finishedGoodCode',
+          'finishedGoodName',
+          'quantitySold',
+          'soldAt',
+          'source',
+          'status',
+          'reason',
+          'createdAt',
+          'resolvedAt',
+          'resolvedBy',
+          'appliedBomVersion',
+          'inventoryMovementIds',
+          'idempotencyKey'
+        ])
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.status == 'PENDING_BOM'
+        && request.resource.data.idempotencyKey == pendingId
+        && request.resource.data.orderId is string
+        && request.resource.data.orderId.size() > 0
+        && request.resource.data.orderNumber is string
+        && request.resource.data.orderNumber.size() > 0
+        && request.resource.data.orderLineId is string
+        && request.resource.data.orderLineId.size() > 0
+        && request.resource.data.finishedGoodId is string
+        && request.resource.data.finishedGoodId.size() > 0
+        && request.resource.data.finishedGoodCode is string
+        && request.resource.data.finishedGoodCode.size() > 0
+        && request.resource.data.finishedGoodName is string
+        && request.resource.data.finishedGoodName.size() > 0
+        && request.resource.data.quantitySold is number
+        && request.resource.data.quantitySold > 0
+        && request.resource.data.soldAt is timestamp
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.source in ['POS', 'CUSTOMER_WEB_ACCEPT']
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.resolvedAt == null
+        && request.resource.data.resolvedBy == null
+        && request.resource.data.appliedBomVersion == null
+        && request.resource.data.inventoryMovementIds is list
+        && request.resource.data.inventoryMovementIds.size() == 0;
+      allow update: if isCheckoutStaff()
+        && (isAdmin() || hasStoreAccess(resource.data.storeId))
+        && resource.data.status == 'PENDING_BOM'
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'reason',
+          'resolvedAt',
+          'resolvedBy',
+          'updatedAt'
+        ])
+        && request.resource.data.resolvedBy == request.auth.uid
+        && request.resource.data.resolvedAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
     }
 
     // --- Menu Management V2 Collections ---

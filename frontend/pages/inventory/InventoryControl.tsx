@@ -38,9 +38,32 @@ import {
 } from '../../types/menu-management';
 
 type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
-type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
+type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_BOM_BACKFILL' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
 type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
+type PendingInventoryConsumptionStatus = 'PENDING_BOM' | 'READY_FOR_BACKFILL' | 'APPLIED' | 'CANCELLED' | 'FAILED_REVIEW';
+
+type PendingInventoryConsumption = {
+  id: string;
+  storeId: string;
+  storeCode?: string;
+  storeName?: string;
+  orderId: string;
+  orderNumber: string;
+  orderLineId: string;
+  finishedGoodCode: string;
+  finishedGoodName: string;
+  quantitySold: number;
+  soldAt?: unknown;
+  source?: string;
+  status: PendingInventoryConsumptionStatus;
+  reason?: string;
+  createdAt?: unknown;
+  resolvedAt?: unknown;
+  resolvedBy?: string | null;
+  appliedBomVersion?: number | null;
+  inventoryMovementIds?: string[];
+};
 
 type AppGstConfig = {
   exists: boolean;
@@ -58,6 +81,7 @@ type InventoryControlData = {
   onlineOrders: OnlineOrder[];
   kotItems: KotItem[];
   stockMovements: StockMovement[];
+  pendingInventoryConsumption: PendingInventoryConsumption[];
   dayClosing: DayClosing | null;
   gstConfig: AppGstConfig;
 };
@@ -155,6 +179,18 @@ type MovementAuditRow = {
   createdBy: string;
 };
 
+type PendingBomRow = {
+  soldAt: string;
+  orderNumber: string;
+  finishedGoodName: string;
+  finishedGoodCode: string;
+  quantitySold: number;
+  source: string;
+  status: PendingInventoryConsumptionStatus;
+  reason: string;
+  movementCount: number;
+};
+
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 const GST_CONFIG_DOC_ID = 'gstConfig';
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
@@ -163,6 +199,7 @@ const RANGE_PRESETS: DatePreset[] = ['TODAY', 'LAST_7_DAYS', 'LAST_30_DAYS', 'CU
 const MOVEMENT_FILTERS: { value: MovementTypeFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
   { value: 'SALE_DEDUCTION', label: 'Sale deduction' },
+  { value: 'ORDER_BOM_BACKFILL', label: 'BOM backfill' },
   { value: 'PURCHASE_INWARD', label: 'Purchase inward' },
   { value: 'ORDER_VOID_REVERSAL', label: 'Void reversal' },
   { value: 'ADJUSTMENT', label: 'Manual adjustment' },
@@ -719,7 +756,7 @@ function buildPaymentTotals(orders: Order[]): Record<PaymentMethod, number> {
 function buildRawConsumptionRows(movements: StockMovement[]): RawConsumptionRow[] {
   const grouped = new Map<string, RawConsumptionRow & { orderIds: Set<string> }>();
   movements.forEach((movement) => {
-    if (movement.movementType !== 'SALE_DEDUCTION') return;
+    if (movement.movementType !== 'SALE_DEDUCTION' && movement.movementType !== 'ORDER_BOM_BACKFILL') return;
     if (!['RAW_INGREDIENT', 'PREP_ITEM'].includes(String(movement.stockItemType || ''))) return;
     const key = `${movement.stockItemType || 'UNKNOWN'}|${movement.stockItemCode || movement.inventoryItemId || 'UNKNOWN'}|${movement.unit || 'UNKNOWN'}`;
     const existing = grouped.get(key) || {
@@ -814,7 +851,7 @@ function buildMovementAuditRows(movements: StockMovement[]): MovementAuditRow[] 
 
 function buildMissingCostRows(movements: StockMovement[]): MissingCostRow[] {
   return movements
-    .filter((movement) => movement.movementType === 'SALE_DEDUCTION' && money(movement.cogsAmount) <= 0)
+    .filter((movement) => (movement.movementType === 'SALE_DEDUCTION' || movement.movementType === 'ORDER_BOM_BACKFILL') && money(movement.cogsAmount) <= 0)
     .map((movement) => ({
       dateTime: formatDateTime(movement.createdAt),
       orderNumber: movement.orderNumber || '-',
@@ -829,7 +866,7 @@ function buildMissingCostRows(movements: StockMovement[]): MissingCostRow[] {
 
 function buildMissingStockCreatedRows(movements: StockMovement[]): MissingStockCreatedRow[] {
   return movements
-    .filter((movement) => movement.movementType === 'SALE_DEDUCTION' && money(movement.previousQty) === 0 && money(movement.newQty) < 0)
+    .filter((movement) => (movement.movementType === 'SALE_DEDUCTION' || movement.movementType === 'ORDER_BOM_BACKFILL') && money(movement.previousQty) === 0 && money(movement.newQty) < 0)
     .map((movement) => ({
       itemName: movement.inventoryItemName || '-',
       stockItemType: (movement.stockItemType || 'RAW_INGREDIENT') as StockItemType,
@@ -866,7 +903,7 @@ function buildNegativeStockRows(
     .filter((row) => row.storeId === store.id && ['RAW_INGREDIENT', 'PREP_ITEM'].includes(row.stockItemType) && money(row.currentStock) < 0)
     .map((row) => {
       const latestMovement = latestMovementByKey.get(`${row.stockItemType}|${row.stockItemCode}`);
-      const createdBySale = Boolean(latestMovement && latestMovement.movementType === 'SALE_DEDUCTION' && (money(latestMovement.previousQty) === 0 || latestMovement.wentNegative));
+      const createdBySale = Boolean(latestMovement && (latestMovement.movementType === 'SALE_DEDUCTION' || latestMovement.movementType === 'ORDER_BOM_BACKFILL') && (money(latestMovement.previousQty) === 0 || latestMovement.wentNegative));
       return {
         itemName: row.stockItemName,
         stockItemType: row.stockItemType,
@@ -879,6 +916,26 @@ function buildNegativeStockRows(
       };
     })
     .sort((a, b) => a.currentStock - b.currentStock);
+}
+
+function buildPendingBomRows(pendingRows: PendingInventoryConsumption[]): PendingBomRow[] {
+  return pendingRows
+    .map((row) => ({
+      soldAt: formatDateTime(row.soldAt || row.createdAt),
+      orderNumber: row.orderNumber || '-',
+      finishedGoodName: row.finishedGoodName || row.finishedGoodCode || '-',
+      finishedGoodCode: row.finishedGoodCode || '-',
+      quantitySold: money(row.quantitySold),
+      source: row.source || '-',
+      status: row.status || 'PENDING_BOM',
+      reason: row.reason || '-',
+      movementCount: Array.isArray(row.inventoryMovementIds) ? row.inventoryMovementIds.length : 0,
+    }))
+    .sort((a, b) => {
+      const aDate = new Date(a.soldAt).getTime();
+      const bDate = new Date(b.soldAt).getTime();
+      return bDate - aDate;
+    });
 }
 
 function buildAuditCards(params: {
@@ -1153,6 +1210,7 @@ export default function InventoryControl() {
     onlineOrders: [],
     kotItems: [],
     stockMovements: [],
+    pendingInventoryConsumption: [],
     dayClosing: null,
     gstConfig: { exists: false, defaultRate: 0, defaultSource: `appSettings/${GST_CONFIG_DOC_ID}`, storeOverrides: {} },
   });
@@ -1218,7 +1276,7 @@ export default function InventoryControl() {
       setDataLoading(true);
       setError('');
       try {
-        const [rawSnap, prepSnap, fgSnap, stockSnap, orderSnap, onlineOrderSnap, kotSnap, movementSnap, gstConfig, closingSnap] = await Promise.all([
+        const [rawSnap, prepSnap, fgSnap, stockSnap, orderSnap, onlineOrderSnap, kotSnap, movementSnap, pendingConsumptionSnap, gstConfig, closingSnap] = await Promise.all([
           getDocs(collection(db, 'rawIngredients')),
           getDocs(collection(db, 'prepItems')),
           getDocs(collection(db, 'finishedGoods')),
@@ -1227,6 +1285,7 @@ export default function InventoryControl() {
           getDocs(query(collection(db, 'onlineOrders'), where('storeId', '==', selectedStore.id))),
           getDocs(query(collection(db, 'kotItems'), where('storeId', '==', selectedStore.id))),
           getDocs(query(collection(db, 'stockMovements'), where('storeId', '==', selectedStore.id))),
+          getDocs(query(collection(db, 'pendingInventoryConsumption'), where('storeId', '==', selectedStore.id))),
           getDoc(doc(db, 'appSettings', GST_CONFIG_DOC_ID)),
           getDoc(doc(db, 'dayClosings', `${selectedStore.id}_${dateRange.endKey}`)),
         ]);
@@ -1242,6 +1301,7 @@ export default function InventoryControl() {
         const allOnlineOrders = onlineOrderSnap.docs.map((item) => ({ id: item.id, ...item.data() } as OnlineOrder));
         const allKotItems = kotSnap.docs.map((item) => ({ id: item.id, ...item.data() } as KotItem));
         const allMovements = movementSnap.docs.map((item) => ({ id: item.id, ...item.data() } as StockMovement));
+        const allPendingConsumption = pendingConsumptionSnap.docs.map((item) => ({ id: item.id, ...item.data() } as PendingInventoryConsumption));
 
         const loaded: InventoryControlData = {
           rawIngredients: rawSnap.docs.map((item) => ({ id: item.id, ...item.data() } as RawIngredient)),
@@ -1260,6 +1320,9 @@ export default function InventoryControl() {
           stockMovements: allMovements
             .filter((movement) => inRange(movement.createdAt))
             .sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)),
+          pendingInventoryConsumption: allPendingConsumption
+            .filter((item) => inRange(item.soldAt || item.createdAt || item.resolvedAt))
+            .sort((a, b) => (toDate(b.soldAt || b.createdAt)?.getTime() || 0) - (toDate(a.soldAt || a.createdAt)?.getTime() || 0)),
           dayClosing: closingSnap.exists() ? ({ id: closingSnap.id, ...closingSnap.data() } as DayClosing) : null,
           gstConfig: gstConfig.exists()
             ? {
@@ -1309,6 +1372,7 @@ export default function InventoryControl() {
     }),
     [data.onlineOrders, dateRange.endKey, dateRange.startKey],
   );
+  const pendingConsumptionRows = useMemo(() => data.pendingInventoryConsumption, [data.pendingInventoryConsumption]);
 
   const completedOrders = useMemo(() => periodOrders.filter((order) => isCompletedOrder(order)), [periodOrders]);
   const voidedOrders = useMemo(() => periodOrders.filter((order) => effectiveOrderStatus(order) !== 'COMPLETED'), [periodOrders]);
@@ -1363,10 +1427,23 @@ export default function InventoryControl() {
       return movementTypeFilterMatch && itemTypeFilterMatch;
     }),
   ), [itemTypeFilter, movementTypeFilter, periodMovements]);
+  const pendingBomRows = useMemo(() => buildPendingBomRows(pendingConsumptionRows), [pendingConsumptionRows]);
   const setupBlockers = useMemo(() => selectedStore ? buildSetupBlockers(selectedStore, data.rawIngredients, data.prepItems, data.finishedGoods) : [], [data.finishedGoods, data.prepItems, data.rawIngredients, selectedStore]);
   const negativeStockCount = negativeStockRows.length;
   const missingCostWarningCount = missingCostRows.length;
   const missingStockCreatedCount = missingStockCreatedRows.length;
+  const activePendingBomRows = pendingConsumptionRows.filter((row) => row.status === 'PENDING_BOM' || row.status === 'READY_FOR_BACKFILL');
+  const appliedPendingBomRows = pendingConsumptionRows.filter((row) => row.status === 'APPLIED');
+  const failedPendingBomRows = pendingConsumptionRows.filter((row) => row.status === 'FAILED_REVIEW');
+  const pendingBomFinishedGoodCount = new Set(activePendingBomRows.map((row) => row.finishedGoodCode).filter(Boolean)).size;
+  const oldestPendingBomSale = activePendingBomRows
+    .map((row) => toDate(row.soldAt || row.createdAt))
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => a.getTime() - b.getTime())[0] || null;
+  const pendingBomOrderIds = new Set(activePendingBomRows.map((row) => row.orderId).filter(Boolean));
+  const pendingBomOrderValue = periodOrders
+    .filter((order) => order.id && pendingBomOrderIds.has(order.id))
+    .reduce((sum, order) => sum + money(order.grandTotal), 0);
   const setupBlockerCount = new Set(setupBlockers.map((blocker) => blocker.finishedGoodCode)).size;
   const pendingKotCount = kotPendingItems.length;
   const pendingKotOldCount = kotOldPendingItems.length;
@@ -1397,6 +1474,12 @@ export default function InventoryControl() {
     { label: 'Negative stock items', value: negativeStockCount, tone: negativeStockCount > 0 ? 'red' : 'neutral' },
     { label: 'Missing cost warnings', value: missingCostWarningCount, tone: missingCostWarningCount > 0 ? 'amber' : 'neutral' },
     { label: 'Missing sale rows', value: missingStockCreatedCount, tone: missingStockCreatedCount > 0 ? 'amber' : 'neutral' },
+    { label: 'Pending BOM lines', value: activePendingBomRows.length, tone: activePendingBomRows.length > 0 ? 'amber' : 'green' },
+    { label: 'Pending BOM products', value: pendingBomFinishedGoodCount, tone: pendingBomFinishedGoodCount > 0 ? 'amber' : 'green' },
+    { label: 'Oldest pending sale', value: oldestPendingBomSale ? formatDateTime(oldestPendingBomSale) : '—', tone: oldestPendingBomSale ? 'amber' : 'green' },
+    { label: 'Pending order value', value: formatMoney(pendingBomOrderValue), tone: pendingBomOrderValue > 0 ? 'amber' : 'neutral' },
+    { label: 'Backfilled BOM lines', value: appliedPendingBomRows.length, tone: appliedPendingBomRows.length > 0 ? 'green' : 'neutral' },
+    { label: 'Failed backfills', value: failedPendingBomRows.length, tone: failedPendingBomRows.length > 0 ? 'red' : 'neutral' },
     { label: 'Total COGS', value: formatMoney(totalCogs), tone: 'neutral' },
     { label: 'Food cost %', value: netSales > 0 ? `${foodCostPct.toFixed(1)}%` : '—', tone: netSales > 0 && foodCostPct > 40 ? 'amber' : 'neutral' },
     { label: 'Stock movement rows', value: periodMovements.length, tone: periodMovements.length > 0 ? 'neutral' : 'amber' },
@@ -1653,6 +1736,39 @@ export default function InventoryControl() {
                 <span key="new" className="font-mono">{row.newStock.toFixed(2)}</span>,
                 row.dateTime,
                 <span key="warn" className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-700">{row.warning}</span>,
+              ])}
+            />
+          </SectionCard>
+
+          <SectionCard
+            title="Pending BOM Consumption"
+            description="Golden I deferred-inventory order lines waiting for BOM completion or backfill. This table is read-only."
+          >
+            <DataTable
+              headers={['Sold at', 'Order', 'Finished good', 'Code', 'Qty sold', 'Source', 'Status', 'Reason', 'Movements']}
+              rows={pendingBomRows.map((row) => [
+                row.soldAt,
+                row.orderNumber,
+                row.finishedGoodName,
+                row.finishedGoodCode,
+                <span key="qty" className="font-mono">{row.quantitySold.toFixed(2)}</span>,
+                row.source,
+                <span
+                  key="status"
+                  className={`rounded-full px-2 py-1 text-[10px] font-black ${
+                    row.status === 'APPLIED'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : row.status === 'FAILED_REVIEW'
+                        ? 'bg-red-100 text-red-700'
+                        : row.status === 'CANCELLED'
+                          ? 'bg-neutral-100 text-neutral-600'
+                          : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {row.status}
+                </span>,
+                row.reason,
+                row.movementCount,
               ])}
             />
           </SectionCard>

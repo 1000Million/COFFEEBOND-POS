@@ -188,11 +188,13 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const sequence = counterSnap.exists() ? (Number(counterSnap.data().lastSequence) || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${sequence.toString().padStart(4, '0')}`;
     const lineRefs = calculatedLines.map(() => doc(collection(newOrderRef, 'items')));
+    const orderType = buildOrderType(onlineOrder);
     const deductionPlan = await planInventoryDeductionForSale({
       transaction,
       store,
       orderId: newOrderRef.id,
       orderNumber,
+      orderType,
       businessDate: dateKey,
       source: 'CUSTOMER_WEB_ACCEPT',
       staffProfile: {
@@ -218,7 +220,6 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const taxableAmount = calculatedLines.reduce((sum, line) => sum + line.lineTaxable, 0);
     const gstTotal = calculatedLines.reduce((sum, line) => sum + line.lineTax, 0);
     const grandTotal = taxableAmount + gstTotal;
-    const orderType = buildOrderType(onlineOrder);
     const tableNumber = buildOnlineOrderTableNumber(onlineOrder);
     const customerPhone = onlineOrder.customerPhone.trim();
     const customerName = onlineOrder.customerName.trim() || 'Online Guest';
@@ -243,6 +244,9 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
 
     deductionPlan.movementPayloads.forEach((movement) => {
       transaction.set(doc(collection(db, 'stockMovements')), movement);
+    });
+    deductionPlan.pendingConsumptionPayloads.forEach((pending) => {
+      transaction.set(doc(db, 'pendingInventoryConsumption', pending.idempotencyKey), pending, { merge: true });
     });
 
     if (counterSnap.exists()) {
@@ -289,6 +293,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       cogsTotal: deductionPlan.totalCogs,
       inventoryWarningCount: deductionPlan.warnings.length,
       inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
+      inventoryConsumptionStatus: deductionPlan.pendingConsumptionPayloads.length > 0 ? 'PENDING_BOM' : 'APPLIED',
       stockMovementCount: deductionPlan.movementPayloads.length,
       paymentMethod: 'PAY_AT_COUNTER',
       paymentMethodLabel: 'PAY_AT_COUNTER',
@@ -326,6 +331,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
         cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
+        inventoryConsumptionStatus: deductionPlan.perLineConsumptionStatus[lineRef.id] || 'APPLIED',
         prepStation: linePrepStation,
         status: 'PENDING',
         createdAt: serverTimestamp(),
