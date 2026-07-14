@@ -23,6 +23,11 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { db, functions } from '../../lib/firebase';
+import {
+  deriveCustomerOrderingState,
+  prepWindowLabel,
+  storeOnlineMessage,
+} from '../../lib/customerOrderingState';
 import { OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { FinishedGood } from '../../types/menu-management';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
@@ -168,27 +173,6 @@ function itemTaxRate(item: CustomerMenuItem, fallbackRate: number): number {
 
 function isStoreAvailable(item: CustomerMenuItem, storeId: string): boolean {
   return Array.isArray(item.availableStoreIds) && item.availableStoreIds.includes(storeId);
-}
-
-function isStoreOnlineEnabled(store: Store | null): boolean {
-  return !!store && store.onlineOrderingEnabled !== false;
-}
-
-function storeOnlineMessage(store: Store | null): string {
-  if (!store) return 'Select a store to start your order.';
-  if (!isStoreOnlineEnabled(store)) return 'Online ordering is currently unavailable for this store.';
-  if (store.onlineOrderingMessage?.trim()) return store.onlineOrderingMessage.trim();
-  if (store.estimatedPrepMinutes && store.estimatedPrepMinutes > 0) {
-    const min = Math.max(5, store.estimatedPrepMinutes - 5);
-    return `Pickup available in ${min}-${store.estimatedPrepMinutes} minutes`;
-  }
-  return 'Pickup available soon after store confirmation.';
-}
-
-function prepWindowLabel(minutes?: number | null): string {
-  const safeMinutes = minutes && minutes > 0 ? minutes : 20;
-  const min = Math.max(5, safeMinutes - 5);
-  return `${min}-${safeMinutes} min`;
 }
 
 function estimatedPrepLabel(store: Store | null): string {
@@ -458,11 +442,9 @@ export default function CustomerOrder() {
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
-  const selectedStoreOnline = isStoreOnlineEnabled(selectedStore);
   const selectedStoreMessage = storeOnlineMessage(selectedStore);
-  const availabilitySnapshotMissing = !!selectedStoreId && !availabilityLoading && !publicAvailability;
   const availabilitySnapshotStale = isSnapshotStale(publicAvailability);
-  const availabilityNotice = availabilitySnapshotMissing || availabilitySnapshotStale
+  const availabilityNotice = availabilitySnapshotStale
     ? 'Availability will be confirmed by the store.'
     : '';
 
@@ -513,6 +495,14 @@ export default function CustomerOrder() {
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name))
       .slice(0, 6);
   }, [orderableItems]);
+
+  const customerOrderingState = useMemo(() => deriveCustomerOrderingState({
+    store: selectedStore,
+    availabilitySnapshot: publicAvailability,
+    availabilityLoading,
+    orderableItemCount: orderableItems.length,
+  }), [selectedStore, publicAvailability, availabilityLoading, orderableItems.length]);
+  const selectedStoreOnline = customerOrderingState.canAcceptOrders;
 
   const totals = useMemo(() => {
     const subtotal = cart.reduce((sum, line) => sum + toNumber(line.item.salePrice) * line.quantity, 0);
@@ -571,7 +561,7 @@ export default function CustomerOrder() {
   const submitOrder = async () => {
     if (saving || submittingRef.current) return;
     if (!selectedStore) return setError('Please select a store.');
-    if (!selectedStoreOnline) return setError(selectedStoreMessage);
+    if (!customerOrderingState.canAcceptOrders) return setError(customerOrderingState.message);
     if (cart.length === 0) return setError('Please add at least one item.');
     const cleanCustomerName = customerName.trim().replace(/\s+/g, ' ');
     const cleanPhone = normalizeIndianPhone(customerPhone);
@@ -703,7 +693,7 @@ export default function CustomerOrder() {
   const renderPopularCard = (item: CustomerMenuItem) => {
     const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-    const canOrder = selectedStoreOnline && availability.available;
+    const canOrder = customerOrderingState.canAcceptOrders && availability.available;
 
     return (
       <article key={`popular-${item.code}`} className="min-w-[144px] max-w-[144px] rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-[#eadfd2]">
@@ -728,7 +718,7 @@ export default function CustomerOrder() {
   const renderMenuCard = (item: CustomerMenuItem) => {
     const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-    const canOrder = selectedStoreOnline && availability.available;
+    const canOrder = customerOrderingState.canAcceptOrders && availability.available;
     const meta = visualMeta(item);
 
     return (
@@ -1011,10 +1001,14 @@ export default function CustomerOrder() {
             </div>
             <div className="flex flex-wrap gap-2">
               <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black ${
-                selectedStoreOnline ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+                customerOrderingState.tone === 'green'
+                  ? 'bg-emerald-50 text-emerald-700'
+                  : customerOrderingState.tone === 'amber'
+                    ? 'bg-amber-50 text-amber-800'
+                    : 'bg-red-50 text-red-700'
               }`}>
-                <CheckCircle2 size={13} />
-                {selectedStoreOnline ? 'Accepting orders' : 'Unavailable'}
+                {customerOrderingState.tone === 'green' ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+                {customerOrderingState.statusLabel}
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fbf5ee] px-3 py-1.5 text-xs font-bold text-[#5c4033]">
                 <Clock size={13} />
@@ -1022,7 +1016,9 @@ export default function CustomerOrder() {
               </span>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-neutral-600">
-              {orderType === 'DINE_IN' ? 'Your table order will be sent after store confirmation.' : selectedStoreMessage}
+              {orderType === 'DINE_IN' && customerOrderingState.canAcceptOrders
+                ? 'Your table order will be sent after store confirmation.'
+                : customerOrderingState.message}
             </p>
             {availabilityLoading ? (
               <p className="mt-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-xs font-bold text-[#7b5a42]">
