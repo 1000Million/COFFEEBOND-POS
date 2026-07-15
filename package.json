@@ -18,6 +18,7 @@
     "refresh:public-menu-availability": "node scripts/refresh-public-menu-availability.mjs",
     "test:packaging-applicability": "esbuild scripts/test-packaging-applicability.ts --bundle --platform=node --format=esm --outfile=/tmp/packaging-applicability-test.mjs && node /tmp/packaging-applicability-test.mjs",
     "test:security-rules": "node scripts/test-firestore-security-rules.mjs",
+    "test:purchase-calculations": "esbuild scripts/test-purchase-calculations.ts --bundle --platform=node --format=esm --outfile=/tmp/purchase-calculations-test.mjs && node /tmp/purchase-calculations-test.mjs",
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs"
   },

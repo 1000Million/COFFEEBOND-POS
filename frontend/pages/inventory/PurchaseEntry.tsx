@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowLeft,
+  Calculator,
   FileText,
   Loader2,
   PackagePlus,
@@ -15,10 +17,21 @@ import {
 import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
+import {
+  calculatePurchaseLine,
+  calculatePurchaseTotals,
+  emptyPurchaseTotals,
+  normalizePurchaseUnit,
+  parseNumber,
+  PriceBasis,
+  PURCHASE_UNITS,
+  PurchaseLineCalculation,
+} from '../../lib/purchaseCalculations';
 import { Store, StockMovement } from '../../types';
 import { PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
 
 type PurchaseLineType = 'RAW_INGREDIENT' | 'PREP_ITEM';
+
 type ItemOption = {
   id: string;
   itemType: PurchaseLineType;
@@ -36,10 +49,14 @@ type PurchaseLineForm = {
   id: string;
   itemType: PurchaseLineType;
   itemCode: string;
-  quantity: string;
-  unit: string;
-  purchaseCostTotal: string;
-  costPerUnit: string;
+  purchaseQuantity: string;
+  purchaseUOM: string;
+  packSize: string;
+  packSizeUOM: string;
+  priceBasis: PriceBasis;
+  rate: string;
+  taxPercent: string;
+  discountPercent: string;
   notes: string;
 };
 
@@ -52,6 +69,11 @@ type PurchaseEntryRecord = {
   supplierName: string;
   invoiceNumber: string;
   notes?: string;
+  subtotal?: number;
+  discountAmount?: number;
+  taxableAmount?: number;
+  taxAmount?: number;
+  grandTotal?: number;
   totalAmount: number;
   itemCount: number;
   status: 'POSTED';
@@ -61,13 +83,26 @@ type PurchaseEntryRecord = {
     itemType: PurchaseLineType;
     itemCode: string;
     itemName: string;
-    quantity: number;
-    stockQuantity: number;
-    unit: string;
-    stockUnit: string;
-    purchaseCostTotal: number;
-    costPerUnit: number;
-    costPerStockUnit: number;
+    quantity?: number;
+    purchaseQuantity?: number;
+    stockQuantity?: number;
+    convertedStockQuantity?: number;
+    unit?: string;
+    purchaseUOM?: string;
+    stockUnit?: string;
+    stockUOM?: string;
+    purchaseCostTotal?: number;
+    costPerUnit?: number;
+    costPerStockUnit?: number;
+    calculatedCostPerStockUnit?: number;
+    inventoryCostAmount?: number;
+    rate?: number;
+    subtotal?: number;
+    discountAmount?: number;
+    taxableAmount?: number;
+    taxRate?: number;
+    taxAmount?: number;
+    totalAmount?: number;
     notes?: string;
   }>;
   movementIds?: string[];
@@ -76,20 +111,31 @@ type PurchaseEntryRecord = {
 type PreparedLine = {
   option: ItemOption;
   form: PurchaseLineForm;
-  quantity: number;
-  stockQuantity: number;
-  totalCost: number;
-  costPerInputUnit: number;
-  costPerStockUnit: number;
-  unit: string;
+  calculation: PurchaseLineCalculation;
   stockId: string;
   existingStock?: StoreStock & { id: string };
+};
+
+type LineState = {
+  option: ItemOption | null;
+  calculation: PurchaseLineCalculation | null;
+  existingStock: (StoreStock & { id: string }) | null;
+  error: string;
+  fieldErrors: Record<string, string>;
 };
 
 const ITEM_TYPES: { value: PurchaseLineType; label: string }[] = [
   { value: 'RAW_INGREDIENT', label: 'Raw ingredient' },
   { value: 'PREP_ITEM', label: 'Prep item' },
 ];
+
+const PRICE_BASIS_OPTIONS: { value: PriceBasis; label: string }[] = [
+  { value: 'PER_PURCHASE_UNIT', label: 'Rate per unit' },
+  { value: 'TOTAL_LINE', label: 'Total line amount' },
+];
+
+const PACK_UNITS = new Set(['PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
+const PACK_CONTENT_UNITS = ['G', 'KG', 'ML', 'L', 'PCS'];
 
 function todayIso(): string {
   const date = new Date();
@@ -100,8 +146,7 @@ function todayIso(): string {
 }
 
 function money(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return parseNumber(value);
 }
 
 function formatMoney(value: unknown): string {
@@ -129,10 +174,6 @@ function itemKey(itemType: string, itemCode: string): string {
   return `${itemType}|${itemCode}`;
 }
 
-function normalizeUnit(value: string): string {
-  return value.trim().toUpperCase();
-}
-
 function allowedStoreIds(profile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
   return profile.assignedStoreIds?.length ? profile.assignedStoreIds : (profile.storeIds || []);
 }
@@ -142,12 +183,106 @@ function newLine(defaultType: PurchaseLineType = 'RAW_INGREDIENT'): PurchaseLine
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     itemType: defaultType,
     itemCode: '',
-    quantity: '',
-    unit: '',
-    purchaseCostTotal: '',
-    costPerUnit: '',
+    purchaseQuantity: '',
+    purchaseUOM: '',
+    packSize: '',
+    packSizeUOM: '',
+    priceBasis: 'PER_PURCHASE_UNIT',
+    rate: '',
+    taxPercent: '0',
+    discountPercent: '0',
     notes: '',
   };
+}
+
+function fieldClass(hasError: boolean): string {
+  return [
+    'w-full rounded-2xl border bg-white px-3 py-3 text-sm font-bold text-[#3e2723] outline-none transition focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]/10',
+    hasError ? 'border-red-300' : 'border-neutral-200',
+  ].join(' ');
+}
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p className="mt-1 text-xs font-bold text-red-700">{message}</p>;
+}
+
+function shouldUseItemConversion(line: PurchaseLineForm, option: ItemOption): number {
+  const purchaseUOM = normalizePurchaseUnit(line.purchaseUOM || option.purchaseUnit || option.baseUnit);
+  const packSizeUOM = normalizePurchaseUnit(line.packSizeUOM);
+  const optionPurchaseUOM = normalizePurchaseUnit(option.purchaseUnit);
+  const optionBaseUnit = normalizePurchaseUnit(option.baseUnit);
+
+  if (!option.conversionFactor || option.conversionFactor <= 0 || option.conversionFactor === 1) return 0;
+  if (purchaseUOM === optionPurchaseUOM && optionPurchaseUOM !== optionBaseUnit) return option.conversionFactor;
+  if (packSizeUOM === optionPurchaseUOM && optionPurchaseUOM !== optionBaseUnit) return option.conversionFactor;
+  return 0;
+}
+
+function buildLineState(
+  line: PurchaseLineForm,
+  optionsByKey: Map<string, ItemOption>,
+  stockByKey: Map<string, StoreStock & { id: string }>,
+): LineState {
+  const option = optionsByKey.get(itemKey(line.itemType, line.itemCode)) || null;
+  const fieldErrors: Record<string, string> = {};
+
+  if (!option) {
+    if (line.itemCode) fieldErrors.itemCode = 'Selected item is no longer available.';
+    return { option, calculation: null, existingStock: null, error: '', fieldErrors };
+  }
+
+  const purchaseQuantity = money(line.purchaseQuantity);
+  const rate = money(line.rate);
+  const discountPercent = money(line.discountPercent);
+  const taxPercent = money(line.taxPercent);
+  if (line.purchaseQuantity && purchaseQuantity <= 0) fieldErrors.purchaseQuantity = 'Quantity must be greater than 0.';
+  if (line.rate && rate < 0) fieldErrors.rate = 'Rate cannot be negative.';
+  if (discountPercent < 0 || discountPercent > 100) fieldErrors.discountPercent = 'Discount must be 0 to 100%.';
+  if (taxPercent < 0 || taxPercent > 100) fieldErrors.taxPercent = 'Tax must be 0 to 100%.';
+
+  try {
+    if (!line.purchaseQuantity || !line.rate) {
+      return {
+        option,
+        calculation: null,
+        existingStock: stockByKey.get(itemKey(option.itemType, option.code)) || null,
+        error: '',
+        fieldErrors,
+      };
+    }
+
+    const purchaseUOM = line.purchaseUOM || option.purchaseUnit || option.baseUnit;
+    const calculation = calculatePurchaseLine({
+      purchaseQuantity,
+      purchaseUOM,
+      stockUOM: option.baseUnit,
+      packSize: money(line.packSize),
+      packSizeUOM: line.packSizeUOM,
+      priceBasis: line.priceBasis,
+      rate,
+      taxPercent,
+      discountPercent,
+      itemConversionFactor: shouldUseItemConversion(line, option),
+    });
+
+    return {
+      option,
+      calculation,
+      existingStock: stockByKey.get(itemKey(option.itemType, option.code)) || null,
+      error: '',
+      fieldErrors,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unable to calculate this row.';
+    return {
+      option,
+      calculation: null,
+      existingStock: stockByKey.get(itemKey(option.itemType, option.code)) || null,
+      error: message,
+      fieldErrors,
+    };
+  }
 }
 
 export default function PurchaseEntry() {
@@ -230,6 +365,18 @@ export default function PurchaseEntry() {
     if (!term) return itemOptions;
     return itemOptions.filter((item) => `${item.name} ${item.code} ${item.itemType}`.toLowerCase().includes(term));
   }, [itemOptions, itemSearch]);
+
+  const lineStates = useMemo(() => (
+    new Map(lines.map((line) => [line.id, buildLineState(line, optionsByKey, stockByKey)]))
+  ), [lines, optionsByKey, stockByKey]);
+
+  const calculatedLines = useMemo(() => (
+    Array.from(lineStates.values()).flatMap((state) => (state.calculation ? [state.calculation] : []))
+  ), [lineStates]);
+
+  const formTotals = useMemo(() => (
+    calculatedLines.length > 0 ? calculatePurchaseTotals(calculatedLines) : emptyPurchaseTotals()
+  ), [calculatedLines]);
 
   const selectedPurchase = useMemo(
     () => recentPurchases.find((purchase) => purchase.id === selectedPurchaseId) || null,
@@ -330,14 +477,22 @@ export default function PurchaseEntry() {
       const next = { ...line, ...patch };
       if (patch.itemType && patch.itemType !== line.itemType) {
         next.itemCode = '';
-        next.unit = '';
+        next.purchaseUOM = '';
+        next.packSize = '';
+        next.packSizeUOM = '';
+        next.rate = '';
       }
       if (patch.itemCode) {
         const option = optionsByKey.get(itemKey(next.itemType, patch.itemCode));
-        next.unit = option?.purchaseUnit || option?.baseUnit || '';
-        if (!next.costPerUnit && option?.currentCost) {
-          next.costPerUnit = String(option.currentCost);
+        next.purchaseUOM = normalizePurchaseUnit(option?.purchaseUnit || option?.baseUnit || '');
+        next.packSizeUOM = '';
+        if (!next.rate && option?.currentCost) {
+          next.rate = String(option.currentCost);
         }
+      }
+      if (patch.purchaseUOM && !PACK_UNITS.has(normalizePurchaseUnit(patch.purchaseUOM))) {
+        next.packSize = '';
+        next.packSizeUOM = '';
       }
       return next;
     }));
@@ -351,51 +506,21 @@ export default function PurchaseEntry() {
     setLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== lineId));
   };
 
-  const resolveStockQuantity = (option: ItemOption, quantity: number, unit: string): number => {
-    const enteredUnit = normalizeUnit(unit);
-    const baseUnit = normalizeUnit(option.baseUnit);
-    const purchaseUnit = normalizeUnit(option.purchaseUnit);
-
-    if (!enteredUnit || !baseUnit) throw new Error(`Unit is missing for ${option.name}.`);
-    if (enteredUnit === baseUnit) return quantity;
-    if (option.itemType === 'RAW_INGREDIENT' && enteredUnit === purchaseUnit && option.conversionFactor > 0) {
-      return quantity * option.conversionFactor;
-    }
-    throw new Error(`Cannot convert ${unit} to ${option.baseUnit} for ${option.name}.`);
-  };
-
   const prepareLines = (): PreparedLine[] => {
     const prepared = lines.map((line, index) => {
-      const option = optionsByKey.get(itemKey(line.itemType, line.itemCode));
-      if (!option) throw new Error(`Select an item for row ${index + 1}.`);
-
-      const quantity = money(line.quantity);
-      if (quantity <= 0) throw new Error(`Quantity must be greater than 0 for ${option.name}.`);
-
-      const unit = line.unit.trim() || option.purchaseUnit || option.baseUnit;
-      const stockQuantity = resolveStockQuantity(option, quantity, unit);
-      if (stockQuantity <= 0) throw new Error(`Stock quantity must be greater than 0 for ${option.name}.`);
-
-      const totalFromInput = money(line.purchaseCostTotal);
-      const costPerInput = money(line.costPerUnit);
-      if (totalFromInput < 0 || costPerInput < 0) throw new Error(`Cost cannot be negative for ${option.name}.`);
-
-      const totalCost = totalFromInput > 0 ? totalFromInput : costPerInput * quantity;
-      const costPerInputUnit = totalCost > 0 ? totalCost / quantity : 0;
-      const costPerStockUnit = totalCost > 0 ? totalCost / stockQuantity : option.currentCost || 0;
-      const existingStock = stockByKey.get(itemKey(option.itemType, option.code));
+      const state = lineStates.get(line.id) || buildLineState(line, optionsByKey, stockByKey);
+      if (!state.option) throw new Error(`Select an item for row ${index + 1}.`);
+      if (!line.purchaseQuantity) throw new Error(`Enter purchase quantity for ${state.option.name}.`);
+      if (!line.rate) throw new Error(`Enter rate for ${state.option.name}.`);
+      if (state.error) throw new Error(`${state.option.name}: ${state.error}`);
+      if (!state.calculation) throw new Error(`${state.option.name}: complete quantity, unit, rate, and conversion details.`);
 
       return {
-        option,
+        option: state.option,
         form: line,
-        quantity,
-        stockQuantity,
-        totalCost,
-        costPerInputUnit,
-        costPerStockUnit,
-        unit,
-        stockId: existingStock?.id || stockRowId(selectedStoreId, option.itemType, option.code),
-        existingStock,
+        calculation: state.calculation,
+        stockId: state.existingStock?.id || stockRowId(selectedStoreId, state.option.itemType, state.option.code),
+        existingStock: state.existingStock || undefined,
       };
     });
 
@@ -434,20 +559,23 @@ export default function PurchaseEntry() {
 
     try {
       const prepared = prepareLines();
+      const totals = calculatePurchaseTotals(prepared.map((line) => line.calculation));
       const now = serverTimestamp();
       const purchaseRef = doc(collection(db, 'purchaseEntries'));
       const movementIds: string[] = [];
       const batch = writeBatch(db);
-      const totalAmount = prepared.reduce((sum, line) => sum + line.totalCost, 0);
 
       prepared.forEach((line) => {
         const movementRef = doc(collection(db, 'stockMovements'));
         movementIds.push(movementRef.id);
 
         const previousQty = money(line.existingStock?.currentStock);
-        const newQty = previousQty + line.stockQuantity;
+        const newQty = previousQty + line.calculation.convertedStockQuantity;
         const stockRef = doc(db, 'storeStock', line.stockId);
-        const stockCost = line.costPerStockUnit > 0 ? line.costPerStockUnit : money(line.existingStock?.costPerUnit) || line.option.currentCost || 0;
+        const stockCost = line.calculation.calculatedCostPerStockUnit > 0
+          ? line.calculation.calculatedCostPerStockUnit
+          : money(line.existingStock?.costPerUnit) || line.option.currentCost || 0;
+        const rowNote = line.form.notes.trim();
 
         batch.set(stockRef, {
           storeId: selectedStore.id,
@@ -456,7 +584,7 @@ export default function PurchaseEntry() {
           stockItemType: line.option.itemType,
           stockItemCode: line.option.code,
           stockItemName: line.option.name,
-          uom: line.option.baseUnit,
+          uom: line.calculation.stockUOM,
           openingStock: line.existingStock ? money(line.existingStock.openingStock) : 0,
           currentStock: newQty,
           minimumStock: line.existingStock ? money(line.existingStock.minimumStock) : 0,
@@ -465,22 +593,19 @@ export default function PurchaseEntry() {
           updatedAt: now,
         }, { merge: true });
 
-        if (staffProfile.role === 'ADMIN' && line.totalCost > 0) {
+        if (staffProfile.role === 'ADMIN' && line.calculation.taxableAmount > 0) {
+          const costPerPurchaseUnit = line.calculation.taxableAmount / money(line.form.purchaseQuantity);
           if (line.option.itemType === 'RAW_INGREDIENT' && line.option.raw) {
-            let purchaseCost = line.costPerInputUnit;
-            if (normalizeUnit(line.unit) === normalizeUnit(line.option.baseUnit) && line.option.conversionFactor > 0) {
-              purchaseCost = line.costPerStockUnit * line.option.conversionFactor;
-            }
             batch.update(doc(db, 'rawIngredients', line.option.raw.id), {
-              purchaseCost,
-              costPerUsageUnit: line.costPerStockUnit,
+              purchaseCost: costPerPurchaseUnit,
+              costPerUsageUnit: line.calculation.calculatedCostPerStockUnit,
               supplierName: supplier,
               updatedAt: now,
             });
           }
           if (line.option.itemType === 'PREP_ITEM' && line.option.prep) {
             batch.update(doc(db, 'prepItems', line.option.prep.id), {
-              costPerUnit: line.costPerStockUnit,
+              costPerUnit: line.calculation.calculatedCostPerStockUnit,
               updatedAt: now,
             });
           }
@@ -493,20 +618,34 @@ export default function PurchaseEntry() {
           inventoryItemId: line.option.code,
           inventoryItemName: line.option.name,
           movementType: 'PURCHASE_INWARD',
-          quantity: line.stockQuantity,
-          quantityDelta: line.stockQuantity,
+          quantity: line.calculation.convertedStockQuantity,
+          quantityDelta: line.calculation.convertedStockQuantity,
           previousQty,
           newQty,
           wentNegative: newQty < 0,
-          unit: line.option.baseUnit,
+          unit: line.calculation.stockUOM,
           referenceType: 'PURCHASE_ENTRY',
           referenceId: purchaseRef.id,
           purchaseEntryId: purchaseRef.id,
           supplierName: supplier,
           invoiceNumber: invoice || null,
-          purchaseCostTotal: line.totalCost,
-          costPerUnitSnapshot: line.costPerStockUnit,
-          notes: [line.form.notes.trim(), purchaseNotes].filter(Boolean).join(' • ') || null,
+          purchaseQuantity: money(line.form.purchaseQuantity),
+          purchaseUOM: line.calculation.purchaseUOM,
+          conversionFactor: line.calculation.conversionFactor,
+          convertedStockQuantity: line.calculation.convertedStockQuantity,
+          stockUOM: line.calculation.stockUOM,
+          rate: money(line.form.rate),
+          subtotal: line.calculation.lineSubtotal,
+          discountAmount: line.calculation.discountAmount,
+          taxableAmount: line.calculation.taxableAmount,
+          taxRate: money(line.form.taxPercent),
+          taxAmount: line.calculation.taxAmount,
+          totalAmount: line.calculation.lineTotal,
+          inventoryCostAmount: line.calculation.inventoryCostAmount,
+          purchaseCostTotal: line.calculation.lineTotal,
+          costPerUnitSnapshot: line.calculation.calculatedCostPerStockUnit,
+          calculatedCostPerStockUnit: line.calculation.calculatedCostPerStockUnit,
+          notes: [rowNote, purchaseNotes].filter(Boolean).join(' • ') || null,
           createdByUserId: staffProfile.uid,
           createdByName: staffProfile.name,
           createdAt: now,
@@ -525,30 +664,57 @@ export default function PurchaseEntry() {
         supplierName: supplier,
         invoiceNumber: invoice,
         notes: purchaseNotes,
-        totalAmount,
+        subtotal: totals.subtotal,
+        discountAmount: totals.discountAmount,
+        taxableAmount: totals.taxableAmount,
+        taxAmount: totals.taxAmount,
+        grandTotal: totals.grandTotal,
+        totalAmount: totals.grandTotal,
         itemCount: prepared.length,
         status: 'POSTED',
         createdAt: now,
         createdBy: staffProfile.uid,
         createdByName: staffProfile.name,
         movementIds,
-        lines: prepared.map((line) => ({
-          itemType: line.option.itemType,
-          itemCode: line.option.code,
-          itemName: line.option.name,
-          quantity: line.quantity,
-          stockQuantity: line.stockQuantity,
-          unit: line.unit,
-          stockUnit: line.option.baseUnit,
-          purchaseCostTotal: line.totalCost,
-          costPerUnit: line.costPerInputUnit,
-          costPerStockUnit: line.costPerStockUnit,
-          notes: line.form.notes.trim(),
-        })),
+        lines: prepared.map((line) => {
+          const purchaseQuantity = money(line.form.purchaseQuantity);
+          const rate = money(line.form.rate);
+          return {
+            itemType: line.option.itemType,
+            itemCode: line.option.code,
+            itemName: line.option.name,
+            purchaseQuantity,
+            purchaseUOM: line.calculation.purchaseUOM,
+            conversionFactor: line.calculation.conversionFactor,
+            convertedStockQuantity: line.calculation.convertedStockQuantity,
+            stockUOM: line.calculation.stockUOM,
+            priceBasis: line.form.priceBasis,
+            rate,
+            subtotal: line.calculation.lineSubtotal,
+            discountPercent: money(line.form.discountPercent),
+            discountAmount: line.calculation.discountAmount,
+            taxableAmount: line.calculation.taxableAmount,
+            taxRate: money(line.form.taxPercent),
+            taxAmount: line.calculation.taxAmount,
+            totalAmount: line.calculation.lineTotal,
+            inventoryCostAmount: line.calculation.inventoryCostAmount,
+            calculatedCostPerStockUnit: line.calculation.calculatedCostPerStockUnit,
+            packSize: money(line.form.packSize),
+            packSizeUOM: normalizePurchaseUnit(line.form.packSizeUOM),
+            notes: line.form.notes.trim(),
+            quantity: purchaseQuantity,
+            stockQuantity: line.calculation.convertedStockQuantity,
+            unit: line.calculation.purchaseUOM,
+            stockUnit: line.calculation.stockUOM,
+            purchaseCostTotal: line.calculation.lineTotal,
+            costPerUnit: line.form.priceBasis === 'TOTAL_LINE' ? (line.calculation.taxableAmount / purchaseQuantity) : rate,
+            costPerStockUnit: line.calculation.calculatedCostPerStockUnit,
+          };
+        }),
       });
 
       await batch.commit();
-      setSuccess(`Purchase posted for ${supplier}. ${prepared.length} item row(s) increased stock.`);
+      setSuccess(`Purchase posted for ${supplier}. ${prepared.length} item row(s) increased stock by converted stock quantity.`);
       setSupplierName('');
       setInvoiceNumber('');
       setNotes('');
@@ -561,17 +727,6 @@ export default function PurchaseEntry() {
       setSaving(false);
     }
   };
-
-  const formTotal = useMemo(() => {
-    try {
-      return prepareLines().reduce((sum, line) => sum + line.totalCost, 0);
-    } catch {
-      return lines.reduce((sum, line) => {
-        const total = money(line.purchaseCostTotal);
-        return sum + (total > 0 ? total : money(line.costPerUnit) * money(line.quantity));
-      }, 0);
-    }
-  }, [lines, optionsByKey, selectedStoreId, stockByKey]);
 
   if (!staffProfile) return null;
 
@@ -609,7 +764,7 @@ export default function PurchaseEntry() {
               <p className="text-xs font-black uppercase tracking-[0.2em] text-neutral-400">Inventory</p>
               <h1 className="text-2xl font-black tracking-tight text-[#3e2723] md:text-3xl">Purchase Entry</h1>
               <p className="mt-1 text-sm font-medium text-neutral-500">
-                Post supplier purchases and increase raw or prep stock with a movement audit.
+                Post supplier invoices with safe unit conversion and stock movement audit.
               </p>
             </div>
           </div>
@@ -643,224 +798,369 @@ export default function PurchaseEntry() {
           </div>
         )}
 
-        <section className="mt-4 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <PackagePlus size={20} className="text-[#5c4033]" />
-              <div>
-                <h2 className="text-base font-black text-[#3e2723]">New purchase inward</h2>
-                <p className="text-sm font-medium text-neutral-500">One posted purchase creates stock movements for every item row.</p>
+        <div className="mt-4 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <section className="min-w-0 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <PackagePlus size={20} className="text-[#5c4033]" />
+                <div>
+                  <h2 className="text-base font-black text-[#3e2723]">New purchase inward</h2>
+                  <p className="text-sm font-medium text-neutral-500">Original supplier units are saved; stock movements use converted stock units.</p>
+                </div>
+              </div>
+              <div className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm font-black text-[#3e2723]">
+                {formTotals.itemRows} calculated row(s)
               </div>
             </div>
-            <div className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm font-black text-[#3e2723]">
-              Total {formatMoney(formTotal)}
-            </div>
-          </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-              Store
-              <div className="relative">
-                <StoreIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
-                <select
-                  value={selectedStoreId}
-                  onChange={(event) => setSelectedStoreId(event.target.value)}
-                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 py-2.5 pl-9 pr-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                >
-                  {accessibleStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
-                </select>
-              </div>
-            </label>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
+              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+                Store
+                <div className="relative">
+                  <StoreIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
+                  <select
+                    value={selectedStoreId}
+                    onChange={(event) => setSelectedStoreId(event.target.value)}
+                    className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 py-3 pl-9 pr-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                  >
+                    {accessibleStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  </select>
+                </div>
+              </label>
 
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-              Purchase date
-              <input
-                type="date"
-                value={purchaseDate}
-                onChange={(event) => setPurchaseDate(event.target.value)}
-                className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-              />
-            </label>
-
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-1">
-              Supplier
-              <input
-                value={supplierName}
-                onChange={(event) => setSupplierName(event.target.value)}
-                placeholder="Supplier name"
-                className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-              />
-            </label>
-
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-              Invoice
-              <input
-                value={invoiceNumber}
-                onChange={(event) => setInvoiceNumber(event.target.value)}
-                placeholder="Bill number"
-                className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-              />
-            </label>
-
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-              Search items
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
+              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+                Purchase date
                 <input
-                  value={itemSearch}
-                  onChange={(event) => setItemSearch(event.target.value)}
-                  placeholder="Milk, cups, beans"
-                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 py-2.5 pl-9 pr-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                  type="date"
+                  value={purchaseDate}
+                  onChange={(event) => setPurchaseDate(event.target.value)}
+                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
                 />
-              </div>
+              </label>
+
+              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+                Supplier
+                <input
+                  value={supplierName}
+                  onChange={(event) => setSupplierName(event.target.value)}
+                  placeholder="Supplier name"
+                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                />
+              </label>
+
+              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+                Invoice
+                <input
+                  value={invoiceNumber}
+                  onChange={(event) => setInvoiceNumber(event.target.value)}
+                  placeholder="Bill number"
+                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                />
+              </label>
+
+              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+                Search items
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
+                  <input
+                    value={itemSearch}
+                    onChange={(event) => setItemSearch(event.target.value)}
+                    placeholder="Milk, cups, beans"
+                    className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 py-3 pl-9 pr-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                  />
+                </div>
+              </label>
+            </div>
+
+            <label className="mt-3 grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500">
+              Notes
+              <input
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Optional purchase notes"
+                className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+              />
             </label>
-          </div>
 
-          <label className="mt-3 grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-            Notes
-            <input
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder="Optional purchase notes"
-              className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-            />
-          </label>
+            <div className="mt-5 grid gap-4">
+              {lines.map((line, index) => {
+                const state = lineStates.get(line.id) || buildLineState(line, optionsByKey, stockByKey);
+                const lineOptions = filteredItemOptions.filter((option) => option.itemType === line.itemType);
+                const selectedOption = state.option;
+                const existingStock = state.existingStock;
+                const isPackUnit = PACK_UNITS.has(normalizePurchaseUnit(line.purchaseUOM));
 
-          <div className="mt-4 grid gap-3">
-            {lines.map((line, index) => {
-              const lineOptions = filteredItemOptions.filter((option) => option.itemType === line.itemType);
-              const selectedOption = optionsByKey.get(itemKey(line.itemType, line.itemCode));
-              const existingStock = selectedOption ? stockByKey.get(itemKey(selectedOption.itemType, selectedOption.code)) : null;
-
-              return (
-                <div key={line.id} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <p className="text-sm font-black text-[#3e2723]">Item row {index + 1}</p>
-                    <button
-                      onClick={() => removeLine(line.id)}
-                      disabled={lines.length === 1}
-                      className="inline-flex items-center gap-1 rounded-full border border-red-100 bg-white px-3 py-1.5 text-xs font-black text-red-700 disabled:opacity-40"
-                    >
-                      <Trash2 size={13} />
-                      Remove
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-2">
-                      Type
-                      <select
-                        value={line.itemType}
-                        onChange={(event) => updateLine(line.id, { itemType: event.target.value as PurchaseLineType })}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                return (
+                  <div key={line.id} className="rounded-3xl border border-neutral-200 bg-[#fffaf4] p-3 shadow-sm md:p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-black text-[#3e2723]">Item row {index + 1}</p>
+                        <p className="text-xs font-bold text-neutral-500">
+                          {selectedOption ? `${selectedOption.code} · stock in ${selectedOption.baseUnit || '-'}` : 'Choose item and supplier unit'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => removeLine(line.id)}
+                        disabled={lines.length === 1}
+                        className="inline-flex items-center gap-1 rounded-full border border-red-100 bg-white px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"
                       >
-                        {ITEM_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
-                      </select>
-                    </label>
+                        <Trash2 size={13} />
+                        Remove
+                      </button>
+                    </div>
 
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-4">
-                      Item
-                      <select
-                        value={line.itemCode}
-                        onChange={(event) => updateLine(line.id, { itemCode: event.target.value })}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                      >
-                        <option value="">Select item</option>
-                        {lineOptions.map((option) => (
-                          <option key={`${option.itemType}-${option.code}`} value={option.code}>
-                            {option.name} ({option.code})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Type
+                        <select
+                          value={line.itemType}
+                          onChange={(event) => updateLine(line.id, { itemType: event.target.value as PurchaseLineType })}
+                          className={fieldClass(false)}
+                        >
+                          {ITEM_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                        </select>
+                      </label>
 
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-2">
-                      Quantity
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.001"
-                        value={line.quantity}
-                        onChange={(event) => updateLine(line.id, { quantity: event.target.value })}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                      />
-                    </label>
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-4">
+                        Item
+                        <select
+                          value={line.itemCode}
+                          onChange={(event) => updateLine(line.id, { itemCode: event.target.value })}
+                          className={fieldClass(Boolean(state.fieldErrors.itemCode))}
+                        >
+                          <option value="">Select item</option>
+                          {lineOptions.map((option) => (
+                            <option key={`${option.itemType}-${option.code}`} value={option.code}>
+                              {option.name} ({option.code})
+                            </option>
+                          ))}
+                        </select>
+                        <FieldError message={state.fieldErrors.itemCode} />
+                      </label>
 
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-1">
-                      Unit
-                      <input
-                        value={line.unit}
-                        onChange={(event) => updateLine(line.id, { unit: event.target.value })}
-                        placeholder={selectedOption?.purchaseUnit || selectedOption?.baseUnit || ''}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                      />
-                    </label>
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Purchase qty
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={line.purchaseQuantity}
+                          onChange={(event) => updateLine(line.id, { purchaseQuantity: event.target.value })}
+                          className={fieldClass(Boolean(state.fieldErrors.purchaseQuantity))}
+                        />
+                        <FieldError message={state.fieldErrors.purchaseQuantity} />
+                      </label>
 
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-1">
-                      Total cost
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={line.purchaseCostTotal}
-                        onChange={(event) => updateLine(line.id, { purchaseCostTotal: event.target.value })}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                      />
-                    </label>
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Purchase unit
+                        <select
+                          value={line.purchaseUOM}
+                          onChange={(event) => updateLine(line.id, { purchaseUOM: event.target.value })}
+                          className={fieldClass(false)}
+                        >
+                          <option value="">Unit</option>
+                          {PURCHASE_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                        </select>
+                      </label>
 
-                    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500 lg:col-span-2">
-                      Cost per unit
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.0001"
-                        value={line.costPerUnit}
-                        onChange={(event) => updateLine(line.id, { costPerUnit: event.target.value })}
-                        className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                      />
-                    </label>
-                  </div>
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Price basis
+                        <select
+                          value={line.priceBasis}
+                          onChange={(event) => updateLine(line.id, { priceBasis: event.target.value as PriceBasis })}
+                          className={fieldClass(false)}
+                        >
+                          {PRICE_BASIS_OPTIONS.map((basis) => <option key={basis.value} value={basis.value}>{basis.label}</option>)}
+                        </select>
+                      </label>
+                    </div>
 
-                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
-                    <input
-                      value={line.notes}
-                      onChange={(event) => updateLine(line.id, { notes: event.target.value })}
-                      placeholder="Optional row note"
-                      className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                    />
-                    <div className="flex flex-wrap gap-2 text-xs font-bold text-neutral-500">
-                      <span>Stock unit: {selectedOption?.baseUnit || '-'}</span>
-                      <span>Current: {existingStock ? `${money(existingStock.currentStock).toFixed(2)} ${existingStock.uom}` : 'missing row'}</span>
-                      {staffProfile.role !== 'ADMIN' && <span>Cost saved as snapshot only</span>}
+                    <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-12">
+                      {isPackUnit && (
+                        <>
+                          <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                            Pack contents
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              value={line.packSize}
+                              onChange={(event) => updateLine(line.id, { packSize: event.target.value })}
+                              placeholder="10"
+                              className={fieldClass(Boolean(state.error && state.error.includes('pack')))}
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                            Contents unit
+                            <select
+                              value={line.packSizeUOM}
+                              onChange={(event) => updateLine(line.id, { packSizeUOM: event.target.value })}
+                              className={fieldClass(Boolean(state.error && state.error.includes('contents unit')))}
+                            >
+                              <option value="">Unit</option>
+                              {PACK_CONTENT_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                            </select>
+                          </label>
+                        </>
+                      )}
+
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Rate
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={line.rate}
+                          onChange={(event) => updateLine(line.id, { rate: event.target.value })}
+                          className={fieldClass(Boolean(state.fieldErrors.rate))}
+                        />
+                        <FieldError message={state.fieldErrors.rate} />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Tax %
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={line.taxPercent}
+                          onChange={(event) => updateLine(line.id, { taxPercent: event.target.value })}
+                          className={fieldClass(Boolean(state.fieldErrors.taxPercent))}
+                        />
+                        <FieldError message={state.fieldErrors.taxPercent} />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
+                        Discount %
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={line.discountPercent}
+                          onChange={(event) => updateLine(line.id, { discountPercent: event.target.value })}
+                          className={fieldClass(Boolean(state.fieldErrors.discountPercent))}
+                        />
+                        <FieldError message={state.fieldErrors.discountPercent} />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-4">
+                        Optional note
+                        <input
+                          value={line.notes}
+                          onChange={(event) => updateLine(line.id, { notes: event.target.value })}
+                          placeholder="Batch, expiry, supplier note"
+                          className={fieldClass(false)}
+                        />
+                      </label>
+                    </div>
+
+                    {state.error && (
+                      <div className="mt-3 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">
+                        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                        <span>{state.error}</span>
+                      </div>
+                    )}
+
+                    <div className="mt-3 grid gap-2 rounded-2xl bg-white p-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Conversion</p>
+                        <p className="font-black text-[#3e2723]">{state.calculation?.conversionPreview || 'Complete row to preview'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Invoice line</p>
+                        <p className="font-black text-[#3e2723]">{formatMoney(state.calculation?.lineTotal || 0)}</p>
+                        <p className="text-xs font-bold text-neutral-500">Tax {formatMoney(state.calculation?.taxAmount || 0)} · Discount {formatMoney(state.calculation?.discountAmount || 0)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Cost per stock unit</p>
+                        <p className="font-black text-[#3e2723]">
+                          {formatMoney(state.calculation?.calculatedCostPerStockUnit || 0)} / {selectedOption?.baseUnit || '-'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Current stock</p>
+                        <p className="font-black text-[#3e2723]">
+                          {existingStock ? `${money(existingStock.currentStock).toFixed(2)} ${existingStock.uom}` : 'Missing row'}
+                        </p>
+                        <p className="text-xs font-bold text-neutral-500">{staffProfile.role !== 'ADMIN' ? 'Master cost unchanged' : 'Master cost may update'}</p>
+                      </div>
                     </div>
                   </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <button
+                onClick={addLine}
+                className="inline-flex items-center gap-2 rounded-full border border-[#5c4033]/20 bg-white px-4 py-3 text-sm font-black text-[#5c4033] hover:bg-[#5c4033]/5"
+              >
+                <Plus size={16} />
+                Add item row
+              </button>
+              <button
+                onClick={postPurchase}
+                disabled={saving || loading || !selectedStore}
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-[#3e2723] px-6 py-3 text-sm font-black text-white shadow-sm hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
+                Post purchase inward
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs font-bold text-neutral-500">
+              Purchases increase current stock and create `PURCHASE_INWARD` movements. Old orders are not recalculated.
+            </p>
+          </section>
+
+          <aside className="xl:sticky xl:top-4 xl:self-start">
+            <div className="rounded-3xl border border-[#5c4033]/15 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Calculator size={18} className="text-[#5c4033]" />
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-neutral-400">Purchase summary</p>
+                  <h2 className="text-xl font-black text-[#3e2723]">{formatMoney(formTotals.grandTotal)}</h2>
                 </div>
-              );
-            })}
-          </div>
+              </div>
 
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <button
-              onClick={addLine}
-              className="inline-flex items-center gap-2 rounded-full border border-[#5c4033]/20 bg-white px-4 py-2 text-sm font-black text-[#5c4033] hover:bg-[#5c4033]/5"
-            >
-              <Plus size={16} />
-              Add item row
-            </button>
-            <button
-              onClick={postPurchase}
-              disabled={saving || loading || !selectedStore}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-[#3e2723] px-6 py-3 text-sm font-black text-white shadow-sm hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {saving ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
-              Post purchase inward
-            </button>
-          </div>
+              <div className="mt-4 grid gap-2 text-sm font-bold text-neutral-600">
+                <div className="flex justify-between gap-3">
+                  <span>Subtotal</span>
+                  <span>{formatMoney(formTotals.subtotal)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Discount</span>
+                  <span>-{formatMoney(formTotals.discountAmount)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Taxable</span>
+                  <span>{formatMoney(formTotals.taxableAmount)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Tax</span>
+                  <span>{formatMoney(formTotals.taxAmount)}</span>
+                </div>
+                <div className="mt-2 border-t border-neutral-200 pt-3">
+                  <div className="flex items-end justify-between gap-3">
+                    <span className="text-lg font-black text-[#3e2723]">Grand total</span>
+                    <span className="text-2xl font-black text-[#3e2723]">{formatMoney(formTotals.grandTotal)}</span>
+                  </div>
+                  <p className="mt-1 text-xs font-bold text-neutral-500">{formTotals.itemRows} calculated item row(s)</p>
+                </div>
+              </div>
 
-          <p className="mt-3 text-xs font-bold text-neutral-500">
-            Purchases increase current stock and create `PURCHASE_INWARD` movements. Old orders are not recalculated.
-          </p>
-        </section>
+              <button
+                onClick={postPurchase}
+                disabled={saving || loading || !selectedStore}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3e2723] px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <ReceiptText size={16} />}
+                Post purchase
+              </button>
+            </div>
+          </aside>
+        </div>
 
         <section className="mt-6 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -884,7 +1184,7 @@ export default function PurchaseEntry() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[820px] w-full text-left text-sm">
+              <table className="w-full min-w-[820px] text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.14em] text-neutral-400">
                   <tr>
                     <th className="px-3 py-2">Date</th>
@@ -910,7 +1210,7 @@ export default function PurchaseEntry() {
                       <td className="px-3 py-3">{purchase.supplierName}</td>
                       <td className="px-3 py-3">{purchase.invoiceNumber || '-'}</td>
                       <td className="px-3 py-3 text-right">{purchase.itemCount}</td>
-                      <td className="px-3 py-3 text-right font-black">{formatMoney(purchase.totalAmount)}</td>
+                      <td className="px-3 py-3 text-right font-black">{formatMoney(purchase.grandTotal ?? purchase.totalAmount)}</td>
                       <td className="px-3 py-3">{purchase.createdByName || '-'}</td>
                       <td className="px-3 py-3">{formatDate(purchase.createdAt)}</td>
                       <td className="px-3 py-3">
@@ -948,8 +1248,8 @@ export default function PurchaseEntry() {
                 <p className="font-bold text-[#3e2723]">{selectedPurchase.invoiceNumber || '-'}</p>
               </div>
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Total</p>
-                <p className="font-black text-[#3e2723]">{formatMoney(selectedPurchase.totalAmount)}</p>
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Grand total</p>
+                <p className="font-black text-[#3e2723]">{formatMoney(selectedPurchase.grandTotal ?? selectedPurchase.totalAmount)}</p>
               </div>
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Created</p>
@@ -962,21 +1262,35 @@ export default function PurchaseEntry() {
             </div>
 
             <div className="mt-4 grid gap-2">
-              {(selectedPurchase.lines || []).map((line) => (
-                <div key={`${line.itemType}-${line.itemCode}`} className="rounded-2xl border border-neutral-200 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <p className="font-black text-[#3e2723]">{line.itemName}</p>
-                      <p className="text-xs font-bold text-neutral-500">{line.itemCode} • {line.itemType.replace('_', ' ')}</p>
+              {(selectedPurchase.lines || []).map((line) => {
+                const purchaseQuantity = line.purchaseQuantity ?? line.quantity ?? 0;
+                const purchaseUOM = line.purchaseUOM || line.unit || '';
+                const stockQuantity = line.convertedStockQuantity ?? line.stockQuantity ?? 0;
+                const stockUOM = line.stockUOM || line.stockUnit || '';
+                const totalAmount = line.totalAmount ?? line.purchaseCostTotal ?? 0;
+                const inventoryCostAmount = line.inventoryCostAmount ?? line.taxableAmount ?? 0;
+                const stockCost = line.calculatedCostPerStockUnit ?? line.costPerStockUnit ?? 0;
+                return (
+                  <div key={`${line.itemType}-${line.itemCode}`} className="rounded-2xl border border-neutral-200 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-black text-[#3e2723]">{line.itemName}</p>
+                        <p className="text-xs font-bold text-neutral-500">{line.itemCode} • {line.itemType.replace('_', ' ')}</p>
+                      </div>
+                      <p className="font-black text-[#3e2723]">{formatMoney(totalAmount)}</p>
                     </div>
-                    <p className="font-black text-[#3e2723]">{formatMoney(line.purchaseCostTotal)}</p>
+                    <p className="mt-2 text-sm font-medium text-neutral-600">
+                      Invoice {purchaseQuantity} {purchaseUOM} → stock +{money(stockQuantity).toFixed(2)} {stockUOM}
+                    </p>
+                    <p className="text-xs font-bold text-neutral-500">
+                      Tax {formatMoney(line.taxAmount || 0)} · Discount {formatMoney(line.discountAmount || 0)} · Cost {formatMoney(stockCost)} / {stockUOM}
+                    </p>
+                    <p className="text-xs font-bold text-neutral-500">
+                      Inventory cost excludes GST: {formatMoney(inventoryCostAmount)}
+                    </p>
                   </div>
-                  <p className="mt-2 text-sm font-medium text-neutral-600">
-                    Received {line.quantity} {line.unit} → stock +{money(line.stockQuantity).toFixed(2)} {line.stockUnit}
-                  </p>
-                  <p className="text-xs font-bold text-neutral-500">Cost snapshot: {formatMoney(line.costPerStockUnit)} / {line.stockUnit}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
