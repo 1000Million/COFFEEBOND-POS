@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { DragEvent, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -13,9 +13,13 @@ import {
   Search,
   Store as StoreIcon,
   Trash2,
+  Upload,
+  X,
 } from 'lucide-react';
-import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
+import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import { db, functions, storage } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   calculatePurchaseLine,
@@ -59,6 +63,86 @@ type PurchaseLineForm = {
   discountPercent: string;
   notes: string;
 };
+
+type InvoiceUploadStatus = 'IDLE' | 'UPLOADING' | 'PARSING' | 'READY_FOR_REVIEW' | 'NEEDS_REVIEW' | 'FAILED';
+
+type InvoiceDraftLine = {
+  lineIndex: number;
+  supplierItemDescription: string;
+  quantity: number;
+  purchaseUnit: string;
+  packContents: number;
+  contentsUnit: string;
+  rate: number;
+  priceBasis: PriceBasis;
+  discount: number;
+  taxPercentage: number;
+  taxAmount: number;
+  lineTotal: number;
+  hsnSac?: string;
+  suggestedItem?: {
+    itemType: PurchaseLineType;
+    itemCode: string;
+    itemName: string;
+  } | null;
+  matchConfidence: number;
+  matchStatus: 'CONFIRMED' | 'NEEDS_CONFIRMATION' | 'UNRESOLVED';
+  matchReason: string;
+};
+
+type InvoiceDraft = {
+  id: string;
+  parsingStatus: 'PARSING' | 'READY_FOR_REVIEW' | 'NEEDS_REVIEW' | 'FAILED';
+  supplierName?: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  gstin?: string;
+  extractedTotals?: {
+    subtotal?: number;
+    discount?: number;
+    taxableAmount?: number;
+    cgst?: number;
+    sgst?: number;
+    igst?: number;
+    otherCharges?: number;
+    grandTotal?: number;
+  };
+  lines?: InvoiceDraftLine[];
+  extractionConfidence?: number;
+  warnings?: string[];
+  failureStage?: string | null;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+  primaryModel?: string | null;
+  finalModel?: string | null;
+  retryCount?: number;
+  fallbackUsed?: boolean;
+  attemptedModels?: Array<{
+    model?: string;
+    attempt?: number;
+    result?: string;
+    httpStatus?: number | null;
+    code?: string;
+  }>;
+  lastRetryableStatus?: number | null;
+  sourceFilePath?: string;
+  sourceFileName?: string;
+};
+
+type InvoiceUploadState = {
+  status: InvoiceUploadStatus;
+  file: File | null;
+  progress: number;
+  draftId: string;
+  sourceFilePath: string;
+  error: string;
+  draft: InvoiceDraft | null;
+};
+
+type InvoiceStatusBanner = {
+  className: string;
+  message: string;
+} | null;
 
 type PurchaseEntryRecord = {
   id: string;
@@ -131,6 +215,20 @@ const ITEM_TYPES: { value: PurchaseLineType; label: string }[] = [
 
 const PACK_UNITS = new Set(['PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
 const PACK_CONTENT_UNITS = ['G', 'KG', 'ML', 'L', 'PCS'];
+const MAX_INVOICE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_INVOICE_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']);
+const parseSupplierInvoiceDraft = httpsCallable<{
+  storeId: string;
+  draftId: string;
+  sourceFilePath: string;
+  sourceFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  retry?: boolean;
+}, { draftId: string; draft: InvoiceDraft; idempotent?: boolean }>(
+  functions,
+  'parseSupplierInvoiceDraft',
+);
 
 function todayIso(): string {
   const date = new Date();
@@ -188,6 +286,87 @@ function newLine(defaultType: PurchaseLineType = 'RAW_INGREDIENT'): PurchaseLine
     discountPercent: '0',
     notes: '',
   };
+}
+
+function emptyInvoiceUploadState(): InvoiceUploadState {
+  return {
+    status: 'IDLE',
+    file: null,
+    progress: 0,
+    draftId: '',
+    sourceFilePath: '',
+    error: '',
+    draft: null,
+  };
+}
+
+function sanitizeInvoiceFileName(fileName: string): string {
+  const cleaned = fileName.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 120);
+  return cleaned || `invoice-${Date.now()}`;
+}
+
+function validateInvoiceFile(file: File): string {
+  const type = file.type.toLowerCase();
+  if (!ALLOWED_INVOICE_MIME_TYPES.has(type)) return 'Upload a PDF, JPG, JPEG, or PNG invoice only.';
+  if (file.size <= 0) return 'Invoice file is empty.';
+  if (file.size > MAX_INVOICE_FILE_SIZE_BYTES) return 'Invoice file must be 10 MB or smaller.';
+  return '';
+}
+
+function validPriceBasis(value: unknown): PriceBasis {
+  if (value === 'RATE_PER_CONTENTS_UNIT' || value === 'RATE_PER_STOCK_UNIT' || value === 'RATE_PER_PURCHASE_UNIT') {
+    return value;
+  }
+  return 'RATE_PER_PURCHASE_UNIT';
+}
+
+function invoiceDraftFailureMessage(draft: InvoiceDraft | null): string {
+  const stage = draft?.failureStage || 'UNKNOWN';
+  const message = draft?.failureMessage || 'Please retry parsing or enter the invoice manually.';
+  return `Invoice parsing failed at ${stage}: ${message}`;
+}
+
+function invoiceParsingProgressMessage(draft: InvoiceDraft | null): string {
+  if (draft?.fallbackUsed) return 'Primary parser is busy. Trying the backup parser...';
+  if ((draft?.retryCount || 0) > 0 || draft?.lastRetryableStatus) {
+    return 'Gemini is temporarily busy. Retrying invoice parsing...';
+  }
+  return 'Invoice uploaded; parsing in progress.';
+}
+
+function invoiceUploadStatusBanner(state: InvoiceUploadState): InvoiceStatusBanner {
+  if (state.status === 'UPLOADING') {
+    return {
+      className: 'border-blue-200 bg-blue-50 text-blue-800',
+      message: `Uploading invoice${state.progress ? ` (${state.progress}%)` : ''}.`,
+    };
+  }
+  if (state.status === 'PARSING') {
+    const isRetrying = Boolean(state.draft?.fallbackUsed || (state.draft?.retryCount || 0) > 0 || state.draft?.lastRetryableStatus);
+    return {
+      className: isRetrying ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-blue-200 bg-blue-50 text-blue-800',
+      message: invoiceParsingProgressMessage(state.draft),
+    };
+  }
+  if (state.status === 'READY_FOR_REVIEW') {
+    return {
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      message: `Invoice draft ${state.draftId} is ready for human review. Stock was not changed.`,
+    };
+  }
+  if (state.status === 'NEEDS_REVIEW') {
+    return {
+      className: 'border-amber-200 bg-amber-50 text-amber-900',
+      message: `Invoice draft ${state.draftId} needs human review before posting. Stock was not changed.`,
+    };
+  }
+  if (state.status === 'FAILED') {
+    return {
+      className: 'border-red-200 bg-red-50 text-red-800',
+      message: state.draft ? invoiceDraftFailureMessage(state.draft) : (state.error || 'Invoice upload or parsing failed.'),
+    };
+  }
+  return null;
 }
 
 function purchaseUnitLabel(line: PurchaseLineForm, option: ItemOption | null): string {
@@ -329,8 +508,10 @@ export default function PurchaseEntry() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [selectedPurchaseId, setSelectedPurchaseId] = useState<string | null>(null);
+  const [invoiceUpload, setInvoiceUpload] = useState<InvoiceUploadState>(() => emptyInvoiceUploadState());
 
   const hasAccess = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
+  const invoiceStatusBanner = invoiceUploadStatusBanner(invoiceUpload);
 
   const accessibleStores = useMemo(() => {
     if (!staffProfile) return [];
@@ -495,6 +676,28 @@ export default function PurchaseEntry() {
     };
   }, [selectedStore]);
 
+  useEffect(() => {
+    if (!invoiceUpload.draftId || invoiceUpload.status !== 'PARSING') return undefined;
+
+    const unsubscribe = onSnapshot(doc(db, 'purchaseDrafts', invoiceUpload.draftId), (snapshot) => {
+      if (!snapshot.exists()) return;
+      const draft = { id: snapshot.id, ...snapshot.data() } as InvoiceDraft;
+      if (!['PARSING', 'READY_FOR_REVIEW', 'NEEDS_REVIEW', 'FAILED'].includes(draft.parsingStatus)) return;
+      setInvoiceUpload((current) => {
+        if (current.draftId !== snapshot.id || current.status !== 'PARSING') return current;
+        const failureMessage = draft.parsingStatus === 'FAILED' ? invoiceDraftFailureMessage(draft) : current.error;
+        return {
+          ...current,
+          status: draft.parsingStatus,
+          error: failureMessage,
+          draft,
+        };
+      });
+    });
+
+    return () => unsubscribe();
+  }, [invoiceUpload.draftId, invoiceUpload.status]);
+
   const updateLine = (lineId: string, patch: Partial<PurchaseLineForm>) => {
     setLines((current) => current.map((line) => {
       if (line.id !== lineId) return line;
@@ -528,6 +731,190 @@ export default function PurchaseEntry() {
 
   const removeLine = (lineId: string) => {
     setLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== lineId));
+  };
+
+  const applyDraftToForm = (draft: InvoiceDraft) => {
+    if (draft.supplierName) setSupplierName(draft.supplierName);
+    if (draft.invoiceNumber) setInvoiceNumber(draft.invoiceNumber);
+    if (draft.invoiceDate) setPurchaseDate(draft.invoiceDate.slice(0, 10));
+
+    const draftLines = Array.isArray(draft.lines) ? draft.lines : [];
+    if (draftLines.length > 0) {
+      setLines(draftLines.map((line) => {
+        const confirmed = line.matchStatus === 'CONFIRMED' && line.suggestedItem;
+        const itemType = confirmed ? line.suggestedItem!.itemType : 'RAW_INGREDIENT';
+        const itemCode = confirmed ? line.suggestedItem!.itemCode : '';
+        const reviewNotes = [
+          line.supplierItemDescription ? `Invoice: ${line.supplierItemDescription}` : '',
+          line.hsnSac ? `HSN/SAC: ${line.hsnSac}` : '',
+          line.suggestedItem && line.matchStatus !== 'CONFIRMED'
+            ? `Suggested ${line.suggestedItem.itemName} (${Math.round(line.matchConfidence * 100)}%) - confirm manually`
+            : '',
+          line.matchReason,
+        ].filter(Boolean).join(' • ');
+
+        return {
+          id: `${Date.now()}-${line.lineIndex}-${Math.random().toString(16).slice(2)}`,
+          itemType,
+          itemCode,
+          purchaseQuantity: line.quantity ? String(line.quantity) : '',
+          purchaseUOM: normalizePurchaseUnit(line.purchaseUnit || ''),
+          packSize: line.packContents ? String(line.packContents) : '',
+          packSizeUOM: normalizePurchaseUnit(line.contentsUnit || ''),
+          priceBasis: validPriceBasis(line.priceBasis),
+          rate: line.rate ? String(line.rate) : '',
+          taxPercent: line.taxPercentage ? String(line.taxPercentage) : '0',
+          discountPercent: line.discount && line.discount <= 100 ? String(line.discount) : '0',
+          notes: reviewNotes,
+        };
+      }));
+    }
+
+    setNotes((current) => {
+      const extracted = [
+        draft.gstin ? `Supplier GSTIN: ${draft.gstin}` : '',
+        draft.extractionConfidence !== undefined ? `Extraction confidence: ${Math.round((draft.extractionConfidence || 0) * 100)}%` : '',
+      ].filter(Boolean).join(' • ');
+      return [current, extracted].filter(Boolean).join(' • ');
+    });
+  };
+
+  const uploadInvoiceFile = async (file: File, retry = false) => {
+    setSuccess('');
+    if (!selectedStore) {
+      setInvoiceUpload((current) => ({ ...current, status: 'FAILED', file, error: 'Select a store before uploading an invoice.' }));
+      return;
+    }
+
+    const validationError = validateInvoiceFile(file);
+    if (validationError) {
+      setInvoiceUpload((current) => ({ ...current, status: 'FAILED', file, error: validationError }));
+      return;
+    }
+
+    const draftId = retry && invoiceUpload.draftId ? invoiceUpload.draftId : doc(collection(db, 'purchaseDrafts')).id;
+    const sourceFileName = sanitizeInvoiceFileName(file.name);
+    const sourceFilePath = `purchase-invoices/${selectedStore.id}/${draftId}/${sourceFileName}`;
+
+    setInvoiceUpload({
+      status: 'UPLOADING',
+      file,
+      progress: 0,
+      draftId,
+      sourceFilePath,
+      error: '',
+      draft: null,
+    });
+
+    try {
+      const targetRef = storageRef(storage, sourceFilePath);
+      await new Promise<void>((resolve, reject) => {
+        const task = uploadBytesResumable(targetRef, file, {
+          contentType: file.type,
+          customMetadata: {
+            storeId: selectedStore.id,
+            draftId,
+            source: 'PURCHASE_ENTRY_INVOICE_UPLOAD',
+          },
+        });
+        task.on('state_changed', (snapshot) => {
+          const progress = snapshot.totalBytes > 0 ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100) : 0;
+          setInvoiceUpload((current) => ({ ...current, status: 'UPLOADING', progress }));
+        }, reject, () => resolve());
+      });
+
+      setInvoiceUpload((current) => ({ ...current, status: 'PARSING', progress: 100 }));
+      const response = await parseSupplierInvoiceDraft({
+        storeId: selectedStore.id,
+        draftId,
+        sourceFilePath,
+        sourceFileName,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        retry,
+      });
+      const draft = response.data.draft;
+      applyDraftToForm(draft);
+      const failureMessage = draft.parsingStatus === 'FAILED' ? invoiceDraftFailureMessage(draft) : '';
+      setInvoiceUpload({
+        status: draft.parsingStatus,
+        file,
+        progress: 100,
+        draftId,
+        sourceFilePath,
+        error: failureMessage,
+        draft,
+      });
+      setSuccess('');
+    } catch (err) {
+      setInvoiceUpload((current) => ({
+        ...current,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'Invoice upload or parsing failed.',
+      }));
+    }
+  };
+
+  const retryInvoiceParsing = async () => {
+    const file = invoiceUpload.file;
+    if (!file || !selectedStore || !invoiceUpload.draftId || !invoiceUpload.sourceFilePath) return;
+    setSuccess('');
+    setInvoiceUpload((current) => ({
+      ...current,
+      status: 'PARSING',
+      error: '',
+      draft: current.draft
+        ? {
+          ...current.draft,
+          parsingStatus: 'PARSING',
+          retryCount: 0,
+          fallbackUsed: false,
+          attemptedModels: [],
+          lastRetryableStatus: null,
+          failureStage: null,
+          failureCode: null,
+          failureMessage: null,
+        }
+        : null,
+    }));
+    try {
+      const sourceFileName = invoiceUpload.sourceFilePath.split('/').pop() || sanitizeInvoiceFileName(file.name);
+      const response = await parseSupplierInvoiceDraft({
+        storeId: selectedStore.id,
+        draftId: invoiceUpload.draftId,
+        sourceFilePath: invoiceUpload.sourceFilePath,
+        sourceFileName,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        retry: true,
+      });
+      const draft = response.data.draft;
+      applyDraftToForm(draft);
+      const failureMessage = draft.parsingStatus === 'FAILED' ? invoiceDraftFailureMessage(draft) : '';
+      setInvoiceUpload((current) => ({
+        ...current,
+        status: draft.parsingStatus,
+        error: failureMessage,
+        draft,
+      }));
+      setSuccess('');
+    } catch (err) {
+      setInvoiceUpload((current) => ({
+        ...current,
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : 'Retry failed.',
+      }));
+    }
+  };
+
+  const removeInvoiceFile = async () => {
+    setInvoiceUpload(emptyInvoiceUploadState());
+  };
+
+  const handleInvoiceDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files?.[0];
+    if (file) void uploadInvoiceFile(file);
   };
 
   const prepareLines = (): PreparedLine[] => {
@@ -821,6 +1208,145 @@ export default function PurchaseEntry() {
             {success}
           </div>
         )}
+
+        <section className="mt-4 rounded-3xl border border-[#5c4033]/15 bg-white p-4 shadow-sm md:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Upload size={20} className="text-[#5c4033]" />
+              <div>
+                <h2 className="text-base font-black text-[#3e2723]">Upload Invoice</h2>
+                <p className="text-sm font-medium text-neutral-500">
+                  PDF, JPG, JPEG or PNG. Upload creates a draft only; stock changes only after review and Post Purchase.
+                </p>
+              </div>
+            </div>
+            <span className={[
+              'rounded-full px-3 py-1 text-xs font-black',
+              invoiceUpload.status === 'READY_FOR_REVIEW' ? 'bg-emerald-50 text-emerald-700' : '',
+              invoiceUpload.status === 'NEEDS_REVIEW' ? 'bg-amber-50 text-amber-800' : '',
+              invoiceUpload.status === 'FAILED' ? 'bg-red-50 text-red-700' : '',
+              invoiceUpload.status === 'UPLOADING' || invoiceUpload.status === 'PARSING' ? 'bg-blue-50 text-blue-700' : '',
+              invoiceUpload.status === 'IDLE' ? 'bg-neutral-100 text-neutral-500' : '',
+            ].join(' ')}>
+              {invoiceUpload.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+
+          {invoiceStatusBanner && (
+            <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm font-bold ${invoiceStatusBanner.className}`}>
+              {invoiceStatusBanner.message}
+            </div>
+          )}
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <label
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleInvoiceDrop}
+              className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-[#5c4033]/25 bg-[#fffaf4] px-4 py-6 text-center transition hover:border-[#5c4033]/60"
+            >
+              <input
+                type="file"
+                accept="application/pdf,image/jpeg,image/jpg,image/png"
+                className="hidden"
+                disabled={!selectedStore || invoiceUpload.status === 'UPLOADING' || invoiceUpload.status === 'PARSING'}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.currentTarget.value = '';
+                  if (file) void uploadInvoiceFile(file);
+                }}
+              />
+              <Upload size={26} className="text-[#5c4033]" />
+              <p className="mt-2 text-sm font-black text-[#3e2723]">Drop invoice here or choose file</p>
+              <p className="mt-1 text-xs font-bold text-neutral-500">Max 10 MB. Admin/Manager only. Draft review required.</p>
+              {invoiceUpload.file && (
+                <p className="mt-3 rounded-full bg-white px-3 py-1 text-xs font-black text-neutral-600">
+                  {invoiceUpload.file.name}
+                </p>
+              )}
+            </label>
+
+            <div className="rounded-3xl border border-neutral-200 bg-neutral-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-neutral-400">Draft status</p>
+                {invoiceUpload.file && (
+                  <button
+                    type="button"
+                    onClick={() => void removeInvoiceFile()}
+                    className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs font-black text-neutral-600 hover:bg-neutral-100"
+                  >
+                    <X size={12} />
+                    Remove
+                  </button>
+                )}
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
+                <div
+                  className="h-full rounded-full bg-[#5c4033] transition-all"
+                  style={{ width: `${invoiceUpload.status === 'PARSING' ? 100 : invoiceUpload.progress}%` }}
+                />
+              </div>
+              <p className="mt-2 text-sm font-bold text-[#3e2723]">
+                {invoiceUpload.status === 'IDLE' && 'Waiting for invoice upload.'}
+                {invoiceUpload.status === 'UPLOADING' && `Uploading ${invoiceUpload.progress}%...`}
+                {invoiceUpload.status === 'PARSING' && invoiceParsingProgressMessage(invoiceUpload.draft)}
+                {invoiceUpload.status === 'READY_FOR_REVIEW' && 'Draft is ready. Please review every line before posting.'}
+                {invoiceUpload.status === 'NEEDS_REVIEW' && 'Draft needs human review before posting.'}
+                {invoiceUpload.status === 'FAILED' && (invoiceUpload.draft ? invoiceDraftFailureMessage(invoiceUpload.draft) : 'Upload or parsing failed.')}
+              </p>
+              {invoiceUpload.error && <p className="mt-2 text-xs font-bold text-red-700">{invoiceUpload.error}</p>}
+              {invoiceUpload.status === 'FAILED' && invoiceUpload.sourceFilePath && (
+                <button
+                  type="button"
+                  onClick={() => void retryInvoiceParsing()}
+                  className="mt-3 rounded-full bg-[#3e2723] px-4 py-2 text-xs font-black text-white hover:bg-[#2d1c19]"
+                >
+                  Retry parsing
+                </button>
+              )}
+            </div>
+          </div>
+
+          {invoiceUpload.draft && (
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Extracted header</p>
+                <p className="mt-2 text-sm font-black text-[#3e2723]">{invoiceUpload.draft.supplierName || 'Supplier not detected'}</p>
+                <p className="text-xs font-bold text-neutral-500">
+                  Invoice {invoiceUpload.draft.invoiceNumber || '-'} · {invoiceUpload.draft.invoiceDate || 'date missing'}
+                </p>
+                <p className="mt-1 text-xs font-bold text-neutral-500">GSTIN {invoiceUpload.draft.gstin || '-'}</p>
+              </div>
+              <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Invoice total check</p>
+                <p className="mt-2 text-sm font-black text-[#3e2723]">
+                  Extracted {formatMoney(invoiceUpload.draft.extractedTotals?.grandTotal || 0)}
+                </p>
+                <p className="text-xs font-bold text-neutral-500">Calculated form {formatMoney(formTotals.grandTotal)}</p>
+                {invoiceUpload.draft.extractedTotals?.grandTotal && Math.abs(formTotals.grandTotal - money(invoiceUpload.draft.extractedTotals.grandTotal)) > 0.99 && (
+                  <p className="mt-1 text-xs font-black text-amber-800">Totals differ. Review item units, rate basis, tax and discount.</p>
+                )}
+              </div>
+              <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-neutral-400">Line matching</p>
+                <p className="mt-2 text-sm font-black text-[#3e2723]">
+                  {(invoiceUpload.draft.lines || []).filter((line) => line.matchStatus === 'CONFIRMED').length} confirmed / {(invoiceUpload.draft.lines || []).length || 0} lines
+                </p>
+                <p className="text-xs font-bold text-neutral-500">
+                  Confidence {Math.round((invoiceUpload.draft.extractionConfidence || 0) * 100)}%
+                </p>
+              </div>
+            </div>
+          )}
+
+          {invoiceUpload.draft?.warnings && invoiceUpload.draft.warnings.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-900">Review warnings</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm font-bold text-amber-900">
+                {invoiceUpload.draft.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+              </ul>
+            </div>
+          )}
+        </section>
 
         <div className="mt-4 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
           <section className="min-w-0 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">

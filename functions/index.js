@@ -3,6 +3,7 @@
 const { randomBytes, createHash } = require('node:crypto');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
+const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 
 admin.initializeApp();
 
@@ -18,6 +19,8 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,}$/;
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
+
+exports.parseSupplierInvoiceDraft = createParseSupplierInvoiceDraft({ admin, db, region: REGION });
 
 function publicStatusMessage(status) {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';

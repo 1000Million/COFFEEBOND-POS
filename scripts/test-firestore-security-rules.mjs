@@ -3,9 +3,11 @@ import path from 'node:path';
 
 const repoRoot = process.cwd();
 const rulesPath = path.join(repoRoot, 'firestore.rules');
+const storageRulesPath = path.join(repoRoot, 'storage.rules');
 const missingProfilePath = path.join(repoRoot, 'frontend/pages/MissingProfile.tsx');
 
 const rules = fs.readFileSync(rulesPath, 'utf8');
+const storageRules = fs.existsSync(storageRulesPath) ? fs.readFileSync(storageRulesPath, 'utf8') : '';
 const missingProfile = fs.existsSync(missingProfilePath) ? fs.readFileSync(missingProfilePath, 'utf8') : '';
 
 const failures = [];
@@ -79,6 +81,8 @@ const stockMovementsBlock = extractMatchBlock(rules, 'match /stockMovements/{mov
 const storeStockBlock = extractMatchBlock(rules, 'match /storeStock/{stockId}');
 const storeInventoryBlock = extractMatchBlock(rules, 'match /storeInventory/{stockId}');
 const pendingConsumptionBlock = extractMatchBlock(rules, 'match /pendingInventoryConsumption/{pendingId}');
+const purchaseDraftsBlock = extractMatchBlock(rules, 'match /purchaseDrafts/{draftId}');
+const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
 const clientBootstrapTerms = [
   ['Initialize Root', ' Admin Profile'].join(''),
@@ -199,6 +203,18 @@ assert(/allow\s+update:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(pen
 assert(/request\.resource\.data\.status\s*==\s*'CANCELLED'/.test(pendingConsumptionBlock), 'Pending BOM client updates must only cancel records.');
 assert(!/request\.resource\.data\.status\s*==\s*'APPLIED'/.test(pendingConsumptionBlock), 'Client rules must not allow marking pending BOM records APPLIED.');
 
+assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*\(isAdmin\(\)\s*\|\|\s*hasStoreAccess\(resource\.data\.storeId\)\);/.test(purchaseDraftsBlock), 'Purchase drafts must be readable only by active staff with store access.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(purchaseDraftsBlock), 'Purchase drafts must be server-created only.');
+assert(storageRules.includes('match /purchase-invoices/{storeId}/{draftId}/{fileName}'), 'Storage rules must protect purchase invoice uploads.');
+assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*hasStoreAccess\(storeId\);/.test(invoiceStorageBlock), 'Invoice files must be readable only by assigned active staff.');
+assert(/allow\s+create,\s*update:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(invoiceStorageBlock), 'Only Admin or Store Manager may upload invoice files.');
+assert(/hasStoreAccess\(storeId\)/.test(invoiceStorageBlock), 'Invoice uploads must require access to the selected store.');
+assert(/isAllowedInvoiceContent\(\)/.test(invoiceStorageBlock), 'Invoice uploads must validate file content.');
+assert(/allow\s+delete:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)\s*&&\s*hasStoreAccess\(storeId\);/.test(invoiceStorageBlock), 'Invoice delete must be limited to Admin or assigned Store Manager.');
+assert(/request\.resource\.size\s*<=\s*10\s*\*\s*1024\s*\*\s*1024/.test(storageRules), 'Invoice uploads must be capped at 10 MB.');
+assert(storageRules.includes('application/pdf') && storageRules.includes('image/jpeg') && storageRules.includes('image/jpg') && storageRules.includes('image/png'), 'Invoice uploads must be limited to PDF/JPG/PNG MIME types.');
+assert(/match \/\{allPaths=\*\*\}/.test(storageRules) && /allow\s+read,\s*write:\s*if\s+false;/.test(storageRules), 'Storage rules must deny all other paths by default.');
+
 const cases = [
   'active ADMIN allowed: isAdmin() is based on active users/{uid}.role == ADMIN',
   'inactive ADMIN denied: hasRole() requires isActive == true',
@@ -218,7 +234,10 @@ const cases = [
   'Stock movements cannot be updated or deleted',
   'Checkout storeStock updates can only reduce currentStock',
   'Checkout storeInventory updates can only reduce currentStock',
-  'Pending BOM client updates can only cancel, never apply'
+  'Pending BOM client updates can only cancel, never apply',
+  'purchaseDrafts are server-created only and readable only by assigned staff',
+  'supplier invoices are private Storage files with Admin/Manager-only upload',
+  'invoice uploads are capped at 10 MB and limited to PDF/JPG/PNG'
 ];
 
 if (failures.length > 0) {

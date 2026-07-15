@@ -1,0 +1,57 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userPath() {
+      return /databases/(default)/documents/users/$(request.auth.uid);
+    }
+
+    function userData() {
+      return firestore.get(userPath()).data;
+    }
+
+    function isActiveStaff() {
+      return isSignedIn()
+        && firestore.exists(userPath())
+        && userData().isActive == true;
+    }
+
+    function isAdmin() {
+      return isActiveStaff() && userData().role == 'ADMIN';
+    }
+
+    function isStoreManager() {
+      return isActiveStaff() && userData().role == 'STORE_MANAGER';
+    }
+
+    function hasStoreAccess(storeId) {
+      return isAdmin()
+        || (isActiveStaff()
+          && userData().keys().hasAll(['storeIds'])
+          && storeId in userData().storeIds);
+    }
+
+    function isAllowedInvoiceContent() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType in ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+    }
+
+    match /purchase-invoices/{storeId}/{draftId}/{fileName} {
+      allow read: if isActiveStaff() && hasStoreAccess(storeId);
+      allow create, update: if (isAdmin() || isStoreManager())
+        && hasStoreAccess(storeId)
+        && isAllowedInvoiceContent();
+      allow delete: if (isAdmin() || isStoreManager()) && hasStoreAccess(storeId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

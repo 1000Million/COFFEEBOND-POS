@@ -502,6 +502,11 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /purchaseDrafts/{draftId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create, update, delete: if false;
+    }
+
     // Orders Collection
     match /orders/{orderId} {
       allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
