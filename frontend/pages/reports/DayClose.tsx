@@ -5,6 +5,7 @@ import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, Times
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, Order, PaymentMethod, Store } from '../../types';
+import { summarizeCollections } from '../../lib/paymentReversal';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 
@@ -23,6 +24,12 @@ type DayCloseSummary = {
   discountTotal: number;
   paymentBreakdown: Record<PaymentMethod, number>;
   expectedCash: number;
+  grossPaymentsReceived: number;
+  voidedPaymentTotal: number;
+  refundedOrReversedPayments: number;
+  refundPendingPayments: number;
+  manualRefundRequiredPayments: number;
+  netCollections: number;
 };
 
 function todayIso(): string {
@@ -90,6 +97,7 @@ function buildSummary(orders: Order[]): DayCloseSummary {
   const completedOrders = orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED');
   const voidedOrders = orders.filter(order => effectiveOrderStatus(order) === 'VOIDED');
   const paymentBreakdown = emptyPaymentBreakdown();
+  const collectionAudit = summarizeCollections(orders);
 
   completedOrders.forEach(order => {
     orderPaymentBreakdown(order).forEach(payment => {
@@ -112,6 +120,12 @@ function buildSummary(orders: Order[]): DayCloseSummary {
     discountTotal: completedOrders.reduce((sum, order) => sum + orderDiscountTotal(order), 0),
     paymentBreakdown,
     expectedCash: paymentBreakdown.CASH,
+    grossPaymentsReceived: collectionAudit.grossPaymentsReceived,
+    voidedPaymentTotal: collectionAudit.voidedPaymentTotal,
+    refundedOrReversedPayments: collectionAudit.refundedOrReversedPayments,
+    refundPendingPayments: collectionAudit.refundPendingPayments,
+    manualRefundRequiredPayments: collectionAudit.manualRefundRequiredPayments,
+    netCollections: collectionAudit.netCollections,
   };
 }
 
@@ -253,6 +267,12 @@ export default function DayClose() {
         discountTotal: summary.discountTotal,
         paymentBreakdown: summary.paymentBreakdown,
         expectedCash: summary.expectedCash,
+        grossPaymentsReceived: summary.grossPaymentsReceived,
+        voidedPaymentTotal: summary.voidedPaymentTotal,
+        refundedOrReversedPayments: summary.refundedOrReversedPayments,
+        refundPendingPayments: summary.refundPendingPayments,
+        manualRefundRequiredPayments: summary.manualRefundRequiredPayments,
+        netCollections: summary.netCollections,
         actualCash: actualCashNumber,
         cashVariance,
         notes: notes.trim(),
@@ -353,6 +373,10 @@ export default function DayClose() {
               <SummaryCard label="GST Total" value={formatMoney(summary.gstTotal)} />
               <SummaryCard label="Discount Total" value={formatMoney(summary.discountTotal)} />
               <SummaryCard label="Expected Cash" value={formatMoney(summary.expectedCash)} tone="amber" />
+              <SummaryCard label="Gross Payments Received" value={formatMoney(summary.grossPaymentsReceived)} />
+              <SummaryCard label="Voided / Refunded Payments" value={formatMoney(summary.voidedPaymentTotal)} tone={summary.voidedPaymentTotal > 0 ? 'red' : 'neutral'} />
+              <SummaryCard label="Refunds Pending" value={formatMoney(summary.refundPendingPayments + summary.manualRefundRequiredPayments)} tone={summary.refundPendingPayments + summary.manualRefundRequiredPayments > 0 ? 'amber' : 'neutral'} />
+              <SummaryCard label="Net Collections" value={formatMoney(summary.netCollections)} tone="green" />
             </section>
 
             <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -453,6 +477,10 @@ export default function DayClose() {
                     <SnapshotRow label="Closed By" value={existingClosing?.closedByName || '-'} />
                     <SnapshotRow label="Closed At" value={existingClosing?.closedAt?.toDate ? existingClosing.closedAt.toDate().toLocaleString() : existingClosing ? 'Saved' : '-'} />
                     <SnapshotRow label="Orders Loaded" value={orders.length.toString()} />
+                    <SnapshotRow label="Gross Payments Received" value={formatMoney(summary.grossPaymentsReceived)} />
+                    <SnapshotRow label="Voided / Refunded Payments" value={formatMoney(summary.voidedPaymentTotal)} />
+                    <SnapshotRow label="Refunds Pending" value={formatMoney(summary.refundPendingPayments + summary.manualRefundRequiredPayments)} />
+                    <SnapshotRow label="Net Collections" value={formatMoney(summary.netCollections)} />
                   </tbody>
                 </table>
               </div>

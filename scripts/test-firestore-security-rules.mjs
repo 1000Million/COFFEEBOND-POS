@@ -62,6 +62,7 @@ const orderSettlementBody = extractFunction(rules, 'isOrderSettlementUpdate');
 const orderVoidBody = extractFunction(rules, 'isOrderVoidUpdate');
 const orderIdentityBody = extractFunction(rules, 'orderIdentityUnchanged');
 const orderTotalsBody = extractFunction(rules, 'orderTotalsUnchanged');
+const paymentReversalStatusBody = extractFunction(rules, 'isValidPaymentReversalStatus');
 const orderItemCreateBody = extractFunction(rules, 'isValidOrderItemCreate');
 const orderItemStatusBody = extractFunction(rules, 'isOrderItemStatusUpdate');
 const paymentCreateBody = extractFunction(rules, 'isValidPaymentCreate');
@@ -156,6 +157,17 @@ assert(/\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(orderVoidBody), 'Void upda
 assert(/request\.resource\.data\.status\s*==\s*'VOIDED'/.test(orderVoidBody), 'Void helper must only move an order to VOIDED.');
 assert(/request\.resource\.data\.voidedBy\s*==\s*request\.auth\.uid/.test(orderVoidBody), 'Void helper must bind voidedBy to the caller.');
 assert(/orderIdentityUnchanged\(\)/.test(orderVoidBody) && /orderTotalsUnchanged\(\)/.test(orderVoidBody), 'Void must preserve order identity and totals.');
+assert(/request\.resource\.data\.paymentStatus\s*==\s*resource\.data\.paymentStatus/.test(orderVoidBody), 'Void must preserve the original payment status and use separate reversal audit fields.');
+assert(/isValidPaymentReversalStatus\(request\.resource\.data\.paymentReversalStatus\)/.test(orderVoidBody), 'Void payment reversal status must be restricted to approved values.');
+for (const status of ['NOT_REQUIRED', 'REFUNDED', 'REVERSED', 'REFUND_PENDING', 'MANUAL_REFUND_REQUIRED']) {
+  assert(paymentReversalStatusBody.includes(`'${status}'`), `Payment reversal status ${status} must be allowed explicitly.`);
+}
+for (const reversalField of ['paymentReversalStatus', 'paymentReversalBreakdown', 'paymentReversalTotal', 'refundedAmount', 'reversedAmount', 'refundPendingAmount', 'manualRefundRequiredAmount', 'netCollectionAmount']) {
+  assert(orderVoidBody.includes(`'${reversalField}'`), `Void helper must field-limit ${reversalField}.`);
+}
+for (const reversalNumber of ['paymentReversalTotal', 'refundedAmount', 'reversedAmount', 'refundPendingAmount', 'manualRefundRequiredAmount', 'netCollectionAmount']) {
+  assert(orderVoidBody.includes(`request.resource.data.${reversalNumber} is number`), `Void helper must require numeric ${reversalNumber}.`);
+}
 for (const immutableField of ['storeId', 'createdByUserId', 'createdAt', 'orderNumber']) {
   assert(orderIdentityBody.includes(`request.resource.data.${immutableField} == resource.data.${immutableField}`), `Order updates must preserve ${immutableField}.`);
 }
@@ -228,6 +240,7 @@ const cases = [
   'Cashier creates orders only for assigned stores and as themselves',
   'Cashier cannot edit PAID orders or change totals after creation',
   'Settlement and void are the only order update paths',
+  'Voided paid orders keep original payment records and add restricted reversal audit fields',
   'Order item updates are status-only for KOT sync',
   'Payment records require parent-order store access and valid methods',
   'KOT creates and status updates preserve immutable ticket fields',

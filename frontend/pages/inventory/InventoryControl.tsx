@@ -11,6 +11,7 @@ import {
   PackagePlus,
   Package,
   RefreshCw,
+  Search,
   ShieldAlert,
   Store as StoreIcon,
   TrendingUp,
@@ -29,6 +30,19 @@ import {
   StockMovement,
 } from '../../types';
 import {
+  buildInventoryMovementAuditRows,
+  buildInventoryRawConsumptionRows,
+  filterInventoryMovementAuditRows,
+  InventoryMovementAuditRow,
+  InventoryRawConsumptionRow,
+  movementOrderReference,
+  buildOrderReferenceLookup,
+  movementItemCode,
+  movementItemName,
+  movementItemType,
+  InventoryMovementFilter,
+} from '../../lib/inventoryControlAudit';
+import {
   BOMComponent,
   FinishedGood,
   PrepItem,
@@ -39,7 +53,7 @@ import {
 
 type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
 type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_BOM_BACKFILL' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
-type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
+type ItemTypeFilter = 'ALL' | StockItemType | 'UNKNOWN';
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 type PendingInventoryConsumptionStatus = 'PENDING_BOM' | 'READY_FOR_BACKFILL' | 'APPLIED' | 'CANCELLED' | 'FAILED_REVIEW';
 
@@ -140,16 +154,6 @@ type MissingCostRow = {
   cogsImpact: number;
 };
 
-type RawConsumptionRow = {
-  itemName: string;
-  stockItemType: StockItemType;
-  totalConsumedQuantity: number;
-  unit: string;
-  estimatedCogs: number;
-  ordersCount: number;
-  lastConsumedAt: string;
-};
-
 type OrderCogsRow = {
   dateTime: string;
   orderNumber: string;
@@ -161,22 +165,6 @@ type OrderCogsRow = {
   stockMovementCount: number;
   paymentMethod: string;
   orderId: string;
-};
-
-type MovementAuditRow = {
-  dateTime: string;
-  storeName: string;
-  movementType: string;
-  source: string;
-  orderNumber: string;
-  itemType: string;
-  itemName: string;
-  quantityDelta: number;
-  previousQty: number;
-  newQty: number;
-  wentNegative: boolean;
-  cogsAmount: number;
-  createdBy: string;
 };
 
 type PendingBomRow = {
@@ -210,6 +198,10 @@ const ITEM_FILTERS: { value: ItemTypeFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
   { value: 'RAW_INGREDIENT', label: 'Raw' },
   { value: 'PREP_ITEM', label: 'Prep' },
+  { value: 'PACKAGING', label: 'Packaging' },
+  { value: 'BOUGHT_COMPONENT', label: 'Bought component' },
+  { value: 'FINISHED_GOOD', label: 'Finished good' },
+  { value: 'UNKNOWN', label: 'Other / unknown' },
 ];
 const STATUS_TONE: Record<AuditStatus, string> = {
   PASS: 'border-emerald-200 bg-emerald-50 text-emerald-900',
@@ -258,6 +250,11 @@ function money(value: unknown): number {
 
 function formatMoney(value: unknown): string {
   return `₹${money(value).toFixed(2)}`;
+}
+
+function formatStockSnapshot(value: number | null): ReactNode {
+  if (value === null) return <span className="text-xs font-bold text-neutral-400">Not recorded</span>;
+  return <span className="font-mono">{value.toFixed(2)}</span>;
 }
 
 function toDate(value: any): Date | null {
@@ -753,43 +750,6 @@ function buildPaymentTotals(orders: Order[]): Record<PaymentMethod, number> {
   }, {} as Record<PaymentMethod, number>);
 }
 
-function buildRawConsumptionRows(movements: StockMovement[]): RawConsumptionRow[] {
-  const grouped = new Map<string, RawConsumptionRow & { orderIds: Set<string> }>();
-  movements.forEach((movement) => {
-    if (movement.movementType !== 'SALE_DEDUCTION' && movement.movementType !== 'ORDER_BOM_BACKFILL') return;
-    if (!['RAW_INGREDIENT', 'PREP_ITEM'].includes(String(movement.stockItemType || ''))) return;
-    const key = `${movement.stockItemType || 'UNKNOWN'}|${movement.stockItemCode || movement.inventoryItemId || 'UNKNOWN'}|${movement.unit || 'UNKNOWN'}`;
-    const existing = grouped.get(key) || {
-      itemName: movement.inventoryItemName || movement.inventoryItemId || 'Unknown item',
-      stockItemType: (movement.stockItemType || 'RAW_INGREDIENT') as StockItemType,
-      totalConsumedQuantity: 0,
-      unit: movement.unit || '-',
-      estimatedCogs: 0,
-      ordersCount: 0,
-      lastConsumedAt: '',
-      orderIds: new Set<string>(),
-    };
-    const qty = Math.abs(money(movement.quantityDelta ?? movement.quantity));
-    existing.totalConsumedQuantity += qty;
-    existing.estimatedCogs += money(movement.cogsAmount);
-    if (movement.orderId) existing.orderIds.add(movement.orderId);
-    const currentDate = toDate(movement.createdAt);
-    const existingDate = existing.lastConsumedAt ? toDate(existing.lastConsumedAt) : null;
-    if (!existingDate || (currentDate && currentDate > existingDate)) {
-      existing.lastConsumedAt = movement.createdAt;
-    }
-    grouped.set(key, existing);
-  });
-
-  return Array.from(grouped.values())
-    .map(({ orderIds, ...row }) => ({
-      ...row,
-      ordersCount: orderIds.size,
-      lastConsumedAt: formatDateTime(row.lastConsumedAt),
-    }))
-    .sort((a, b) => b.totalConsumedQuantity - a.totalConsumedQuantity || b.estimatedCogs - a.estimatedCogs);
-}
-
 function buildOrderCogsRows(orders: Order[], movements: StockMovement[]): OrderCogsRow[] {
   const movementCogsByOrder = new Map<string, number>();
   const movementCountByOrder = new Map<string, number>();
@@ -829,24 +789,6 @@ function buildOrderCogsRows(orders: Order[], movements: StockMovement[]): OrderC
       return bDate - aDate;
     })
     .slice(0, 50);
-}
-
-function buildMovementAuditRows(movements: StockMovement[]): MovementAuditRow[] {
-  return movements.map((movement) => ({
-    dateTime: formatDateTime(movement.createdAt),
-    storeName: movement.storeName || '-',
-    movementType: movement.movementType || '-',
-    source: movement.source || movement.referenceType || '-',
-    orderNumber: movement.orderNumber || '-',
-    itemType: movement.stockItemType || movement.inventoryItemId || '-',
-    itemName: movement.inventoryItemName || movement.inventoryItemId || '-',
-    quantityDelta: money(movement.quantityDelta ?? movement.quantity),
-    previousQty: money(movement.previousQty),
-    newQty: money(movement.newQty),
-    wentNegative: Boolean(movement.wentNegative),
-    cogsAmount: money(movement.cogsAmount),
-    createdBy: movement.createdByName || '-',
-  }));
 }
 
 function buildMissingCostRows(movements: StockMovement[]): MissingCostRow[] {
@@ -1196,6 +1138,7 @@ export default function InventoryControl() {
   const [customEnd, setCustomEnd] = useState(todayIso());
   const [movementTypeFilter, setMovementTypeFilter] = useState<MovementTypeFilter>('ALL');
   const [itemTypeFilter, setItemTypeFilter] = useState<ItemTypeFilter>('ALL');
+  const [movementSearch, setMovementSearch] = useState('');
   const [storesLoading, setStoresLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(true);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -1398,7 +1341,6 @@ export default function InventoryControl() {
   }, 0), [completedOrders, periodMovements]);
   const netSales = useMemo(() => completedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0), [completedOrders]);
   const foodCostPct = netSales > 0 ? (totalCogs / netSales) * 100 : 0;
-  const stockReversalCount = useMemo(() => periodMovements.filter((movement) => movement.movementType === 'ORDER_VOID_REVERSAL').length, [periodMovements]);
   const pendingOnlineOrders = useMemo(() => currentOnlineOrders.filter((order) => order.status === 'PENDING'), [currentOnlineOrders]);
   const rejectedOnlineOrders = useMemo(() => currentOnlineOrders.filter((order) => order.status === 'REJECTED'), [currentOnlineOrders]);
   const acceptedOnlineOrders = useMemo(() => currentOnlineOrders.filter((order) => order.status === 'ACCEPTED' || order.status === 'CONVERTED'), [currentOnlineOrders]);
@@ -1409,24 +1351,38 @@ export default function InventoryControl() {
   const gstZeroCount = useMemo(() => completedOrders.filter((order) => orderTaxTotal(order) <= 0).length, [completedOrders]);
   const voidedOrdersMissingReason = useMemo(() => voidedOrders.filter((order) => !String(order.voidReason || '').trim() || !order.voidedAt || !String(order.voidedByName || '').trim()).length, [voidedOrders]);
   const voidedOrderIds = useMemo(() => new Set(voidedOrders.map((order) => order.id).filter(Boolean) as string[]), [voidedOrders]);
+  const voidedOrderNumbers = useMemo(() => new Set(voidedOrders.map((order) => order.orderNumber).filter(Boolean)), [voidedOrders]);
+  const orderReferenceLookup = useMemo(() => buildOrderReferenceLookup(periodOrders), [periodOrders]);
   const voidReversalMovements = useMemo(
-    () => periodMovements.filter((movement) => movement.movementType === 'ORDER_VOID_REVERSAL' && movement.referenceId && voidedOrderIds.has(movement.referenceId)),
-    [periodMovements, voidedOrderIds],
+    () => periodMovements.filter((movement) => {
+      if (movement.movementType !== 'ORDER_VOID_REVERSAL') return false;
+      if (movement.referenceId && voidedOrderIds.has(movement.referenceId)) return true;
+      const resolvedOrder = movementOrderReference(movement, orderReferenceLookup);
+      return voidedOrderNumbers.has(resolvedOrder);
+    }),
+    [orderReferenceLookup, periodMovements, voidedOrderIds, voidedOrderNumbers],
   );
-  const missingVoidReversalCount = useMemo(() => voidedOrders.filter((order) => !periodMovements.some((movement) => movement.movementType === 'ORDER_VOID_REVERSAL' && movement.referenceId === order.id)).length, [periodMovements, voidedOrders]);
+  const missingVoidReversalCount = useMemo(() => voidedOrders.filter((order) => !periodMovements.some((movement) => {
+    if (movement.movementType !== 'ORDER_VOID_REVERSAL') return false;
+    if (movement.referenceId === order.id || movement.orderId === order.id) return true;
+    return movementOrderReference(movement, orderReferenceLookup) === order.orderNumber;
+  })).length, [orderReferenceLookup, periodMovements, voidedOrders]);
   const negativeStockRows = useMemo(() => buildNegativeStockRows(selectedStore || ({ id: '', name: '', code: '', address: '', isActive: true, createdAt: null, updatedAt: null } as Store), data.storeStock, periodMovements), [selectedStore, data.storeStock, periodMovements]);
   const missingStockCreatedRows = useMemo(() => buildMissingStockCreatedRows(periodMovements), [periodMovements]);
   const missingCostRows = useMemo(() => buildMissingCostRows(periodMovements), [periodMovements]);
-  const rawConsumptionRows = useMemo(() => buildRawConsumptionRows(periodMovements), [periodMovements]);
+  const rawConsumptionRows = useMemo(() => buildInventoryRawConsumptionRows(periodMovements), [periodMovements]);
   const orderCogsRows = useMemo(() => buildOrderCogsRows(periodOrders, periodMovements), [periodMovements, periodOrders]);
-  const movementAuditRows = useMemo(() => buildMovementAuditRows(
-    periodMovements.filter((movement) => {
-      const movementTypeFilterMatch = movementTypeFilter === 'ALL'
-        || movement.movementType === movementTypeFilter;
-      const itemTypeFilterMatch = itemTypeFilter === 'ALL' || movement.stockItemType === itemTypeFilter;
-      return movementTypeFilterMatch && itemTypeFilterMatch;
-    }),
-  ), [itemTypeFilter, movementTypeFilter, periodMovements]);
+  const allMovementAuditRows = useMemo(() => buildInventoryMovementAuditRows(periodMovements, periodOrders), [periodMovements, periodOrders]);
+  const movementAuditFilters: InventoryMovementFilter = useMemo(() => ({
+    movementType: movementTypeFilter,
+    itemType: itemTypeFilter,
+    search: movementSearch,
+  }), [itemTypeFilter, movementSearch, movementTypeFilter]);
+  const movementAuditRows = useMemo(
+    () => filterInventoryMovementAuditRows(allMovementAuditRows, movementAuditFilters),
+    [allMovementAuditRows, movementAuditFilters],
+  );
+  const stockReversalCount = useMemo(() => movementAuditRows.filter((row) => row.movementType === 'ORDER_VOID_REVERSAL').length, [movementAuditRows]);
   const pendingBomRows = useMemo(() => buildPendingBomRows(pendingConsumptionRows), [pendingConsumptionRows]);
   const setupBlockers = useMemo(() => selectedStore ? buildSetupBlockers(selectedStore, data.rawIngredients, data.prepItems, data.finishedGoods) : [], [data.finishedGoods, data.prepItems, data.rawIngredients, selectedStore]);
   const negativeStockCount = negativeStockRows.length;
@@ -1576,7 +1532,13 @@ export default function InventoryControl() {
         </div>
 
         <div className="mt-4 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-neutral-400">Stock Movement Audit Filters</p>
+              <p className="mt-1 text-xs font-bold text-neutral-500">Movement type, item type, and search affect the Stock Movement Audit table and reversal count.</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
             <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
               Store
               <div className="relative">
@@ -1622,6 +1584,19 @@ export default function InventoryControl() {
               >
                 {ITEM_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
               </select>
+            </label>
+
+            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
+              Order / item search
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
+                <input
+                  value={movementSearch}
+                  onChange={(event) => setMovementSearch(event.target.value)}
+                  placeholder="Order, item, code"
+                  className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 py-2.5 pl-9 pr-3 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
+                />
+              </div>
             </label>
           </div>
 
@@ -1794,19 +1769,21 @@ export default function InventoryControl() {
 
           <SectionCard
             title="Raw Material Consumption"
-            description="Grouped sale deduction consumption for the selected store and date range."
+            description="Gross sale deductions, void reversals, and net usage for the selected store and date range."
             action={<Link to="/reports" className="rounded-full border border-[#5c4033]/20 bg-white px-3 py-2 text-xs font-black text-[#5c4033] hover:bg-[#5c4033]/5">Open Reports</Link>}
           >
             <DataTable
-              headers={['Item', 'Type', 'Total consumed', 'Unit', 'Estimated COGS', 'Orders', 'Last consumed']}
-              rows={rawConsumptionRows.map((row) => [
+              headers={['Item', 'Type', 'Gross consumed', 'Reversed', 'Net consumed', 'Unit', 'Net COGS', 'Orders', 'Last consumed']}
+              rows={rawConsumptionRows.map((row: InventoryRawConsumptionRow) => [
                 row.itemName,
                 row.stockItemType,
-                <span key="total" className="font-mono">{row.totalConsumedQuantity.toFixed(2)}</span>,
+                <span key="gross" className="font-mono">{row.grossConsumedQuantity.toFixed(2)}</span>,
+                <span key="reversed" className="font-mono text-emerald-700">{row.reversedQuantity.toFixed(2)}</span>,
+                <span key="net" className="font-mono font-black">{row.netConsumedQuantity.toFixed(2)}</span>,
                 row.unit,
-                <span key="cogs" className="font-mono">{formatMoney(row.estimatedCogs)}</span>,
+                <span key="cogs" className="font-mono">{formatMoney(row.netCogs)}</span>,
                 row.ordersCount,
-                row.lastConsumedAt,
+                formatDateTime(row.lastConsumedAt),
               ])}
             />
           </SectionCard>
@@ -1851,24 +1828,24 @@ export default function InventoryControl() {
 
           <SectionCard
             title="Stock Movement Audit"
-            description="Filtered movements for the selected store and date range. Use the filters above to narrow the log."
+            description="Filtered movement log for the selected store and date range."
           >
             <DataTable
-              headers={['Date/time', 'Store', 'Movement type', 'Source', 'Order', 'Item type', 'Item name', 'Qty delta', 'Prev', 'New', 'Neg', 'COGS', 'Created by']}
-              rows={movementAuditRows.map((row) => [
-                row.dateTime,
+              headers={['Date/time', 'Store', 'Item name', 'Item code', 'Item type', 'Movement type', 'Quantity change', 'Unit', 'Stock before', 'Stock after', 'Source', 'Order/reference', 'Reason']}
+              rows={movementAuditRows.map((row: InventoryMovementAuditRow) => [
+                formatDateTime(row.dateTimeSource),
                 row.storeName,
+                row.itemName,
+                row.itemCode,
+                row.itemType,
                 row.movementType,
+                <span key="delta" className={`font-mono ${row.quantityDelta < 0 ? 'text-red-700' : row.quantityDelta > 0 ? 'text-emerald-700' : 'text-neutral-700'}`}>{`${row.quantityDelta > 0 ? '+' : ''}${row.quantityDelta.toFixed(2)}`}</span>,
+                row.unit,
+                formatStockSnapshot(row.previousQty),
+                formatStockSnapshot(row.newQty),
                 row.source,
                 row.orderNumber,
-                row.itemType,
-                row.itemName,
-                <span key="delta" className={`font-mono ${row.quantityDelta < 0 ? 'text-red-700' : row.quantityDelta > 0 ? 'text-emerald-700' : 'text-neutral-700'}`}>{`${row.quantityDelta > 0 ? '+' : ''}${row.quantityDelta.toFixed(2)}`}</span>,
-                <span key="prev" className="font-mono">{row.previousQty.toFixed(2)}</span>,
-                <span key="new" className="font-mono">{row.newQty.toFixed(2)}</span>,
-                row.wentNegative ? <span key="neg" className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-black text-red-700">Yes</span> : 'No',
-                <span key="cogs" className="font-mono">{formatMoney(row.cogsAmount)}</span>,
-                row.createdBy,
+                row.reason,
               ])}
             />
           </SectionCard>

@@ -104,6 +104,10 @@ service cloud.firestore {
       return method in ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
     }
 
+    function isValidPaymentReversalStatus(status) {
+      return status in ['NOT_REQUIRED', 'REFUNDED', 'REVERSED', 'REFUND_PENDING', 'MANUAL_REFUND_REQUIRED'];
+    }
+
     function isValidKotStatus(status) {
       return status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'RETURNED', 'WASTAGE_RECORDED', 'REMAKE_REQUESTED', 'CANCELLED'];
     }
@@ -180,10 +184,32 @@ service cloud.firestore {
         && orderIdentityUnchanged()
         && orderTotalsUnchanged()
         && request.resource.data.paymentStatus == resource.data.paymentStatus
+        && isValidPaymentReversalStatus(request.resource.data.paymentReversalStatus)
+        && request.resource.data.paymentReversalBreakdown is list
+        && request.resource.data.paymentReversalTotal is number
+        && request.resource.data.paymentReversalTotal >= 0
+        && request.resource.data.refundedAmount is number
+        && request.resource.data.refundedAmount >= 0
+        && request.resource.data.reversedAmount is number
+        && request.resource.data.reversedAmount >= 0
+        && request.resource.data.refundPendingAmount is number
+        && request.resource.data.refundPendingAmount >= 0
+        && request.resource.data.manualRefundRequiredAmount is number
+        && request.resource.data.manualRefundRequiredAmount >= 0
+        && request.resource.data.netCollectionAmount is number
+        && request.resource.data.netCollectionAmount >= 0
         && request.resource.data.voidedBy == request.auth.uid
         && request.resource.data.voidedAt is timestamp
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status',
+          'paymentReversalStatus',
+          'paymentReversalBreakdown',
+          'paymentReversalTotal',
+          'refundedAmount',
+          'reversedAmount',
+          'refundPendingAmount',
+          'manualRefundRequiredAmount',
+          'netCollectionAmount',
           'voidReason',
           'voidedBy',
           'voidedByName',

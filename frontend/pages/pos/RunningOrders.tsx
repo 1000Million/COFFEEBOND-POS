@@ -3,7 +3,6 @@ import {
   collection,
   doc,
   getDocs,
-  increment,
   query,
   runTransaction,
   serverTimestamp,
@@ -31,6 +30,7 @@ import {
 import { db } from '../../lib/firebase';
 import { auth } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
+import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
 import {
   KotItem,
   KotStatus,
@@ -87,6 +87,10 @@ const FILTER_TABS: { id: RunningTab; label: string }[] = [
 function money(value: unknown): number {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundStock(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 function formatMoney(value: unknown): string {
@@ -204,6 +208,7 @@ function statusBadge(bundle: OrderBundle): { label: string; className: string } 
 function printReceipt(bundle: OrderBundle) {
   const { order, items, payments } = bundle;
   const paymentRows = payments.length > 0 ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }];
+  const paymentOutcome = paymentOutcomeLabel(order, payments);
   const printWin = window.open('', '', 'width=420,height=650');
   printWin?.document.write(`
     <html>
@@ -237,7 +242,7 @@ function printReceipt(bundle: OrderBundle) {
           <div class="row">
             <div>
               <p class="bold">${item.itemName}</p>
-              <p class="muted">${money(item.quantity)} x ${formatMoney(item.unitPrice)}</p>
+              <p class="muted">${money(item.quantity)} x ${formatMoney(item.unitPrice)}${effectiveOrderStatus(order) === 'VOIDED' ? ` • ${orderItemDisplayStatus(order, item)}` : ''}</p>
             </div>
             <p class="bold">${formatMoney(item.lineTotal)}</p>
           </div>
@@ -250,7 +255,7 @@ function printReceipt(bundle: OrderBundle) {
         <div class="row total"><span>Total</span><span>${formatMoney(order.grandTotal)}</span></div>
         <div class="line"></div>
         ${paymentRows.map(payment => `<div class="row"><span>${payment.method}</span><span>${formatMoney(payment.amount)}</span></div>`).join('')}
-        <p class="center muted" style="margin-top:16px;">${inferPaymentStatus(order, payments)}</p>
+        <p class="center muted" style="margin-top:16px;">${paymentOutcome}</p>
       </body>
     </html>
   `);
@@ -620,13 +625,14 @@ export default function RunningOrders() {
     setSuccess('');
     try {
       const orderRef = doc(db, 'orders', voidBundle.order.id);
-      const [movementSnap, kotSnap] = await Promise.all([
+      const [movementSnap, kotSnap, paymentSnap] = await Promise.all([
         getDocs(query(collection(db, 'stockMovements'), where('referenceId', '==', voidBundle.order.id))),
         getDocs(query(
           collection(db, 'kotItems'),
           where('storeId', '==', voidBundle.order.storeId),
           where('orderId', '==', voidBundle.order.id),
         )),
+        getDocs(collection(db, 'orders', voidBundle.order.id, 'payments')),
       ]);
       const pendingSnap = await getDocs(query(
         collection(db, 'pendingInventoryConsumption'),
@@ -642,12 +648,14 @@ export default function RunningOrders() {
         && (movement.referenceType === 'ORDER' || !movement.referenceType)
         && Number(movement.quantity) < 0
       ));
+      const paymentRows = paymentSnap.docs.map(paymentDoc => ({ id: paymentDoc.id, ...paymentDoc.data() } as OrderPayment));
 
       await runTransaction(db, async transaction => {
         const freshOrderSnap = await transaction.get(orderRef);
         if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
         const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
         if (effectiveOrderStatus(freshOrder) === 'VOIDED') throw new Error('This order is already voided.');
+        const paymentReversal = buildPaymentReversalAudit(freshOrder, paymentRows);
 
         const stockTargets = saleMovements.map(movement => {
           const stockItemType = String(movement.stockItemType || 'RAW_INGREDIENT');
@@ -670,23 +678,34 @@ export default function RunningOrders() {
           throw new Error(`Cannot reverse stock; storeStock row is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
         }
 
-        stockTargets.forEach(target => {
+        stockTargets.forEach((target, index) => {
           const reversalQuantity = Math.abs(Number(target.movement.quantity) || 0);
+          const stockBefore = Number(stockSnaps[index].data()?.currentStock);
+          if (!Number.isFinite(stockBefore)) {
+            throw new Error(`Cannot reverse stock; current stock is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
+          }
+          const stockAfter = roundStock(stockBefore + reversalQuantity);
           transaction.update(target.stockRef, {
-            currentStock: increment(reversalQuantity),
+            currentStock: stockAfter,
             updatedAt: serverTimestamp(),
           });
           transaction.set(doc(collection(db, 'stockMovements')), {
             storeId: target.movement.storeId,
+            storeCode: freshOrder.storeCode,
             storeName: target.movement.storeName || freshOrder.storeName,
             inventoryItemId: target.stockItemCode,
             inventoryItemName: target.movement.inventoryItemName || target.stockItemCode,
             movementType: 'ORDER_VOID_REVERSAL',
             reason: 'ORDER_VOID_REVERSAL',
             quantity: reversalQuantity,
+            quantityDelta: reversalQuantity,
             unit: target.movement.unit || '',
             referenceType: 'ORDER',
             referenceId: freshOrder.id,
+            orderId: freshOrder.id,
+            orderNumber: freshOrder.orderNumber,
+            sourceOrderId: freshOrder.id,
+            voidedOrderId: freshOrder.id,
             originalMovementId: target.movement.id,
             originalMovementType: target.movement.movementType,
             notes: `Void order ${freshOrder.orderNumber}: ${voidReason.trim()}`,
@@ -696,6 +715,12 @@ export default function RunningOrders() {
             stockSystem: target.movement.stockSystem || 'MENU_MANAGEMENT',
             stockItemType: target.stockItemType,
             stockItemCode: target.stockItemCode,
+            previousQty: stockBefore,
+            newQty: stockAfter,
+            stockBefore,
+            stockAfter,
+            balanceBefore: stockBefore,
+            balanceAfter: stockAfter,
           });
         });
 
@@ -725,6 +750,14 @@ export default function RunningOrders() {
 
         transaction.update(orderRef, {
           status: 'VOIDED',
+          paymentReversalStatus: paymentReversal.paymentReversalStatus,
+          paymentReversalBreakdown: paymentReversal.paymentReversalBreakdown,
+          paymentReversalTotal: paymentReversal.paymentReversalTotal,
+          refundedAmount: paymentReversal.refundedAmount,
+          reversedAmount: paymentReversal.reversedAmount,
+          refundPendingAmount: paymentReversal.refundPendingAmount,
+          manualRefundRequiredAmount: paymentReversal.manualRefundRequiredAmount,
+          netCollectionAmount: paymentReversal.netCollectionAmount,
           voidReason: voidReason.trim(),
           voidedBy: auth.currentUser!.uid,
           voidedByName: staffProfile.displayName || staffProfile.name,
@@ -859,6 +892,7 @@ export default function RunningOrders() {
             const badge = statusBadge(bundle);
             const kot = kotSummary(bundle.kotItems);
             const paymentStatus = inferPaymentStatus(order, bundle.payments);
+            const paymentOutcome = paymentOutcomeLabel(order, bundle.payments);
             const payAtCounter = isPayAtCounter(order, bundle.payments);
             const voided = effectiveOrderStatus(order) === 'VOIDED';
             const source = sourceLabel(order);
@@ -885,8 +919,8 @@ export default function RunningOrders() {
 
                 <div className="mb-4 flex flex-wrap gap-2">
                   <span className={`rounded-full px-3 py-1 text-xs font-black ${kot.tone}`}>KOT: {kot.label}</span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-black ${paymentStatus === 'PAID' ? 'bg-emerald-100 text-emerald-700' : 'bg-violet-100 text-violet-700'}`}>
-                    Payment: {paymentStatus}{payAtCounter && paymentStatus !== 'PAID' ? ' / PAY AT COUNTER' : ''}
+                  <span className={`rounded-full px-3 py-1 text-xs font-black ${voided ? 'bg-red-100 text-red-700' : paymentStatus === 'PAID' ? 'bg-emerald-100 text-emerald-700' : 'bg-violet-100 text-violet-700'}`}>
+                    Payment: {paymentOutcome}{payAtCounter && paymentStatus !== 'PAID' && !voided ? ' / PAY AT COUNTER' : ''}
                   </span>
                   <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">Fulfillment: {fulfillmentStatus(bundle)}</span>
                 </div>
@@ -1157,7 +1191,8 @@ function OrderDetailDrawer({
 }) {
   const { order, items, payments, kotItems } = bundle;
   const kot = kotSummary(kotItems);
-  const paymentStatus = inferPaymentStatus(order, payments);
+  const paymentStatus = paymentOutcomeLabel(order, payments);
+  const reversalAudit = buildPaymentReversalAudit(order, payments);
   const record = order as Order & Record<string, unknown>;
   const onlineRef = record.onlineOrderId || record.onlineOrderReference || record.linkedOnlineOrderId || record.sourceOrderId || null;
 
@@ -1179,6 +1214,11 @@ function OrderDetailDrawer({
           {effectiveOrderStatus(order) === 'VOIDED' && (
             <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">
               VOIDED: {order.voidReason || 'No reason saved'}
+              {reversalAudit.paymentReversalStatus !== 'NOT_REQUIRED' && (
+                <p className="mt-2 text-xs">
+                  Payment outcome: {paymentStatus} · Reversal total {formatMoney(reversalAudit.paymentReversalTotal)}
+                </p>
+              )}
             </div>
           )}
 
@@ -1204,7 +1244,7 @@ function OrderDetailDrawer({
                 <div key={item.id || item.itemCode} className="flex items-start justify-between gap-3 border-b border-neutral-100 p-3 last:border-b-0">
                   <div>
                     <p className="font-black text-neutral-900">{item.itemName}</p>
-                    <p className="text-xs font-bold text-neutral-500">{money(item.quantity)} x {formatMoney(item.unitPrice)} • {item.status || 'PENDING'}</p>
+                    <p className="text-xs font-bold text-neutral-500">{money(item.quantity)} x {formatMoney(item.unitPrice)} • {orderItemDisplayStatus(order, item)}</p>
                   </div>
                   <p className="font-mono font-black">{formatMoney(item.lineTotal)}</p>
                 </div>
@@ -1250,6 +1290,24 @@ function OrderDetailDrawer({
               ))}
             </div>
           </section>
+
+          {effectiveOrderStatus(order) === 'VOIDED' && reversalAudit.paymentReversalBreakdown.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-sm font-black uppercase tracking-widest text-neutral-500">Void Payment Audit</h3>
+              <div className="space-y-2 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm">
+                {reversalAudit.paymentReversalBreakdown.map((line, index) => (
+                  <div key={`${line.method}-${index}`} className="rounded-xl bg-white p-3">
+                    <div className="flex justify-between gap-3 font-black text-red-800">
+                      <span>{line.method}</span>
+                      <span>{formatMoney(line.amount)}</span>
+                    </div>
+                    <p className="mt-1 text-xs font-bold text-red-700">{line.reversalStatus}</p>
+                    <p className="mt-1 text-xs text-red-700">{line.reason}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-2 border-t border-neutral-200 bg-neutral-50 p-3 sm:grid-cols-2 sm:p-4">

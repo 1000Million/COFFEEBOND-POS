@@ -16,6 +16,7 @@ import { collection, doc, getDoc, getDocs, query, Timestamp, where } from 'fireb
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, KotItem, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
+import { summarizeCollections } from '../../lib/paymentReversal';
 
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 
@@ -399,6 +400,7 @@ export default function AuditControl() {
     });
     return breakdown;
   }, [completedOrders]);
+  const collectionAudit = useMemo(() => summarizeCollections(orders), [orders]);
 
   const grossSales = completedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
   const voidedSales = voidedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
@@ -520,6 +522,10 @@ export default function AuditControl() {
               <SummaryCard label="Stock Reversals" value={reversalMovements.length} tone={reversalMovements.length > 0 ? 'amber' : 'neutral'} />
               <SummaryCard label="KOT Pending" value={pendingKotItems.length} tone={oldPendingKotItems.length > 0 ? 'red' : pendingKotItems.length > 0 ? 'amber' : 'neutral'} />
               <SummaryCard label="Payment Total" value={formatMoney(paymentTotal)} tone={Math.abs(paymentMismatch) > 0.01 ? 'red' : 'green'} />
+              <SummaryCard label="Gross Payments Received" value={formatMoney(collectionAudit.grossPaymentsReceived)} />
+              <SummaryCard label="Voided / Refunded Payments" value={formatMoney(collectionAudit.voidedPaymentTotal)} tone={collectionAudit.voidedPaymentTotal > 0 ? 'red' : 'neutral'} />
+              <SummaryCard label="Refunds Pending" value={formatMoney(collectionAudit.refundPendingPayments + collectionAudit.manualRefundRequiredPayments)} tone={collectionAudit.refundPendingPayments + collectionAudit.manualRefundRequiredPayments > 0 ? 'amber' : 'neutral'} />
+              <SummaryCard label="Net Collections" value={formatMoney(collectionAudit.netCollections)} tone="green" />
             </section>
 
             <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -687,6 +693,10 @@ export default function AuditControl() {
                 ['Cash variance', dayClosing ? formatMoney(dayClosing.cashVariance) : '-'],
                 ['Dashboard payment total', formatMoney(paymentTotal)],
                 ['Dashboard net sales', formatMoney(netSales)],
+                ['Gross payments received', formatMoney(collectionAudit.grossPaymentsReceived)],
+                ['Voided/refunded payments', formatMoney(collectionAudit.voidedPaymentTotal)],
+                ['Refunds pending/manual', formatMoney(collectionAudit.refundPendingPayments + collectionAudit.manualRefundRequiredPayments)],
+                ['Net collections', formatMoney(collectionAudit.netCollections)],
               ]}
             />
 

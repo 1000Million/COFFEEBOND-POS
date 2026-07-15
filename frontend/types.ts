@@ -113,6 +113,20 @@ export interface Order {
   paymentMethodLabel?: string;
   isSplitPayment?: boolean;
   paymentBreakdown?: { method: PaymentMethod; amount: number }[];
+  paymentReversalStatus?: "NOT_REQUIRED" | "REFUNDED" | "REVERSED" | "REFUND_PENDING" | "MANUAL_REFUND_REQUIRED";
+  paymentReversalBreakdown?: {
+    method: PaymentMethod | string;
+    originalAmount: number;
+    amount: number;
+    reversalStatus: "NOT_REQUIRED" | "REFUNDED" | "REVERSED" | "REFUND_PENDING" | "MANUAL_REFUND_REQUIRED";
+    reason: string;
+  }[];
+  paymentReversalTotal?: number;
+  refundedAmount?: number;
+  reversedAmount?: number;
+  refundPendingAmount?: number;
+  manualRefundRequiredAmount?: number;
+  netCollectionAmount?: number;
   voidReason?: string | null;
   voidedBy?: string | null;
   voidedByName?: string | null;
@@ -291,6 +305,12 @@ export interface DayClosing {
   discountTotal: number;
   paymentBreakdown: Record<PaymentMethod, number>;
   expectedCash: number;
+  grossPaymentsReceived?: number;
+  voidedPaymentTotal?: number;
+  refundedOrReversedPayments?: number;
+  refundPendingPayments?: number;
+  manualRefundRequiredPayments?: number;
+  netCollections?: number;
   actualCash: number;
   cashVariance: number;
   notes: string;

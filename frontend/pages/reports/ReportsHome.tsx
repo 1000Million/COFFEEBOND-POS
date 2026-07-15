@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { auth, db } from '../../lib/firebase';
-import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
 import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { buildPaymentReversalAudit, orderItemDisplayStatus, orderPaymentReversalAudit, paymentOutcomeLabel, summarizeCollections } from '../../lib/paymentReversal';
 
 type ReportPaymentBreakdown = {
   method: PaymentMethod | string;
@@ -30,6 +31,10 @@ type StockMovementDoc = {
 function moneyNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundStock(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 function orderTaxTotal(order: Order): number {
@@ -302,6 +307,12 @@ export default function ReportsHome() {
     if (!selectedOrder?.id) return [];
     return orderItems.filter(i => i.orderId === selectedOrder.id);
   }, [orderItems, selectedOrder]);
+  const selectedOrderPaymentAudit = useMemo(() => {
+    return selectedOrder ? orderPaymentReversalAudit(selectedOrder) : null;
+  }, [selectedOrder]);
+  const selectedOrderPaymentOutcome = useMemo(() => {
+    return selectedOrder ? paymentOutcomeLabel(selectedOrder) : '';
+  }, [selectedOrder]);
 
   const displayOrders = useMemo(() => {
     return [...filteredOrders].sort((a, b) => {
@@ -352,6 +363,7 @@ export default function ReportsHome() {
     });
     return summary;
   }, [completedOrders]);
+  const collectionAudit = useMemo(() => summarizeCollections(filteredOrders), [filteredOrders]);
 
   const categorySummary = useMemo(() => {
     const summary: Record<string, { count: number, total: number, tax: number }> = {};
@@ -521,6 +533,7 @@ export default function ReportsHome() {
         if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
         const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
         if (isVoidedOrder(freshOrder)) throw new Error('This order is already voided.');
+        const paymentReversal = buildPaymentReversalAudit(freshOrder);
 
         const stockTargets = saleMovements.map(movement => {
           const stockItemType = String(movement.stockItemType || 'RAW_INGREDIENT');
@@ -536,26 +549,38 @@ export default function ReportsHome() {
           throw new Error(`Cannot reverse stock; storeStock row is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
         }
 
-        stockTargets.forEach(target => {
+        stockTargets.forEach((target, index) => {
           const reversalQuantity = Math.abs(Number(target.movement.quantity) || 0);
+          const stockBefore = Number(stockSnaps[index].data()?.currentStock);
+          if (!Number.isFinite(stockBefore)) {
+            throw new Error(`Cannot reverse stock; current stock is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
+          }
+          const stockAfter = roundStock(stockBefore + reversalQuantity);
           transaction.update(target.stockRef, {
-            currentStock: increment(reversalQuantity),
+            currentStock: stockAfter,
             updatedAt: serverTimestamp(),
           });
 
           const reversalRef = doc(collection(db, 'stockMovements'));
           transaction.set(reversalRef, {
             storeId: target.movement.storeId,
+            storeCode: freshOrder.storeCode,
             storeName: target.movement.storeName || freshOrder.storeName,
             inventoryItemId: target.stockItemCode,
             inventoryItemName: target.movement.inventoryItemName || target.stockItemCode,
             movementType: 'ORDER_VOID_REVERSAL',
             reason: 'ORDER_VOID_REVERSAL',
             quantity: reversalQuantity,
+            quantityDelta: reversalQuantity,
             unit: target.movement.unit || '',
             referenceType: 'ORDER',
-            referenceId: selectedOrder.id,
+            referenceId: freshOrder.id,
+            orderId: freshOrder.id,
+            orderNumber: freshOrder.orderNumber,
+            sourceOrderId: freshOrder.id,
+            voidedOrderId: freshOrder.id,
             originalMovementId: target.movement.id,
+            originalMovementType: target.movement.movementType,
             notes: `Void order ${freshOrder.orderNumber}: ${voidReason.trim()}`,
             createdByUserId: auth.currentUser!.uid,
             createdByName: staffProfile.name,
@@ -563,6 +588,12 @@ export default function ReportsHome() {
             stockSystem: target.movement.stockSystem || 'MENU_MANAGEMENT',
             stockItemType: target.stockItemType,
             stockItemCode: target.stockItemCode,
+            previousQty: stockBefore,
+            newQty: stockAfter,
+            stockBefore,
+            stockAfter,
+            balanceBefore: stockBefore,
+            balanceAfter: stockAfter,
           });
         });
 
@@ -578,6 +609,14 @@ export default function ReportsHome() {
 
         transaction.update(orderRef, {
           status: 'VOIDED',
+          paymentReversalStatus: paymentReversal.paymentReversalStatus,
+          paymentReversalBreakdown: paymentReversal.paymentReversalBreakdown,
+          paymentReversalTotal: paymentReversal.paymentReversalTotal,
+          refundedAmount: paymentReversal.refundedAmount,
+          reversedAmount: paymentReversal.reversedAmount,
+          refundPendingAmount: paymentReversal.refundPendingAmount,
+          manualRefundRequiredAmount: paymentReversal.manualRefundRequiredAmount,
+          netCollectionAmount: paymentReversal.netCollectionAmount,
           voidReason: voidReason.trim(),
           voidedBy: auth.currentUser!.uid,
           voidedByName: staffProfile.name,
@@ -590,6 +629,7 @@ export default function ReportsHome() {
       const updatedOrder: Order = {
         ...selectedOrder,
         status: 'VOIDED',
+        ...buildPaymentReversalAudit(selectedOrder),
         voidReason: voidReason.trim(),
         voidedBy: auth.currentUser.uid,
         voidedByName: staffProfile.name,
@@ -867,6 +907,22 @@ export default function ReportsHome() {
                  <div className="text-[10px] font-bold text-red-700 uppercase tracking-widest mb-1">Discount</div>
                  <div className="text-xl font-bold font-mono text-red-800">₹{Math.round(totalDiscount)}</div>
               </div>
+              <div className="bg-white/50 border border-neutral-200 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-1">Gross Payments</div>
+                 <div className="text-xl font-bold font-mono">{collectionAudit.grossPaymentsReceived.toFixed(2)}</div>
+              </div>
+              <div className="bg-white/50 border border-red-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-red-700 uppercase tracking-widest mb-1">Voided/Refunded</div>
+                 <div className="text-xl font-bold font-mono text-red-800">₹{collectionAudit.voidedPaymentTotal.toFixed(2)}</div>
+              </div>
+              <div className="bg-white/50 border border-amber-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-amber-700 uppercase tracking-widest mb-1">Refunds Pending</div>
+                 <div className="text-xl font-bold font-mono text-amber-800">₹{(collectionAudit.refundPendingPayments + collectionAudit.manualRefundRequiredPayments).toFixed(2)}</div>
+              </div>
+              <div className="bg-white/50 border border-green-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-green-700 uppercase tracking-widest mb-1">Net Collections</div>
+                 <div className="text-xl font-bold font-mono text-green-800">₹{collectionAudit.netCollections.toFixed(2)}</div>
+              </div>
             </div>
             
             {/* Main reporting grids */}
@@ -1030,7 +1086,7 @@ export default function ReportsHome() {
                           <td className="px-4 py-3 text-neutral-500">{formatOrderDateTime(order)}</td>
                           <td className="px-4 py-3 text-neutral-700">{order.storeName}</td>
                           <td className="px-4 py-3 text-neutral-600">{order.customerName || 'Walk-in'}</td>
-                          <td className="px-4 py-3 text-neutral-600 max-w-[220px] truncate">{orderPaymentLabel(order)}</td>
+                          <td className="px-4 py-3 text-neutral-600 max-w-[220px] truncate">{isVoided ? paymentOutcomeLabel(order) : orderPaymentLabel(order)}</td>
                           <td className={`px-4 py-3 text-right font-mono font-bold ${isVoided ? 'line-through text-red-500' : 'text-[#5c4033]'}`}>₹{(order.grandTotal || 0).toFixed(2)}</td>
                           <td className="px-4 py-3">
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
@@ -1196,7 +1252,7 @@ export default function ReportsHome() {
             </div>
 
             <div className="p-5 overflow-y-auto custom-scrollbar space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
                   <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Status</p>
                   <p className={`mt-1 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-emerald-700'}`}>
@@ -1211,6 +1267,12 @@ export default function ReportsHome() {
                   <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Order Type</p>
                   <p className="mt-1 font-bold text-neutral-800">{selectedOrder.orderType.replace('_', ' ')}{selectedOrder.tableNumber ? ` • Table ${selectedOrder.tableNumber}` : ''}</p>
                 </div>
+                <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Payment Outcome</p>
+                  <p className={`mt-1 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-neutral-800'}`}>
+                    {selectedOrderPaymentOutcome}
+                  </p>
+                </div>
               </div>
 
               {isVoidedOrder(selectedOrder) && (
@@ -1220,6 +1282,11 @@ export default function ReportsHome() {
                   <p className="mt-2 text-xs text-red-600">
                     Voided by {selectedOrder.voidedByName || 'Unknown'}{selectedOrder.voidedByEmail ? ` (${selectedOrder.voidedByEmail})` : ''}
                   </p>
+                  {selectedOrderPaymentAudit && selectedOrderPaymentAudit.paymentReversalStatus !== 'NOT_REQUIRED' && (
+                    <p className="mt-2 text-xs font-bold text-red-700">
+                      Payment outcome: {selectedOrderPaymentOutcome} · Reversal total ₹{selectedOrderPaymentAudit.paymentReversalTotal.toFixed(2)}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1231,6 +1298,9 @@ export default function ReportsHome() {
                       <div>
                         <p className="font-bold text-neutral-900">{item.itemName}</p>
                         <p className="text-xs text-neutral-500 font-mono">{item.quantity} x ₹{item.unitPrice.toFixed(2)}</p>
+                        <p className={`mt-1 text-xs font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-neutral-500'}`}>
+                          {orderItemDisplayStatus(selectedOrder, item)}
+                        </p>
                       </div>
                       <span className="font-mono font-bold text-neutral-800">₹{(item.lineTotal || 0).toFixed(2)}</span>
                     </div>
@@ -1259,6 +1329,24 @@ export default function ReportsHome() {
                   ))}
                 </div>
               </div>
+
+              {isVoidedOrder(selectedOrder) && selectedOrderPaymentAudit && selectedOrderPaymentAudit.paymentReversalBreakdown.length > 0 && (
+                <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                  <p className="font-black text-red-900">Void Payment Audit</p>
+                  <div className="mt-3 grid grid-cols-1 gap-2">
+                    {selectedOrderPaymentAudit.paymentReversalBreakdown.map((line, index) => (
+                      <div key={`${line.method}-${index}`} className="rounded-lg bg-white p-3 text-sm">
+                        <div className="flex justify-between gap-3 font-black text-red-800">
+                          <span>{line.method}</span>
+                          <span className="font-mono">₹{line.amount.toFixed(2)}</span>
+                        </div>
+                        <p className="mt-1 text-xs font-black uppercase tracking-wider text-red-700">{line.reversalStatus}</p>
+                        <p className="mt-1 text-xs font-medium text-red-700">{line.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {canVoidOrders && !isVoidedOrder(selectedOrder) && (
                 <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
