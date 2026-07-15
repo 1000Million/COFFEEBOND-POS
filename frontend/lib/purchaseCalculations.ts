@@ -1,7 +1,7 @@
 export const PURCHASE_UNITS = ['G', 'KG', 'ML', 'L', 'PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY'] as const;
 
 export type PurchaseUnit = typeof PURCHASE_UNITS[number];
-export type PriceBasis = 'PER_PURCHASE_UNIT' | 'TOTAL_LINE';
+export type PriceBasis = 'RATE_PER_PURCHASE_UNIT' | 'RATE_PER_CONTENTS_UNIT' | 'RATE_PER_STOCK_UNIT';
 
 export type PurchaseLineCalculationInput = {
   purchaseQuantity: number;
@@ -32,6 +32,7 @@ export type PurchaseLineCalculation = {
   landedCostAmountApplied: number;
   calculatedCostPerStockUnit: number;
   conversionPreview: string;
+  pricingPreview: string;
 };
 
 const STANDARD_UNIT_TO_BASE: Record<string, { family: 'WEIGHT' | 'VOLUME' | 'COUNT'; factor: number }> = {
@@ -77,6 +78,10 @@ function conversionFactorBetweenUnits(fromUnit: string, toUnit: string): number 
   const to = STANDARD_UNIT_TO_BASE[toUnit];
   if (!from || !to || from.family !== to.family) return null;
   return from.factor / to.factor;
+}
+
+function formatAmount(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000000) / 1000000);
 }
 
 export function resolvePurchaseConversionFactor(input: {
@@ -145,7 +150,18 @@ export function calculatePurchaseLine(input: PurchaseLineCalculationInput): Purc
   const convertedStockQuantity = roundQuantity(purchaseQuantity * conversionFactor);
   if (convertedStockQuantity <= 0) throw new Error('Converted stock quantity must be greater than 0.');
 
-  const lineSubtotal = roundCurrency(input.priceBasis === 'TOTAL_LINE' ? rate : purchaseQuantity * rate);
+  const packSize = parseNumber(input.packSize);
+  const lineSubtotal = (() => {
+    if (input.priceBasis === 'RATE_PER_PURCHASE_UNIT') return roundCurrency(purchaseQuantity * rate);
+    if (input.priceBasis === 'RATE_PER_CONTENTS_UNIT') {
+      if (packSize <= 0 || !normalizedPackSizeUOM) {
+        throw new Error('Rate per contents unit needs pack contents and contents unit.');
+      }
+      return roundCurrency(purchaseQuantity * packSize * rate);
+    }
+    if (input.priceBasis === 'RATE_PER_STOCK_UNIT') return roundCurrency(convertedStockQuantity * rate);
+    throw new Error('Select a valid price basis.');
+  })();
   const discountAmount = roundCurrency(lineSubtotal * discountPercent / 100);
   const taxableAmount = roundCurrency(lineSubtotal - discountAmount);
   const taxAmount = roundCurrency(taxableAmount * taxPercent / 100);
@@ -156,8 +172,17 @@ export function calculatePurchaseLine(input: PurchaseLineCalculationInput): Purc
     ? Math.round((inventoryCostAmount / convertedStockQuantity) * 1000000) / 1000000
     : 0;
   const packPreview = PACK_UNITS.has(purchaseUOM)
-    ? ` × ${parseNumber(input.packSize)} ${normalizedPackSizeUOM || stockUOM}`
+    ? ` × ${formatAmount(packSize)} ${normalizedPackSizeUOM || stockUOM}`
     : '';
+  const pricingPreview = (() => {
+    if (input.priceBasis === 'RATE_PER_PURCHASE_UNIT') {
+      return `${formatAmount(purchaseQuantity)} ${purchaseUOM} × ₹${formatAmount(rate)}/${purchaseUOM} = ₹${formatAmount(lineSubtotal)}`;
+    }
+    if (input.priceBasis === 'RATE_PER_CONTENTS_UNIT') {
+      return `${formatAmount(purchaseQuantity)} ${purchaseUOM} × ${formatAmount(packSize)} ${normalizedPackSizeUOM} × ₹${formatAmount(rate)}/${normalizedPackSizeUOM} = ₹${formatAmount(lineSubtotal)}`;
+    }
+    return `${formatAmount(convertedStockQuantity)} ${stockUOM} × ₹${formatAmount(rate)}/${stockUOM} = ₹${formatAmount(lineSubtotal)}`;
+  })();
 
   return {
     purchaseUOM,
@@ -172,7 +197,8 @@ export function calculatePurchaseLine(input: PurchaseLineCalculationInput): Purc
     inventoryCostAmount,
     landedCostAmountApplied,
     calculatedCostPerStockUnit,
-    conversionPreview: `${purchaseQuantity} ${purchaseUOM}${packPreview} → ${convertedStockQuantity} ${stockUOM}`,
+    conversionPreview: `${formatAmount(purchaseQuantity)} ${purchaseUOM}${packPreview} = ${formatAmount(convertedStockQuantity)} ${stockUOM}`,
+    pricingPreview,
   };
 }
 

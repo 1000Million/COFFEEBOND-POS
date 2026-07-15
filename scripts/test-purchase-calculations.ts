@@ -11,7 +11,7 @@ const kgToG = calculatePurchaseLine({
   stockUOM: 'G',
   packSize: 0,
   packSizeUOM: '',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 250,
   taxPercent: 0,
   discountPercent: 0,
@@ -26,7 +26,7 @@ const lToMl = calculatePurchaseLine({
   stockUOM: 'ML',
   packSize: 0,
   packSizeUOM: '',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 100,
   taxPercent: 5,
   discountPercent: 10,
@@ -44,7 +44,7 @@ const boxToPcs = calculatePurchaseLine({
   stockUOM: 'PCS',
   packSize: 10,
   packSizeUOM: 'PCS',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 120,
   taxPercent: 0,
   discountPercent: 0,
@@ -58,7 +58,7 @@ const bagToKgToG = calculatePurchaseLine({
   stockUOM: 'G',
   packSize: 5,
   packSizeUOM: 'KG',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 500,
   taxPercent: 0,
   discountPercent: 0,
@@ -73,7 +73,7 @@ const gstExcludedFromInventoryCost = calculatePurchaseLine({
   stockUOM: 'G',
   packSize: 1,
   packSizeUOM: 'KG',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 250,
   taxPercent: 5,
   discountPercent: 0,
@@ -92,7 +92,7 @@ const discountReducesInventoryCost = calculatePurchaseLine({
   stockUOM: 'G',
   packSize: 1,
   packSizeUOM: 'KG',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 250,
   taxPercent: 5,
   discountPercent: 10,
@@ -108,7 +108,7 @@ const explicitLandedCostCanIncreaseInventoryCost = calculatePurchaseLine({
   stockUOM: 'G',
   packSize: 1,
   packSizeUOM: 'KG',
-  priceBasis: 'PER_PURCHASE_UNIT',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
   rate: 250,
   taxPercent: 5,
   discountPercent: 0,
@@ -126,29 +126,65 @@ assert.throws(() => resolvePurchaseConversionFactor({
   packSizeUOM: '',
 }), /Cannot convert G to ML/);
 
-const totalLine = calculatePurchaseLine({
-  purchaseQuantity: 4,
-  purchaseUOM: 'PCS',
-  stockUOM: 'PCS',
-  packSize: 0,
-  packSizeUOM: '',
-  priceBasis: 'TOTAL_LINE',
-  rate: 400,
-  taxPercent: 12,
-  discountPercent: 5,
+const ratePerPurchaseUnit = calculatePurchaseLine({
+  purchaseQuantity: 1,
+  purchaseUOM: 'BAG',
+  stockUOM: 'G',
+  packSize: 5,
+  packSizeUOM: 'KG',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
+  rate: 600,
+  taxPercent: 5,
+  discountPercent: 0,
 });
-assert.equal(totalLine.lineSubtotal, 400);
-assert.equal(totalLine.discountAmount, 20);
-assert.equal(totalLine.taxableAmount, 380);
-assert.equal(totalLine.taxAmount, 45.6);
-assert.equal(totalLine.lineTotal, 425.6);
-assert.equal(totalLine.calculatedCostPerStockUnit, 95);
+assert.equal(ratePerPurchaseUnit.lineSubtotal, 600);
+assert.equal(ratePerPurchaseUnit.convertedStockQuantity, 5000);
+assert.equal(ratePerPurchaseUnit.taxAmount, 30);
+assert.equal(ratePerPurchaseUnit.lineTotal, 630);
+assert.equal(ratePerPurchaseUnit.calculatedCostPerStockUnit, 0.12);
+assert.equal(ratePerPurchaseUnit.pricingPreview, '1 BAG × ₹600/BAG = ₹600');
 
-const totals = calculatePurchaseTotals([kgToG, lToMl, totalLine]);
-assert.equal(totals.subtotal, 1050);
-assert.equal(totals.discountAmount, 35);
-assert.equal(totals.taxAmount, 52.35);
-assert.equal(totals.grandTotal, 1067.35);
+const ratePerContentsUnit = calculatePurchaseLine({
+  purchaseQuantity: 1,
+  purchaseUOM: 'BAG',
+  stockUOM: 'G',
+  packSize: 5,
+  packSizeUOM: 'KG',
+  priceBasis: 'RATE_PER_CONTENTS_UNIT',
+  rate: 120,
+  taxPercent: 5,
+  discountPercent: 0,
+});
+assert.equal(ratePerContentsUnit.lineSubtotal, 600);
+assert.equal(ratePerContentsUnit.convertedStockQuantity, 5000);
+assert.equal(ratePerContentsUnit.taxAmount, 30);
+assert.equal(ratePerContentsUnit.lineTotal, 630);
+assert.equal(ratePerContentsUnit.calculatedCostPerStockUnit, 0.12);
+assert.equal(ratePerContentsUnit.pricingPreview, '1 BAG × 5 KG × ₹120/KG = ₹600');
+
+const ratePerStockUnit = calculatePurchaseLine({
+  purchaseQuantity: 1,
+  purchaseUOM: 'BAG',
+  stockUOM: 'G',
+  packSize: 5,
+  packSizeUOM: 'KG',
+  priceBasis: 'RATE_PER_STOCK_UNIT',
+  rate: 0.12,
+  taxPercent: 5,
+  discountPercent: 0,
+});
+assert.equal(ratePerStockUnit.lineSubtotal, 600);
+assert.equal(ratePerStockUnit.convertedStockQuantity, 5000);
+assert.equal(ratePerStockUnit.taxAmount, 30);
+assert.equal(ratePerStockUnit.lineTotal, 630);
+assert.equal(ratePerStockUnit.calculatedCostPerStockUnit, 0.12);
+assert.equal(ratePerStockUnit.pricingPreview, '5000 G × ₹0.12/G = ₹600');
+
+const totals = calculatePurchaseTotals([kgToG, lToMl, ratePerStockUnit]);
+assert.equal(totals.subtotal, 1250);
+assert.equal(totals.discountAmount, 15);
+assert.equal(totals.taxAmount, 36.75);
+assert.equal(totals.grandTotal, 1271.75);
 assert.equal(totals.itemRows, 3);
 
 console.log('Purchase calculation tests passed.');
@@ -160,4 +196,7 @@ console.log('- incompatible G to ML blocked');
 console.log('- GST excluded from inventory cost');
 console.log('- discount reduces inventory cost');
 console.log('- explicit landed cost can increase inventory cost');
+console.log('- rate per purchase unit');
+console.log('- rate per contents unit');
+console.log('- rate per stock unit');
 console.log('- subtotal/tax/discount/grand total/cost per stock unit');

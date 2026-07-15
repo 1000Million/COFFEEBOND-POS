@@ -129,11 +129,6 @@ const ITEM_TYPES: { value: PurchaseLineType; label: string }[] = [
   { value: 'PREP_ITEM', label: 'Prep item' },
 ];
 
-const PRICE_BASIS_OPTIONS: { value: PriceBasis; label: string }[] = [
-  { value: 'PER_PURCHASE_UNIT', label: 'Rate per unit' },
-  { value: 'TOTAL_LINE', label: 'Total line amount' },
-];
-
 const PACK_UNITS = new Set(['PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
 const PACK_CONTENT_UNITS = ['G', 'KG', 'ML', 'L', 'PCS'];
 
@@ -187,12 +182,41 @@ function newLine(defaultType: PurchaseLineType = 'RAW_INGREDIENT'): PurchaseLine
     purchaseUOM: '',
     packSize: '',
     packSizeUOM: '',
-    priceBasis: 'PER_PURCHASE_UNIT',
+    priceBasis: 'RATE_PER_PURCHASE_UNIT',
     rate: '',
     taxPercent: '0',
     discountPercent: '0',
     notes: '',
   };
+}
+
+function purchaseUnitLabel(line: PurchaseLineForm, option: ItemOption | null): string {
+  return normalizePurchaseUnit(line.purchaseUOM || option?.purchaseUnit || option?.baseUnit || 'purchase unit') || 'purchase unit';
+}
+
+function contentsUnitLabel(line: PurchaseLineForm): string {
+  return normalizePurchaseUnit(line.packSizeUOM || 'contents unit') || 'contents unit';
+}
+
+function stockUnitLabel(option: ItemOption | null): string {
+  return normalizePurchaseUnit(option?.baseUnit || 'stock unit') || 'stock unit';
+}
+
+function priceBasisOptionsForLine(line: PurchaseLineForm, option: ItemOption | null): { value: PriceBasis; label: string }[] {
+  const purchaseUnit = purchaseUnitLabel(line, option);
+  const contentsUnit = contentsUnitLabel(line);
+  const stockUnit = stockUnitLabel(option);
+  return [
+    { value: 'RATE_PER_PURCHASE_UNIT', label: `Rate per ${purchaseUnit}` },
+    { value: 'RATE_PER_CONTENTS_UNIT', label: `Rate per ${contentsUnit} inside pack` },
+    { value: 'RATE_PER_STOCK_UNIT', label: `Rate per ${stockUnit}` },
+  ];
+}
+
+function rateLabelForLine(line: PurchaseLineForm, option: ItemOption | null): string {
+  if (line.priceBasis === 'RATE_PER_CONTENTS_UNIT') return `Rate per ${contentsUnitLabel(line)} inside pack`;
+  if (line.priceBasis === 'RATE_PER_STOCK_UNIT') return `Rate per ${stockUnitLabel(option)}`;
+  return `Rate per ${purchaseUnitLabel(line, option)}`;
 }
 
 function fieldClass(hasError: boolean): string {
@@ -707,7 +731,7 @@ export default function PurchaseEntry() {
             unit: line.calculation.purchaseUOM,
             stockUnit: line.calculation.stockUOM,
             purchaseCostTotal: line.calculation.lineTotal,
-            costPerUnit: line.form.priceBasis === 'TOTAL_LINE' ? (line.calculation.taxableAmount / purchaseQuantity) : rate,
+            costPerUnit: line.calculation.taxableAmount / purchaseQuantity,
             costPerStockUnit: line.calculation.calculatedCostPerStockUnit,
           };
         }),
@@ -889,6 +913,8 @@ export default function PurchaseEntry() {
                 const selectedOption = state.option;
                 const existingStock = state.existingStock;
                 const isPackUnit = PACK_UNITS.has(normalizePurchaseUnit(line.purchaseUOM));
+                const priceBasisOptions = priceBasisOptionsForLine(line, selectedOption);
+                const rateLabel = rateLabelForLine(line, selectedOption);
 
                 return (
                   <div key={line.id} className="rounded-3xl border border-neutral-200 bg-[#fffaf4] p-3 shadow-sm md:p-4">
@@ -970,7 +996,7 @@ export default function PurchaseEntry() {
                           onChange={(event) => updateLine(line.id, { priceBasis: event.target.value as PriceBasis })}
                           className={fieldClass(false)}
                         >
-                          {PRICE_BASIS_OPTIONS.map((basis) => <option key={basis.value} value={basis.value}>{basis.label}</option>)}
+                          {priceBasisOptions.map((basis) => <option key={basis.value} value={basis.value}>{basis.label}</option>)}
                         </select>
                       </label>
                     </div>
@@ -1005,7 +1031,7 @@ export default function PurchaseEntry() {
                       )}
 
                       <label className="grid gap-1 text-xs font-black uppercase tracking-[0.14em] text-neutral-500 lg:col-span-2">
-                        Rate
+                        {rateLabel}
                         <input
                           type="number"
                           min="0"
@@ -1066,6 +1092,9 @@ export default function PurchaseEntry() {
                       <div>
                         <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Conversion</p>
                         <p className="font-black text-[#3e2723]">{state.calculation?.conversionPreview || 'Complete row to preview'}</p>
+                        {state.calculation?.pricingPreview && (
+                          <p className="mt-1 text-xs font-bold text-neutral-500">{state.calculation.pricingPreview}</p>
+                        )}
                       </div>
                       <div>
                         <p className="text-xs font-black uppercase tracking-[0.12em] text-neutral-400">Invoice line</p>
