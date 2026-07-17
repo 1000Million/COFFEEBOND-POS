@@ -17,6 +17,8 @@
     "backfill:pending-bom": "node scripts/backfill-pending-bom-consumption.mjs",
     "refresh:public-menu-availability": "node scripts/refresh-public-menu-availability.mjs",
     "dry-run:menu-setup-unit-repair": "node scripts/dry-run-menu-setup-unit-repair.mjs",
+    "dry-run:berry-base-split": "node scripts/dry-run-berry-base-split.mjs",
+    "test:berry-base-split": "node scripts/test-berry-base-split.mjs",
     "test:packaging-applicability": "esbuild scripts/test-packaging-applicability.ts --bundle --platform=node --format=esm --outfile=/tmp/packaging-applicability-test.mjs && node /tmp/packaging-applicability-test.mjs",
     "test:security-rules": "node scripts/test-firestore-security-rules.mjs",
     "test:menu-setup-unit-repair": "node scripts/test-menu-setup-unit-repair.mjs",
