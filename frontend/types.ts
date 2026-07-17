@@ -28,6 +28,10 @@ export interface Store {
   code: string;
   address: string;
   isActive: boolean;
+  latitude?: number;
+  longitude?: number;
+  lat?: number;
+  lng?: number;
   inventoryPolicy?: "STRICT" | "ALLOW_NEGATIVE" | "ALLOW_NEGATIVE_DEFER_BOM";
   onlineOrderingEnabled?: boolean;
   estimatedPrepMinutes?: number;

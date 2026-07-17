@@ -6,17 +6,18 @@ import {
   CakeSlice,
   CheckCircle2,
   ChevronDown,
-  Clock,
   Coffee,
   Copy,
   CupSoda,
   Leaf,
+  MapPin,
   Minus,
+  Navigation,
   Plus,
   Search,
   ShoppingBag,
   Sparkles,
-  Store as StoreIcon,
+  Star,
   Trash2,
   Utensils,
   X,
@@ -134,6 +135,12 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 const CATEGORY_ORDER = ['ALL', 'Coffee', 'Cold Coffee', 'Matcha & Tea', 'Food', 'Desserts', 'Add Ons'];
 const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
+const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
+
+type StoreCoordinate = {
+  latitude: number;
+  longitude: number;
+};
 
 function toNumber(value: unknown): number {
   if (value === null || value === undefined || value === '') return 0;
@@ -164,6 +171,61 @@ function storeTaxRate(store: Store | null, gstConfig: GstConfig): number {
   if (override > 0) return override;
   const storeRate = pickTaxRate(store as unknown as Record<string, unknown>, STORE_TAX_RATE_KEYS);
   return storeRate > 0 ? storeRate : gstConfig.defaultRate;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function storeCoordinate(store: Store): StoreCoordinate | null {
+  const record = store as Store & Record<string, unknown>;
+  const nested = record.location || record.geoPoint || record.coordinates;
+  const nestedRecord = nested && typeof nested === 'object' ? nested as Record<string, unknown> : {};
+  const latitude = numberOrNull(record.latitude)
+    ?? numberOrNull(record.lat)
+    ?? numberOrNull(nestedRecord.latitude)
+    ?? numberOrNull(nestedRecord.lat);
+  const longitude = numberOrNull(record.longitude)
+    ?? numberOrNull(record.lng)
+    ?? numberOrNull(nestedRecord.longitude)
+    ?? numberOrNull(nestedRecord.lng);
+  if (latitude === null || longitude === null) return null;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
+
+function distanceKm(a: StoreCoordinate, b: StoreCoordinate): number {
+  const earthRadiusKm = 6371;
+  const lat1 = a.latitude * Math.PI / 180;
+  const lat2 = b.latitude * Math.PI / 180;
+  const deltaLat = (b.latitude - a.latitude) * Math.PI / 180;
+  const deltaLon = (b.longitude - a.longitude) * Math.PI / 180;
+  const sinLat = Math.sin(deltaLat / 2);
+  const sinLon = Math.sin(deltaLon / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  return 2 * earthRadiusKm * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function closestStoreToPosition(stores: Store[], position: StoreCoordinate): { store: Store; distanceKm: number } | null {
+  return stores.reduce<{ store: Store; distanceKm: number } | null>((closest, store) => {
+    const coordinate = storeCoordinate(store);
+    if (!coordinate) return closest;
+    const distance = distanceKm(position, coordinate);
+    if (!closest || distance < closest.distanceKm) return { store, distanceKm: distance };
+    return closest;
+  }, null);
+}
+
+function defaultStoreIdFromStorage(stores: Store[]): string {
+  try {
+    const stored = window.localStorage.getItem(DEFAULT_STORE_KEY);
+    if (stored && stores.some(store => store.id === stored)) return stored;
+  } catch {
+    // Storage is optional for public ordering.
+  }
+  return '';
 }
 
 function itemTaxRate(item: CustomerMenuItem, fallbackRate: number): number {
@@ -354,12 +416,23 @@ export default function CustomerOrder() {
   const [publicAvailability, setPublicAvailability] = useState<PublicAvailabilitySnapshot | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [basketOpen, setBasketOpen] = useState(false);
+  const [storeSelectorOpen, setStoreSelectorOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
+  const [storePreferenceMessage, setStorePreferenceMessage] = useState('');
+  const [locatingStore, setLocatingStore] = useState(false);
   const submittingRef = useRef(false);
+  const userStoreChoiceRef = useRef(false);
+  const triedAutoLocationRef = useRef(false);
+
+  useEffect(() => {
+    if (!storePreferenceMessage) return undefined;
+    const timeout = window.setTimeout(() => setStorePreferenceMessage(''), 2800);
+    return () => window.clearTimeout(timeout);
+  }, [storePreferenceMessage]);
 
   useEffect(() => {
     let active = true;
@@ -379,8 +452,13 @@ export default function CustomerOrder() {
           .sort((a, b) => a.name.localeCompare(b.name));
         const gstData = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : {};
 
+        const savedStoreId = defaultStoreIdFromStorage(loadedStores);
         setStores(loadedStores);
-        setSelectedStoreId(prev => prev || loadedStores[0]?.id || '');
+        setSelectedStoreId(prev => prev || savedStoreId || loadedStores[0]?.id || '');
+        if (savedStoreId) {
+          const savedStore = loadedStores.find(store => store.id === savedStoreId);
+          setStorePreferenceMessage(savedStore ? `Using your default store: ${savedStore.name}.` : '');
+        }
         setGstConfig({
           defaultRate: pickTaxRate(gstData, APP_TAX_RATE_KEYS),
           storeOverrides: normalizeStoreOverrides(gstData.storeOverrides),
@@ -440,6 +518,64 @@ export default function CustomerOrder() {
     };
   }, [selectedStoreId, stores]);
 
+  const selectClosestStore = (options: { automatic?: boolean } = {}) => {
+    if (locatingStore) return;
+    if (stores.length === 0) return;
+    const storesWithCoordinates = stores.filter(store => storeCoordinate(store));
+    if (storesWithCoordinates.length === 0) {
+      if (!options.automatic) setStorePreferenceMessage('Nearest store needs store coordinates first.');
+      return;
+    }
+    if (!navigator.geolocation) {
+      if (!options.automatic) setStorePreferenceMessage('Location is not available in this browser.');
+      return;
+    }
+
+    setLocatingStore(true);
+    if (!options.automatic) setStorePreferenceMessage('Finding the nearest Coffee Bond...');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLocatingStore(false);
+        if (options.automatic && userStoreChoiceRef.current) return;
+        const closest = closestStoreToPosition(stores, {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+        if (!closest) {
+          setStorePreferenceMessage('Nearest store could not be calculated yet.');
+          return;
+        }
+        if (cart.length > 0 && closest.store.id !== selectedStoreId) {
+          setStorePreferenceMessage(`${closest.store.name} is nearest, but your basket is already started.`);
+          return;
+        }
+        setSelectedStoreId(closest.store.id);
+        setCategory('ALL');
+        setSearch('');
+        setError(null);
+        setStoreSelectorOpen(false);
+        setStorePreferenceMessage(`Nearest store selected: ${closest.store.name} (${closest.distanceKm.toFixed(1)} km away).`);
+      },
+      (geoError) => {
+        setLocatingStore(false);
+        if (!options.automatic) {
+          setStorePreferenceMessage(geoError.code === geoError.PERMISSION_DENIED
+            ? 'Location permission was not allowed. You can still choose a store manually.'
+            : 'Could not get your location. Please choose a store manually.');
+        }
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 10 * 60 * 1000 },
+    );
+  };
+
+  useEffect(() => {
+    if (stores.length === 0 || triedAutoLocationRef.current) return;
+    if (defaultStoreIdFromStorage(stores)) return;
+    if (!stores.some(store => storeCoordinate(store))) return;
+    triedAutoLocationRef.current = true;
+    selectClosestStore({ automatic: true });
+  }, [stores]);
+
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
   const selectedStoreMessage = storeOnlineMessage(selectedStore);
@@ -478,13 +614,11 @@ export default function CustomerOrder() {
   const visibleItems = useMemo(() => {
     const searchText = search.trim().toLowerCase();
     return storeItems.filter(item => {
-      const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-      if (!availability.available) return false;
       const matchesCategory = category === 'ALL' || categoryGroupName(item) === category;
       const name = `${item.displayName || item.name} ${item.code} ${item.description || ''}`.toLowerCase();
       return matchesCategory && (!searchText || name.includes(searchText));
     });
-  }, [storeItems, itemAvailability, selectedStoreId, category, search]);
+  }, [storeItems, category, search]);
 
   const orderableItems = useMemo(() => {
     return storeItems.filter(item => (itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)).available);
@@ -503,6 +637,8 @@ export default function CustomerOrder() {
     orderableItemCount: orderableItems.length,
   }), [selectedStore, publicAvailability, availabilityLoading, orderableItems.length]);
   const selectedStoreOnline = customerOrderingState.canAcceptOrders;
+  const storesMissingCoordinates = useMemo(() => stores.filter(store => !storeCoordinate(store)), [stores]);
+  const selectedStoreHasCoordinates = selectedStore ? !!storeCoordinate(selectedStore) : false;
 
   const totals = useMemo(() => {
     const subtotal = cart.reduce((sum, line) => sum + toNumber(line.item.salePrice) * line.quantity, 0);
@@ -526,12 +662,26 @@ export default function CustomerOrder() {
       const shouldSwitch = window.confirm('Changing store will clear your current basket so prices and availability stay correct. Continue?');
       if (!shouldSwitch) return;
     }
+    userStoreChoiceRef.current = true;
     setSelectedStoreId(nextStoreId);
     setCart([]);
     setCategory('ALL');
     setSearch('');
     setBasketOpen(false);
     setError(null);
+    setStoreSelectorOpen(false);
+    const store = stores.find(item => item.id === nextStoreId);
+    setStorePreferenceMessage(store ? `Selected ${store.name}.` : '');
+  };
+
+  const saveSelectedStoreAsDefault = () => {
+    if (!selectedStore) return;
+    try {
+      window.localStorage.setItem(DEFAULT_STORE_KEY, selectedStore.id);
+      setStorePreferenceMessage(`${selectedStore.name} saved as your default store.`);
+    } catch {
+      setStorePreferenceMessage('Could not save the default store on this device.');
+    }
   };
 
   const handleOrderTypeChange = (nextType: OnlineOrderType) => {
@@ -696,17 +846,17 @@ export default function CustomerOrder() {
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
 
     return (
-      <article key={`popular-${item.code}`} className="min-w-[144px] max-w-[144px] rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-[#eadfd2]">
-        {renderItemThumb(item, 'h-24 w-full')}
-        <div className="mt-2 min-h-[78px]">
+      <article key={`popular-${item.code}`} className="min-w-[158px] max-w-[158px] rounded-[20px] bg-white p-2.5 shadow-sm ring-1 ring-[#e7ddd3]">
+        {renderItemThumb(item, 'h-[96px] w-full')}
+        <div className="mt-2 min-h-[76px]">
           <div className="mb-1 inline-flex rounded-full bg-[#ecf8ef] px-2 py-0.5 text-[10px] font-bold text-emerald-700">Popular</div>
-          <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{item.displayName || item.name}</h3>
-          <p className="mt-1 text-xs font-bold text-[#5c4033]">{formatMoney(toNumber(item.salePrice))}</p>
+          <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
+          <p className="mt-1 text-xs font-bold text-[#8b5e42]">{formatMoney(toNumber(item.salePrice))}</p>
         </div>
         <button
           onClick={() => setCartQuantity(item, qty + 1)}
           disabled={!canOrder}
-          className="mt-2 flex h-9 w-full items-center justify-center gap-1 rounded-full bg-[#3b261d] text-xs font-black text-white disabled:bg-neutral-300"
+          className="mt-2 flex h-11 w-full items-center justify-center gap-1 rounded-2xl bg-[#3b241c] text-xs font-black text-white disabled:bg-neutral-300"
         >
           <Plus size={14} />
           Add
@@ -722,34 +872,34 @@ export default function CustomerOrder() {
     const meta = visualMeta(item);
 
     return (
-      <article key={`menu-${item.code}`} className={`flex gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-[#eadfd2] ${canOrder ? '' : 'opacity-75'}`}>
-        {renderItemThumb(item)}
+      <article key={`menu-${item.code}`} className={`flex min-h-[112px] w-full min-w-0 gap-3 overflow-hidden rounded-[20px] bg-white p-3 shadow-sm ring-1 ring-[#e7ddd3] ${canOrder ? '' : 'opacity-75'}`}>
+        {renderItemThumb(item, 'h-20 w-20 min-[380px]:h-[88px] min-[380px]:w-[88px]')}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-[11px] font-bold text-[#a06f48]">{meta.label}</p>
-              <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{item.displayName || item.name}</h3>
+              <h3 className="line-clamp-2 text-[15px] font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
             </div>
             {qty > 0 ? (
-              <div className="inline-flex shrink-0 items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-0.5">
-                <button onClick={() => setCartQuantity(item, qty - 1)} className="rounded-full p-1.5 text-[#5c4033]"><Minus size={13} /></button>
-                <span className="min-w-5 text-center text-xs font-black">{qty}</span>
-                <button onClick={() => setCartQuantity(item, qty + 1)} className="rounded-full p-1.5 text-[#5c4033]"><Plus size={13} /></button>
+              <div className="inline-flex h-11 shrink-0 items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-0.5">
+                <button onClick={() => setCartQuantity(item, qty - 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Decrease ${item.displayName || item.name}`}><Minus size={14} /></button>
+                <span className="min-w-6 text-center text-xs font-black">{qty}</span>
+                <button onClick={() => setCartQuantity(item, qty + 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Increase ${item.displayName || item.name}`}><Plus size={14} /></button>
               </div>
             ) : (
               <button
                 onClick={() => setCartQuantity(item, 1)}
                 disabled={!canOrder}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#3b261d] text-white disabled:bg-neutral-300"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#3b241c] text-white disabled:bg-neutral-300"
                 aria-label={`Add ${item.displayName || item.name}`}
               >
                 <Plus size={16} />
               </button>
             )}
           </div>
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500">{shortDescription(item)}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#71645d]">{shortDescription(item)}</p>
           <div className="mt-2 flex items-center justify-between">
-            <p className="text-sm font-black text-[#2d2019]">{formatMoney(toNumber(item.salePrice))}</p>
+            <p className="text-sm font-black text-[#271a16]">{formatMoney(toNumber(item.salePrice))}</p>
             {!canOrder && <p className="text-[11px] font-bold text-red-700">{availability.reason}</p>}
           </div>
         </div>
@@ -956,98 +1106,95 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] pb-24 font-sans text-neutral-900 lg:pb-8">
-      <header className="sticky top-0 z-30 border-b border-[#eadfd2] bg-[#fffaf5]/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-md min-w-0 items-center justify-between gap-3 lg:max-w-6xl">
-          <div className="flex min-w-0 items-center gap-3">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
+    <div className={`min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] ${itemCount > 0 ? 'pb-24' : 'pb-6'} lg:pb-8`}>
+      <header className="sticky top-0 z-30 border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur">
+        <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-3 lg:max-w-6xl">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-8 w-8 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
             <div className="min-w-0">
-              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
-              <h1 className="truncate text-lg font-black text-[#2d2019]">Order ahead</h1>
+              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#8b5e42]">Coffee Bond</p>
+              <h1 className="truncate text-base font-black leading-tight text-[#271a16]">Order ahead</h1>
             </div>
           </div>
           <button
             onClick={() => setBasketOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-[#3b261d] px-3 py-2 text-xs font-black text-white shadow-sm"
+            className="relative inline-flex h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+            aria-label={`Open basket with ${itemCount} item${itemCount === 1 ? '' : 's'}`}
           >
             <ShoppingBag size={15} />
-            {itemCount}
+            {itemCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#07855b] px-1 text-[10px] text-white">
+                {itemCount}
+              </span>
+            )}
           </button>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-md min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:px-6">
+      <main className="mx-auto grid w-full min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
         <section className="min-w-0 space-y-4">
-          <section className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-[#eadfd2]">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-neutral-500">{orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}</p>
-                <label className="mt-1 flex items-center gap-2">
-                  <StoreIcon size={16} className="text-[#9a6a45]" />
-                  <select
-                    value={selectedStoreId}
-                    onChange={(event) => handleStoreChange(event.target.value)}
-                    className="max-w-[210px] appearance-none bg-transparent text-base font-black text-[#2d2019] outline-none"
-                    aria-label="Select pickup store"
-                  >
-                    {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
-                  </select>
-                  <ChevronDown size={16} className="text-neutral-400" />
-                </label>
+          <button
+            type="button"
+            onClick={() => setStoreSelectorOpen(true)}
+            className="flex min-h-[76px] w-full items-center justify-between gap-3 rounded-3xl bg-white px-4 py-3 text-left shadow-sm ring-1 ring-[#e7ddd3] transition hover:bg-[#fffdf9] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/35"
+            aria-label="Choose pickup store"
+          >
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-[#71645d]">{orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}</p>
+              <div className="mt-1 flex min-w-0 items-center gap-2">
+                <MapPin size={16} className="shrink-0 text-[#8b5e42]" />
+                <h2 className="truncate text-lg font-black text-[#271a16]">{selectedStore?.name || 'Choose store'}</h2>
               </div>
-              <div className="rounded-full bg-[#fbf5ee] px-3 py-2 text-xs font-black text-[#5c4033]">
-                {selectedStore ? estimatedPrepLabel(selectedStore) : '--'}
+              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-black ${
+                  customerOrderingState.tone === 'green'
+                    ? 'bg-emerald-50 text-[#07855b]'
+                    : customerOrderingState.tone === 'amber'
+                      ? 'bg-amber-50 text-amber-800'
+                      : 'bg-red-50 text-red-700'
+                }`}>
+                  {customerOrderingState.statusLabel}
+                </span>
+                <span className="text-xs font-bold text-[#71645d]">{selectedStore ? estimatedPrepLabel(selectedStore) : '--'}</span>
+                {selectedStoreMessage && <span className="truncate text-xs font-bold text-[#71645d]">{selectedStoreMessage}</span>}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black ${
-                customerOrderingState.tone === 'green'
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : customerOrderingState.tone === 'amber'
-                    ? 'bg-amber-50 text-amber-800'
-                    : 'bg-red-50 text-red-700'
-              }`}>
-                {customerOrderingState.tone === 'green' ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
-                {customerOrderingState.statusLabel}
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fbf5ee] px-3 py-1.5 text-xs font-bold text-[#5c4033]">
-                <Clock size={13} />
-                {orderType === 'DINE_IN' ? 'Dine in' : 'Pickup'}
-              </span>
-            </div>
-            <p className="mt-3 text-sm leading-relaxed text-neutral-600">
-              {orderType === 'DINE_IN' && customerOrderingState.canAcceptOrders
-                ? 'Your table order will be sent after store confirmation.'
-                : customerOrderingState.message}
-            </p>
-            {availabilityLoading ? (
-              <p className="mt-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-xs font-bold text-[#7b5a42]">
-                Checking item availability...
-              </p>
-            ) : availabilityNotice ? (
-              <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
-                {availabilityNotice}
-              </p>
-            ) : null}
-          </section>
+            <ChevronDown size={18} className="shrink-0 text-[#8b5e42]" />
+          </button>
 
-          <label className="flex h-12 items-center gap-2 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#eadfd2]">
-            <Search size={18} className="text-neutral-400" />
+          {!customerOrderingState.canAcceptOrders && !availabilityLoading && (
+            <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold leading-relaxed text-red-800">
+              {customerOrderingState.message}
+            </div>
+          )}
+          {availabilityLoading ? (
+            <div className="rounded-2xl bg-[#f5ede5] px-4 py-3 text-sm font-bold text-[#71645d]">
+              Checking menu availability...
+            </div>
+          ) : availabilityNotice ? (
+            <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
+              {availabilityNotice}
+            </div>
+          ) : null}
+
+          <label className="flex h-12 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
+            <Search size={18} className="shrink-0 text-[#8b5e42]" />
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              className="w-full bg-transparent text-sm outline-none"
-              placeholder="Search coffee, food, desserts..."
+              className="w-full bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
+              placeholder="Search the menu"
+              aria-label="Search the menu"
             />
           </label>
 
-          <nav className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
+          <nav className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label="Menu categories">
             {categories.map(cat => (
               <button
                 key={cat}
                 onClick={() => setCategory(cat)}
-                className={`shrink-0 rounded-full px-4 py-2 text-sm font-black transition-colors ${
-                  category === cat ? 'bg-[#3b261d] text-white' : 'bg-white text-[#5c4033] ring-1 ring-[#eadfd2]'
+                className={`min-h-10 shrink-0 rounded-full px-4 text-sm font-black transition-colors ${
+                  category === cat ? 'bg-[#3b241c] text-white' : 'bg-white text-[#3b241c] ring-1 ring-[#e7ddd3]'
                 }`}
               >
                 {categoryLabel(cat)}
@@ -1063,32 +1210,36 @@ export default function CustomerOrder() {
           )}
 
           <section>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xl font-black text-[#2d2019]">Popular today</h2>
-              <p className="text-xs font-bold text-neutral-500">Quick add</p>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-lg font-black text-[#271a16]">Popular today</h2>
+              <p className="text-xs font-bold text-[#71645d]">Quick add</p>
             </div>
             {loading ? (
-              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">Loading favourites...</div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {[1, 2, 3, 4].map(key => <div key={key} className="h-40 animate-pulse rounded-3xl bg-white/80" />)}
+              </div>
             ) : popularItems.length === 0 ? (
-              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">No popular items available.</div>
+              <div className="rounded-2xl bg-white p-4 text-center text-sm font-bold text-[#71645d]">No popular items available.</div>
             ) : (
-              <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2">
+              <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {popularItems.map(item => renderPopularCard(item))}
               </div>
             )}
           </section>
 
           <section>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xl font-black text-[#2d2019]">Explore the menu</h2>
-              <p className="text-xs font-bold text-neutral-500">{visibleItems.length} items</p>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-lg font-black text-[#271a16]">Full menu</h2>
+              <p className="text-xs font-bold text-[#71645d]">{visibleItems.length} items</p>
             </div>
             {loading ? (
-              <div className="rounded-2xl bg-white p-5 text-center text-sm font-bold text-neutral-500">Loading menu...</div>
+              <div className="space-y-3">
+                {[1, 2, 3, 4].map(key => <div key={key} className="h-28 animate-pulse rounded-3xl bg-white/80" />)}
+              </div>
             ) : visibleItems.length === 0 ? (
-              <div className="rounded-2xl bg-white p-5 text-center">
-                <p className="font-black text-neutral-800">Nothing found here</p>
-                <p className="text-sm text-neutral-500">Try another category or search.</p>
+              <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
+                <p className="font-black text-[#271a16]">Nothing found here</p>
+                <p className="text-sm text-[#71645d]">Try another category or search.</p>
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">
@@ -1098,26 +1249,141 @@ export default function CustomerOrder() {
           </section>
         </section>
 
-        <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-sm ring-1 ring-[#eadfd2] lg:sticky lg:top-24 lg:block">
+        <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-sm ring-1 ring-[#e7ddd3] lg:sticky lg:top-24 lg:block">
           {basketPanel}
         </aside>
       </main>
 
-      <button
-        onClick={() => setBasketOpen(true)}
-        className="fixed inset-x-4 bottom-4 z-40 flex items-center justify-between rounded-2xl bg-[#3b261d] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] lg:hidden"
-      >
-        <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
-        <span>{formatMoney(totals.grandTotal)}</span>
-      </button>
+      {itemCount > 0 && (
+        <button
+          onClick={() => setBasketOpen(true)}
+          className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex min-h-14 items-center justify-between rounded-2xl bg-[#3b241c] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] transition lg:hidden"
+        >
+          <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
+          <span>{formatMoney(totals.grandTotal)}</span>
+        </button>
+      )}
 
       {basketOpen && (
         <div className="fixed inset-0 z-50 bg-black/35 lg:hidden">
           <button aria-label="Close basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:p-5">
+          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[28px] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:p-5">
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-neutral-200" />
             {basketPanel}
           </div>
+        </div>
+      )}
+
+      {storeSelectorOpen && (
+        <div className="fixed inset-0 z-50 bg-black/35">
+          <button aria-label="Close store selector" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setStoreSelectorOpen(false)} />
+          <section className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[28px] bg-[#fbf7f1] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl lg:left-1/2 lg:right-auto lg:w-[430px] lg:-translate-x-1/2">
+            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-[#d9cec3]" />
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#8b5e42]">Pickup store</p>
+                <h2 className="mt-1 text-2xl font-black text-[#271a16]">{selectedStore?.name || 'Choose store'}</h2>
+                <p className="mt-1 text-sm font-semibold text-[#71645d]">{customerOrderingState.message}</p>
+              </div>
+              <button onClick={() => setStoreSelectorOpen(false)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-[#3b241c] ring-1 ring-[#e7ddd3]" aria-label="Close store selector">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid gap-3">
+              <div className="rounded-3xl bg-white p-4 ring-1 ring-[#e7ddd3]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-[#71645d]">Current store</p>
+                    <p className="mt-1 font-black text-[#271a16]">{selectedStore?.name || 'Not selected'}</p>
+                  </div>
+                  <span className={`rounded-full px-3 py-1.5 text-xs font-black ${
+                    customerOrderingState.tone === 'green'
+                      ? 'bg-emerald-50 text-[#07855b]'
+                      : customerOrderingState.tone === 'amber'
+                        ? 'bg-amber-50 text-amber-800'
+                        : 'bg-red-50 text-red-700'
+                  }`}>
+                    {customerOrderingState.statusLabel}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => selectClosestStore()}
+                    disabled={locatingStore || stores.length === 0}
+                    className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-2xl bg-[#3b241c] px-3 text-sm font-black text-white disabled:opacity-60"
+                  >
+                    <Navigation size={16} />
+                    {locatingStore ? 'Finding nearest...' : 'Nearest store'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveSelectedStoreAsDefault}
+                    disabled={!selectedStore}
+                    className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-2xl bg-[#f5ede5] px-3 text-sm font-black text-[#3b241c] disabled:opacity-60"
+                  >
+                    <Star size={16} />
+                    Save default
+                  </button>
+                </div>
+                {!selectedStoreHasCoordinates && selectedStore && (
+                  <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold leading-relaxed text-amber-800">
+                    This store needs coordinates before it can be used by the nearest-store shortcut.
+                  </p>
+                )}
+                {storePreferenceMessage && (
+                  <p className="mt-3 rounded-2xl bg-[#f5ede5] px-3 py-2 text-xs font-bold leading-relaxed text-[#71645d]">
+                    {storePreferenceMessage}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {stores.map(store => {
+                  const state = deriveCustomerOrderingState({
+                    store,
+                    availabilitySnapshot: store.id === selectedStoreId ? publicAvailability : null,
+                    availabilityLoading: store.id === selectedStoreId ? availabilityLoading : false,
+                    orderableItemCount: store.id === selectedStoreId ? orderableItems.length : 1,
+                  });
+                  const isSelected = store.id === selectedStoreId;
+                  const hasCoordinates = !!storeCoordinate(store);
+                  return (
+                    <button
+                      key={store.id}
+                      type="button"
+                      onClick={() => handleStoreChange(store.id)}
+                      className={`flex min-h-[72px] w-full items-center justify-between gap-3 rounded-3xl p-4 text-left ring-1 transition ${
+                        isSelected ? 'bg-[#3b241c] text-white ring-[#3b241c]' : 'bg-white text-[#271a16] ring-[#e7ddd3]'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-base font-black">{store.name}</p>
+                        <p className={`mt-1 text-xs font-bold ${isSelected ? 'text-white/75' : 'text-[#71645d]'}`}>
+                          {state.statusLabel} · {estimatedPrepLabel(store)}
+                          {!hasCoordinates ? ' · Coordinates needed' : ''}
+                        </p>
+                      </div>
+                      {isSelected ? <CheckCircle2 size={20} className="shrink-0" /> : <ChevronDown size={18} className="shrink-0 rotate-[-90deg] text-[#8b5e42]" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {storesMissingCoordinates.length > 0 && (
+                <div className="rounded-3xl bg-amber-50 p-4 text-sm font-bold leading-relaxed text-amber-800">
+                  {storesMissingCoordinates.length} store{storesMissingCoordinates.length === 1 ? '' : 's'} need coordinates before nearest-store selection can include them.
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {storePreferenceMessage && !storeSelectorOpen && (
+        <div role="status" aria-live="polite" className="fixed inset-x-4 top-[calc(max(env(safe-area-inset-top),0px)+72px)] z-50 rounded-2xl bg-[#3b241c] px-4 py-3 text-center text-sm font-black text-white shadow-lg lg:left-1/2 lg:right-auto lg:w-[360px] lg:-translate-x-1/2">
+          {storePreferenceMessage}
         </div>
       )}
     </div>
