@@ -1,5 +1,14 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { X, Save, Loader2, Plus, Trash2, AlertCircle } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import {
+  X,
+  Save,
+  Loader2,
+  Plus,
+  Trash2,
+  AlertCircle,
+  Upload,
+  ImageOff,
+} from "lucide-react";
 import {
   FinishedGood,
   BOMComponent,
@@ -16,8 +25,18 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import { db } from "../../../lib/firebase";
+import { getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
+import { useAuth } from "../../../contexts/AuthContext";
+import { db, storage } from "../../../lib/firebase";
 import { validateBOM } from "../../../lib/bomValidation";
+import {
+  buildNextProductImageStoragePath,
+  buildProductImagePatch,
+  buildProductImageUploadMetadata,
+  getCurrentProductImage,
+  prepareProductImageForUpload,
+  validateProductImageFile,
+} from "../../../lib/productImages";
 
 interface Props {
   isOpen: boolean;
@@ -30,6 +49,8 @@ const DEFAULT_ITEM: Partial<FinishedGood> = {
   name: "",
   displayName: "",
   description: "",
+  imageUrl: "",
+  imageStoragePath: null,
   posCategoryCode: "",
   posCategoryName: "",
   salePrice: 0,
@@ -50,10 +71,15 @@ const DEFAULT_ITEM: Partial<FinishedGood> = {
 };
 
 export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
+  const { staffProfile } = useAuth();
   const [formData, setFormData] = useState<Partial<FinishedGood>>(DEFAULT_ITEM);
   const [bom, setBom] = useState<BOMComponent[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageProgress, setImageProgress] = useState(0);
+  const [imageUploadMessage, setImageUploadMessage] = useState("");
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const [rawIngredients, setRawIngredients] = useState<RawIngredient[]>([]);
   const [prepItems, setPrepItems] = useState<PrepItem[]>([]);
@@ -109,7 +135,115 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
       setBom([]);
     }
     setError("");
+    setImageUploading(false);
+    setImageProgress(0);
+    setImageUploadMessage("");
   }, [item, isOpen]);
+
+  const buildFinalCode = (source: Partial<FinishedGood>) => {
+    const base = source.code ? source.code : source.name || "";
+    return base
+      .toUpperCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^A-Z0-9_]/g, "");
+  };
+
+  const handleImageUpload = async (file: File) => {
+    setError("");
+    setImageUploadMessage("");
+
+    if (!staffProfile || staffProfile.role !== "ADMIN" || staffProfile.isActive === false) {
+      setError("Only an active Admin can upload product images.");
+      return;
+    }
+
+    const validation = validateProductImageFile(file);
+    if (!validation.ok) {
+      setError(validation.message || "Invalid image file.");
+      return;
+    }
+
+    const finalCode = buildFinalCode(formData);
+    if (!finalCode) {
+      setError("Enter a name or code before uploading an image.");
+      return;
+    }
+
+    setImageUploading(true);
+    setImageProgress(0);
+    setImageUploadMessage("Preparing WebP image...");
+
+    try {
+      const webpBlob = await prepareProductImageForUpload(file);
+      const currentImage = getCurrentProductImage(formData);
+      const path = buildNextProductImageStoragePath(finalCode, currentImage.imageStoragePath, new Date());
+      const targetRef = storageRef(storage, path);
+      const task = uploadBytesResumable(
+        targetRef,
+        webpBlob,
+        buildProductImageUploadMetadata(finalCode, formData.name || finalCode, "admin-menu-management"),
+      );
+      setImageUploadMessage("Uploading WebP image...");
+
+      await new Promise<void>((resolve, reject) => {
+        task.on(
+          "state_changed",
+          (snapshot) => {
+            const progress = snapshot.totalBytes
+              ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
+              : 0;
+            setImageProgress(progress);
+          },
+          reject,
+          () => resolve(),
+        );
+      });
+
+      const downloadUrl = await getDownloadURL(task.snapshot.ref);
+      const imagePatch = buildProductImagePatch({
+        product: item || {
+          code: finalCode,
+          name: formData.name || finalCode,
+          imageUrl: null,
+          imageStoragePath: null,
+        },
+        action: currentImage.imageUrl ? "REPLACE" : "UPLOAD",
+        newImageUrl: downloadUrl,
+        newStoragePath: path,
+        actorUid: staffProfile?.uid || "",
+        actorEmail: staffProfile?.email || null,
+        timestamp: serverTimestamp(),
+      });
+      setFormData((prev) => ({ ...prev, ...imagePatch }));
+      setImageUploadMessage("Image uploaded and ready to save.");
+    } catch (uploadError) {
+      console.error("Finished good image upload failed", uploadError);
+      setError(uploadError instanceof Error ? uploadError.message : "Image upload failed.");
+      setImageUploadMessage("");
+    } finally {
+      setImageUploading(false);
+    }
+  };
+
+  const handleImageClear = () => {
+    const finalCode = buildFinalCode(formData);
+    const imagePatch = buildProductImagePatch({
+      product: item || {
+        code: finalCode,
+        name: formData.name || finalCode,
+        imageUrl: formData.imageUrl,
+        imageStoragePath: formData.imageStoragePath,
+      },
+      action: "REMOVE",
+      newImageUrl: null,
+      newStoragePath: null,
+      actorUid: staffProfile?.uid || "",
+      actorEmail: staffProfile?.email || null,
+      timestamp: serverTimestamp(),
+    });
+    setFormData((prev) => ({ ...prev, ...imagePatch }));
+    setImageUploadMessage("Image will be removed when this item is saved.");
+  };
 
   const availableComponents = useMemo(() => {
     const raw: {
@@ -287,15 +421,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
       return;
     }
 
-    const finalCode = formData.code
-      ? formData.code
-          .toUpperCase()
-          .replace(/\s+/g, "_")
-          .replace(/[^A-Z0-9_]/g, "")
-      : formData.name
-          .toUpperCase()
-          .replace(/\s+/g, "_")
-          .replace(/[^A-Z0-9_]/g, "");
+    const finalCode = buildFinalCode(formData);
 
     if (!finalCode) {
       setError("Code is required.");
@@ -368,6 +494,13 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
         code: finalCode,
         displayName: formData.displayName || formData.name,
         description: formData.description || "",
+        imageUrl: formData.imageUrl || "",
+        imageStoragePath: formData.imageStoragePath || null,
+        imageSource: formData.imageSource || null,
+        imageUpdatedAt: formData.imageUpdatedAt || null,
+        imageUpdatedBy: formData.imageUpdatedBy || null,
+        previousImageUrl: formData.previousImageUrl || null,
+        previousImageStoragePath: formData.previousImageStoragePath || null,
         posCategoryCode:
           formData.posCategoryCode ||
           formData.posCategoryName.toUpperCase().replace(/\s+/g, "_"),
@@ -508,6 +641,84 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
                     className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033] resize-none h-24"
                     placeholder="Optional description..."
                   />
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-black text-neutral-800 mb-4">
+                Item Image
+              </h3>
+              <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)] items-start">
+                <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 p-4 flex flex-col gap-3">
+                  <div className="aspect-square rounded-xl bg-white border border-neutral-200 overflow-hidden flex items-center justify-center">
+                    {formData.imageUrl ? (
+                      <img
+                        src={formData.imageUrl}
+                        alt={formData.name || formData.displayName || "Finished good"}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-neutral-400 text-sm font-medium px-4 text-center">
+                        <ImageOff size={28} />
+                        No image uploaded yet
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={imageUploading}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[#5c4033] text-white font-bold text-sm disabled:opacity-50"
+                    >
+                      <Upload size={16} />
+                      Upload image
+                    </button>
+                    {formData.imageUrl && (
+                      <button
+                        type="button"
+                        onClick={handleImageClear}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-neutral-200 text-neutral-700 bg-white font-bold text-sm"
+                      >
+                        Clear image
+                      </button>
+                    )}
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void handleImageUpload(file);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <p className="text-sm text-neutral-600">
+                    Upload a photo for this sellable item. The saved image URL is reused by the customer ordering app and menu previews.
+                  </p>
+                  <div className="rounded-2xl border border-neutral-200 bg-white p-4 text-sm text-neutral-700 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold text-neutral-900">Current image URL</span>
+                      {imageUploading && (
+                        <span className="text-xs font-bold text-[#5c4033]">
+                          Uploading {imageProgress}%
+                        </span>
+                      )}
+                    </div>
+                    <div className="break-all text-neutral-500">
+                      {formData.imageUrl || "No image saved yet."}
+                    </div>
+                    {imageUploadMessage && (
+                      <div className="text-xs font-semibold text-emerald-700">
+                        {imageUploadMessage}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </section>

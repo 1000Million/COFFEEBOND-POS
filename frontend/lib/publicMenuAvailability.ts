@@ -25,6 +25,7 @@ export type PublicMenuDisplayItem = {
   productionMode?: FinishedGood['productionMode'];
   sortOrder: number;
   availableStoreIds: string[];
+  addOnGroupIds?: string[];
   isSellable: boolean;
   isAvailable: boolean;
   isActive: boolean;
@@ -266,6 +267,7 @@ function publicItem(
 
 function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayItem {
   const record = item as FinishedGood & Record<string, unknown>;
+  const addonGroupIds = (item as unknown as { addOnGroupIds?: unknown }).addOnGroupIds;
   const imageUrl = ['imageUrl', 'image', 'photoUrl', 'photo', 'thumbnailUrl', 'thumbnail']
     .map((key) => record[key])
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
@@ -284,6 +286,9 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
     ...(item.productionMode ? { productionMode: item.productionMode } : {}),
     sortOrder: toNumber(item.sortOrder),
     availableStoreIds: [store.id],
+    ...(Array.isArray(addonGroupIds)
+      ? { addOnGroupIds: Array.from(new Set((addonGroupIds as unknown[]).filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim()))) }
+      : {}),
     isSellable: item.isSellable !== false,
     isAvailable: item.isAvailable !== false,
     isActive: item.isActive !== false,

@@ -505,6 +505,11 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /productImageAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
     match /dayClosings/{closingId} {
       allow get: if isCheckoutStaff() && (
         !exists(/databases/$(database)/documents/dayClosings/$(closingId))

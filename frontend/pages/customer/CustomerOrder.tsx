@@ -830,7 +830,23 @@ export default function CustomerOrder() {
     return (
       <div className={`${sizeClass} shrink-0 overflow-hidden rounded-2xl bg-[#f5eadf]`}>
         {imageUrl ? (
-          <img src={imageUrl} alt={item.displayName || item.name} className="h-full w-full object-cover" />
+          <>
+            <img
+              src={imageUrl}
+              alt={item.displayName || item.name}
+              loading="lazy"
+              decoding="async"
+              className="h-full w-full object-cover"
+              onError={(event) => {
+                event.currentTarget.style.display = 'none';
+                const fallback = event.currentTarget.nextElementSibling;
+                if (fallback instanceof HTMLElement) fallback.style.display = 'flex';
+              }}
+            />
+            <div className={`hidden h-full w-full items-center justify-center bg-gradient-to-br ${meta.gradient}`}>
+              <Icon size={24} className={meta.iconColor} />
+            </div>
+          </>
         ) : (
           <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${meta.gradient}`}>
             <Icon size={24} className={meta.iconColor} />
