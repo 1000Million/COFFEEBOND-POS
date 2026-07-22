@@ -6,6 +6,7 @@ import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
 import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { buildPaymentReversalAudit, orderItemDisplayStatus, orderPaymentReversalAudit, paymentOutcomeLabel, summarizeCollections } from '../../lib/paymentReversal';
+import { isComplimentaryOrder, summarizeComplimentaryOrders } from '../../lib/complimentaryOrders';
 
 type ReportPaymentBreakdown = {
   method: PaymentMethod | string;
@@ -55,6 +56,7 @@ function orderTaxableAmount(order: Order): number {
 }
 
 function orderPaymentBreakdown(order: Order): ReportPaymentBreakdown[] {
+  if (isComplimentaryOrder(order)) return [];
   const rawBreakdown = (order as Order & { paymentBreakdown?: ReportPaymentBreakdown[] }).paymentBreakdown;
   if (Array.isArray(rawBreakdown) && rawBreakdown.length > 0) {
     const normalized = rawBreakdown
@@ -73,6 +75,7 @@ function orderPaymentBreakdown(order: Order): ReportPaymentBreakdown[] {
 }
 
 function orderPaymentLabel(order: Order): string {
+  if (isComplimentaryOrder(order)) return 'NO PAYMENT REQUIRED';
   const paymentLabel = (order as Order & { paymentMethodLabel?: string }).paymentMethodLabel;
   if (paymentLabel) return paymentLabel;
   const breakdown = orderPaymentBreakdown(order);
@@ -82,6 +85,7 @@ function orderPaymentLabel(order: Order): string {
 
 function orderHasPaymentMethod(order: Order, method: string): boolean {
   if (method === 'ALL') return true;
+  if (method === 'COMPLIMENTARY') return isComplimentaryOrder(order);
   return orderPaymentBreakdown(order).some(payment => payment.method === method);
 }
 
@@ -296,8 +300,12 @@ export default function ReportsHome() {
   
   const completedOrders = useMemo(() => filteredOrders.filter(o => !isVoidedOrder(o)), [filteredOrders]);
   const voidedOrders = useMemo(() => filteredOrders.filter(isVoidedOrder), [filteredOrders]);
+  const commercialCompletedOrders = useMemo(() => completedOrders.filter(order => !isComplimentaryOrder(order)), [completedOrders]);
+  const commercialVoidedOrders = useMemo(() => voidedOrders.filter(order => !isComplimentaryOrder(order)), [voidedOrders]);
+  const commercialFilteredOrders = useMemo(() => filteredOrders.filter(order => !isComplimentaryOrder(order)), [filteredOrders]);
+  const complimentaryMetrics = useMemo(() => summarizeComplimentaryOrders(completedOrders), [completedOrders]);
   const filteredOrderIds = useMemo(() => new Set(filteredOrders.map(o => o.id)), [filteredOrders]);
-  const completedOrderIds = useMemo(() => new Set(completedOrders.map(o => o.id)), [completedOrders]);
+  const completedOrderIds = useMemo(() => new Set(commercialCompletedOrders.map(o => o.id)), [commercialCompletedOrders]);
   
   const filteredItems = useMemo(() => {
     return orderItems.filter(i => completedOrderIds.has(i.orderId as string));
@@ -323,37 +331,31 @@ export default function ReportsHome() {
   }, [filteredOrders]);
 
   // Metrics
-  const grossSalesBeforeVoids = filteredOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const voidedSales = voidedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const totalSales = completedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const totalBills = completedOrders.length;
+  const grossSalesBeforeVoids = commercialFilteredOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const voidedSales = commercialVoidedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const totalSales = commercialCompletedOrders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const totalBills = commercialCompletedOrders.length;
   const totalOrdersIncludingVoids = filteredOrders.length;
   const voidCount = voidedOrders.length;
   const avgOrderValue = totalBills > 0 ? (totalSales / totalBills) : 0;
-  const totalTax = completedOrders.reduce((sum, o) => sum + orderTaxTotal(o), 0);
-  const totalDiscount = completedOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
+  const totalTax = commercialCompletedOrders.reduce((sum, o) => sum + orderTaxTotal(o), 0);
+  const totalDiscount = commercialCompletedOrders.reduce((sum, o) => sum + orderDiscountTotal(o), 0);
   
-  const paidSales = completedOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
-  const unpaidSales = completedOrders.reduce((sum, o) => {
+  const paidSales = commercialCompletedOrders.filter(o => o.paymentStatus === 'PAID').reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+  const unpaidSales = commercialCompletedOrders.reduce((sum, o) => {
     const creditAmount = orderPaymentBreakdown(o)
       .filter(payment => payment.method === 'CREDIT')
       .reduce((creditSum, payment) => creditSum + payment.amount, 0);
     if (creditAmount > 0) return sum + creditAmount;
     return o.paymentStatus !== 'PAID' ? sum + (o.grandTotal || 0) : sum;
   }, 0);
-  const compSales = completedOrders.reduce((sum, o) => {
-    return sum + orderPaymentBreakdown(o)
-      .filter(payment => payment.method === 'COMPLIMENTARY')
-      .reduce((compSum, payment) => compSum + payment.amount, 0);
-  }, 0);
-
-  const dineInCount = completedOrders.filter(o => o.orderType === 'DINE_IN').length;
-  const takeawayCount = completedOrders.filter(o => o.orderType === 'TAKEAWAY').length;
-  const deliveryCount = completedOrders.filter(o => o.orderType === 'DELIVERY').length;
+  const dineInCount = commercialCompletedOrders.filter(o => o.orderType === 'DINE_IN').length;
+  const takeawayCount = commercialCompletedOrders.filter(o => o.orderType === 'TAKEAWAY').length;
+  const deliveryCount = commercialCompletedOrders.filter(o => o.orderType === 'DELIVERY').length;
 
   const paymentSummary = useMemo(() => {
     const summary: Record<string, { count: number, total: number }> = {};
-    completedOrders.forEach(o => {
+    commercialCompletedOrders.forEach(o => {
       orderPaymentBreakdown(o).forEach(payment => {
         const pm = payment.method || 'UNKNOWN';
         if (!summary[pm]) summary[pm] = { count: 0, total: 0 };
@@ -362,7 +364,7 @@ export default function ReportsHome() {
       });
     });
     return summary;
-  }, [completedOrders]);
+  }, [commercialCompletedOrders]);
   const collectionAudit = useMemo(() => summarizeCollections(filteredOrders), [filteredOrders]);
 
   const categorySummary = useMemo(() => {
@@ -607,8 +609,7 @@ export default function ReportsHome() {
           });
         });
 
-        transaction.update(orderRef, {
-          status: 'VOIDED',
+        const paymentReversalFields = isComplimentaryOrder(freshOrder) ? {} : {
           paymentReversalStatus: paymentReversal.paymentReversalStatus,
           paymentReversalBreakdown: paymentReversal.paymentReversalBreakdown,
           paymentReversalTotal: paymentReversal.paymentReversalTotal,
@@ -617,6 +618,10 @@ export default function ReportsHome() {
           refundPendingAmount: paymentReversal.refundPendingAmount,
           manualRefundRequiredAmount: paymentReversal.manualRefundRequiredAmount,
           netCollectionAmount: paymentReversal.netCollectionAmount,
+        };
+        transaction.update(orderRef, {
+          status: 'VOIDED',
+          ...paymentReversalFields,
           voidReason: voidReason.trim(),
           voidedBy: auth.currentUser!.uid,
           voidedByName: staffProfile.name,
@@ -629,7 +634,7 @@ export default function ReportsHome() {
       const updatedOrder: Order = {
         ...selectedOrder,
         status: 'VOIDED',
-        ...buildPaymentReversalAudit(selectedOrder),
+        ...(isComplimentaryOrder(selectedOrder) ? {} : buildPaymentReversalAudit(selectedOrder)),
         voidReason: voidReason.trim(),
         voidedBy: auth.currentUser.uid,
         voidedByName: staffProfile.name,
@@ -900,8 +905,16 @@ export default function ReportsHome() {
                  <div className="text-xl font-bold font-mono text-red-800">₹{Math.round(unpaidSales)}</div>
               </div>
               <div className="bg-white/50 border border-purple-200/50 rounded-xl p-4">
-                 <div className="text-[10px] font-bold text-purple-700 uppercase tracking-widest mb-1">Complimentary</div>
-                 <div className="text-xl font-bold font-mono text-purple-800">₹{Math.round(compSales)}</div>
+                 <div className="text-[10px] font-bold text-purple-700 uppercase tracking-widest mb-1">Complimentary Orders</div>
+                 <div className="text-xl font-bold font-mono text-purple-800">{complimentaryMetrics.orderCount}</div>
+              </div>
+              <div className="bg-white/50 border border-purple-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-purple-700 uppercase tracking-widest mb-1">Complimentary Menu Value</div>
+                 <div className="text-xl font-bold font-mono text-purple-800">₹{Math.round(complimentaryMetrics.menuValue)}</div>
+              </div>
+              <div className="bg-white/50 border border-purple-200/50 rounded-xl p-4">
+                 <div className="text-[10px] font-bold text-purple-700 uppercase tracking-widest mb-1">Complimentary COGS</div>
+                 <div className="text-xl font-bold font-mono text-purple-800">₹{Math.round(complimentaryMetrics.cogs)}</div>
               </div>
               <div className="bg-white/50 border border-red-200/50 rounded-xl p-4">
                  <div className="text-[10px] font-bold text-red-700 uppercase tracking-widest mb-1">Discount</div>
@@ -1092,7 +1105,7 @@ export default function ReportsHome() {
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
                               isVoided ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
                             }`}>
-                              {status}
+                              {isVoided ? status : isComplimentaryOrder(order) ? 'COMPLIMENTARY' : status}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right">
@@ -1256,7 +1269,7 @@ export default function ReportsHome() {
                 <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
                   <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Status</p>
                   <p className={`mt-1 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-emerald-700'}`}>
-                    {effectiveOrderStatus(selectedOrder)}
+                    {isVoidedOrder(selectedOrder) ? 'VOIDED' : isComplimentaryOrder(selectedOrder) ? 'COMPLIMENTARY' : effectiveOrderStatus(selectedOrder)}
                   </p>
                 </div>
                 <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
@@ -1302,7 +1315,7 @@ export default function ReportsHome() {
                           {orderItemDisplayStatus(selectedOrder, item)}
                         </p>
                       </div>
-                      <span className="font-mono font-bold text-neutral-800">₹{(item.lineTotal || 0).toFixed(2)}</span>
+                      <span className="font-mono font-bold text-neutral-800">₹{(isComplimentaryOrder(selectedOrder) ? item.unitPrice * item.quantity : item.lineTotal || 0).toFixed(2)}</span>
                     </div>
                   ))}
                 </div>
@@ -1311,17 +1324,22 @@ export default function ReportsHome() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="rounded-xl border border-neutral-200 p-4 space-y-2 text-sm">
                   <p className="font-black text-neutral-800">Totals</p>
-                  <div className="flex justify-between text-neutral-500"><span>Subtotal</span><span className="font-mono">₹{(selectedOrder.subtotal || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between text-neutral-500"><span>Discount</span><span className="font-mono">-₹{orderDiscountTotal(selectedOrder).toFixed(2)}</span></div>
+                  <div className="flex justify-between text-neutral-500"><span>{isComplimentaryOrder(selectedOrder) ? 'Menu Value' : 'Subtotal'}</span><span className="font-mono">₹{(selectedOrder.menuValue ?? selectedOrder.subtotal ?? 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between text-neutral-500"><span>{isComplimentaryOrder(selectedOrder) ? 'Complimentary Discount' : 'Discount'}</span><span className="font-mono">-₹{(selectedOrder.complimentaryDiscount ?? orderDiscountTotal(selectedOrder)).toFixed(2)}</span></div>
                   <div className="flex justify-between text-neutral-500"><span>GST</span><span className="font-mono">₹{orderTaxTotal(selectedOrder).toFixed(2)}</span></div>
                   <div className={`flex justify-between pt-2 border-t border-neutral-100 font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700 line-through' : 'text-neutral-900'}`}>
-                    <span>Total</span><span className="font-mono">₹{(selectedOrder.grandTotal || 0).toFixed(2)}</span>
+                    <span>{isComplimentaryOrder(selectedOrder) ? 'Amount Payable' : 'Total'}</span><span className="font-mono">₹{(selectedOrder.grandTotal || 0).toFixed(2)}</span>
                   </div>
                 </div>
 
                 <div className="rounded-xl border border-neutral-200 p-4 space-y-2 text-sm">
                   <p className="font-black text-neutral-800">Payment</p>
-                  {orderPaymentBreakdown(selectedOrder).map((payment, index) => (
+                  {isComplimentaryOrder(selectedOrder) ? (
+                    <div className="rounded-lg bg-purple-50 p-3 text-center font-black text-purple-800">
+                      <p>COMPLIMENTARY — NO PAYMENT REQUIRED</p>
+                      <p className="mt-1 text-xs">Payment Status: NOT REQUIRED</p>
+                    </div>
+                  ) : orderPaymentBreakdown(selectedOrder).map((payment, index) => (
                     <div key={`${payment.method}-${index}`} className="flex justify-between text-neutral-600">
                       <span>{payment.method}</span>
                       <span className="font-mono">₹{payment.amount.toFixed(2)}</span>

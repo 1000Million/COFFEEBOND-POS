@@ -88,6 +88,41 @@ assert(collectionSummary.grossPaymentsReceived === 150, 'Gross payments should i
 assert(collectionSummary.voidedPaymentTotal === 50, 'Voided payment total should include the voided payment.');
 assert(collectionSummary.netCollections === 100, 'Net collections should exclude voided payment total.');
 
+const complimentaryVoid = buildPaymentReversalAudit(order({
+  status: 'VOIDED',
+  commercialStatus: 'COMPLIMENTARY',
+  paymentStatus: 'NOT_REQUIRED',
+  paymentMethod: 'COMPLIMENTARY',
+  subtotal: 225,
+  menuValue: 225,
+  complimentaryDiscount: 225,
+  taxableAmount: 0,
+  taxTotal: 0,
+  gstTotal: 0,
+  grandTotal: 0,
+}));
+assert(complimentaryVoid.paymentReversalStatus === 'NOT_REQUIRED', 'Complimentary void must not create a payment reversal.');
+assert(complimentaryVoid.paymentReversalBreakdown.length === 0, 'Complimentary void must not create reversal tender rows.');
+assert(complimentaryVoid.paymentReversalTotal === 0, 'Complimentary void reversal total must stay zero.');
+const collectionsWithComplimentary = summarizeCollections([
+  order({ id: 'completed-cash-2', grandTotal: 100, paymentMethod: 'CASH' }),
+  order({
+    id: 'complimentary-order',
+    commercialStatus: 'COMPLIMENTARY',
+    paymentStatus: 'NOT_REQUIRED',
+    paymentMethod: 'COMPLIMENTARY',
+    subtotal: 225,
+    menuValue: 225,
+    complimentaryDiscount: 225,
+    taxableAmount: 0,
+    taxTotal: 0,
+    gstTotal: 0,
+    grandTotal: 0,
+  }),
+]);
+assert(collectionsWithComplimentary.grossPaymentsReceived === 100, 'Complimentary menu value must not enter gross payments.');
+assert(collectionsWithComplimentary.netCollections === 100, 'Complimentary menu value must not enter net collections.');
+
 for (const staleItemStatus of ['PENDING', 'PREPARING', 'READY'] as OrderItem['status'][]) {
   assert(
     orderItemDisplayStatus(order({ status: 'VOIDED' }), orderItem(staleItemStatus)) === VOIDED_ITEM_STATUS_LABEL,
@@ -285,6 +320,7 @@ for (const [label, source] of [['RunningOrders', runningOrders], ['ReportsHome',
   assert(source.includes('already has reversal stock movements'), `${label} must prevent duplicate stock reversals.`);
   assert(source.includes('Cannot reverse stock'), `${label} must fail safely when inventory reversal cannot be completed.`);
   assert(source.includes('paymentReversalStatus'), `${label} must write void payment audit fields.`);
+  assert(source.includes('isComplimentaryOrder'), `${label} must suppress payment reversal fields for complimentary voids.`);
   assert(source.includes('orderItemDisplayStatus'), `${label} must use void-aware item-status presentation.`);
 }
 assert(inventoryControl.includes('Stock Movement Audit Filters'), 'Inventory Control should clearly scope movement filters to the stock movement audit.');

@@ -1,10 +1,28 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp, getDoc, Timestamp } from 'firebase/firestore';
+import type { ConfirmationResult } from 'firebase/auth';
 import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation } from '../../types';
+import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation, ReceiptLegalDetails } from '../../types';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
+import {
+  buildComplimentaryTotals,
+  ComplimentaryOtpVerification,
+  isComplimentaryVerificationExpired,
+  isValidIndianMobile,
+  receiptLegalDetailsFromStore,
+  retainVerificationForPhone,
+  validateComplimentaryCheckout,
+} from '../../lib/complimentaryOrders';
+import {
+  complimentaryPhoneErrorCode,
+  complimentaryPhoneErrorMessage,
+  complimentaryRecaptchaContainerId,
+  disposeComplimentaryPhoneVerification,
+  sendComplimentaryPhoneOtp,
+  verifyComplimentaryPhoneOtp,
+} from '../../lib/complimentaryPhoneVerification';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -72,6 +90,10 @@ type ReceiptOrderSnapshot = {
   paymentMethod: PaymentMethod;
   isSplitPayment: boolean;
   paymentStatus?: string | null;
+  commercialStatus?: Order['commercialStatus'];
+  menuValue?: number;
+  complimentaryDiscount?: number;
+  receiptLegalDetails?: ReceiptLegalDetails;
 };
 
 type ReceiptPaymentSnapshot = {
@@ -90,6 +112,8 @@ type SplitPaymentRow = {
   method: PaymentMethod;
   amountStr: string;
 };
+
+type ComplimentaryOtpStatus = 'IDLE' | 'SENDING' | 'CODE_SENT' | 'VERIFYING' | 'VERIFIED' | 'EXPIRED' | 'ERROR';
 
 type HeldBill = {
   id: string;
@@ -129,6 +153,9 @@ const RECENT_ITEMS_STORAGE_KEY = 'coffeeBondPos:recentItems:v1';
 const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
+const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => method !== 'COMPLIMENTARY');
+const COMPLIMENTARY_OTP_RESEND_SECONDS = 30;
+const COMPLIMENTARY_RECAPTCHA_CONTAINER_ID = complimentaryRecaptchaContainerId();
 const POS_PRODUCT_FILTERS = [
   { id: 'ALL', label: 'All' },
   { id: 'FOOD', label: 'Food' },
@@ -456,8 +483,9 @@ function buildReceiptSnapshot(
   order: Order,
   items: OrderItem[],
   payments: OrderPayment[],
-  storeName: string,
+  store: Store,
 ): ReceiptSnapshot {
+  const isComplimentary = order.commercialStatus === 'COMPLIMENTARY';
   const discountAmount =
     toFiniteNumber(order.discountAmount) ??
     toFiniteNumber(order.discountTotal) ??
@@ -475,7 +503,7 @@ function buildReceiptSnapshot(
   return {
     order: {
       orderNumber: order.orderNumber,
-      storeName: order.storeName || storeName,
+      storeName: order.storeName || store.name,
       createdAtIso: new Date().toISOString(),
       createdByName: order.createdByName,
       customerName: order.customerName || null,
@@ -491,6 +519,10 @@ function buildReceiptSnapshot(
       paymentMethod: order.paymentMethod || receiptPayments[0]?.method || 'CASH',
       isSplitPayment: order.isSplitPayment === true || receiptPayments.length > 1,
       paymentStatus: order.paymentStatus || null,
+      commercialStatus: order.commercialStatus,
+      menuValue: toFiniteNumber(order.menuValue) ?? toFiniteNumber(order.subtotal) ?? 0,
+      complimentaryDiscount: toFiniteNumber(order.complimentaryDiscount) ?? discountAmount,
+      receiptLegalDetails: order.receiptLegalDetails || receiptLegalDetailsFromStore(store),
     },
     items: items.map(item => {
       const quantity = toFiniteNumber(item.quantity) || 0;
@@ -499,10 +531,12 @@ function buildReceiptSnapshot(
         itemName: item.itemName,
         quantity,
         unitPrice,
-        lineTotal: toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
+        lineTotal: isComplimentary ? quantity * unitPrice : toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
       };
     }),
-    payments: receiptPayments.length > 0
+    payments: isComplimentary
+      ? []
+      : receiptPayments.length > 0
       ? receiptPayments
       : [{ method: order.paymentMethod || 'CASH', amount: toFiniteNumber(order.grandTotal) || 0 }],
   };
@@ -671,6 +705,14 @@ export default function POSHome() {
   const [tableNumberError, setTableNumberError] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [complimentaryReason, setComplimentaryReason] = useState('');
+  const [complimentaryVerification, setComplimentaryVerification] = useState<ComplimentaryOtpVerification | null>(null);
+  const [complimentaryConfirmationResult, setComplimentaryConfirmationResult] = useState<ConfirmationResult | null>(null);
+  const [complimentaryOtpCode, setComplimentaryOtpCode] = useState('');
+  const [complimentaryOtpStatus, setComplimentaryOtpStatus] = useState<ComplimentaryOtpStatus>('IDLE');
+  const [complimentaryOtpMessage, setComplimentaryOtpMessage] = useState<string | null>(null);
+  const [complimentaryResendSeconds, setComplimentaryResendSeconds] = useState(0);
+  const [complimentaryExpiryClock, setComplimentaryExpiryClock] = useState(0);
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
@@ -704,6 +746,43 @@ export default function POSHome() {
     setHeldBills(loadStoredHeldBills());
     setRecentItemIdsByStore(loadStoredRecentItems());
   }, []);
+
+  useEffect(() => {
+    return () => {
+      void disposeComplimentaryPhoneVerification();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (complimentaryResendSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setComplimentaryResendSeconds(current => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [complimentaryResendSeconds]);
+
+  useEffect(() => {
+    if (!complimentaryVerification) return;
+    const timer = window.setInterval(() => setComplimentaryExpiryClock(current => current + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [complimentaryVerification]);
+
+  useEffect(() => {
+    if (!complimentaryVerification || !isComplimentaryVerificationExpired(complimentaryVerification)) return;
+    setComplimentaryVerification(null);
+    setComplimentaryOtpStatus('EXPIRED');
+    setComplimentaryOtpMessage('Verification expired. Send a new OTP.');
+  }, [complimentaryExpiryClock, complimentaryVerification]);
+
+  useEffect(() => {
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus('IDLE');
+    setComplimentaryOtpMessage(null);
+    setComplimentaryResendSeconds(0);
+    void disposeComplimentaryPhoneVerification();
+  }, [selectedStoreId]);
 
   useEffect(() => {
     if (!loading) {
@@ -1124,6 +1203,98 @@ export default function POSHome() {
     setCart(prev => prev.filter(ci => ci.id !== cartItemId));
   };
 
+  const resetComplimentaryOtp = (status: ComplimentaryOtpStatus = 'IDLE', message: string | null = null) => {
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus(status);
+    setComplimentaryOtpMessage(message);
+    setComplimentaryResendSeconds(0);
+    void disposeComplimentaryPhoneVerification();
+  };
+
+  const handleComplimentaryPhoneChange = (nextPhone: string) => {
+    const normalized = nextPhone.replace(/[^0-9]/g, '').slice(0, 10);
+    if (normalized !== customerPhone.trim()) {
+      setComplimentaryVerification(current => retainVerificationForPhone(current, normalized));
+      setComplimentaryConfirmationResult(null);
+      setComplimentaryOtpCode('');
+      setComplimentaryOtpStatus('IDLE');
+      setComplimentaryOtpMessage(null);
+      setComplimentaryResendSeconds(0);
+      void disposeComplimentaryPhoneVerification();
+    }
+    setCustomerPhone(normalized);
+  };
+
+  const handleSendComplimentaryOtp = async () => {
+    if (!selectedStoreId) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Select a store before sending the OTP.');
+      return;
+    }
+    if (!isValidIndianMobile(customerPhone)) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Enter a valid Indian 10-digit mobile number.');
+      return;
+    }
+    if (complimentaryResendSeconds > 0 || complimentaryOtpStatus === 'SENDING') return;
+
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus('SENDING');
+    setComplimentaryOtpMessage('An SMS verification code is being sent to this number.');
+    try {
+      const confirmationResult = await sendComplimentaryPhoneOtp(customerPhone);
+      setComplimentaryConfirmationResult(confirmationResult);
+      setComplimentaryOtpStatus('CODE_SENT');
+      setComplimentaryOtpMessage('Enter the 6-digit code sent by SMS.');
+      setComplimentaryResendSeconds(COMPLIMENTARY_OTP_RESEND_SECONDS);
+    } catch (error) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage(complimentaryPhoneErrorMessage(error));
+    }
+  };
+
+  const handleVerifyComplimentaryOtp = async () => {
+    if (!complimentaryConfirmationResult) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Send an OTP before verifying.');
+      return;
+    }
+    if (!/^[0-9]{6}$/.test(complimentaryOtpCode)) {
+      setComplimentaryOtpStatus('CODE_SENT');
+      setComplimentaryOtpMessage('Enter the complete 6-digit OTP.');
+      return;
+    }
+
+    setComplimentaryOtpStatus('VERIFYING');
+    setComplimentaryOtpMessage('Verifying the customer phone securely...');
+    try {
+      const verification = await verifyComplimentaryPhoneOtp({
+        confirmationResult: complimentaryConfirmationResult,
+        code: complimentaryOtpCode,
+        expectedPhone: customerPhone,
+        storeId: selectedStoreId,
+      });
+      setComplimentaryVerification(verification);
+      setComplimentaryConfirmationResult(null);
+      setComplimentaryOtpCode('');
+      setComplimentaryOtpStatus('VERIFIED');
+      setComplimentaryOtpMessage('Customer phone verified.');
+      setComplimentaryResendSeconds(0);
+    } catch (error) {
+      const message = complimentaryPhoneErrorMessage(error);
+      const code = complimentaryPhoneErrorCode(error);
+      const expired = code === 'auth/code-expired' || message.toLowerCase().includes('expired');
+      const requiresResend = expired || code.startsWith('functions/');
+      setComplimentaryOtpStatus(expired ? 'EXPIRED' : requiresResend ? 'ERROR' : 'CODE_SENT');
+      setComplimentaryOtpMessage(message);
+      if (requiresResend) setComplimentaryConfirmationResult(null);
+    }
+  };
+
   const clearCart = (skipConfirm: boolean = false) => {
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
@@ -1135,6 +1306,8 @@ export default function POSHome() {
       setSplitPayments([]);
       setCustomerName('');
       setCustomerPhone('');
+      setComplimentaryReason('');
+      resetComplimentaryOtp();
       setTableNumber('');
       setTableNumberError(null);
       setOrderType('DINE_IN');
@@ -1144,6 +1317,17 @@ export default function POSHome() {
   const cartTotals = useMemo(() => {
     return calculateTotals(cart, discountPercentStr, selectedStoreTaxConfig.rate);
   }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);
+  const isComplimentarySelected = !isSplitPayment && paymentMethod === 'COMPLIMENTARY';
+  const displayedCartTotals = useMemo(() => {
+    return isComplimentarySelected ? buildComplimentaryTotals(cartTotals.subtotal) : cartTotals;
+  }, [cartTotals, isComplimentarySelected]);
+  const complimentaryValidationErrors = useMemo(() => validateComplimentaryCheckout({
+    customerName,
+    customerPhone,
+    reason: complimentaryReason,
+    verification: complimentaryVerification,
+  }), [complimentaryExpiryClock, complimentaryReason, complimentaryVerification, customerName, customerPhone]);
+  const canSubmitComplimentary = !isComplimentarySelected || complimentaryValidationErrors.length === 0;
 
   const cartHasItemTaxRate = useMemo(() => {
     return cart.some(item => normalizeTaxRate(item.taxRate) > 0);
@@ -1153,8 +1337,8 @@ export default function POSHome() {
   const maxDiscountPercent = getMaxDiscountPercent(staffProfile?.role);
   const discountExceedsLimit = cartTotals.discountPercent > maxDiscountPercent + 0.0001;
   const splitAllocatedAmount = useMemo(() => paymentRowsAllocated(splitPayments), [splitPayments]);
-  const splitBalanceAmount = cartTotals.grandTotal - splitAllocatedAmount;
-  const splitPaymentBalanced = paymentRowsAreBalanced(cartTotals.grandTotal, splitAllocatedAmount);
+  const splitBalanceAmount = displayedCartTotals.grandTotal - splitAllocatedAmount;
+  const splitPaymentBalanced = paymentRowsAreBalanced(displayedCartTotals.grandTotal, splitAllocatedAmount);
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
   const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
@@ -1295,6 +1479,7 @@ export default function POSHome() {
 
   const handleCheckout = async (paymentMethodOverride?: PaymentMethod) => {
     const selectedPaymentMethod = !isSplitPayment && paymentMethodOverride ? paymentMethodOverride : paymentMethod;
+    const isComplimentaryCheckout = !isSplitPayment && selectedPaymentMethod === 'COMPLIMENTARY';
 
     if (!staffProfile || !auth.currentUser) return;
     if (cart.length === 0) return alert("Cart is empty");
@@ -1304,6 +1489,22 @@ export default function POSHome() {
     if (orderType === 'DINE_IN' && !tableNumber.trim()) {
       setTableNumberError('Table number is required for dine in orders.');
       return;
+    }
+
+    if (isComplimentaryCheckout) {
+      const validationErrors = validateComplimentaryCheckout({
+        customerName,
+        customerPhone,
+        reason: complimentaryReason,
+        verification: complimentaryVerification,
+      });
+      if (validationErrors.length > 0) {
+        setCheckoutError({
+          message: validationErrors[0],
+          details: validationErrors.join('\n'),
+        });
+        return;
+      }
     }
 
     setTableNumberError(null);
@@ -1339,20 +1540,25 @@ export default function POSHome() {
         discountPercentStr,
         selectedStoreTaxConfig.rate,
       );
-      const trueSubtotal = trueTotals.subtotal;
-      const trueDiscount = trueTotals.discountAmount;
-      const trueDiscountPercent = trueTotals.discountPercent;
-      const trueTaxableAmount = trueTotals.taxableAmount;
-      const trueTaxTotal = trueTotals.taxTotal;
-      const trueGrandTotal = trueTotals.grandTotal;
+      const effectiveTotals = isComplimentaryCheckout
+        ? buildComplimentaryTotals(trueTotals.subtotal)
+        : trueTotals;
+      const trueSubtotal = effectiveTotals.subtotal;
+      const trueDiscount = effectiveTotals.discountAmount;
+      const trueDiscountPercent = effectiveTotals.discountPercent;
+      const trueTaxableAmount = effectiveTotals.taxableAmount;
+      const trueTaxTotal = effectiveTotals.taxTotal;
+      const trueGrandTotal = effectiveTotals.grandTotal;
       const trueDiscountRatio = trueSubtotal > 0 ? trueDiscount / trueSubtotal : 0;
       const userMaxDiscount = getMaxDiscountPercent(staffProfile.role);
 
-      if (trueDiscountPercent > userMaxDiscount + 0.0001) {
+      if (!isComplimentaryCheckout && trueDiscountPercent > userMaxDiscount + 0.0001) {
         throw new Error(`Discount ${trueDiscountPercent.toFixed(2)}% exceeds the ${userMaxDiscount}% limit for your role.`);
       }
 
-      const paymentRows: ReceiptPaymentSnapshot[] = isSplitPayment
+      const paymentRows: ReceiptPaymentSnapshot[] = isComplimentaryCheckout
+        ? []
+        : isSplitPayment
         ? normalizedSplitPayments(trueGrandTotal)
         : [{
           method: selectedPaymentMethod as PaymentMethod,
@@ -1371,15 +1577,8 @@ export default function POSHome() {
         }
       }
 
-      if (paymentRows.some(payment => payment.method === 'COMPLIMENTARY' && payment.amount > 0) && trueGrandTotal > 0) {
-        if (!window.confirm(`This order is COMPLIMENTARY but has a total of ₹${trueGrandTotal.toFixed(2)}. Proceed?`)) {
-          setIsSaving(false);
-          return;
-        }
-      }
-
       // Detailed Checkout Logging
-      if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}, Phone: ${customerPhone}`);
+      if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}`);
 
       // Check customer
       let customerId: string | null = null;
@@ -1389,7 +1588,7 @@ export default function POSHome() {
 
       if (phoneToSearch) {
         try {
-          if (import.meta.env.DEV) console.log(`[CHECKOUT] Fetching customer with phone: ${phoneToSearch}`);
+          if (import.meta.env.DEV) console.log('[CHECKOUT] Fetching customer by phone');
           const q = query(collection(db, 'customers'), where('phone', '==', phoneToSearch));
           const custSnap = await getDocs(q);
           if (!custSnap.empty) {
@@ -1412,6 +1611,9 @@ export default function POSHome() {
       const counterRef = doc(db, 'counters', counterId);
       const newOrderRef = doc(collection(db, 'orders'));
       const orderLineRefs = validatedCart.map(() => doc(collection(newOrderRef, 'items')));
+      const complimentaryAuthorizationRef = isComplimentaryCheckout
+        ? doc(db, 'complimentaryAuthorizations', complimentaryVerification!.authorizationId)
+        : null;
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);
 
@@ -1424,6 +1626,30 @@ export default function POSHome() {
         if (custRef) {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get customer doc`);
           custDoc = await transaction.get(custRef);
+        }
+
+        let complimentaryAuthorizationData: Record<string, any> | null = null;
+        if (complimentaryAuthorizationRef) {
+          if (import.meta.env.DEV) console.log('[CHECKOUT] Transaction: get complimentary authorization');
+          const authorizationSnapshot = await transaction.get(complimentaryAuthorizationRef);
+          if (!authorizationSnapshot.exists()) {
+            throw new Error('Complimentary phone verification was not found. Send a new OTP.');
+          }
+          complimentaryAuthorizationData = authorizationSnapshot.data();
+          const expiresAt = complimentaryAuthorizationData.expiresAt;
+          const expectedPhoneE164 = `+91${customerPhone.trim()}`;
+          if (
+            complimentaryAuthorizationData.status !== 'VERIFIED'
+            || complimentaryAuthorizationData.used !== false
+            || complimentaryAuthorizationData.staffUid !== auth.currentUser!.uid
+            || complimentaryAuthorizationData.storeId !== selectedStore.id
+            || complimentaryAuthorizationData.customerPhoneE164 !== expectedPhoneE164
+            || complimentaryAuthorizationData.provider !== complimentaryVerification!.provider
+            || !(expiresAt instanceof Timestamp)
+            || expiresAt.toMillis() <= Date.now()
+          ) {
+            throw new Error('Complimentary phone verification is expired, used, or does not match this sale. Send a new OTP.');
+          }
         }
 
         let seq = 1;
@@ -1544,7 +1770,9 @@ export default function POSHome() {
           customerId = custRef.id;
         }
 
-        const paymentStatus: Order['paymentStatus'] = isSplitPayment
+        const paymentStatus: Order['paymentStatus'] = isComplimentaryCheckout
+          ? 'NOT_REQUIRED'
+          : isSplitPayment
           ? splitPaymentStatus(paymentRows, trueGrandTotal)
           : (selectedPaymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
 
@@ -1561,6 +1789,19 @@ export default function POSHome() {
           orderType,
           status: 'COMPLETED',
           paymentStatus,
+          commercialStatus: isComplimentaryCheckout ? 'COMPLIMENTARY' : 'SALE',
+          ...(isComplimentaryCheckout && {
+            menuValue: trueSubtotal,
+            complimentaryDiscount: trueSubtotal,
+            complimentaryReason: complimentaryReason.trim(),
+            complimentaryAuthorizationId: complimentaryVerification!.authorizationId,
+            complimentaryOtpVerified: true,
+            complimentaryVerifiedPhone: complimentaryVerification!.verifiedPhone,
+            complimentaryOtpProvider: complimentaryVerification!.provider,
+            complimentaryAuthorisedByUid: auth.currentUser!.uid,
+            complimentaryAuthorisedByName: staffProfile.name,
+            complimentaryAuthorisedAt: serverTimestamp(),
+          }),
           tableNumber: tableNumber.trim() || null,
           subtotal: trueSubtotal,
           taxTotal: trueTaxTotal,
@@ -1576,7 +1817,8 @@ export default function POSHome() {
           inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
           inventoryConsumptionStatus: deductionPlan.pendingConsumptionPayloads.length > 0 ? 'PENDING_BOM' : 'APPLIED',
           stockMovementCount: deductionPlan.movementPayloads.length,
-          paymentMethod: (paymentRows[0]?.method || paymentMethod) as PaymentMethod,
+          paymentMethod: (paymentRows[0]?.method || selectedPaymentMethod) as PaymentMethod,
+          receiptLegalDetails: receiptLegalDetailsFromStore(selectedStore),
           ...(isSplitPayment && {
             isSplitPayment: true,
             paymentMethodLabel: buildPaymentLabel(paymentRows),
@@ -1589,6 +1831,15 @@ export default function POSHome() {
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving order data...`);
         traceCheckoutWrite('order save', 'create', newOrderRef.path);
         transaction.set(newOrderRef, orderData);
+        if (complimentaryAuthorizationRef) {
+          traceCheckoutWrite('complimentary authorization consume', 'update', complimentaryAuthorizationRef.path);
+          transaction.update(complimentaryAuthorizationRef, {
+            used: true,
+            usedAt: serverTimestamp(),
+            usedByOrderId: newOrderRef.id,
+            usedByOrderNumber: orderNumber,
+          });
+        }
 
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
@@ -1596,10 +1847,10 @@ export default function POSHome() {
         validatedCart.forEach(({ cartItem: item, liveItem }, index) => {
           const lineRef = orderLineRefs[index];
           const lineSub = liveItem.price * item.quantity;
-          const lineDiscount = lineSub * trueDiscountRatio;
+          const lineDiscount = isComplimentaryCheckout ? lineSub : lineSub * trueDiscountRatio;
           const lineTaxable = Math.max(0, lineSub - lineDiscount);
           const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);
-          const lineTax = lineTaxable * (appliedTaxRate / 100);
+          const lineTax = isComplimentaryCheckout ? 0 : lineTaxable * (appliedTaxRate / 100);
           const linePrepStation = normalizePrepStation(liveItem.prepStation);
 
           const itemData: OrderItem = {
@@ -1668,7 +1919,9 @@ export default function POSHome() {
 
         // Prep payment
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving payment data...`);
-        const paymentsToWrite: ReceiptPaymentSnapshot[] = isSplitPayment
+        const paymentsToWrite: ReceiptPaymentSnapshot[] = isComplimentaryCheckout
+          ? []
+          : isSplitPayment
           ? paymentRows
           : [{
             method: selectedPaymentMethod as PaymentMethod,
@@ -1700,7 +1953,7 @@ export default function POSHome() {
       }
 
       // Show receipt
-      const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore.name);
+      const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore);
       setLastReceipt(receipt);
       writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
       setReceiptViewTitle('Order Saved');
@@ -2252,10 +2505,11 @@ export default function POSHome() {
                   <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#8a6a58]">Customer</p>
                   <button
                     type="button"
-                    onClick={() => {
-                      setCustomerName('Walk-in');
-                      setCustomerPhone('');
-                    }}
+	                    onClick={() => {
+	                      setCustomerName('Walk-in');
+	                      setCustomerPhone('');
+	                      resetComplimentaryOtp();
+	                    }}
                     className="rounded-full border border-[#eadfd4] bg-white px-3 py-1.5 text-[10px] font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
                   >
                     Walk-in
@@ -2278,7 +2532,9 @@ export default function POSHome() {
                       type="tel"
                       placeholder="Phone"
                       value={customerPhone}
-                      onChange={e => setCustomerPhone(e.target.value)}
+                      onChange={e => isComplimentarySelected
+                        ? handleComplimentaryPhoneChange(e.target.value)
+                        : setCustomerPhone(e.target.value)}
                       className="w-full bg-transparent text-sm font-medium outline-none placeholder-neutral-400"
                     />
                   </div>
@@ -2369,23 +2625,27 @@ export default function POSHome() {
           <div className="mt-2 space-y-0.5 border-t border-[#eadfd4] pt-2">
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Subtotal</span>
-              <span className="font-mono leading-none">₹{cartTotals.subtotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.subtotal.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>Discount (%)</span>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                value={discountPercentStr}
-                onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
-                className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
-                placeholder="0"
-              />
+              <span>{isComplimentarySelected ? 'Complimentary Discount (%)' : 'Discount (%)'}</span>
+              {isComplimentarySelected ? (
+                <span className="font-mono leading-none">100.00</span>
+              ) : (
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={discountPercentStr}
+                  onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
+                  className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
+                  placeholder="0"
+                />
+              )}
             </div>
-            {discountExceedsLimit && (
+            {discountExceedsLimit && !isComplimentarySelected && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold leading-snug text-red-700">
                 Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
               </div>
@@ -2393,27 +2653,27 @@ export default function POSHome() {
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Discount Amount</span>
-              <span className="font-mono leading-none">-₹{cartTotals.discountAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">-₹{displayedCartTotals.discountAmount.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Taxable Amount</span>
-              <span className="font-mono leading-none">₹{cartTotals.taxableAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.taxableAmount.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>GST</span>
-              <span className="font-mono leading-none">₹{cartTotals.taxTotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.taxTotal.toFixed(2)}</span>
             </div>
-            {canViewCheckoutDebug && cartIsMissingGstConfig && (
+            {canViewCheckoutDebug && cartIsMissingGstConfig && !isComplimentarySelected && (
               <p className="rounded-lg border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold leading-snug text-amber-700">
                 GST rate is not configured for this store/menu.
               </p>
             )}
 
             <div className="mt-1.5 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-1.5">
-              <span className="shrink-0 text-[15px] font-black text-neutral-800">Total</span>
-              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{cartTotals.grandTotal.toFixed(2)}</span>
+              <span className="shrink-0 text-[15px] font-black text-neutral-800">{isComplimentarySelected ? 'Amount Payable' : 'Total'}</span>
+              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
             </div>
           </div>
 
@@ -2438,7 +2698,11 @@ export default function POSHome() {
                   {PAYMENT_METHODS.map(method => (
                     <button
                       key={method}
-                      onClick={() => setPaymentMethod(method)}
+                      onClick={() => {
+                        setPaymentMethod(method);
+                        setCheckoutError(null);
+                        if (method !== 'COMPLIMENTARY') resetComplimentaryOtp();
+                      }}
                       className={`min-h-[30px] min-w-[58px] rounded-full border px-2.5 py-1 text-[9px] font-black transition-all ${
                         paymentMethod === method
                           ? 'border-[#5c4033] bg-[#5c4033] text-white shadow-sm'
@@ -2451,6 +2715,113 @@ export default function POSHome() {
                     </button>
                   ))}
                 </div>
+                {isComplimentarySelected && (
+                  <div className="mt-2 space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                    <div>
+                      <p className="text-xs font-black text-amber-900">Complimentary authorization</p>
+                      <p className="mt-0.5 text-[10px] font-semibold leading-relaxed text-amber-800">
+                        Customer details, reason, and a real OTP verification are mandatory. No payment will be collected.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <input
+                        type="text"
+                        value={customerName}
+                        onChange={event => setCustomerName(event.target.value)}
+                        placeholder="Customer name"
+                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
+                      />
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        value={customerPhone}
+                        onChange={event => handleComplimentaryPhoneChange(event.target.value)}
+                        placeholder="10-digit mobile"
+                        disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING'}
+                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <textarea
+                      value={complimentaryReason}
+                      onChange={event => setComplimentaryReason(event.target.value)}
+                      placeholder="Complimentary reason"
+                      rows={2}
+                      className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
+                    />
+                    <p className="text-[10px] font-semibold leading-relaxed text-amber-800">
+                      An SMS verification code will be sent to this number. Phone numbers supplied to Firebase Phone Authentication are processed by Google for verification and abuse prevention.
+                    </p>
+                    <div id={COMPLIMENTARY_RECAPTCHA_CONTAINER_ID} className="max-w-full overflow-hidden" />
+
+                    {complimentaryOtpStatus === 'VERIFIED' && complimentaryVerification ? (
+                      <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-800">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Verified</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomerPhone('');
+                              resetComplimentaryOtp();
+                            }}
+                            className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-black"
+                          >
+                            Change number
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(complimentaryOtpStatus === 'CODE_SENT' || complimentaryOtpStatus === 'VERIFYING') && (
+                          <div className="grid grid-cols-[1fr_auto] gap-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="one-time-code"
+                              value={complimentaryOtpCode}
+                              onChange={event => setComplimentaryOtpCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                              placeholder="Enter 6-digit OTP"
+                              disabled={complimentaryOtpStatus === 'VERIFYING'}
+                              className="min-h-[40px] min-w-0 rounded-xl border border-amber-200 bg-white px-3 text-sm tracking-[0.2em] outline-none focus:border-amber-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleVerifyComplimentaryOtp()}
+                              disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryOtpCode.length !== 6}
+                              className="min-h-[40px] rounded-xl bg-[#5c4033] px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
+                            >
+                              {complimentaryOtpStatus === 'VERIFYING' ? 'Verifying…' : 'Verify OTP'}
+                            </button>
+                          </div>
+                        )}
+
+                        {complimentaryOtpMessage && (
+                          <div className={`rounded-xl border px-3 py-2 text-[11px] font-bold ${
+                            complimentaryOtpStatus === 'ERROR' || complimentaryOtpStatus === 'EXPIRED'
+                              ? 'border-red-200 bg-red-50 text-red-700'
+                              : 'border-amber-200 bg-amber-100/60 text-amber-800'
+                          }`}>
+                            {complimentaryOtpMessage}
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleSendComplimentaryOtp()}
+                          disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING' || complimentaryResendSeconds > 0}
+                          className="w-full rounded-xl border border-[#5c4033] bg-white px-3 py-2 text-xs font-black text-[#5c4033] disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-100 disabled:text-neutral-400"
+                        >
+                          {complimentaryOtpStatus === 'SENDING'
+                            ? 'Sending…'
+                            : complimentaryResendSeconds > 0
+                              ? `Resend available in ${complimentaryResendSeconds}s`
+                              : complimentaryConfirmationResult
+                                ? 'Resend OTP'
+                                : 'Send OTP'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -2463,7 +2834,7 @@ export default function POSHome() {
                         className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-2.5 py-1.5 text-[11px] font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                         aria-label={`Payment method ${index + 1}`}
                       >
-                        {PAYMENT_METHODS.map(method => (
+                        {SPLIT_PAYMENT_METHODS.map(method => (
                           <option key={method} value={method}>{method}</option>
                         ))}
                       </select>
@@ -2502,7 +2873,7 @@ export default function POSHome() {
                 <div className="space-y-0.5 rounded-2xl bg-white px-3 py-2 text-[11px] font-bold text-neutral-600">
                   <div className="flex justify-between">
                     <span>Total Due</span>
-                    <span className="font-mono">₹{cartTotals.grandTotal.toFixed(2)}</span>
+                    <span className="font-mono">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Amount Allocated</span>
@@ -2517,15 +2888,23 @@ export default function POSHome() {
             )}
 
             <button
-              disabled={cart.length === 0 || isSaving}
+              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary}
               className={`mt-0.5 w-full rounded-2xl py-2.5 text-sm font-black transition-all shadow-sm ${
-                cart.length > 0 && !isSaving
+                cart.length > 0 && !isSaving && canSubmitComplimentary
                   ? 'border border-[#2d1c19] bg-[#3e2723] text-[#f9f5f0] hover:bg-[#2d1c19] hover:shadow-md active:scale-[0.99]'
                   : 'cursor-not-allowed border border-neutral-300 bg-neutral-200 text-neutral-400'
               }`}
               onClick={() => void handleCheckout()}
             >
-              {isSaving ? <Loader2 size={20} className="mx-auto animate-spin text-[#5c4033]" /> : (cart.length > 0 ? `Charge ₹${cartTotals.grandTotal.toFixed(2)}` : 'Cart Empty')}
+              {isSaving
+                ? <Loader2 size={20} className="mx-auto animate-spin text-[#5c4033]" />
+                : cart.length === 0
+                  ? 'Cart Empty'
+                  : isComplimentarySelected && !canSubmitComplimentary
+                    ? 'Complimentary checkout unavailable'
+                    : isComplimentarySelected
+                      ? 'Save Complimentary Order'
+                      : `Charge ₹${displayedCartTotals.grandTotal.toFixed(2)}`}
             </button>
           </div>
         </div>
@@ -2540,7 +2919,7 @@ export default function POSHome() {
                 <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
                 <span className="truncate text-sm">View Order</span>
               </span>
-              <span className="min-w-0 truncate text-base sm:text-lg">₹{cartTotals.grandTotal.toFixed(2)}</span>
+	              <span className="min-w-0 truncate text-base sm:text-lg">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
            </button>
         </div>
       )}
@@ -2557,8 +2936,22 @@ export default function POSHome() {
             {/* Printable Receipt Area */}
             <div id="receipt-area" className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar text-neutral-800 text-sm">
                <div className="text-center mb-6 border-b border-dashed border-neutral-300 pb-6">
-                 <h1 className="text-xl font-black uppercase tracking-widest mb-1">Coffee Bond</h1>
-                 <p className="font-bold text-neutral-600">{receiptView.order.storeName}</p>
+	                 <h1 className="text-xl font-black uppercase tracking-widest mb-1">
+	                   {receiptView.order.receiptLegalDetails?.tradeName || receiptView.order.receiptLegalDetails?.legalName || 'Coffee Bond'}
+	                 </h1>
+	                 <p className="font-bold text-neutral-600">{receiptView.order.storeName}</p>
+	                 {receiptView.order.receiptLegalDetails?.legalAddress && (
+	                   <p className="mt-1 text-xs text-neutral-500">{receiptView.order.receiptLegalDetails.legalAddress}</p>
+	                 )}
+	                 {receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin && (
+	                   <p className="mt-1 text-xs font-bold text-neutral-600">GSTIN: {receiptView.order.receiptLegalDetails.gstin}</p>
+	                 )}
+	                 {receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.stateName && (
+	                   <p className="text-xs text-neutral-500">
+	                     {receiptView.order.receiptLegalDetails.stateName}
+	                     {receiptView.order.receiptLegalDetails.stateCode ? ` (${receiptView.order.receiptLegalDetails.stateCode})` : ''}
+	                   </p>
+	                 )}
                  <p className="text-neutral-500 mt-2 text-xs">{new Date(receiptView.order.createdAtIso).toLocaleString()}</p>
                  <p className="text-neutral-500 text-xs">Staff: {receiptView.order.createdByName}</p>
                  {receiptView.order.customerName && <p className="text-neutral-500 text-xs mt-1">Guest: {receiptView.order.customerName} {receiptView.order.customerPhone ? `(${receiptView.order.customerPhone})` : ''}</p>}
@@ -2582,12 +2975,17 @@ export default function POSHome() {
                </div>
 
                <div className="space-y-2 mb-6 text-sm">
-                 <div className="flex justify-between text-neutral-500">
-                    <span>Subtotal</span>
-                    <span className="font-mono text-neutral-800">₹{receiptView.order.subtotal.toFixed(2)}</span>
-                 </div>
-                 {receiptView.order.discountAmount > 0 && (
-                   <div className="flex justify-between text-red-500">
+	                 <div className="flex justify-between text-neutral-500">
+	                    <span>{receiptView.order.commercialStatus === 'COMPLIMENTARY' ? 'Menu Value' : 'Subtotal'}</span>
+	                    <span className="font-mono text-neutral-800">₹{(receiptView.order.menuValue ?? receiptView.order.subtotal).toFixed(2)}</span>
+	                 </div>
+	                 {receiptView.order.commercialStatus === 'COMPLIMENTARY' ? (
+	                   <div className="flex justify-between text-red-500">
+	                     <span>Complimentary Discount</span>
+	                     <span className="font-mono">-₹{(receiptView.order.complimentaryDiscount ?? receiptView.order.discountAmount).toFixed(2)}</span>
+	                   </div>
+	                 ) : receiptView.order.discountAmount > 0 && (
+	                   <div className="flex justify-between text-red-500">
                       <span>Discount ({receiptView.order.discountPercent.toFixed(2)}%)</span>
                       <span className="font-mono">-₹{receiptView.order.discountAmount.toFixed(2)}</span>
                    </div>
@@ -2600,14 +2998,19 @@ export default function POSHome() {
                     <span>GST</span>
                     <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
                  </div>
-                 <div className="flex justify-between font-black text-lg pt-1">
-                    <span>Total Paid</span>
-                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
-                 </div>
-               </div>
+	                 <div className="flex justify-between font-black text-lg pt-1">
+	                    <span>{receiptView.order.commercialStatus === 'COMPLIMENTARY' ? 'Amount Payable' : 'Total Paid'}</span>
+	                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
+	                 </div>
+	               </div>
 
-               <div className="text-xs font-bold text-neutral-500 mb-6">
-                 {receiptView.order.isSplitPayment ? (
+	               <div className="text-xs font-bold text-neutral-500 mb-6">
+	                 {receiptView.order.commercialStatus === 'COMPLIMENTARY' ? (
+	                   <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-center text-amber-900">
+	                     <p className="font-black">COMPLIMENTARY — NO PAYMENT REQUIRED</p>
+	                     <p>Payment Status: NOT REQUIRED</p>
+	                   </div>
+	                 ) : receiptView.order.isSplitPayment ? (
                    <div className="rounded-lg border border-neutral-100 p-3 space-y-1">
                      <p className="text-center uppercase tracking-widest text-neutral-400 mb-2">Split Payment</p>
                      {receiptView.payments.map((payment, index) => (
@@ -2620,7 +3023,9 @@ export default function POSHome() {
                  ) : (
                    <p className="text-center">Payment Method: {receiptView.order.paymentMethod}</p>
                  )}
-                 <p className="text-center mt-2">{receiptView.order.paymentStatus || 'PAID'}</p>
+	                 {receiptView.order.commercialStatus !== 'COMPLIMENTARY' && (
+	                   <p className="text-center mt-2">{receiptView.order.paymentStatus || 'PAID'}</p>
+	                 )}
                </div>
 
                <div className="text-center font-bold text-neutral-400 pt-4 border-t border-dashed border-neutral-300">

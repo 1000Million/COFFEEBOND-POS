@@ -39,7 +39,7 @@ if (missingFirebaseEnv.length > 0) {
   throw new Error(message);
 }
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: firebaseEnv.VITE_FIREBASE_API_KEY,
   authDomain: firebaseEnv.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: firebaseEnv.VITE_FIREBASE_PROJECT_ID,

@@ -17,6 +17,11 @@ export interface RawIngredient {
 export type BOMComponentType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONENT' | 'FINISHED_GOOD' | 'PACKAGING';
 export type PackagingApplicability = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'ALL';
 
+export interface AddOnGroup {
+  id?: string;
+  name: string;
+}
+
 export interface BOMComponent {
   componentType: BOMComponentType;
   componentStockType?: 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONENT' | 'FINISHED_GOOD' | 'PACKAGING';
