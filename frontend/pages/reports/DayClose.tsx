@@ -6,6 +6,7 @@ import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, Order, PaymentMethod, Store } from '../../types';
 import { summarizeCollections } from '../../lib/paymentReversal';
+import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 
@@ -69,6 +70,7 @@ function orderDiscountTotal(order: Order): number {
 }
 
 function orderPaymentBreakdown(order: Order): ReportPaymentBreakdown[] {
+  if (isComplimentaryOrder(order)) return [];
   const rawBreakdown = (order as Order & { paymentBreakdown?: ReportPaymentBreakdown[] }).paymentBreakdown;
   if (Array.isArray(rawBreakdown) && rawBreakdown.length > 0) {
     const normalized = rawBreakdown
@@ -94,8 +96,9 @@ function emptyPaymentBreakdown(): Record<PaymentMethod, number> {
 }
 
 function buildSummary(orders: Order[]): DayCloseSummary {
-  const completedOrders = orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED');
+  const completedOrders = orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED' && !isComplimentaryOrder(order));
   const voidedOrders = orders.filter(order => effectiveOrderStatus(order) === 'VOIDED');
+  const commercialVoidedOrders = voidedOrders.filter(order => !isComplimentaryOrder(order));
   const paymentBreakdown = emptyPaymentBreakdown();
   const collectionAudit = summarizeCollections(orders);
 
@@ -108,7 +111,7 @@ function buildSummary(orders: Order[]): DayCloseSummary {
   });
 
   const grossSales = completedOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
-  const voidedSales = voidedOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
+  const voidedSales = commercialVoidedOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
 
   return {
     completedBillCount: completedOrders.length,

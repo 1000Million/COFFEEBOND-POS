@@ -36,6 +36,13 @@ export interface Store {
   onlineOrderingEnabled?: boolean;
   estimatedPrepMinutes?: number;
   onlineOrderingMessage?: string;
+  legalName?: string;
+  tradeName?: string;
+  legalAddress?: string;
+  gstin?: string;
+  stateName?: string;
+  stateCode?: string;
+  gstRegistered?: boolean;
   createdAt: any;
   updatedAt: any;
 }
@@ -56,6 +63,18 @@ export type PrepStation = "BARISTA" | "KITCHEN" | "BOTH" | "NONE";
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
 export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER";
+export type PaymentStatus = "PAID" | "UNPAID" | "PARTIAL" | "NOT_REQUIRED";
+export type CommercialStatus = "SALE" | "COMPLIMENTARY";
+
+export interface ReceiptLegalDetails {
+  legalName: string | null;
+  tradeName: string | null;
+  legalAddress: string | null;
+  gstin: string | null;
+  stateName: string | null;
+  stateCode: string | null;
+  gstRegistered: boolean;
+}
 
 export interface CartItem {
   id: string; // generate unique ID for cart row, or use menu item ID if grouping
@@ -97,7 +116,20 @@ export interface Order {
   createdByName: string;
   orderType: OrderType;
   status: "COMPLETED" | "CANCELLED" | "VOIDED";
-  paymentStatus: "PAID" | "UNPAID" | "PARTIAL";
+  paymentStatus: PaymentStatus;
+  commercialStatus?: CommercialStatus;
+  menuValue?: number;
+  complimentaryDiscount?: number;
+  complimentaryReason?: string;
+  complimentaryAuthorizationId?: string;
+  complimentaryOtpVerified?: boolean;
+  complimentaryVerifiedPhone?: string;
+  complimentaryOtpProvider?: string;
+  complimentaryVerifiedAt?: any;
+  complimentaryAuthorisedByUid?: string;
+  complimentaryAuthorisedByName?: string;
+  complimentaryAuthorisedAt?: any;
+  receiptLegalDetails?: ReceiptLegalDetails;
   tableNumber: string | null;
   subtotal: number;
   taxTotal: number;

@@ -17,6 +17,7 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, KotItem, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
 import { summarizeCollections } from '../../lib/paymentReversal';
+import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
 
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 
@@ -387,8 +388,9 @@ export default function AuditControl() {
     return () => { active = false; };
   }, [dateStr, selectedStore, staffProfile]);
 
-  const completedOrders = useMemo(() => orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED'), [orders]);
+  const completedOrders = useMemo(() => orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED' && !isComplimentaryOrder(order)), [orders]);
   const voidedOrders = useMemo(() => orders.filter(order => effectiveOrderStatus(order) === 'VOIDED'), [orders]);
+  const commercialVoidedOrders = useMemo(() => voidedOrders.filter(order => !isComplimentaryOrder(order)), [voidedOrders]);
   const paymentBreakdown = useMemo(() => {
     const breakdown = emptyPaymentBreakdown();
     completedOrders.forEach(order => {
@@ -403,7 +405,7 @@ export default function AuditControl() {
   const collectionAudit = useMemo(() => summarizeCollections(orders), [orders]);
 
   const grossSales = completedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
-  const voidedSales = voidedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
+  const voidedSales = commercialVoidedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
   const netSales = grossSales;
   const gstTotal = completedOrders.reduce((sum, order) => sum + orderTaxTotal(order), 0);
   const taxableSales = completedOrders.reduce((sum, order) => sum + orderTaxableAmount(order), 0);

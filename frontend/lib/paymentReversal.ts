@@ -1,4 +1,5 @@
 import { Order, OrderItem, OrderPayment, PaymentMethod } from '../types';
+import { isComplimentaryOrder } from './complimentaryOrders';
 
 export type PaymentReversalStatus =
   | 'NOT_REQUIRED'
@@ -43,6 +44,7 @@ function money(value: unknown): number {
 }
 
 function normalizePaymentRows(order: Order, payments?: OrderPayment[]): PaymentReversalLine[] {
+  if (isComplimentaryOrder(order)) return [];
   const sourceRows = payments && payments.length > 0
     ? payments
     : Array.isArray(order.paymentBreakdown) && order.paymentBreakdown.length > 0
@@ -66,7 +68,8 @@ function normalizePaymentRows(order: Order, payments?: OrderPayment[]): PaymentR
 
 function tenderReversalStatus(method: string): PaymentReversalStatus {
   if (method === 'CASH') return 'REFUNDED';
-  if (method === 'CREDIT' || method === 'COMPLIMENTARY') return 'REVERSED';
+  if (method === 'CREDIT') return 'REVERSED';
+  if (method === 'COMPLIMENTARY') return 'NOT_REQUIRED';
   if (method === 'UPI' || method === 'CARD' || method === 'SWIGGY' || method === 'ZOMATO') {
     return 'MANUAL_REFUND_REQUIRED';
   }
@@ -90,6 +93,18 @@ function aggregateStatus(lines: PaymentReversalLine[]): PaymentReversalStatus {
 }
 
 export function buildPaymentReversalAudit(order: Order, payments?: OrderPayment[]): PaymentReversalAudit {
+  if (isComplimentaryOrder(order)) {
+    return {
+      paymentReversalStatus: 'NOT_REQUIRED',
+      paymentReversalBreakdown: [],
+      paymentReversalTotal: 0,
+      refundedAmount: 0,
+      reversedAmount: 0,
+      refundPendingAmount: 0,
+      manualRefundRequiredAmount: 0,
+      netCollectionAmount: 0,
+    };
+  }
   const paidRows = normalizePaymentRows(order, payments);
   const lines = paidRows.map((line) => {
     const reversalStatus = tenderReversalStatus(line.method);
@@ -150,6 +165,9 @@ export function orderPaymentReversalAudit(order: Order): PaymentReversalAudit {
 }
 
 export function paymentOutcomeLabel(order: Order, payments?: OrderPayment[]): string {
+  if (isComplimentaryOrder(order)) {
+    return order.status === 'VOIDED' ? 'VOIDED / NO PAYMENT' : 'NOT REQUIRED';
+  }
   if (order.status !== 'VOIDED') return order.paymentStatus || 'UNPAID';
   const audit = payments ? buildPaymentReversalAudit(order, payments) : orderPaymentReversalAudit(order);
   if (audit.paymentReversalStatus === 'NOT_REQUIRED') return 'VOIDED / NO PAYMENT';
@@ -166,6 +184,7 @@ export function orderItemDisplayStatus(order: Order, item?: Pick<OrderItem, 'sta
 
 export function summarizeCollections(orders: Order[]): PaymentCollectionAudit {
   return orders.reduce<PaymentCollectionAudit>((summary, order) => {
+    if (isComplimentaryOrder(order)) return summary;
     const rows = normalizePaymentRows(order);
     const orderPayments = money(rows.reduce((sum, row) => sum + row.amount, 0));
     summary.grossPaymentsReceived += orderPayments;

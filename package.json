@@ -20,6 +20,7 @@
     "dry-run:menu-image-import": "node scripts/dry-run-menu-image-import.mjs",
     "dry-run:menu-setup-unit-repair": "node scripts/dry-run-menu-setup-unit-repair.mjs",
     "dry-run:berry-base-split": "node scripts/dry-run-berry-base-split.mjs",
+    "dry-run:complimentary-order-repair": "node scripts/dry-run-complimentary-order-repair.mjs",
     "test:berry-base-split": "node scripts/test-berry-base-split.mjs",
     "test:addon-group-mapping": "esbuild scripts/test-addon-group-mapping.ts --bundle --platform=node --format=esm --outfile=/tmp/addon-group-mapping-test.mjs && node /tmp/addon-group-mapping-test.mjs",
     "test:packaging-applicability": "esbuild scripts/test-packaging-applicability.ts --bundle --platform=node --format=esm --outfile=/tmp/packaging-applicability-test.mjs && node /tmp/packaging-applicability-test.mjs",
@@ -29,6 +30,7 @@
     "test:purchase-calculations": "esbuild scripts/test-purchase-calculations.ts --bundle --platform=node --format=esm --outfile=/tmp/purchase-calculations-test.mjs && node /tmp/purchase-calculations-test.mjs",
     "test:purchase-invoice-draft": "node scripts/test-purchase-invoice-draft.mjs",
     "test:void-payment-reversal": "esbuild scripts/test-void-payment-reversal.ts --bundle --platform=node --format=esm --outfile=/tmp/void-payment-reversal-test.mjs && node /tmp/void-payment-reversal-test.mjs",
+    "test:complimentary-orders": "esbuild scripts/test-complimentary-orders.ts --bundle --platform=node --format=esm --outfile=/tmp/complimentary-orders-test.mjs && node /tmp/complimentary-orders-test.mjs",
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs"
   },
