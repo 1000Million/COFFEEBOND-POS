@@ -31,6 +31,7 @@ import { db } from '../../lib/firebase';
 import { auth } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
+import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
 import {
   KotItem,
   KotStatus,
@@ -71,7 +72,7 @@ type SettlementRow = {
   amount: string;
 };
 
-const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
+const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT'];
 const FILTER_TABS: { id: RunningTab; label: string }[] = [
   { id: 'ALL', label: 'All' },
   { id: 'DINE_IN', label: 'Dine-in' },
@@ -143,6 +144,7 @@ function effectiveOrderStatus(order: Order): 'COMPLETED' | 'VOIDED' | 'CANCELLED
 }
 
 function inferPaymentStatus(order: Order, payments: OrderPayment[]): Order['paymentStatus'] {
+  if (isComplimentaryOrder(order)) return 'NOT_REQUIRED';
   if (effectiveOrderStatus(order) === 'VOIDED') return order.paymentStatus || 'UNPAID';
   if (order.paymentStatus) return order.paymentStatus;
   if (order.paymentMethod === 'PAY_AT_COUNTER') return 'UNPAID';
@@ -198,6 +200,7 @@ function statusBadge(bundle: OrderBundle): { label: string; className: string } 
   const paymentStatus = inferPaymentStatus(bundle.order, bundle.payments);
   const kot = kotSummary(bundle.kotItems);
   if (orderStatus === 'VOIDED') return { label: 'Voided', className: 'bg-red-100 text-red-700 border-red-200' };
+  if (isComplimentaryOrder(bundle.order)) return { label: 'Complimentary', className: 'bg-purple-100 text-purple-700 border-purple-200' };
   if (paymentStatus === 'PAID' && kot.label === 'Served / Completed') return { label: 'Paid', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
   if (isPayAtCounter(bundle.order, bundle.payments) && paymentStatus !== 'PAID') return { label: 'Pay at Counter', className: 'bg-violet-100 text-violet-700 border-violet-200' };
   if (kot.label === 'Ready') return { label: 'Ready', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
@@ -207,8 +210,12 @@ function statusBadge(bundle: OrderBundle): { label: string; className: string } 
 
 function printReceipt(bundle: OrderBundle) {
   const { order, items, payments } = bundle;
-  const paymentRows = payments.length > 0 ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }];
+  const complimentary = isComplimentaryOrder(order);
+  const paymentRows = complimentary
+    ? []
+    : payments.length > 0 ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }];
   const paymentOutcome = paymentOutcomeLabel(order, payments);
+  const legalDetails = order.receiptLegalDetails;
   const printWin = window.open('', '', 'width=420,height=650');
   printWin?.document.write(`
     <html>
@@ -228,8 +235,10 @@ function printReceipt(bundle: OrderBundle) {
       </head>
       <body>
         <div class="center">
-          <h1>COFFEE BOND</h1>
+          <h1>${legalDetails?.tradeName || legalDetails?.legalName || 'COFFEE BOND'}</h1>
           <p class="bold">${order.storeName || ''}</p>
+          ${legalDetails?.legalAddress ? `<p class="muted">${legalDetails.legalAddress}</p>` : ''}
+          ${legalDetails?.gstRegistered && legalDetails.gstin ? `<p class="muted">GSTIN: ${legalDetails.gstin}</p>` : ''}
           <p class="muted">${order.orderNumber}</p>
           <p class="muted">${toDate(order.createdAt)?.toLocaleString() || new Date().toLocaleString()}</p>
           ${effectiveOrderStatus(order) === 'VOIDED' ? '<div class="voided">VOIDED</div>' : ''}
@@ -244,18 +253,19 @@ function printReceipt(bundle: OrderBundle) {
               <p class="bold">${item.itemName}</p>
               <p class="muted">${money(item.quantity)} x ${formatMoney(item.unitPrice)}${effectiveOrderStatus(order) === 'VOIDED' ? ` • ${orderItemDisplayStatus(order, item)}` : ''}</p>
             </div>
-            <p class="bold">${formatMoney(item.lineTotal)}</p>
+            <p class="bold">${formatMoney(complimentary ? money(item.quantity) * money(item.unitPrice) : item.lineTotal)}</p>
           </div>
         `).join('')}
         <div class="line"></div>
-        <div class="row"><span>Subtotal</span><span>${formatMoney(order.subtotal)}</span></div>
-        <div class="row"><span>Discount (${money(order.discountPercent).toFixed(2)}%)</span><span>-${formatMoney(order.discountAmount ?? order.discountTotal ?? order.discount)}</span></div>
+        <div class="row"><span>${complimentary ? 'Menu Value' : 'Subtotal'}</span><span>${formatMoney(order.menuValue ?? order.subtotal)}</span></div>
+        <div class="row"><span>${complimentary ? 'Complimentary Discount' : `Discount (${money(order.discountPercent).toFixed(2)}%)`}</span><span>-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}</span></div>
         <div class="row"><span>Taxable</span><span>${formatMoney(order.taxableAmount ?? Math.max(0, money(order.subtotal) - money(order.discountTotal)))}</span></div>
         <div class="row"><span>GST</span><span>${formatMoney(order.gstTotal ?? order.taxTotal)}</span></div>
-        <div class="row total"><span>Total</span><span>${formatMoney(order.grandTotal)}</span></div>
+        <div class="row total"><span>${complimentary ? 'Amount Payable' : 'Total'}</span><span>${formatMoney(order.grandTotal)}</span></div>
         <div class="line"></div>
-        ${paymentRows.map(payment => `<div class="row"><span>${payment.method}</span><span>${formatMoney(payment.amount)}</span></div>`).join('')}
-        <p class="center muted" style="margin-top:16px;">${paymentOutcome}</p>
+        ${complimentary
+          ? '<p class="center bold">COMPLIMENTARY — NO PAYMENT REQUIRED</p><p class="center muted" style="margin-top:8px;">Payment Status: NOT REQUIRED</p>'
+          : `${paymentRows.map(payment => `<div class="row"><span>${payment.method}</span><span>${formatMoney(payment.amount)}</span></div>`).join('')}<p class="center muted" style="margin-top:16px;">${paymentOutcome}</p>`}
       </body>
     </html>
   `);
@@ -407,7 +417,7 @@ export default function RunningOrders() {
       if (activeTab === 'PAY_AT_COUNTER' && !isPayAtCounter(order, bundle.payments)) return false;
       if (activeTab === 'PREPARING' && kot.label !== 'Preparing') return false;
       if (activeTab === 'READY' && kot.label !== 'Ready') return false;
-      if (activeTab === 'UNPAID' && paymentStatus === 'PAID') return false;
+      if (activeTab === 'UNPAID' && (paymentStatus === 'PAID' || paymentStatus === 'NOT_REQUIRED')) return false;
       if (activeTab === 'VOIDED' && orderStatus !== 'VOIDED') return false;
       if (activeTab !== 'VOIDED' && orderStatus === 'VOIDED' && !['ALL', 'UNPAID'].includes(activeTab)) return false;
 
@@ -441,7 +451,7 @@ export default function RunningOrders() {
       if (isPayAtCounter(bundle.order, bundle.payments)) counts.PAY_AT_COUNTER += 1;
       if (kot.label === 'Preparing') counts.PREPARING += 1;
       if (kot.label === 'Ready') counts.READY += 1;
-      if (paymentStatus !== 'PAID') counts.UNPAID += 1;
+      if (paymentStatus !== 'PAID' && paymentStatus !== 'NOT_REQUIRED') counts.UNPAID += 1;
       if (orderStatus === 'VOIDED') counts.VOIDED += 1;
     });
     return counts;
@@ -748,8 +758,7 @@ export default function RunningOrders() {
           });
         });
 
-        transaction.update(orderRef, {
-          status: 'VOIDED',
+        const paymentReversalFields = isComplimentaryOrder(freshOrder) ? {} : {
           paymentReversalStatus: paymentReversal.paymentReversalStatus,
           paymentReversalBreakdown: paymentReversal.paymentReversalBreakdown,
           paymentReversalTotal: paymentReversal.paymentReversalTotal,
@@ -758,6 +767,10 @@ export default function RunningOrders() {
           refundPendingAmount: paymentReversal.refundPendingAmount,
           manualRefundRequiredAmount: paymentReversal.manualRefundRequiredAmount,
           netCollectionAmount: paymentReversal.netCollectionAmount,
+        };
+        transaction.update(orderRef, {
+          status: 'VOIDED',
+          ...paymentReversalFields,
           voidReason: voidReason.trim(),
           voidedBy: auth.currentUser!.uid,
           voidedByName: staffProfile.displayName || staffProfile.name,
@@ -914,12 +927,12 @@ export default function RunningOrders() {
                   <Info label="Table" value={order.tableNumber || '-'} />
                   <Info label="Age" value={elapsedLabel(order.createdAt, now)} />
                   <Info label="Items" value={`${orderItemCount(bundle.items)} item${orderItemCount(bundle.items) === 1 ? '' : 's'}`} />
-                  <Info label="Total" value={formatMoney(order.grandTotal)} />
+                  <Info label={isComplimentaryOrder(order) ? 'Menu Value' : 'Total'} value={formatMoney(isComplimentaryOrder(order) ? order.menuValue ?? order.subtotal : order.grandTotal)} />
                 </div>
 
                 <div className="mb-4 flex flex-wrap gap-2">
                   <span className={`rounded-full px-3 py-1 text-xs font-black ${kot.tone}`}>KOT: {kot.label}</span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-black ${voided ? 'bg-red-100 text-red-700' : paymentStatus === 'PAID' ? 'bg-emerald-100 text-emerald-700' : 'bg-violet-100 text-violet-700'}`}>
+                  <span className={`rounded-full px-3 py-1 text-xs font-black ${voided ? 'bg-red-100 text-red-700' : paymentStatus === 'PAID' ? 'bg-emerald-100 text-emerald-700' : paymentStatus === 'NOT_REQUIRED' ? 'bg-purple-100 text-purple-700' : 'bg-violet-100 text-violet-700'}`}>
                     Payment: {paymentOutcome}{payAtCounter && paymentStatus !== 'PAID' && !voided ? ' / PAY AT COUNTER' : ''}
                   </span>
                   <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">Fulfillment: {fulfillmentStatus(bundle)}</span>
@@ -1246,7 +1259,7 @@ function OrderDetailDrawer({
                     <p className="font-black text-neutral-900">{item.itemName}</p>
                     <p className="text-xs font-bold text-neutral-500">{money(item.quantity)} x {formatMoney(item.unitPrice)} • {orderItemDisplayStatus(order, item)}</p>
                   </div>
-                  <p className="font-mono font-black">{formatMoney(item.lineTotal)}</p>
+                  <p className="font-mono font-black">{formatMoney(isComplimentaryOrder(order) ? money(item.quantity) * money(item.unitPrice) : item.lineTotal)}</p>
                 </div>
               ))}
             </div>
@@ -1274,18 +1287,23 @@ function OrderDetailDrawer({
           <section>
             <h3 className="mb-2 text-sm font-black uppercase tracking-widest text-neutral-500">Totals</h3>
             <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm">
-              <Row label="Subtotal" value={formatMoney(order.subtotal)} />
-              <Row label={`Discount (${money(order.discountPercent).toFixed(2)}%)`} value={`-${formatMoney(order.discountAmount ?? order.discountTotal ?? order.discount)}`} />
+              <Row label={isComplimentaryOrder(order) ? 'Menu Value' : 'Subtotal'} value={formatMoney(order.menuValue ?? order.subtotal)} />
+              <Row label={isComplimentaryOrder(order) ? 'Complimentary Discount' : `Discount (${money(order.discountPercent).toFixed(2)}%)`} value={`-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}`} />
               <Row label="Taxable" value={formatMoney(order.taxableAmount ?? Math.max(0, money(order.subtotal) - money(order.discountTotal)))} />
               <Row label="GST" value={formatMoney(order.gstTotal ?? order.taxTotal)} />
-              <Row label="Total" value={formatMoney(order.grandTotal)} bold />
+              <Row label={isComplimentaryOrder(order) ? 'Amount Payable' : 'Total'} value={formatMoney(order.grandTotal)} bold />
             </div>
           </section>
 
           <section>
-            <h3 className="mb-2 text-sm font-black uppercase tracking-widest text-neutral-500">Payment Breakdown</h3>
-            <div className="rounded-2xl border border-neutral-200 p-4 text-sm">
-              {(payments.length ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }]).map((payment, index) => (
+            <h3 className="mb-2 text-sm font-black uppercase tracking-widest text-neutral-500">Payment</h3>
+            <div className={`rounded-2xl border p-4 text-sm ${isComplimentaryOrder(order) ? 'border-purple-200 bg-purple-50 text-purple-900' : 'border-neutral-200'}`}>
+              {isComplimentaryOrder(order) ? (
+                <div className="space-y-1 text-center font-black">
+                  <p>COMPLIMENTARY — NO PAYMENT REQUIRED</p>
+                  <p className="text-xs">Payment Status: NOT REQUIRED</p>
+                </div>
+              ) : (payments.length ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }]).map((payment, index) => (
                 <Row key={`${payment.method}-${index}`} label={payment.method} value={formatMoney(payment.amount)} />
               ))}
             </div>

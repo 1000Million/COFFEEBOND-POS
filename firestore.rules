@@ -108,6 +108,74 @@ service cloud.firestore {
       return status in ['NOT_REQUIRED', 'REFUNDED', 'REVERSED', 'REFUND_PENDING', 'MANUAL_REFUND_REQUIRED'];
     }
 
+    function isValidIndianMobile(phone) {
+      return phone is string && phone.matches('^[6-9][0-9]{9}$');
+    }
+
+    function complimentaryAuthorizationPath(authorizationId) {
+      return /databases/$(database)/documents/complimentaryAuthorizations/$(authorizationId);
+    }
+
+    function hasValidComplimentaryAuthorization(data) {
+      return data.complimentaryAuthorizationId is string
+        && data.complimentaryAuthorizationId.size() > 0
+        && exists(complimentaryAuthorizationPath(data.complimentaryAuthorizationId))
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.status == 'VERIFIED'
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.storeId == data.storeId
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.customerPhone == data.customerPhone
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.authorisedStaffUid == request.auth.uid
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.provider == data.complimentaryOtpProvider
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.verifiedAt == data.complimentaryVerifiedAt
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.expiresAt is timestamp
+        && get(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.expiresAt > request.time;
+    }
+
+    function isValidComplimentaryOrderCreate(data) {
+      return data.commercialStatus == 'COMPLIMENTARY'
+        && data.paymentMethod == 'COMPLIMENTARY'
+        && data.paymentStatus == 'NOT_REQUIRED'
+        && data.subtotal is number
+        && data.subtotal > 0
+        && data.menuValue == data.subtotal
+        && data.discountPercent == 100
+        && data.discountAmount == data.subtotal
+        && data.discountTotal == data.subtotal
+        && data.discount == data.subtotal
+        && data.complimentaryDiscount == data.subtotal
+        && data.taxableAmount == 0
+        && data.taxTotal == 0
+        && data.gstTotal == 0
+        && data.grandTotal == 0
+        && data.customerName is string
+        && data.customerName.size() > 0
+        && isValidIndianMobile(data.customerPhone)
+        && data.complimentaryReason is string
+        && data.complimentaryReason.size() > 0
+        && data.complimentaryOtpVerified == true
+        && data.complimentaryVerifiedPhone == data.customerPhone
+        && data.complimentaryOtpProvider is string
+        && data.complimentaryOtpProvider.size() > 0
+        && data.complimentaryVerifiedAt is timestamp
+        && data.complimentaryAuthorisedByUid == request.auth.uid
+        && data.complimentaryAuthorisedByName is string
+        && data.complimentaryAuthorisedByName.size() > 0
+        && data.complimentaryAuthorisedAt is timestamp
+        && !data.keys().hasAny(['otp', 'otpCode', 'oneTimePassword', 'verificationCode'])
+        && hasValidComplimentaryAuthorization(data);
+    }
+
+    function isValidSaleOrderCreate(data) {
+      return (!data.keys().hasAny(['commercialStatus']) || data.commercialStatus == 'SALE')
+        && data.paymentStatus in ['PAID', 'UNPAID', 'PARTIAL']
+        && isValidPaymentMethod(data.paymentMethod)
+        && data.paymentMethod != 'COMPLIMENTARY';
+    }
+
+    function isStoredComplimentaryOrder(data) {
+      return (data.keys().hasAny(['commercialStatus']) && data.commercialStatus == 'COMPLIMENTARY')
+        || (data.keys().hasAny(['paymentMethod']) && data.paymentMethod == 'COMPLIMENTARY');
+    }
+
     function isValidKotStatus(status) {
       return status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'RETURNED', 'WASTAGE_RECORDED', 'REMAKE_REQUESTED', 'CANCELLED'];
     }
@@ -145,8 +213,7 @@ service cloud.firestore {
         && hasStoreAccess(request.resource.data.storeId)
         && request.resource.data.createdByUserId == request.auth.uid
         && request.resource.data.status == 'COMPLETED'
-        && request.resource.data.paymentStatus in ['PAID', 'UNPAID', 'PARTIAL']
-        && isValidPaymentMethod(request.resource.data.paymentMethod)
+        && (isValidSaleOrderCreate(request.resource.data) || isValidComplimentaryOrderCreate(request.resource.data))
         && hasValidInventoryConsumptionStatus(request.resource.data);
     }
 
@@ -184,23 +251,33 @@ service cloud.firestore {
         && orderIdentityUnchanged()
         && orderTotalsUnchanged()
         && request.resource.data.paymentStatus == resource.data.paymentStatus
-        && isValidPaymentReversalStatus(request.resource.data.paymentReversalStatus)
-        && request.resource.data.paymentReversalBreakdown is list
-        && request.resource.data.paymentReversalTotal is number
-        && request.resource.data.paymentReversalTotal >= 0
-        && request.resource.data.refundedAmount is number
-        && request.resource.data.refundedAmount >= 0
-        && request.resource.data.reversedAmount is number
-        && request.resource.data.reversedAmount >= 0
-        && request.resource.data.refundPendingAmount is number
-        && request.resource.data.refundPendingAmount >= 0
-        && request.resource.data.manualRefundRequiredAmount is number
-        && request.resource.data.manualRefundRequiredAmount >= 0
-        && request.resource.data.netCollectionAmount is number
-        && request.resource.data.netCollectionAmount >= 0
         && request.resource.data.voidedBy == request.auth.uid
         && request.resource.data.voidedAt is timestamp
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        && ((isStoredComplimentaryOrder(resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'voidReason',
+            'voidedBy',
+            'voidedByName',
+            'voidedByEmail',
+            'voidedAt',
+            'updatedAt'
+        ])) || (!isStoredComplimentaryOrder(resource.data)
+          && isValidPaymentReversalStatus(request.resource.data.paymentReversalStatus)
+          && request.resource.data.paymentReversalBreakdown is list
+          && request.resource.data.paymentReversalTotal is number
+          && request.resource.data.paymentReversalTotal >= 0
+          && request.resource.data.refundedAmount is number
+          && request.resource.data.refundedAmount >= 0
+          && request.resource.data.reversedAmount is number
+          && request.resource.data.reversedAmount >= 0
+          && request.resource.data.refundPendingAmount is number
+          && request.resource.data.refundPendingAmount >= 0
+          && request.resource.data.manualRefundRequiredAmount is number
+          && request.resource.data.manualRefundRequiredAmount >= 0
+          && request.resource.data.netCollectionAmount is number
+          && request.resource.data.netCollectionAmount >= 0
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status',
           'paymentReversalStatus',
           'paymentReversalBreakdown',
@@ -216,13 +293,20 @@ service cloud.firestore {
           'voidedByEmail',
           'voidedAt',
           'updatedAt'
-        ]);
+        ])));
     }
 
     function isValidOrderItemCreate(orderId) {
       return isCheckoutStaff()
         && hasStoreAccess(orderAfter(orderId).storeId)
         && request.resource.data.status == 'PENDING'
+        && (!isStoredComplimentaryOrder(orderAfter(orderId))
+          || (request.resource.data.lineSubtotal is number
+            && request.resource.data.lineSubtotal > 0
+            && request.resource.data.lineDiscount == request.resource.data.lineSubtotal
+            && request.resource.data.lineTaxable == 0
+            && request.resource.data.lineTax == 0
+            && request.resource.data.lineTotal == 0))
         && hasValidInventoryConsumptionStatus(request.resource.data);
     }
 
@@ -237,6 +321,8 @@ service cloud.firestore {
       return isCheckoutStaff()
         && hasStoreAccess(orderAfter(orderId).storeId)
         && orderAfter(orderId).status != 'VOIDED'
+        && orderAfter(orderId).paymentStatus != 'NOT_REQUIRED'
+        && !isStoredComplimentaryOrder(orderAfter(orderId))
         && request.resource.data.keys().hasOnly([
           'method',
           'amount',
@@ -530,6 +616,12 @@ service cloud.firestore {
 
     match /purchaseDrafts/{draftId} {
       allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create, update, delete: if false;
+    }
+
+    // A real OTP provider must create these server-side. Client writes remain denied.
+    match /complimentaryAuthorizations/{authorizationId} {
+      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       allow create, update, delete: if false;
     }
 

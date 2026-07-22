@@ -3,8 +3,16 @@ import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp
 import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation } from '../../types';
+import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation, ReceiptLegalDetails } from '../../types';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
+import {
+  buildComplimentaryTotals,
+  COMPLIMENTARY_OTP_BLOCKER,
+  ComplimentaryOtpVerification,
+  receiptLegalDetailsFromStore,
+  retainVerificationForPhone,
+  validateComplimentaryCheckout,
+} from '../../lib/complimentaryOrders';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -72,6 +80,10 @@ type ReceiptOrderSnapshot = {
   paymentMethod: PaymentMethod;
   isSplitPayment: boolean;
   paymentStatus?: string | null;
+  commercialStatus?: Order['commercialStatus'];
+  menuValue?: number;
+  complimentaryDiscount?: number;
+  receiptLegalDetails?: ReceiptLegalDetails;
 };
 
 type ReceiptPaymentSnapshot = {
@@ -129,6 +141,8 @@ const RECENT_ITEMS_STORAGE_KEY = 'coffeeBondPos:recentItems:v1';
 const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
+const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => method !== 'COMPLIMENTARY');
+const COMPLIMENTARY_OTP_PROVIDER_CONFIGURED = false;
 const POS_PRODUCT_FILTERS = [
   { id: 'ALL', label: 'All' },
   { id: 'FOOD', label: 'Food' },
@@ -456,8 +470,9 @@ function buildReceiptSnapshot(
   order: Order,
   items: OrderItem[],
   payments: OrderPayment[],
-  storeName: string,
+  store: Store,
 ): ReceiptSnapshot {
+  const isComplimentary = order.commercialStatus === 'COMPLIMENTARY';
   const discountAmount =
     toFiniteNumber(order.discountAmount) ??
     toFiniteNumber(order.discountTotal) ??
@@ -475,7 +490,7 @@ function buildReceiptSnapshot(
   return {
     order: {
       orderNumber: order.orderNumber,
-      storeName: order.storeName || storeName,
+      storeName: order.storeName || store.name,
       createdAtIso: new Date().toISOString(),
       createdByName: order.createdByName,
       customerName: order.customerName || null,
@@ -491,6 +506,10 @@ function buildReceiptSnapshot(
       paymentMethod: order.paymentMethod || receiptPayments[0]?.method || 'CASH',
       isSplitPayment: order.isSplitPayment === true || receiptPayments.length > 1,
       paymentStatus: order.paymentStatus || null,
+      commercialStatus: order.commercialStatus,
+      menuValue: toFiniteNumber(order.menuValue) ?? toFiniteNumber(order.subtotal) ?? 0,
+      complimentaryDiscount: toFiniteNumber(order.complimentaryDiscount) ?? discountAmount,
+      receiptLegalDetails: order.receiptLegalDetails || receiptLegalDetailsFromStore(store),
     },
     items: items.map(item => {
       const quantity = toFiniteNumber(item.quantity) || 0;
@@ -499,10 +518,12 @@ function buildReceiptSnapshot(
         itemName: item.itemName,
         quantity,
         unitPrice,
-        lineTotal: toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
+        lineTotal: isComplimentary ? quantity * unitPrice : toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
       };
     }),
-    payments: receiptPayments.length > 0
+    payments: isComplimentary
+      ? []
+      : receiptPayments.length > 0
       ? receiptPayments
       : [{ method: order.paymentMethod || 'CASH', amount: toFiniteNumber(order.grandTotal) || 0 }],
   };
@@ -671,6 +692,8 @@ export default function POSHome() {
   const [tableNumberError, setTableNumberError] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [complimentaryReason, setComplimentaryReason] = useState('');
+  const [complimentaryVerification, setComplimentaryVerification] = useState<ComplimentaryOtpVerification | null>(null);
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
@@ -1135,6 +1158,8 @@ export default function POSHome() {
       setSplitPayments([]);
       setCustomerName('');
       setCustomerPhone('');
+      setComplimentaryReason('');
+      setComplimentaryVerification(null);
       setTableNumber('');
       setTableNumberError(null);
       setOrderType('DINE_IN');
@@ -1144,6 +1169,18 @@ export default function POSHome() {
   const cartTotals = useMemo(() => {
     return calculateTotals(cart, discountPercentStr, selectedStoreTaxConfig.rate);
   }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);
+  const isComplimentarySelected = !isSplitPayment && paymentMethod === 'COMPLIMENTARY';
+  const displayedCartTotals = useMemo(() => {
+    return isComplimentarySelected ? buildComplimentaryTotals(cartTotals.subtotal) : cartTotals;
+  }, [cartTotals, isComplimentarySelected]);
+  const complimentaryValidationErrors = useMemo(() => validateComplimentaryCheckout({
+    customerName,
+    customerPhone,
+    reason: complimentaryReason,
+    verification: complimentaryVerification,
+    otpProviderConfigured: COMPLIMENTARY_OTP_PROVIDER_CONFIGURED,
+  }), [complimentaryReason, complimentaryVerification, customerName, customerPhone]);
+  const canSubmitComplimentary = !isComplimentarySelected || complimentaryValidationErrors.length === 0;
 
   const cartHasItemTaxRate = useMemo(() => {
     return cart.some(item => normalizeTaxRate(item.taxRate) > 0);
@@ -1153,8 +1190,8 @@ export default function POSHome() {
   const maxDiscountPercent = getMaxDiscountPercent(staffProfile?.role);
   const discountExceedsLimit = cartTotals.discountPercent > maxDiscountPercent + 0.0001;
   const splitAllocatedAmount = useMemo(() => paymentRowsAllocated(splitPayments), [splitPayments]);
-  const splitBalanceAmount = cartTotals.grandTotal - splitAllocatedAmount;
-  const splitPaymentBalanced = paymentRowsAreBalanced(cartTotals.grandTotal, splitAllocatedAmount);
+  const splitBalanceAmount = displayedCartTotals.grandTotal - splitAllocatedAmount;
+  const splitPaymentBalanced = paymentRowsAreBalanced(displayedCartTotals.grandTotal, splitAllocatedAmount);
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
   const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
@@ -1295,6 +1332,7 @@ export default function POSHome() {
 
   const handleCheckout = async (paymentMethodOverride?: PaymentMethod) => {
     const selectedPaymentMethod = !isSplitPayment && paymentMethodOverride ? paymentMethodOverride : paymentMethod;
+    const isComplimentaryCheckout = !isSplitPayment && selectedPaymentMethod === 'COMPLIMENTARY';
 
     if (!staffProfile || !auth.currentUser) return;
     if (cart.length === 0) return alert("Cart is empty");
@@ -1304,6 +1342,25 @@ export default function POSHome() {
     if (orderType === 'DINE_IN' && !tableNumber.trim()) {
       setTableNumberError('Table number is required for dine in orders.');
       return;
+    }
+
+    if (isComplimentaryCheckout) {
+      const validationErrors = validateComplimentaryCheckout({
+        customerName,
+        customerPhone,
+        reason: complimentaryReason,
+        verification: complimentaryVerification,
+        otpProviderConfigured: COMPLIMENTARY_OTP_PROVIDER_CONFIGURED,
+      });
+      if (validationErrors.length > 0) {
+        setCheckoutError({
+          message: validationErrors.includes(COMPLIMENTARY_OTP_BLOCKER)
+            ? 'Complimentary checkout is disabled until a real OTP provider is configured.'
+            : validationErrors[0],
+          details: validationErrors.join('\n'),
+        });
+        return;
+      }
     }
 
     setTableNumberError(null);
@@ -1339,20 +1396,25 @@ export default function POSHome() {
         discountPercentStr,
         selectedStoreTaxConfig.rate,
       );
-      const trueSubtotal = trueTotals.subtotal;
-      const trueDiscount = trueTotals.discountAmount;
-      const trueDiscountPercent = trueTotals.discountPercent;
-      const trueTaxableAmount = trueTotals.taxableAmount;
-      const trueTaxTotal = trueTotals.taxTotal;
-      const trueGrandTotal = trueTotals.grandTotal;
+      const effectiveTotals = isComplimentaryCheckout
+        ? buildComplimentaryTotals(trueTotals.subtotal)
+        : trueTotals;
+      const trueSubtotal = effectiveTotals.subtotal;
+      const trueDiscount = effectiveTotals.discountAmount;
+      const trueDiscountPercent = effectiveTotals.discountPercent;
+      const trueTaxableAmount = effectiveTotals.taxableAmount;
+      const trueTaxTotal = effectiveTotals.taxTotal;
+      const trueGrandTotal = effectiveTotals.grandTotal;
       const trueDiscountRatio = trueSubtotal > 0 ? trueDiscount / trueSubtotal : 0;
       const userMaxDiscount = getMaxDiscountPercent(staffProfile.role);
 
-      if (trueDiscountPercent > userMaxDiscount + 0.0001) {
+      if (!isComplimentaryCheckout && trueDiscountPercent > userMaxDiscount + 0.0001) {
         throw new Error(`Discount ${trueDiscountPercent.toFixed(2)}% exceeds the ${userMaxDiscount}% limit for your role.`);
       }
 
-      const paymentRows: ReceiptPaymentSnapshot[] = isSplitPayment
+      const paymentRows: ReceiptPaymentSnapshot[] = isComplimentaryCheckout
+        ? []
+        : isSplitPayment
         ? normalizedSplitPayments(trueGrandTotal)
         : [{
           method: selectedPaymentMethod as PaymentMethod,
@@ -1368,13 +1430,6 @@ export default function POSHome() {
         }
         if (!paymentRowsAreBalanced(trueGrandTotal, allocatedPaymentAmount)) {
           throw new Error(`Split payment must equal the total due. Allocated ₹${allocatedPaymentAmount.toFixed(2)} against ₹${trueGrandTotal.toFixed(2)}.`);
-        }
-      }
-
-      if (paymentRows.some(payment => payment.method === 'COMPLIMENTARY' && payment.amount > 0) && trueGrandTotal > 0) {
-        if (!window.confirm(`This order is COMPLIMENTARY but has a total of ₹${trueGrandTotal.toFixed(2)}. Proceed?`)) {
-          setIsSaving(false);
-          return;
         }
       }
 
@@ -1544,7 +1599,9 @@ export default function POSHome() {
           customerId = custRef.id;
         }
 
-        const paymentStatus: Order['paymentStatus'] = isSplitPayment
+        const paymentStatus: Order['paymentStatus'] = isComplimentaryCheckout
+          ? 'NOT_REQUIRED'
+          : isSplitPayment
           ? splitPaymentStatus(paymentRows, trueGrandTotal)
           : (selectedPaymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
 
@@ -1561,6 +1618,20 @@ export default function POSHome() {
           orderType,
           status: 'COMPLETED',
           paymentStatus,
+          commercialStatus: isComplimentaryCheckout ? 'COMPLIMENTARY' : 'SALE',
+          ...(isComplimentaryCheckout && {
+            menuValue: trueSubtotal,
+            complimentaryDiscount: trueSubtotal,
+            complimentaryReason: complimentaryReason.trim(),
+            complimentaryAuthorizationId: complimentaryVerification!.authorizationId,
+            complimentaryOtpVerified: true,
+            complimentaryVerifiedPhone: complimentaryVerification!.verifiedPhone,
+            complimentaryOtpProvider: complimentaryVerification!.provider,
+            complimentaryVerifiedAt: Timestamp.fromDate(new Date(complimentaryVerification!.verifiedAtIso)),
+            complimentaryAuthorisedByUid: auth.currentUser!.uid,
+            complimentaryAuthorisedByName: staffProfile.name,
+            complimentaryAuthorisedAt: serverTimestamp(),
+          }),
           tableNumber: tableNumber.trim() || null,
           subtotal: trueSubtotal,
           taxTotal: trueTaxTotal,
@@ -1576,7 +1647,8 @@ export default function POSHome() {
           inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
           inventoryConsumptionStatus: deductionPlan.pendingConsumptionPayloads.length > 0 ? 'PENDING_BOM' : 'APPLIED',
           stockMovementCount: deductionPlan.movementPayloads.length,
-          paymentMethod: (paymentRows[0]?.method || paymentMethod) as PaymentMethod,
+          paymentMethod: (paymentRows[0]?.method || selectedPaymentMethod) as PaymentMethod,
+          receiptLegalDetails: receiptLegalDetailsFromStore(selectedStore),
           ...(isSplitPayment && {
             isSplitPayment: true,
             paymentMethodLabel: buildPaymentLabel(paymentRows),
@@ -1596,10 +1668,10 @@ export default function POSHome() {
         validatedCart.forEach(({ cartItem: item, liveItem }, index) => {
           const lineRef = orderLineRefs[index];
           const lineSub = liveItem.price * item.quantity;
-          const lineDiscount = lineSub * trueDiscountRatio;
+          const lineDiscount = isComplimentaryCheckout ? lineSub : lineSub * trueDiscountRatio;
           const lineTaxable = Math.max(0, lineSub - lineDiscount);
           const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);
-          const lineTax = lineTaxable * (appliedTaxRate / 100);
+          const lineTax = isComplimentaryCheckout ? 0 : lineTaxable * (appliedTaxRate / 100);
           const linePrepStation = normalizePrepStation(liveItem.prepStation);
 
           const itemData: OrderItem = {
@@ -1668,7 +1740,9 @@ export default function POSHome() {
 
         // Prep payment
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving payment data...`);
-        const paymentsToWrite: ReceiptPaymentSnapshot[] = isSplitPayment
+        const paymentsToWrite: ReceiptPaymentSnapshot[] = isComplimentaryCheckout
+          ? []
+          : isSplitPayment
           ? paymentRows
           : [{
             method: selectedPaymentMethod as PaymentMethod,
@@ -1700,7 +1774,7 @@ export default function POSHome() {
       }
 
       // Show receipt
-      const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore.name);
+      const receipt = buildReceiptSnapshot(savedOrder, savedItems, savedPayments, selectedStore);
       setLastReceipt(receipt);
       writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
       setReceiptViewTitle('Order Saved');
@@ -2252,10 +2326,11 @@ export default function POSHome() {
                   <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#8a6a58]">Customer</p>
                   <button
                     type="button"
-                    onClick={() => {
-                      setCustomerName('Walk-in');
-                      setCustomerPhone('');
-                    }}
+	                    onClick={() => {
+	                      setCustomerName('Walk-in');
+	                      setCustomerPhone('');
+	                      setComplimentaryVerification(null);
+	                    }}
                     className="rounded-full border border-[#eadfd4] bg-white px-3 py-1.5 text-[10px] font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
                   >
                     Walk-in
@@ -2278,7 +2353,11 @@ export default function POSHome() {
                       type="tel"
                       placeholder="Phone"
                       value={customerPhone}
-                      onChange={e => setCustomerPhone(e.target.value)}
+	                      onChange={e => {
+	                        const nextPhone = e.target.value;
+	                        setCustomerPhone(nextPhone);
+	                        setComplimentaryVerification(current => retainVerificationForPhone(current, nextPhone));
+	                      }}
                       className="w-full bg-transparent text-sm font-medium outline-none placeholder-neutral-400"
                     />
                   </div>
@@ -2369,23 +2448,27 @@ export default function POSHome() {
           <div className="mt-2 space-y-0.5 border-t border-[#eadfd4] pt-2">
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Subtotal</span>
-              <span className="font-mono leading-none">₹{cartTotals.subtotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.subtotal.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>Discount (%)</span>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                value={discountPercentStr}
-                onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
-                className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
-                placeholder="0"
-              />
+              <span>{isComplimentarySelected ? 'Complimentary Discount (%)' : 'Discount (%)'}</span>
+              {isComplimentarySelected ? (
+                <span className="font-mono leading-none">100.00</span>
+              ) : (
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={discountPercentStr}
+                  onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
+                  className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
+                  placeholder="0"
+                />
+              )}
             </div>
-            {discountExceedsLimit && (
+            {discountExceedsLimit && !isComplimentarySelected && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold leading-snug text-red-700">
                 Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
               </div>
@@ -2393,27 +2476,27 @@ export default function POSHome() {
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Discount Amount</span>
-              <span className="font-mono leading-none">-₹{cartTotals.discountAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">-₹{displayedCartTotals.discountAmount.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>Taxable Amount</span>
-              <span className="font-mono leading-none">₹{cartTotals.taxableAmount.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.taxableAmount.toFixed(2)}</span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
               <span>GST</span>
-              <span className="font-mono leading-none">₹{cartTotals.taxTotal.toFixed(2)}</span>
+              <span className="font-mono leading-none">₹{displayedCartTotals.taxTotal.toFixed(2)}</span>
             </div>
-            {canViewCheckoutDebug && cartIsMissingGstConfig && (
+            {canViewCheckoutDebug && cartIsMissingGstConfig && !isComplimentarySelected && (
               <p className="rounded-lg border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold leading-snug text-amber-700">
                 GST rate is not configured for this store/menu.
               </p>
             )}
 
             <div className="mt-1.5 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-1.5">
-              <span className="shrink-0 text-[15px] font-black text-neutral-800">Total</span>
-              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{cartTotals.grandTotal.toFixed(2)}</span>
+              <span className="shrink-0 text-[15px] font-black text-neutral-800">{isComplimentarySelected ? 'Amount Payable' : 'Total'}</span>
+              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
             </div>
           </div>
 
@@ -2438,7 +2521,10 @@ export default function POSHome() {
                   {PAYMENT_METHODS.map(method => (
                     <button
                       key={method}
-                      onClick={() => setPaymentMethod(method)}
+                      onClick={() => {
+                        setPaymentMethod(method);
+                        setCheckoutError(null);
+                      }}
                       className={`min-h-[30px] min-w-[58px] rounded-full border px-2.5 py-1 text-[9px] font-black transition-all ${
                         paymentMethod === method
                           ? 'border-[#5c4033] bg-[#5c4033] text-white shadow-sm'
@@ -2451,6 +2537,54 @@ export default function POSHome() {
                     </button>
                   ))}
                 </div>
+                {isComplimentarySelected && (
+                  <div className="mt-2 space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                    <div>
+                      <p className="text-xs font-black text-amber-900">Complimentary authorization</p>
+                      <p className="mt-0.5 text-[10px] font-semibold leading-relaxed text-amber-800">
+                        Customer details, reason, and a real OTP verification are mandatory. No payment will be collected.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <input
+                        type="text"
+                        value={customerName}
+                        onChange={event => setCustomerName(event.target.value)}
+                        placeholder="Customer name"
+                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
+                      />
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        value={customerPhone}
+                        onChange={event => {
+                          const nextPhone = event.target.value.replace(/[^0-9]/g, '').slice(0, 10);
+                          setCustomerPhone(nextPhone);
+                          setComplimentaryVerification(current => retainVerificationForPhone(current, nextPhone));
+                        }}
+                        placeholder="10-digit mobile"
+                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <textarea
+                      value={complimentaryReason}
+                      onChange={event => setComplimentaryReason(event.target.value)}
+                      placeholder="Complimentary reason"
+                      rows={2}
+                      className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
+                    />
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-bold text-red-700">
+                      OTP verification unavailable: {COMPLIMENTARY_OTP_BLOCKER}
+                    </div>
+                    <button
+                      type="button"
+                      disabled
+                      className="w-full cursor-not-allowed rounded-xl bg-neutral-200 px-3 py-2 text-xs font-black text-neutral-500"
+                    >
+                      Verify OTP
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -2463,7 +2597,7 @@ export default function POSHome() {
                         className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-2.5 py-1.5 text-[11px] font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                         aria-label={`Payment method ${index + 1}`}
                       >
-                        {PAYMENT_METHODS.map(method => (
+                        {SPLIT_PAYMENT_METHODS.map(method => (
                           <option key={method} value={method}>{method}</option>
                         ))}
                       </select>
@@ -2502,7 +2636,7 @@ export default function POSHome() {
                 <div className="space-y-0.5 rounded-2xl bg-white px-3 py-2 text-[11px] font-bold text-neutral-600">
                   <div className="flex justify-between">
                     <span>Total Due</span>
-                    <span className="font-mono">₹{cartTotals.grandTotal.toFixed(2)}</span>
+                    <span className="font-mono">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Amount Allocated</span>
@@ -2517,15 +2651,23 @@ export default function POSHome() {
             )}
 
             <button
-              disabled={cart.length === 0 || isSaving}
+              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary}
               className={`mt-0.5 w-full rounded-2xl py-2.5 text-sm font-black transition-all shadow-sm ${
-                cart.length > 0 && !isSaving
+                cart.length > 0 && !isSaving && canSubmitComplimentary
                   ? 'border border-[#2d1c19] bg-[#3e2723] text-[#f9f5f0] hover:bg-[#2d1c19] hover:shadow-md active:scale-[0.99]'
                   : 'cursor-not-allowed border border-neutral-300 bg-neutral-200 text-neutral-400'
               }`}
               onClick={() => void handleCheckout()}
             >
-              {isSaving ? <Loader2 size={20} className="mx-auto animate-spin text-[#5c4033]" /> : (cart.length > 0 ? `Charge ₹${cartTotals.grandTotal.toFixed(2)}` : 'Cart Empty')}
+              {isSaving
+                ? <Loader2 size={20} className="mx-auto animate-spin text-[#5c4033]" />
+                : cart.length === 0
+                  ? 'Cart Empty'
+                  : isComplimentarySelected && !canSubmitComplimentary
+                    ? 'Complimentary checkout unavailable'
+                    : isComplimentarySelected
+                      ? 'Save Complimentary Order'
+                      : `Charge ₹${displayedCartTotals.grandTotal.toFixed(2)}`}
             </button>
           </div>
         </div>
@@ -2540,7 +2682,7 @@ export default function POSHome() {
                 <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
                 <span className="truncate text-sm">View Order</span>
               </span>
-              <span className="min-w-0 truncate text-base sm:text-lg">₹{cartTotals.grandTotal.toFixed(2)}</span>
+	              <span className="min-w-0 truncate text-base sm:text-lg">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
            </button>
         </div>
       )}
@@ -2557,8 +2699,22 @@ export default function POSHome() {
             {/* Printable Receipt Area */}
             <div id="receipt-area" className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar text-neutral-800 text-sm">
                <div className="text-center mb-6 border-b border-dashed border-neutral-300 pb-6">
-                 <h1 className="text-xl font-black uppercase tracking-widest mb-1">Coffee Bond</h1>
-                 <p className="font-bold text-neutral-600">{receiptView.order.storeName}</p>
+	                 <h1 className="text-xl font-black uppercase tracking-widest mb-1">
+	                   {receiptView.order.receiptLegalDetails?.tradeName || receiptView.order.receiptLegalDetails?.legalName || 'Coffee Bond'}
+	                 </h1>
+	                 <p className="font-bold text-neutral-600">{receiptView.order.storeName}</p>
+	                 {receiptView.order.receiptLegalDetails?.legalAddress && (
+	                   <p className="mt-1 text-xs text-neutral-500">{receiptView.order.receiptLegalDetails.legalAddress}</p>
+	                 )}
+	                 {receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin && (
+	                   <p className="mt-1 text-xs font-bold text-neutral-600">GSTIN: {receiptView.order.receiptLegalDetails.gstin}</p>
+	                 )}
+	                 {receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.stateName && (
+	                   <p className="text-xs text-neutral-500">
+	                     {receiptView.order.receiptLegalDetails.stateName}
+	                     {receiptView.order.receiptLegalDetails.stateCode ? ` (${receiptView.order.receiptLegalDetails.stateCode})` : ''}
+	                   </p>
+	                 )}
                  <p className="text-neutral-500 mt-2 text-xs">{new Date(receiptView.order.createdAtIso).toLocaleString()}</p>
                  <p className="text-neutral-500 text-xs">Staff: {receiptView.order.createdByName}</p>
                  {receiptView.order.customerName && <p className="text-neutral-500 text-xs mt-1">Guest: {receiptView.order.customerName} {receiptView.order.customerPhone ? `(${receiptView.order.customerPhone})` : ''}</p>}
@@ -2582,12 +2738,17 @@ export default function POSHome() {
                </div>
 
                <div className="space-y-2 mb-6 text-sm">
-                 <div className="flex justify-between text-neutral-500">
-                    <span>Subtotal</span>
-                    <span className="font-mono text-neutral-800">₹{receiptView.order.subtotal.toFixed(2)}</span>
-                 </div>
-                 {receiptView.order.discountAmount > 0 && (
-                   <div className="flex justify-between text-red-500">
+	                 <div className="flex justify-between text-neutral-500">
+	                    <span>{receiptView.order.commercialStatus === 'COMPLIMENTARY' ? 'Menu Value' : 'Subtotal'}</span>
+	                    <span className="font-mono text-neutral-800">₹{(receiptView.order.menuValue ?? receiptView.order.subtotal).toFixed(2)}</span>
+	                 </div>
+	                 {receiptView.order.commercialStatus === 'COMPLIMENTARY' ? (
+	                   <div className="flex justify-between text-red-500">
+	                     <span>Complimentary Discount</span>
+	                     <span className="font-mono">-₹{(receiptView.order.complimentaryDiscount ?? receiptView.order.discountAmount).toFixed(2)}</span>
+	                   </div>
+	                 ) : receiptView.order.discountAmount > 0 && (
+	                   <div className="flex justify-between text-red-500">
                       <span>Discount ({receiptView.order.discountPercent.toFixed(2)}%)</span>
                       <span className="font-mono">-₹{receiptView.order.discountAmount.toFixed(2)}</span>
                    </div>
@@ -2600,14 +2761,19 @@ export default function POSHome() {
                     <span>GST</span>
                     <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
                  </div>
-                 <div className="flex justify-between font-black text-lg pt-1">
-                    <span>Total Paid</span>
-                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
-                 </div>
-               </div>
+	                 <div className="flex justify-between font-black text-lg pt-1">
+	                    <span>{receiptView.order.commercialStatus === 'COMPLIMENTARY' ? 'Amount Payable' : 'Total Paid'}</span>
+	                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
+	                 </div>
+	               </div>
 
-               <div className="text-xs font-bold text-neutral-500 mb-6">
-                 {receiptView.order.isSplitPayment ? (
+	               <div className="text-xs font-bold text-neutral-500 mb-6">
+	                 {receiptView.order.commercialStatus === 'COMPLIMENTARY' ? (
+	                   <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-center text-amber-900">
+	                     <p className="font-black">COMPLIMENTARY — NO PAYMENT REQUIRED</p>
+	                     <p>Payment Status: NOT REQUIRED</p>
+	                   </div>
+	                 ) : receiptView.order.isSplitPayment ? (
                    <div className="rounded-lg border border-neutral-100 p-3 space-y-1">
                      <p className="text-center uppercase tracking-widest text-neutral-400 mb-2">Split Payment</p>
                      {receiptView.payments.map((payment, index) => (
@@ -2620,7 +2786,9 @@ export default function POSHome() {
                  ) : (
                    <p className="text-center">Payment Method: {receiptView.order.paymentMethod}</p>
                  )}
-                 <p className="text-center mt-2">{receiptView.order.paymentStatus || 'PAID'}</p>
+	                 {receiptView.order.commercialStatus !== 'COMPLIMENTARY' && (
+	                   <p className="text-center mt-2">{receiptView.order.paymentStatus || 'PAID'}</p>
+	                 )}
                </div>
 
                <div className="text-center font-bold text-neutral-400 pt-4 border-t border-dashed border-neutral-300">

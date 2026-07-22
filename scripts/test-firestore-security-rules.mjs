@@ -58,6 +58,9 @@ const isActiveUserProfileBody = extractFunction(rules, 'isActiveUserProfile');
 const hasStoreAccessBody = extractFunction(rules, 'hasStoreAccess');
 const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocument');
 const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
+const complimentaryOrderCreateBody = extractFunction(rules, 'isValidComplimentaryOrderCreate');
+const complimentaryAuthorizationBody = extractFunction(rules, 'hasValidComplimentaryAuthorization');
+const storedComplimentaryOrderBody = extractFunction(rules, 'isStoredComplimentaryOrder');
 const orderSettlementBody = extractFunction(rules, 'isOrderSettlementUpdate');
 const orderVoidBody = extractFunction(rules, 'isOrderVoidUpdate');
 const orderIdentityBody = extractFunction(rules, 'orderIdentityUnchanged');
@@ -83,6 +86,7 @@ const storeStockBlock = extractMatchBlock(rules, 'match /storeStock/{stockId}');
 const storeInventoryBlock = extractMatchBlock(rules, 'match /storeInventory/{stockId}');
 const pendingConsumptionBlock = extractMatchBlock(rules, 'match /pendingInventoryConsumption/{pendingId}');
 const purchaseDraftsBlock = extractMatchBlock(rules, 'match /purchaseDrafts/{draftId}');
+const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
 const clientBootstrapTerms = [
@@ -146,6 +150,15 @@ assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(ordersBlock), 'Only Admin may 
 assert(/createdByUserId\s*==\s*request\.auth\.uid/.test(orderCreateBody), 'Order creation must bind createdByUserId to the caller.');
 assert(/hasStoreAccess\(request\.resource\.data\.storeId\)/.test(orderCreateBody), 'Order creation must require assigned-store access.');
 assert(/request\.resource\.data\.status\s*==\s*'COMPLETED'/.test(orderCreateBody), 'Checkout-created orders must use the completed operational status.');
+assert(/isValidSaleOrderCreate\(request\.resource\.data\) \|\| isValidComplimentaryOrderCreate\(request\.resource\.data\)/.test(orderCreateBody), 'Order creation must separate normal sale and complimentary validation.');
+assert(/data\.paymentStatus\s*==\s*'NOT_REQUIRED'/.test(complimentaryOrderCreateBody), 'Complimentary orders must require NOT_REQUIRED payment status.');
+assert(/data\.taxableAmount\s*==\s*0/.test(complimentaryOrderCreateBody) && /data\.gstTotal\s*==\s*0/.test(complimentaryOrderCreateBody) && /data\.grandTotal\s*==\s*0/.test(complimentaryOrderCreateBody), 'Complimentary orders must have zero taxable, GST, and payable totals.');
+assert(/isValidIndianMobile\(data\.customerPhone\)/.test(complimentaryOrderCreateBody), 'Complimentary orders must require a valid Indian mobile number.');
+assert(/hasValidComplimentaryAuthorization\(data\)/.test(complimentaryOrderCreateBody), 'Complimentary orders must reference a server-side OTP authorization.');
+assert(/status\s*==\s*'VERIFIED'/.test(complimentaryAuthorizationBody) && /expiresAt\s*>\s*request\.time/.test(complimentaryAuthorizationBody), 'Complimentary authorization must be verified and unexpired.');
+assert(/data\.keys\(\)\.hasAny\(\['commercialStatus'\]\)/.test(storedComplimentaryOrderBody), 'Complimentary detection must tolerate legacy orders without commercialStatus.');
+assert(/data\.keys\(\)\.hasAny\(\['paymentMethod'\]\)/.test(storedComplimentaryOrderBody), 'Legacy complimentary detection must guard optional paymentMethod access.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(complimentaryAuthorizationsBlock), 'Clients must not create or modify complimentary OTP authorizations.');
 
 assert(/resource\.data\.paymentStatus in \['UNPAID', 'PARTIAL'\]/.test(orderSettlementBody), 'Settlement must start only from unpaid or partial orders.');
 assert(/request\.resource\.data\.paymentStatus\s*==\s*'PAID'/.test(orderSettlementBody), 'Settlement must only mark an order paid.');
@@ -158,6 +171,7 @@ assert(/request\.resource\.data\.status\s*==\s*'VOIDED'/.test(orderVoidBody), 'V
 assert(/request\.resource\.data\.voidedBy\s*==\s*request\.auth\.uid/.test(orderVoidBody), 'Void helper must bind voidedBy to the caller.');
 assert(/orderIdentityUnchanged\(\)/.test(orderVoidBody) && /orderTotalsUnchanged\(\)/.test(orderVoidBody), 'Void must preserve order identity and totals.');
 assert(/request\.resource\.data\.paymentStatus\s*==\s*resource\.data\.paymentStatus/.test(orderVoidBody), 'Void must preserve the original payment status and use separate reversal audit fields.');
+assert(/isStoredComplimentaryOrder\(resource\.data\)/.test(orderVoidBody), 'New and legacy complimentary voids must use the no-payment-reversal update branch.');
 assert(/isValidPaymentReversalStatus\(request\.resource\.data\.paymentReversalStatus\)/.test(orderVoidBody), 'Void payment reversal status must be restricted to approved values.');
 for (const status of ['NOT_REQUIRED', 'REFUNDED', 'REVERSED', 'REFUND_PENDING', 'MANUAL_REFUND_REQUIRED']) {
   assert(paymentReversalStatusBody.includes(`'${status}'`), `Payment reversal status ${status} must be allowed explicitly.`);
@@ -186,6 +200,8 @@ assert(/allow\s+update:\s*if\s+isPayAtCounterPlaceholderUpdate\(orderId\);/.test
 assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(orderPaymentsBlock), 'Only Admin may delete payment records.');
 assert(/hasStoreAccess\(orderAfter\(orderId\)\.storeId\)/.test(paymentCreateBody), 'Payment creation must use parent order store access.');
 assert(/isValidPaymentMethod\(request\.resource\.data\.method\)/.test(paymentCreateBody), 'Payment creation must validate payment methods.');
+assert(/orderAfter\(orderId\)\.paymentStatus\s*!=\s*'NOT_REQUIRED'/.test(paymentCreateBody), 'Payment rows must be denied for NOT_REQUIRED orders.');
+assert(/!isStoredComplimentaryOrder\(orderAfter\(orderId\)\)/.test(paymentCreateBody), 'Payment rows must be denied for new and legacy complimentary orders without blocking legacy normal orders.');
 assert(/request\.resource\.data\.settledBy\s*==\s*request\.auth\.uid/.test(paymentCreateBody), 'Settlement payment rows must bind settledBy to the caller when present.');
 assert(/resource\.data\.method\s*==\s*'PAY_AT_COUNTER'/.test(paymentUpdateBody), 'Payment updates must only touch PAY_AT_COUNTER placeholders.');
 assert(/affectedKeys\(\)\.hasOnly\(\['amount', 'reference'\]\)/.test(paymentUpdateBody), 'Payment placeholder updates must only affect amount/reference.');
@@ -243,6 +259,9 @@ const cases = [
   'Voided paid orders keep original payment records and add restricted reversal audit fields',
   'Order item updates are status-only for KOT sync',
   'Payment records require parent-order store access and valid methods',
+  'Complimentary checkout requires zero taxable/GST/payable and a server-side verified OTP authorization',
+  'Complimentary authorization documents are server-managed and client writes are denied',
+  'Complimentary orders cannot create payment rows or settlement writes',
   'KOT creates and status updates preserve immutable ticket fields',
   'Stock movements cannot be updated or deleted',
   'Checkout storeStock updates can only reduce currentStock',
