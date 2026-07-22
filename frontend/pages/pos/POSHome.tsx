@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp, getDoc, Timestamp } from 'firebase/firestore';
+import type { ConfirmationResult } from 'firebase/auth';
 import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -7,12 +8,21 @@ import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, 
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
 import {
   buildComplimentaryTotals,
-  COMPLIMENTARY_OTP_BLOCKER,
   ComplimentaryOtpVerification,
+  isComplimentaryVerificationExpired,
+  isValidIndianMobile,
   receiptLegalDetailsFromStore,
   retainVerificationForPhone,
   validateComplimentaryCheckout,
 } from '../../lib/complimentaryOrders';
+import {
+  complimentaryPhoneErrorCode,
+  complimentaryPhoneErrorMessage,
+  complimentaryRecaptchaContainerId,
+  disposeComplimentaryPhoneVerification,
+  sendComplimentaryPhoneOtp,
+  verifyComplimentaryPhoneOtp,
+} from '../../lib/complimentaryPhoneVerification';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -103,6 +113,8 @@ type SplitPaymentRow = {
   amountStr: string;
 };
 
+type ComplimentaryOtpStatus = 'IDLE' | 'SENDING' | 'CODE_SENT' | 'VERIFYING' | 'VERIFIED' | 'EXPIRED' | 'ERROR';
+
 type HeldBill = {
   id: string;
   storeId: string;
@@ -142,7 +154,8 @@ const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
 const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => method !== 'COMPLIMENTARY');
-const COMPLIMENTARY_OTP_PROVIDER_CONFIGURED = false;
+const COMPLIMENTARY_OTP_RESEND_SECONDS = 30;
+const COMPLIMENTARY_RECAPTCHA_CONTAINER_ID = complimentaryRecaptchaContainerId();
 const POS_PRODUCT_FILTERS = [
   { id: 'ALL', label: 'All' },
   { id: 'FOOD', label: 'Food' },
@@ -694,6 +707,12 @@ export default function POSHome() {
   const [customerPhone, setCustomerPhone] = useState('');
   const [complimentaryReason, setComplimentaryReason] = useState('');
   const [complimentaryVerification, setComplimentaryVerification] = useState<ComplimentaryOtpVerification | null>(null);
+  const [complimentaryConfirmationResult, setComplimentaryConfirmationResult] = useState<ConfirmationResult | null>(null);
+  const [complimentaryOtpCode, setComplimentaryOtpCode] = useState('');
+  const [complimentaryOtpStatus, setComplimentaryOtpStatus] = useState<ComplimentaryOtpStatus>('IDLE');
+  const [complimentaryOtpMessage, setComplimentaryOtpMessage] = useState<string | null>(null);
+  const [complimentaryResendSeconds, setComplimentaryResendSeconds] = useState(0);
+  const [complimentaryExpiryClock, setComplimentaryExpiryClock] = useState(0);
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
@@ -727,6 +746,43 @@ export default function POSHome() {
     setHeldBills(loadStoredHeldBills());
     setRecentItemIdsByStore(loadStoredRecentItems());
   }, []);
+
+  useEffect(() => {
+    return () => {
+      void disposeComplimentaryPhoneVerification();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (complimentaryResendSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setComplimentaryResendSeconds(current => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [complimentaryResendSeconds]);
+
+  useEffect(() => {
+    if (!complimentaryVerification) return;
+    const timer = window.setInterval(() => setComplimentaryExpiryClock(current => current + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [complimentaryVerification]);
+
+  useEffect(() => {
+    if (!complimentaryVerification || !isComplimentaryVerificationExpired(complimentaryVerification)) return;
+    setComplimentaryVerification(null);
+    setComplimentaryOtpStatus('EXPIRED');
+    setComplimentaryOtpMessage('Verification expired. Send a new OTP.');
+  }, [complimentaryExpiryClock, complimentaryVerification]);
+
+  useEffect(() => {
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus('IDLE');
+    setComplimentaryOtpMessage(null);
+    setComplimentaryResendSeconds(0);
+    void disposeComplimentaryPhoneVerification();
+  }, [selectedStoreId]);
 
   useEffect(() => {
     if (!loading) {
@@ -1147,6 +1203,98 @@ export default function POSHome() {
     setCart(prev => prev.filter(ci => ci.id !== cartItemId));
   };
 
+  const resetComplimentaryOtp = (status: ComplimentaryOtpStatus = 'IDLE', message: string | null = null) => {
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus(status);
+    setComplimentaryOtpMessage(message);
+    setComplimentaryResendSeconds(0);
+    void disposeComplimentaryPhoneVerification();
+  };
+
+  const handleComplimentaryPhoneChange = (nextPhone: string) => {
+    const normalized = nextPhone.replace(/[^0-9]/g, '').slice(0, 10);
+    if (normalized !== customerPhone.trim()) {
+      setComplimentaryVerification(current => retainVerificationForPhone(current, normalized));
+      setComplimentaryConfirmationResult(null);
+      setComplimentaryOtpCode('');
+      setComplimentaryOtpStatus('IDLE');
+      setComplimentaryOtpMessage(null);
+      setComplimentaryResendSeconds(0);
+      void disposeComplimentaryPhoneVerification();
+    }
+    setCustomerPhone(normalized);
+  };
+
+  const handleSendComplimentaryOtp = async () => {
+    if (!selectedStoreId) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Select a store before sending the OTP.');
+      return;
+    }
+    if (!isValidIndianMobile(customerPhone)) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Enter a valid Indian 10-digit mobile number.');
+      return;
+    }
+    if (complimentaryResendSeconds > 0 || complimentaryOtpStatus === 'SENDING') return;
+
+    setComplimentaryVerification(null);
+    setComplimentaryConfirmationResult(null);
+    setComplimentaryOtpCode('');
+    setComplimentaryOtpStatus('SENDING');
+    setComplimentaryOtpMessage('An SMS verification code is being sent to this number.');
+    try {
+      const confirmationResult = await sendComplimentaryPhoneOtp(customerPhone);
+      setComplimentaryConfirmationResult(confirmationResult);
+      setComplimentaryOtpStatus('CODE_SENT');
+      setComplimentaryOtpMessage('Enter the 6-digit code sent by SMS.');
+      setComplimentaryResendSeconds(COMPLIMENTARY_OTP_RESEND_SECONDS);
+    } catch (error) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage(complimentaryPhoneErrorMessage(error));
+    }
+  };
+
+  const handleVerifyComplimentaryOtp = async () => {
+    if (!complimentaryConfirmationResult) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage('Send an OTP before verifying.');
+      return;
+    }
+    if (!/^[0-9]{6}$/.test(complimentaryOtpCode)) {
+      setComplimentaryOtpStatus('CODE_SENT');
+      setComplimentaryOtpMessage('Enter the complete 6-digit OTP.');
+      return;
+    }
+
+    setComplimentaryOtpStatus('VERIFYING');
+    setComplimentaryOtpMessage('Verifying the customer phone securely...');
+    try {
+      const verification = await verifyComplimentaryPhoneOtp({
+        confirmationResult: complimentaryConfirmationResult,
+        code: complimentaryOtpCode,
+        expectedPhone: customerPhone,
+        storeId: selectedStoreId,
+      });
+      setComplimentaryVerification(verification);
+      setComplimentaryConfirmationResult(null);
+      setComplimentaryOtpCode('');
+      setComplimentaryOtpStatus('VERIFIED');
+      setComplimentaryOtpMessage('Customer phone verified.');
+      setComplimentaryResendSeconds(0);
+    } catch (error) {
+      const message = complimentaryPhoneErrorMessage(error);
+      const code = complimentaryPhoneErrorCode(error);
+      const expired = code === 'auth/code-expired' || message.toLowerCase().includes('expired');
+      const requiresResend = expired || code.startsWith('functions/');
+      setComplimentaryOtpStatus(expired ? 'EXPIRED' : requiresResend ? 'ERROR' : 'CODE_SENT');
+      setComplimentaryOtpMessage(message);
+      if (requiresResend) setComplimentaryConfirmationResult(null);
+    }
+  };
+
   const clearCart = (skipConfirm: boolean = false) => {
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
@@ -1159,7 +1307,7 @@ export default function POSHome() {
       setCustomerName('');
       setCustomerPhone('');
       setComplimentaryReason('');
-      setComplimentaryVerification(null);
+      resetComplimentaryOtp();
       setTableNumber('');
       setTableNumberError(null);
       setOrderType('DINE_IN');
@@ -1178,8 +1326,7 @@ export default function POSHome() {
     customerPhone,
     reason: complimentaryReason,
     verification: complimentaryVerification,
-    otpProviderConfigured: COMPLIMENTARY_OTP_PROVIDER_CONFIGURED,
-  }), [complimentaryReason, complimentaryVerification, customerName, customerPhone]);
+  }), [complimentaryExpiryClock, complimentaryReason, complimentaryVerification, customerName, customerPhone]);
   const canSubmitComplimentary = !isComplimentarySelected || complimentaryValidationErrors.length === 0;
 
   const cartHasItemTaxRate = useMemo(() => {
@@ -1350,13 +1497,10 @@ export default function POSHome() {
         customerPhone,
         reason: complimentaryReason,
         verification: complimentaryVerification,
-        otpProviderConfigured: COMPLIMENTARY_OTP_PROVIDER_CONFIGURED,
       });
       if (validationErrors.length > 0) {
         setCheckoutError({
-          message: validationErrors.includes(COMPLIMENTARY_OTP_BLOCKER)
-            ? 'Complimentary checkout is disabled until a real OTP provider is configured.'
-            : validationErrors[0],
+          message: validationErrors[0],
           details: validationErrors.join('\n'),
         });
         return;
@@ -1434,7 +1578,7 @@ export default function POSHome() {
       }
 
       // Detailed Checkout Logging
-      if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}, Phone: ${customerPhone}`);
+      if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}`);
 
       // Check customer
       let customerId: string | null = null;
@@ -1444,7 +1588,7 @@ export default function POSHome() {
 
       if (phoneToSearch) {
         try {
-          if (import.meta.env.DEV) console.log(`[CHECKOUT] Fetching customer with phone: ${phoneToSearch}`);
+          if (import.meta.env.DEV) console.log('[CHECKOUT] Fetching customer by phone');
           const q = query(collection(db, 'customers'), where('phone', '==', phoneToSearch));
           const custSnap = await getDocs(q);
           if (!custSnap.empty) {
@@ -1467,6 +1611,9 @@ export default function POSHome() {
       const counterRef = doc(db, 'counters', counterId);
       const newOrderRef = doc(collection(db, 'orders'));
       const orderLineRefs = validatedCart.map(() => doc(collection(newOrderRef, 'items')));
+      const complimentaryAuthorizationRef = isComplimentaryCheckout
+        ? doc(db, 'complimentaryAuthorizations', complimentaryVerification!.authorizationId)
+        : null;
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);
 
@@ -1479,6 +1626,30 @@ export default function POSHome() {
         if (custRef) {
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get customer doc`);
           custDoc = await transaction.get(custRef);
+        }
+
+        let complimentaryAuthorizationData: Record<string, any> | null = null;
+        if (complimentaryAuthorizationRef) {
+          if (import.meta.env.DEV) console.log('[CHECKOUT] Transaction: get complimentary authorization');
+          const authorizationSnapshot = await transaction.get(complimentaryAuthorizationRef);
+          if (!authorizationSnapshot.exists()) {
+            throw new Error('Complimentary phone verification was not found. Send a new OTP.');
+          }
+          complimentaryAuthorizationData = authorizationSnapshot.data();
+          const expiresAt = complimentaryAuthorizationData.expiresAt;
+          const expectedPhoneE164 = `+91${customerPhone.trim()}`;
+          if (
+            complimentaryAuthorizationData.status !== 'VERIFIED'
+            || complimentaryAuthorizationData.used !== false
+            || complimentaryAuthorizationData.staffUid !== auth.currentUser!.uid
+            || complimentaryAuthorizationData.storeId !== selectedStore.id
+            || complimentaryAuthorizationData.customerPhoneE164 !== expectedPhoneE164
+            || complimentaryAuthorizationData.provider !== complimentaryVerification!.provider
+            || !(expiresAt instanceof Timestamp)
+            || expiresAt.toMillis() <= Date.now()
+          ) {
+            throw new Error('Complimentary phone verification is expired, used, or does not match this sale. Send a new OTP.');
+          }
         }
 
         let seq = 1;
@@ -1627,7 +1798,6 @@ export default function POSHome() {
             complimentaryOtpVerified: true,
             complimentaryVerifiedPhone: complimentaryVerification!.verifiedPhone,
             complimentaryOtpProvider: complimentaryVerification!.provider,
-            complimentaryVerifiedAt: Timestamp.fromDate(new Date(complimentaryVerification!.verifiedAtIso)),
             complimentaryAuthorisedByUid: auth.currentUser!.uid,
             complimentaryAuthorisedByName: staffProfile.name,
             complimentaryAuthorisedAt: serverTimestamp(),
@@ -1661,6 +1831,15 @@ export default function POSHome() {
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving order data...`);
         traceCheckoutWrite('order save', 'create', newOrderRef.path);
         transaction.set(newOrderRef, orderData);
+        if (complimentaryAuthorizationRef) {
+          traceCheckoutWrite('complimentary authorization consume', 'update', complimentaryAuthorizationRef.path);
+          transaction.update(complimentaryAuthorizationRef, {
+            used: true,
+            usedAt: serverTimestamp(),
+            usedByOrderId: newOrderRef.id,
+            usedByOrderNumber: orderNumber,
+          });
+        }
 
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
@@ -2329,7 +2508,7 @@ export default function POSHome() {
 	                    onClick={() => {
 	                      setCustomerName('Walk-in');
 	                      setCustomerPhone('');
-	                      setComplimentaryVerification(null);
+	                      resetComplimentaryOtp();
 	                    }}
                     className="rounded-full border border-[#eadfd4] bg-white px-3 py-1.5 text-[10px] font-black text-[#5c4033] transition hover:bg-[#fff8ed]"
                   >
@@ -2353,11 +2532,9 @@ export default function POSHome() {
                       type="tel"
                       placeholder="Phone"
                       value={customerPhone}
-	                      onChange={e => {
-	                        const nextPhone = e.target.value;
-	                        setCustomerPhone(nextPhone);
-	                        setComplimentaryVerification(current => retainVerificationForPhone(current, nextPhone));
-	                      }}
+                      onChange={e => isComplimentarySelected
+                        ? handleComplimentaryPhoneChange(e.target.value)
+                        : setCustomerPhone(e.target.value)}
                       className="w-full bg-transparent text-sm font-medium outline-none placeholder-neutral-400"
                     />
                   </div>
@@ -2524,6 +2701,7 @@ export default function POSHome() {
                       onClick={() => {
                         setPaymentMethod(method);
                         setCheckoutError(null);
+                        if (method !== 'COMPLIMENTARY') resetComplimentaryOtp();
                       }}
                       className={`min-h-[30px] min-w-[58px] rounded-full border px-2.5 py-1 text-[9px] font-black transition-all ${
                         paymentMethod === method
@@ -2557,12 +2735,9 @@ export default function POSHome() {
                         type="tel"
                         inputMode="numeric"
                         value={customerPhone}
-                        onChange={event => {
-                          const nextPhone = event.target.value.replace(/[^0-9]/g, '').slice(0, 10);
-                          setCustomerPhone(nextPhone);
-                          setComplimentaryVerification(current => retainVerificationForPhone(current, nextPhone));
-                        }}
+                        onChange={event => handleComplimentaryPhoneChange(event.target.value)}
                         placeholder="10-digit mobile"
+                        disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING'}
                         className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
                       />
                     </div>
@@ -2573,16 +2748,78 @@ export default function POSHome() {
                       rows={2}
                       className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
                     />
-                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-bold text-red-700">
-                      OTP verification unavailable: {COMPLIMENTARY_OTP_BLOCKER}
-                    </div>
-                    <button
-                      type="button"
-                      disabled
-                      className="w-full cursor-not-allowed rounded-xl bg-neutral-200 px-3 py-2 text-xs font-black text-neutral-500"
-                    >
-                      Verify OTP
-                    </button>
+                    <p className="text-[10px] font-semibold leading-relaxed text-amber-800">
+                      An SMS verification code will be sent to this number. Phone numbers supplied to Firebase Phone Authentication are processed by Google for verification and abuse prevention.
+                    </p>
+                    <div id={COMPLIMENTARY_RECAPTCHA_CONTAINER_ID} className="max-w-full overflow-hidden" />
+
+                    {complimentaryOtpStatus === 'VERIFIED' && complimentaryVerification ? (
+                      <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-800">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Verified</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomerPhone('');
+                              resetComplimentaryOtp();
+                            }}
+                            className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-black"
+                          >
+                            Change number
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(complimentaryOtpStatus === 'CODE_SENT' || complimentaryOtpStatus === 'VERIFYING') && (
+                          <div className="grid grid-cols-[1fr_auto] gap-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="one-time-code"
+                              value={complimentaryOtpCode}
+                              onChange={event => setComplimentaryOtpCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                              placeholder="Enter 6-digit OTP"
+                              disabled={complimentaryOtpStatus === 'VERIFYING'}
+                              className="min-h-[40px] min-w-0 rounded-xl border border-amber-200 bg-white px-3 text-sm tracking-[0.2em] outline-none focus:border-amber-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleVerifyComplimentaryOtp()}
+                              disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryOtpCode.length !== 6}
+                              className="min-h-[40px] rounded-xl bg-[#5c4033] px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
+                            >
+                              {complimentaryOtpStatus === 'VERIFYING' ? 'Verifying…' : 'Verify OTP'}
+                            </button>
+                          </div>
+                        )}
+
+                        {complimentaryOtpMessage && (
+                          <div className={`rounded-xl border px-3 py-2 text-[11px] font-bold ${
+                            complimentaryOtpStatus === 'ERROR' || complimentaryOtpStatus === 'EXPIRED'
+                              ? 'border-red-200 bg-red-50 text-red-700'
+                              : 'border-amber-200 bg-amber-100/60 text-amber-800'
+                          }`}>
+                            {complimentaryOtpMessage}
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleSendComplimentaryOtp()}
+                          disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING' || complimentaryResendSeconds > 0}
+                          className="w-full rounded-xl border border-[#5c4033] bg-white px-3 py-2 text-xs font-black text-[#5c4033] disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-100 disabled:text-neutral-400"
+                        >
+                          {complimentaryOtpStatus === 'SENDING'
+                            ? 'Sending…'
+                            : complimentaryResendSeconds > 0
+                              ? `Resend available in ${complimentaryResendSeconds}s`
+                              : complimentaryConfirmationResult
+                                ? 'Resend OTP'
+                                : 'Send OTP'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

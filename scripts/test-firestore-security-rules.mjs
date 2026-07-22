@@ -60,6 +60,7 @@ const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocum
 const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
 const complimentaryOrderCreateBody = extractFunction(rules, 'isValidComplimentaryOrderCreate');
 const complimentaryAuthorizationBody = extractFunction(rules, 'hasValidComplimentaryAuthorization');
+const complimentaryAuthorizationConsumeBody = extractFunction(rules, 'isValidComplimentaryAuthorizationConsume');
 const storedComplimentaryOrderBody = extractFunction(rules, 'isStoredComplimentaryOrder');
 const orderSettlementBody = extractFunction(rules, 'isOrderSettlementUpdate');
 const orderVoidBody = extractFunction(rules, 'isOrderVoidUpdate');
@@ -144,21 +145,32 @@ for (const field of forbiddenPublicTrackingFields) {
   assert(!safePublicTrackingBody.includes(`'${field}'`) && !safePublicTrackingBody.includes(`"${field}"`), `Public tracking documents must not allow ${field}.`);
 }
 
-assert(/allow\s+create:\s*if\s+isValidOrderCreate\(\);/.test(ordersBlock), 'Order creation must use the hardened order create helper.');
+assert(/allow\s+create:\s*if\s+isValidOrderCreate\(orderId\);/.test(ordersBlock), 'Order creation must use the hardened order create helper with the exact order ID.');
 assert(/allow\s+update:\s*if\s+isOrderSettlementUpdate\(\)\s*\|\|\s*isOrderVoidUpdate\(\);/.test(ordersBlock), 'Order updates must be limited to settlement or void helpers.');
 assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(ordersBlock), 'Only Admin may delete orders.');
 assert(/createdByUserId\s*==\s*request\.auth\.uid/.test(orderCreateBody), 'Order creation must bind createdByUserId to the caller.');
 assert(/hasStoreAccess\(request\.resource\.data\.storeId\)/.test(orderCreateBody), 'Order creation must require assigned-store access.');
 assert(/request\.resource\.data\.status\s*==\s*'COMPLETED'/.test(orderCreateBody), 'Checkout-created orders must use the completed operational status.');
-assert(/isValidSaleOrderCreate\(request\.resource\.data\) \|\| isValidComplimentaryOrderCreate\(request\.resource\.data\)/.test(orderCreateBody), 'Order creation must separate normal sale and complimentary validation.');
+assert(/isValidSaleOrderCreate\(request\.resource\.data\) \|\| isValidComplimentaryOrderCreate\(request\.resource\.data, orderId\)/.test(orderCreateBody), 'Order creation must separate normal sale and order-bound complimentary validation.');
 assert(/data\.paymentStatus\s*==\s*'NOT_REQUIRED'/.test(complimentaryOrderCreateBody), 'Complimentary orders must require NOT_REQUIRED payment status.');
 assert(/data\.taxableAmount\s*==\s*0/.test(complimentaryOrderCreateBody) && /data\.gstTotal\s*==\s*0/.test(complimentaryOrderCreateBody) && /data\.grandTotal\s*==\s*0/.test(complimentaryOrderCreateBody), 'Complimentary orders must have zero taxable, GST, and payable totals.');
 assert(/isValidIndianMobile\(data\.customerPhone\)/.test(complimentaryOrderCreateBody), 'Complimentary orders must require a valid Indian mobile number.');
-assert(/hasValidComplimentaryAuthorization\(data\)/.test(complimentaryOrderCreateBody), 'Complimentary orders must reference a server-side OTP authorization.');
+assert(/hasValidComplimentaryAuthorization\(data, orderId\)/.test(complimentaryOrderCreateBody), 'Complimentary orders must reference a server-side OTP authorization bound to the exact order.');
 assert(/status\s*==\s*'VERIFIED'/.test(complimentaryAuthorizationBody) && /expiresAt\s*>\s*request\.time/.test(complimentaryAuthorizationBody), 'Complimentary authorization must be verified and unexpired.');
+assert(/getAfter\(complimentaryAuthorizationPath/.test(complimentaryAuthorizationBody), 'Order creation must validate the authorization after its atomic consume update.');
+assert(/data\.used\s*==\s*true/.test(complimentaryAuthorizationBody) && /data\.usedByOrderId\s*==\s*orderId/.test(complimentaryAuthorizationBody), 'Complimentary authorization must be consumed once by the exact order ID.');
+assert(/data\.staffUid\s*==\s*request\.auth\.uid/.test(complimentaryAuthorizationBody), 'Authorization staff UID must match the checkout staff user.');
+assert(/\.data\.storeId\s*==\s*data\.storeId/.test(complimentaryAuthorizationBody), 'Authorization store must match the complimentary order store.');
+assert(/customerPhoneE164\s*==\s*'\+91' \+ data\.customerPhone/.test(complimentaryAuthorizationBody), 'Authorization phone must match the order customer phone.');
 assert(/data\.keys\(\)\.hasAny\(\['commercialStatus'\]\)/.test(storedComplimentaryOrderBody), 'Complimentary detection must tolerate legacy orders without commercialStatus.');
 assert(/data\.keys\(\)\.hasAny\(\['paymentMethod'\]\)/.test(storedComplimentaryOrderBody), 'Legacy complimentary detection must guard optional paymentMethod access.');
-assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(complimentaryAuthorizationsBlock), 'Clients must not create or modify complimentary OTP authorizations.');
+assert(/allow\s+create,\s*delete:\s*if\s+false;/.test(complimentaryAuthorizationsBlock), 'Clients must not create or delete complimentary OTP authorizations.');
+assert(/allow\s+update:\s*if\s+isValidComplimentaryAuthorizationConsume\(authorizationId\);/.test(complimentaryAuthorizationsBlock), 'Clients may only perform the restricted atomic authorization consume update.');
+assert(/resource\.data\.used\s*==\s*false/.test(complimentaryAuthorizationConsumeBody) && /request\.resource\.data\.used\s*==\s*true/.test(complimentaryAuthorizationConsumeBody), 'Used authorizations cannot be reused.');
+assert(/resource\.data\.staffUid\s*==\s*request\.auth\.uid/.test(complimentaryAuthorizationConsumeBody), 'Authorization consume must reject staff UID mismatch.');
+assert(/hasStoreAccess\(resource\.data\.storeId\)/.test(complimentaryAuthorizationConsumeBody), 'Authorization consume must reject cross-store access.');
+assert(/affectedKeys\(\)\.hasOnly\(\[/.test(complimentaryAuthorizationConsumeBody), 'Authorization consume must preserve all verification fields.');
+assert(/complimentaryAuthorizationId\s*==\s*authorizationId/.test(complimentaryAuthorizationConsumeBody), 'Consumed authorization must link back from the created complimentary order.');
 
 assert(/resource\.data\.paymentStatus in \['UNPAID', 'PARTIAL'\]/.test(orderSettlementBody), 'Settlement must start only from unpaid or partial orders.');
 assert(/request\.resource\.data\.paymentStatus\s*==\s*'PAID'/.test(orderSettlementBody), 'Settlement must only mark an order paid.');
@@ -260,7 +272,7 @@ const cases = [
   'Order item updates are status-only for KOT sync',
   'Payment records require parent-order store access and valid methods',
   'Complimentary checkout requires zero taxable/GST/payable and a server-side verified OTP authorization',
-  'Complimentary authorization documents are server-managed and client writes are denied',
+  'Complimentary authorizations are server-created and only atomically consumed by their exact order',
   'Complimentary orders cannot create payment rows or settlement writes',
   'KOT creates and status updates preserve immutable ticket fields',
   'Stock movements cannot be updated or deleted',

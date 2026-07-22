@@ -1,12 +1,12 @@
 import type { Order, ReceiptLegalDetails, Store } from '../types';
 
-export const COMPLIMENTARY_OTP_BLOCKER = 'BLOCKED_OTP_PROVIDER_NOT_CONFIGURED';
+export const COMPLIMENTARY_PHONE_PROVIDER = 'FIREBASE_PHONE_AUTH';
 
 export type ComplimentaryOtpVerification = {
   authorizationId: string;
   provider: string;
   verifiedPhone: string;
-  verifiedAtIso: string;
+  expiresAtIso: string;
 };
 
 export type ComplimentaryCheckoutInput = {
@@ -14,7 +14,6 @@ export type ComplimentaryCheckoutInput = {
   customerPhone: string;
   reason: string;
   verification: ComplimentaryOtpVerification | null;
-  otpProviderConfigured: boolean;
 };
 
 export type ComplimentaryTotals = {
@@ -41,6 +40,25 @@ export function isValidIndianMobile(value: string): boolean {
   return /^[6-9][0-9]{9}$/.test(value.trim());
 }
 
+export function normalizeIndianPhoneE164(value: string): string | null {
+  const digits = value.replace(/\D/g, '');
+  const nationalNumber = digits.length === 12 && digits.startsWith('91')
+    ? digits.slice(2)
+    : digits.length === 11 && digits.startsWith('0')
+      ? digits.slice(1)
+      : digits;
+  return isValidIndianMobile(nationalNumber) ? `+91${nationalNumber}` : null;
+}
+
+export function isComplimentaryVerificationExpired(
+  verification: ComplimentaryOtpVerification | null,
+  nowMs = Date.now(),
+): boolean {
+  if (!verification) return false;
+  const expiresAtMs = Date.parse(verification.expiresAtIso);
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
+}
+
 export function validateComplimentaryCheckout(input: ComplimentaryCheckoutInput): string[] {
   const errors: string[] = [];
   const name = input.customerName.trim();
@@ -50,16 +68,16 @@ export function validateComplimentaryCheckout(input: ComplimentaryCheckoutInput)
   if (!name) errors.push('Customer name is required for a complimentary order.');
   if (!isValidIndianMobile(phone)) errors.push('Enter a valid Indian 10-digit mobile number.');
   if (!reason) errors.push('Complimentary reason is required.');
-  if (!input.otpProviderConfigured) {
-    errors.push(COMPLIMENTARY_OTP_BLOCKER);
-  } else if (!input.verification) {
+  if (!input.verification) {
     errors.push('Successful OTP verification is required.');
   } else if (input.verification.verifiedPhone !== phone) {
     errors.push('The phone number changed after verification. Verify the new number.');
+  } else if (isComplimentaryVerificationExpired(input.verification)) {
+    errors.push('OTP verification has expired. Send a new code.');
   } else if (!input.verification.authorizationId.trim() || !input.verification.provider.trim()) {
     errors.push('OTP verification authorization is incomplete.');
-  } else if (Number.isNaN(Date.parse(input.verification.verifiedAtIso))) {
-    errors.push('OTP verification timestamp is invalid.');
+  } else if (input.verification.provider !== COMPLIMENTARY_PHONE_PROVIDER) {
+    errors.push('OTP verification provider is invalid.');
   }
 
   return errors;
