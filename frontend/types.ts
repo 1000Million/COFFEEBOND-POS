@@ -377,6 +377,8 @@ export interface MenuItem {
   prepStation: PrepStation;
   isActive: boolean;
   availableStoreIds: string[];
+  addOnGroupIds?: string[];
+  addonGroupIds?: string[];
   createdAt: any;
   updatedAt: any;
 }

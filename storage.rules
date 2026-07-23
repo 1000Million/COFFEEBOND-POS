@@ -42,6 +42,21 @@ service firebase.storage {
         && request.resource.contentType in ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
     }
 
+    function isAllowedMenuImageContent() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType == 'image/webp';
+    }
+
+    match /menu-images/{productCode}/{fileName} {
+      allow read: if true;
+      allow create, update: if isAdmin()
+        && isAllowedMenuImageContent()
+        && fileName.matches('^card-[0-9]{8}T[0-9]{6}\\.webp$');
+      allow delete: if isAdmin();
+    }
+
     match /purchase-invoices/{storeId}/{draftId}/{fileName} {
       allow read: if isActiveStaff() && hasStoreAccess(storeId);
       allow create, update: if (isAdmin() || isStoreManager())

@@ -1328,6 +1328,29 @@ export default function POSHome() {
     verification: complimentaryVerification,
   }), [complimentaryExpiryClock, complimentaryReason, complimentaryVerification, customerName, customerPhone]);
   const canSubmitComplimentary = !isComplimentarySelected || complimentaryValidationErrors.length === 0;
+  const complimentaryUiStatus = complimentaryOtpStatus === 'VERIFIED' && complimentaryVerification
+    ? {
+        label: 'Verified',
+        className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      }
+    : complimentaryOtpStatus === 'EXPIRED'
+      ? {
+          label: 'Expired',
+          className: 'border-red-200 bg-red-50 text-red-700',
+        }
+      : complimentaryOtpStatus === 'SENDING'
+        || complimentaryOtpStatus === 'CODE_SENT'
+        || complimentaryOtpStatus === 'VERIFYING'
+        || (complimentaryOtpStatus === 'ERROR' && complimentaryConfirmationResult)
+        ? {
+            label: 'OTP sent',
+            className: 'border-amber-200 bg-amber-50 text-amber-700',
+          }
+        : {
+            label: 'Verification required',
+            className: 'border-[#eadfd4] bg-[#f8f3ec] text-[#73594b]',
+          };
+  const complimentaryMaskedPhone = customerPhone.replace(/\D/g, '').slice(-4);
 
   const cartHasItemTaxRate = useMemo(() => {
     return cart.some(item => normalizeTaxRate(item.taxRate) > 0);
@@ -2499,7 +2522,7 @@ export default function POSHome() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : !isComplimentarySelected ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#8a6a58]">Customer</p>
@@ -2540,7 +2563,7 @@ export default function POSHome() {
                   </div>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
 
           {checkoutError && (
@@ -2622,17 +2645,15 @@ export default function POSHome() {
             </div>
           )}
 
-          <div className="mt-2 space-y-0.5 border-t border-[#eadfd4] pt-2">
-            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>Subtotal</span>
-              <span className="font-mono leading-none">₹{displayedCartTotals.subtotal.toFixed(2)}</span>
-            </div>
+          {!isComplimentarySelected && (
+            <div className="mt-2 space-y-0.5 border-t border-[#eadfd4] pt-2">
+              <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
+                <span>Subtotal</span>
+                <span className="font-mono leading-none">₹{displayedCartTotals.subtotal.toFixed(2)}</span>
+              </div>
 
-            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>{isComplimentarySelected ? 'Complimentary Discount (%)' : 'Discount (%)'}</span>
-              {isComplimentarySelected ? (
-                <span className="font-mono leading-none">100.00</span>
-              ) : (
+              <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
+                <span>Discount (%)</span>
                 <input
                   type="number"
                   min="0"
@@ -2643,39 +2664,39 @@ export default function POSHome() {
                   className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
                   placeholder="0"
                 />
-              )}
-            </div>
-            {discountExceedsLimit && !isComplimentarySelected && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold leading-snug text-red-700">
-                Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
               </div>
-            )}
+              {discountExceedsLimit && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold leading-snug text-red-700">
+                  Max discount for {staffProfile?.role || 'this role'}: {maxDiscountPercent}% · Current discount {cartTotals.discountPercent.toFixed(2)}% will be blocked
+                </div>
+              )}
 
-            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>Discount Amount</span>
-              <span className="font-mono leading-none">-₹{displayedCartTotals.discountAmount.toFixed(2)}</span>
-            </div>
+              <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
+                <span>Discount Amount</span>
+                <span className="font-mono leading-none">-₹{displayedCartTotals.discountAmount.toFixed(2)}</span>
+              </div>
 
-            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>Taxable Amount</span>
-              <span className="font-mono leading-none">₹{displayedCartTotals.taxableAmount.toFixed(2)}</span>
-            </div>
+              <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
+                <span>Taxable Amount</span>
+                <span className="font-mono leading-none">₹{displayedCartTotals.taxableAmount.toFixed(2)}</span>
+              </div>
 
-            <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
-              <span>GST</span>
-              <span className="font-mono leading-none">₹{displayedCartTotals.taxTotal.toFixed(2)}</span>
-            </div>
-            {canViewCheckoutDebug && cartIsMissingGstConfig && !isComplimentarySelected && (
-              <p className="rounded-lg border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold leading-snug text-amber-700">
-                GST rate is not configured for this store/menu.
-              </p>
-            )}
+              <div className="flex items-center justify-between gap-2 text-[12px] font-medium text-neutral-500">
+                <span>GST</span>
+                <span className="font-mono leading-none">₹{displayedCartTotals.taxTotal.toFixed(2)}</span>
+              </div>
+              {canViewCheckoutDebug && cartIsMissingGstConfig && (
+                <p className="rounded-lg border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold leading-snug text-amber-700">
+                  GST rate is not configured for this store/menu.
+                </p>
+              )}
 
-            <div className="mt-1.5 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-1.5">
-              <span className="shrink-0 text-[15px] font-black text-neutral-800">{isComplimentarySelected ? 'Amount Payable' : 'Total'}</span>
-              <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
+              <div className="mt-1.5 flex items-end justify-between gap-2 border-t border-[#eadfd4] pt-1.5">
+                <span className="shrink-0 text-[15px] font-black text-neutral-800">Total</span>
+                <span className="break-all text-right font-mono text-[27px] font-black leading-none text-[#3e2723]">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mt-2 space-y-2 border-t border-[#eadfd4] pt-2">
             <div className="flex items-center justify-between gap-2">
@@ -2693,8 +2714,9 @@ export default function POSHome() {
             </div>
 
             {!isSplitPayment ? (
-              <div className="overflow-x-auto custom-scrollbar">
-                <div className="flex min-w-max gap-1.5 pb-0.5">
+              <>
+                <div className="overflow-x-auto custom-scrollbar">
+                  <div className="flex min-w-max gap-1.5 pb-0.5">
                   {PAYMENT_METHODS.map(method => (
                     <button
                       key={method}
@@ -2714,65 +2736,83 @@ export default function POSHome() {
                       </span>
                     </button>
                   ))}
+                  </div>
                 </div>
                 {isComplimentarySelected && (
-                  <div className="mt-2 space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-3">
-                    <div>
-                      <p className="text-xs font-black text-amber-900">Complimentary authorization</p>
-                      <p className="mt-0.5 text-[10px] font-semibold leading-relaxed text-amber-800">
-                        Customer details, reason, and a real OTP verification are mandatory. No payment will be collected.
-                      </p>
+                  <section className="mt-3 rounded-2xl border border-[#eadfd4] bg-[#fffdf9] p-3 shadow-sm md:p-4" aria-labelledby="complimentary-order-title">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 id="complimentary-order-title" className="text-sm font-black text-[#2d1c19]">
+                        Complimentary Order
+                      </h3>
+                      <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black ${complimentaryUiStatus.className}`}>
+                        {complimentaryUiStatus.label}
+                      </span>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <input
-                        type="text"
-                        value={customerName}
-                        onChange={event => setCustomerName(event.target.value)}
-                        placeholder="Customer name"
-                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
-                      />
-                      <input
-                        type="tel"
-                        inputMode="numeric"
-                        value={customerPhone}
-                        onChange={event => handleComplimentaryPhoneChange(event.target.value)}
-                        placeholder="10-digit mobile"
-                        disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING'}
-                        className="min-h-[40px] rounded-xl border border-amber-200 bg-white px-3 text-sm outline-none focus:border-amber-500"
-                      />
-                    </div>
-                    <textarea
-                      value={complimentaryReason}
-                      onChange={event => setComplimentaryReason(event.target.value)}
-                      placeholder="Complimentary reason"
-                      rows={2}
-                      className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
-                    />
-                    <p className="text-[10px] font-semibold leading-relaxed text-amber-800">
-                      An SMS verification code will be sent to this number. Phone numbers supplied to Firebase Phone Authentication are processed by Google for verification and abuse prevention.
-                    </p>
-                    <div id={COMPLIMENTARY_RECAPTCHA_CONTAINER_ID} className="max-w-full overflow-hidden" />
 
-                    {complimentaryOtpStatus === 'VERIFIED' && complimentaryVerification ? (
-                      <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-800">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>Verified</span>
+                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <label className="space-y-1.5">
+                        <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Customer name</span>
+                        <input
+                          type="text"
+                          value={customerName}
+                          onChange={event => setCustomerName(event.target.value)}
+                          placeholder="Customer name"
+                          className="h-10 w-full rounded-xl border border-[#eadfd4] bg-white px-3 text-sm outline-none transition focus:border-[#8a6a58] focus:ring-2 focus:ring-[#8a6a58]/10"
+                        />
+                      </label>
+                      <label className="space-y-1.5">
+                        <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Mobile number</span>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          value={customerPhone}
+                          onChange={event => handleComplimentaryPhoneChange(event.target.value)}
+                          placeholder="10-digit mobile"
+                          disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING'}
+                          className="h-10 w-full rounded-xl border border-[#eadfd4] bg-white px-3 text-sm outline-none transition focus:border-[#8a6a58] focus:ring-2 focus:ring-[#8a6a58]/10 disabled:bg-neutral-50"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="mt-3 block space-y-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Complimentary reason</span>
+                      <textarea
+                        value={complimentaryReason}
+                        onChange={event => setComplimentaryReason(event.target.value)}
+                        placeholder="Reason for complimentary order"
+                        rows={2}
+                        className="w-full resize-none rounded-xl border border-[#eadfd4] bg-white px-3 py-2 text-sm outline-none transition focus:border-[#8a6a58] focus:ring-2 focus:ring-[#8a6a58]/10"
+                      />
+                    </label>
+
+                    <div className="mt-3 border-t border-[#eee4da] pt-3">
+                      <div id={COMPLIMENTARY_RECAPTCHA_CONTAINER_ID} className="max-w-full overflow-hidden" />
+
+                      {complimentaryOtpStatus === 'VERIFIED' && complimentaryVerification ? (
+                        <div className="flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-emerald-800 md:flex-row md:items-center md:justify-between">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <CheckCircle size={17} className="shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-xs font-black">Mobile verified</p>
+                              <p className="text-[10px] font-semibold text-emerald-700">
+                                ••••••{complimentaryMaskedPhone}
+                              </p>
+                            </div>
+                          </div>
                           <button
                             type="button"
                             onClick={() => {
                               setCustomerPhone('');
                               resetComplimentaryOtp();
                             }}
-                            className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-black"
+                            className="self-start text-[10px] font-black text-emerald-800 underline decoration-emerald-300 underline-offset-2 md:self-auto"
                           >
                             Change number
                           </button>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {(complimentaryOtpStatus === 'CODE_SENT' || complimentaryOtpStatus === 'VERIFYING') && (
-                          <div className="grid grid-cols-[1fr_auto] gap-2">
+                      ) : complimentaryOtpStatus === 'CODE_SENT' || complimentaryOtpStatus === 'VERIFYING' ? (
+                        <div className="space-y-2.5">
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
                             <input
                               type="text"
                               inputMode="numeric"
@@ -2781,48 +2821,88 @@ export default function POSHome() {
                               onChange={event => setComplimentaryOtpCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
                               placeholder="Enter 6-digit OTP"
                               disabled={complimentaryOtpStatus === 'VERIFYING'}
-                              className="min-h-[40px] min-w-0 rounded-xl border border-amber-200 bg-white px-3 text-sm tracking-[0.2em] outline-none focus:border-amber-500"
+                              aria-label="Six-digit OTP"
+                              className="h-10 min-w-0 rounded-xl border border-amber-200 bg-white px-3 text-sm tracking-[0.2em] outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-500/10"
                             />
                             <button
                               type="button"
                               onClick={() => void handleVerifyComplimentaryOtp()}
                               disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryOtpCode.length !== 6}
-                              className="min-h-[40px] rounded-xl bg-[#5c4033] px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
+                              className="h-10 w-full rounded-xl bg-[#5c4033] px-4 text-xs font-black text-white transition hover:bg-[#3e2723] disabled:cursor-not-allowed disabled:bg-neutral-300 md:w-auto"
                             >
                               {complimentaryOtpStatus === 'VERIFYING' ? 'Verifying…' : 'Verify OTP'}
                             </button>
                           </div>
-                        )}
-
-                        {complimentaryOtpMessage && (
-                          <div className={`rounded-xl border px-3 py-2 text-[11px] font-bold ${
-                            complimentaryOtpStatus === 'ERROR' || complimentaryOtpStatus === 'EXPIRED'
-                              ? 'border-red-200 bg-red-50 text-red-700'
-                              : 'border-amber-200 bg-amber-100/60 text-amber-800'
-                          }`}>
-                            {complimentaryOtpMessage}
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-bold">
+                            <button
+                              type="button"
+                              onClick={() => void handleSendComplimentaryOtp()}
+                              disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryResendSeconds > 0}
+                              className="text-amber-800 underline decoration-amber-300 underline-offset-2 disabled:cursor-not-allowed disabled:text-neutral-400 disabled:no-underline"
+                            >
+                              {complimentaryResendSeconds > 0 ? `Resend in ${complimentaryResendSeconds}s` : 'Resend OTP'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCustomerPhone('');
+                                resetComplimentaryOtp();
+                              }}
+                              disabled={complimentaryOtpStatus === 'VERIFYING'}
+                              className="text-[#5c4033] underline decoration-[#d9c8b8] underline-offset-2 disabled:text-neutral-400"
+                            >
+                              Change number
+                            </button>
                           </div>
-                        )}
-
+                        </div>
+                      ) : (
+                        <div>
                         <button
                           type="button"
                           onClick={() => void handleSendComplimentaryOtp()}
-                          disabled={complimentaryOtpStatus === 'SENDING' || complimentaryOtpStatus === 'VERIFYING' || complimentaryResendSeconds > 0}
-                          className="w-full rounded-xl border border-[#5c4033] bg-white px-3 py-2 text-xs font-black text-[#5c4033] disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-100 disabled:text-neutral-400"
+                          disabled={complimentaryOtpStatus === 'SENDING'}
+                          className="h-10 w-full rounded-xl bg-[#5c4033] px-4 text-xs font-black text-white transition hover:bg-[#3e2723] disabled:cursor-not-allowed disabled:bg-neutral-300 md:w-auto"
                         >
-                          {complimentaryOtpStatus === 'SENDING'
-                            ? 'Sending…'
-                            : complimentaryResendSeconds > 0
-                              ? `Resend available in ${complimentaryResendSeconds}s`
-                              : complimentaryConfirmationResult
-                                ? 'Resend OTP'
-                                : 'Send OTP'}
+                          {complimentaryOtpStatus === 'SENDING' ? 'Sending…' : 'Send OTP'}
                         </button>
+                          <p className="mt-2 text-[10px] font-medium leading-relaxed text-neutral-500">
+                            An SMS verification code will be sent to this number.
+                          </p>
+                        </div>
+                      )}
+
+                      {complimentaryOtpMessage && (complimentaryOtpStatus === 'ERROR' || complimentaryOtpStatus === 'EXPIRED') && (
+                        <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[10px] font-bold text-red-700">
+                          {complimentaryOtpMessage}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-3 space-y-1.5 border-t border-[#eee4da] pt-3 text-[11px] font-medium text-neutral-600">
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Menu Value</span>
+                        <span className="font-mono text-neutral-800">₹{displayedCartTotals.subtotal.toFixed(2)}</span>
                       </div>
-                    )}
-                  </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Complimentary Discount</span>
+                        <span className="font-mono text-neutral-800">-₹{displayedCartTotals.discountAmount.toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Taxable Amount</span>
+                        <span className="font-mono text-neutral-800">₹{displayedCartTotals.taxableAmount.toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>GST</span>
+                        <span className="font-mono text-neutral-800">₹{displayedCartTotals.taxTotal.toFixed(2)}</span>
+                      </div>
+                      <div className="mt-2 flex items-end justify-between gap-3 border-t border-[#e4d6ca] pt-2">
+                        <span className="text-sm font-black text-[#2d1c19]">Amount Payable</span>
+                        <span className="font-mono text-2xl font-black leading-none text-[#3e2723]">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </section>
                 )}
-              </div>
+              </>
             ) : (
               <div className="space-y-2">
                 <div className="space-y-1.5">

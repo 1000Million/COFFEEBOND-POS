@@ -87,8 +87,10 @@ const storeStockBlock = extractMatchBlock(rules, 'match /storeStock/{stockId}');
 const storeInventoryBlock = extractMatchBlock(rules, 'match /storeInventory/{stockId}');
 const pendingConsumptionBlock = extractMatchBlock(rules, 'match /pendingInventoryConsumption/{pendingId}');
 const purchaseDraftsBlock = extractMatchBlock(rules, 'match /purchaseDrafts/{draftId}');
+const productImageAuditBlock = extractMatchBlock(rules, 'match /productImageAudit/{auditId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
+const menuImageStorageBlock = extractMatchBlock(storageRules, 'match /menu-images/{productCode}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
 const clientBootstrapTerms = [
   ['Initialize Root', ' Admin Profile'].join(''),
@@ -245,6 +247,8 @@ assert(!/request\.resource\.data\.status\s*==\s*'APPLIED'/.test(pendingConsumpti
 
 assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*\(isAdmin\(\)\s*\|\|\s*hasStoreAccess\(resource\.data\.storeId\)\);/.test(purchaseDraftsBlock), 'Purchase drafts must be readable only by active staff with store access.');
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(purchaseDraftsBlock), 'Purchase drafts must be server-created only.');
+assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(productImageAuditBlock), 'Product image audit must be admin readable and writable.');
+assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productImageAuditBlock), 'Product image audit must remain append-only.');
 assert(storageRules.includes('match /purchase-invoices/{storeId}/{draftId}/{fileName}'), 'Storage rules must protect purchase invoice uploads.');
 assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*hasStoreAccess\(storeId\);/.test(invoiceStorageBlock), 'Invoice files must be readable only by assigned active staff.');
 assert(/allow\s+create,\s*update:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(invoiceStorageBlock), 'Only Admin or Store Manager may upload invoice files.');
@@ -253,6 +257,15 @@ assert(/isAllowedInvoiceContent\(\)/.test(invoiceStorageBlock), 'Invoice uploads
 assert(/allow\s+delete:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)\s*&&\s*hasStoreAccess\(storeId\);/.test(invoiceStorageBlock), 'Invoice delete must be limited to Admin or assigned Store Manager.');
 assert(/request\.resource\.size\s*<=\s*10\s*\*\s*1024\s*\*\s*1024/.test(storageRules), 'Invoice uploads must be capped at 10 MB.');
 assert(storageRules.includes('application/pdf') && storageRules.includes('image/jpeg') && storageRules.includes('image/jpg') && storageRules.includes('image/png'), 'Invoice uploads must be limited to PDF/JPG/PNG MIME types.');
+assert(/match \/menu-images\/\{productCode\}\/\{fileName\}/.test(storageRules), 'Menu image uploads must have a dedicated storage path.');
+assert(/allow\s+read:\s*if\s+true;/.test(menuImageStorageBlock), 'Menu image files must be publicly readable by the customer ordering app.');
+assert(/allow\s+create,\s*update:\s*if\s+isAdmin\(\)/.test(menuImageStorageBlock), 'Only active Admin may create or replace menu images.');
+assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(menuImageStorageBlock), 'Only active Admin may delete menu images.');
+assert(/isAllowedMenuImageContent\(\)/.test(menuImageStorageBlock), 'Menu image uploads must validate image file content.');
+assert(/request\.resource\.contentType\s*==\s*'image\/webp'/.test(storageRules), 'Menu image writes must use WebP content type.');
+assert(/fileName\.matches\('\^card-\[0-9\]\{8\}T\[0-9\]\{6\}\\\\\.webp\$'\)/.test(menuImageStorageBlock), 'Menu image filenames must follow the card timestamp pattern.');
+assert(!/STORE_MANAGER|CASHIER/.test(menuImageStorageBlock), 'Store Manager and Cashier must not write menu images.');
+assert(!storageRules.includes(['finished', 'good', 'images'].join('-')), 'Duplicate finished-good image path must be removed.');
 assert(/match \/\{allPaths=\*\*\}/.test(storageRules) && /allow\s+read,\s*write:\s*if\s+false;/.test(storageRules), 'Storage rules must deny all other paths by default.');
 
 const cases = [

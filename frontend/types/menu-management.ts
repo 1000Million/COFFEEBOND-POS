@@ -66,6 +66,14 @@ export interface FinishedGood {
   name: string;
   displayName?: string;
   description?: string;
+  imageUrl?: string;
+  imageStoragePath?: string | null;
+  imageSource?: 'ADMIN_UPLOAD' | null;
+  imageUpdatedAt?: any;
+  imageUpdatedBy?: string | null;
+  previousImageUrl?: string | null;
+  previousImageStoragePath?: string | null;
+  addOnGroupIds?: string[];
   posCategoryCode: string;
   posCategoryName: string;
   salePrice: number;
@@ -85,6 +93,35 @@ export interface FinishedGood {
   isActive: boolean;
   createdAt?: any;
   updatedAt?: any;
+}
+
+export interface AddOnGroup {
+  id?: string;
+  name: string;
+  code: string;
+  description?: string;
+  isActive: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+  productIds?: string[];
+  productCodes?: string[];
+}
+
+export type ProductImageAction = 'UPLOAD' | 'REPLACE' | 'REMOVE';
+
+export interface ProductImageAudit {
+  id?: string;
+  action: ProductImageAction;
+  productCode: string;
+  productName: string;
+  productDocumentPath: string;
+  previousImageUrl: string | null;
+  newImageUrl: string | null;
+  previousStoragePath: string | null;
+  newStoragePath: string | null;
+  performedByUid: string;
+  performedByEmail: string | null;
+  timestamp: any;
 }
 
 export type StockItemType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONENT' | 'FINISHED_GOOD' | 'PACKAGING';

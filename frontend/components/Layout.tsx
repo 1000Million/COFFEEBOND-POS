@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Menu, X, ShoppingBag, ListChecks, Wrench, PackagePlus, ShieldCheck } from 'lucide-react';
+import { Coffee, LogOut, LayoutDashboard, Calculator, FileText, ChefHat, Menu, X, ShoppingBag, ListChecks, Wrench, PackagePlus, ShieldCheck, ImageUp } from 'lucide-react';
 
 export default function Layout() {
   const { staffProfile, logout } = useAuth();
@@ -27,6 +27,9 @@ export default function Layout() {
   }
 
   if (role === 'ADMIN' || role === 'STORE_MANAGER') {
+    if (role === 'ADMIN') {
+      navLinks.push({ to: '/admin/product-images', label: 'Images', title: 'Product Images', icon: ImageUp });
+    }
     navLinks.push({ to: '/inventory/control', label: 'Inventory', title: 'Inventory Control', icon: LayoutDashboard });
     navLinks.push({ to: '/inventory/stock-correction', label: 'Stock', title: 'Stock Correction', icon: Wrench });
     navLinks.push({ to: '/inventory/purchase-entry', label: 'Purchases', title: 'Purchase Entry', icon: PackagePlus });
