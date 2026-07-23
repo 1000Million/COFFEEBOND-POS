@@ -55,6 +55,8 @@ const extractMatchBlock = (source, matchLine) => {
 const isAdminBody = extractFunction(rules, 'isAdmin');
 const hasRoleBody = extractFunction(rules, 'hasRole');
 const isActiveUserProfileBody = extractFunction(rules, 'isActiveUserProfile');
+const isActiveStaffBody = extractFunction(rules, 'isActiveStaff');
+const isFranchiseProfileBody = extractFunction(rules, 'isFranchiseProfile');
 const hasStoreAccessBody = extractFunction(rules, 'hasStoreAccess');
 const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocument');
 const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
@@ -78,6 +80,7 @@ const kotUpdateBody = extractFunction(rules, 'isValidKotUpdate');
 const storeStockDeductionBody = extractFunction(rules, 'isCheckoutStoreStockDeduction');
 const storeInventoryDeductionBody = extractFunction(rules, 'isCheckoutStoreInventoryDeduction');
 const usersBlock = extractMatchBlock(rules, 'match /users/{userId}');
+const franchiseAccessAuditBlock = extractMatchBlock(rules, 'match /franchiseAccessAudit/{auditId}');
 const onlineOrdersBlock = extractMatchBlock(rules, 'match /onlineOrders/{onlineOrderId}');
 const publicTrackingBlock = extractMatchBlock(rules, 'match /publicOrderTracking/{trackingToken}');
 const ordersBlock = extractMatchBlock(rules, 'match /orders/{orderId}');
@@ -110,9 +113,15 @@ assert(/isActiveUserProfile\(\)/.test(hasRoleBody), 'Role checks must require an
 assert(/userData\(\)\.role\s*==\s*role/.test(hasRoleBody), 'Role checks must compare users/{uid}.role to the expected role.');
 assert(/userData\(\)\.isActive\s*==\s*true/.test(isActiveUserProfileBody), 'Active profile checks must require users/{uid}.isActive == true.');
 
-assert(/allow\s+read:\s*if\s+isSignedIn\(\)\s*&&\s*request\.auth\.uid\s*==\s*userId;/.test(usersBlock), 'Users may read their own profile.');
-assert(/allow\s+read,\s*write:\s*if\s+isAdmin\(\);/.test(usersBlock), 'Only active ADMIN users may manage staff profiles.');
+assert(/request\.auth\.uid\s*==\s*userId/.test(usersBlock), 'Users may read their own profile.');
+assert(/allow\s+read:\s*if[\s\S]*\|\|\s*isAdmin\(\);/.test(usersBlock), 'Active ADMIN users may read staff profiles.');
+assert(/allow\s+create:\s*if\s+isAdmin\(\)\s*&&\s*!isFranchiseProfile\(request\.resource\.data\);/.test(usersBlock), 'Direct client creation of franchise profiles must be denied.');
+assert(/allow\s+update:\s*if\s+isAdmin\(\)/.test(usersBlock) && /!isFranchiseProfile\(resource\.data\)/.test(usersBlock), 'Direct client updates to franchise profiles must be denied.');
 assert(!/allow write:\s*if\s*isSignedIn\(\) && request\.auth\.uid == userId/.test(usersBlock), 'Users must not be able to update their own staff profile.');
+assert(!isActiveStaffBody.includes('FRANCHISE_VIEWER'), 'FRANCHISE_VIEWER must not inherit operational active-staff access.');
+assert(/data\.role\s*==\s*'FRANCHISE_VIEWER'/.test(isFranchiseProfileBody), 'Franchise profiles must be identified explicitly.');
+assert(/allow\s+read:\s*if\s+isAdmin\(\);/.test(franchiseAccessAuditBlock), 'Only Admin may read franchise access audit records.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(franchiseAccessAuditBlock), 'Franchise audit records must be server-written and client-immutable.');
 
 assert(/isAdmin\(\)/.test(hasStoreAccessBody), 'Admins should retain all-store access.');
 assert(/isActiveUserProfile\(\)/.test(hasStoreAccessBody), 'Non-admin store access must require an active profile.');
@@ -306,6 +315,8 @@ const cases = [
   'CASHIER denied from admin writes: users/{uid} write is guarded by isAdmin()',
   'user cannot promote themselves: self-profile rule is read-only',
   'cross-store access denied: non-admin store access requires storeId in users/{uid}.storeIds',
+  'FRANCHISE_VIEWER is excluded from operational active-staff permissions',
+  'franchise profiles are managed through Admin SDK callables, not direct client writes',
   'unauthenticated direct onlineOrders creation denied: create requires isCheckoutStaff()',
   'authenticated CASHIER cannot create another-store online order: create requires hasStoreAccess(storeId)',
   'customer tracking reads are exact-token only: get allowed, list denied',

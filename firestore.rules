@@ -44,7 +44,12 @@ service cloud.firestore {
     }
     
     function isActiveStaff() {
-      return isActiveUserProfile();
+      return isActiveUserProfile()
+        && userData().role in ['ADMIN', 'STORE_MANAGER', 'CASHIER', 'BARISTA', 'KITCHEN', 'TRAINEE'];
+    }
+
+    function isFranchiseProfile(data) {
+      return data.keys().hasAny(['role']) && data.role == 'FRANCHISE_VIEWER';
     }
 
     function isCheckoutStaff() {
@@ -600,8 +605,18 @@ service cloud.firestore {
 
     // Users Collection
     match /users/{userId} {
-      allow read: if isSignedIn() && request.auth.uid == userId;
-      allow read, write: if isAdmin();
+      allow read: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+      allow create: if isAdmin() && !isFranchiseProfile(request.resource.data);
+      allow update: if isAdmin()
+        && !isFranchiseProfile(resource.data)
+        && !isFranchiseProfile(request.resource.data);
+      allow delete: if isAdmin() && !isFranchiseProfile(resource.data);
+    }
+
+    // Admin SDK callables create and manage these append-only audit records.
+    match /franchiseAccessAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
     }
 
     // App Settings

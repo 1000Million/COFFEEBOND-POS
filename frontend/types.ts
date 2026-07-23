@@ -1,4 +1,4 @@
-export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE";
+export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE" | "FRANCHISE_VIEWER";
 
 export type AuthStatus = 
   | "checking-auth"
@@ -18,6 +18,14 @@ export interface StaffProfile {
   isActive: boolean;
   storeIds: string[];
   assignedStoreIds: string[];
+  username?: string;
+  usernameNormalized?: string;
+  userCategory?: string;
+  permissions?: {
+    viewDailySales?: boolean;
+    exportSales?: boolean;
+  };
+  mustChangePassword?: boolean;
   createdAt: any; // Firestore Timestamp
   updatedAt: any; // Firestore Timestamp
 }

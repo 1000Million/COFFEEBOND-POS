@@ -36,6 +36,7 @@
     "test:void-payment-reversal": "esbuild scripts/test-void-payment-reversal.ts --bundle --platform=node --format=esm --outfile=/tmp/void-payment-reversal-test.mjs && node /tmp/void-payment-reversal-test.mjs",
     "test:complimentary-orders": "esbuild scripts/test-complimentary-orders.ts --bundle --platform=node --format=esm --outfile=/tmp/complimentary-orders-test.mjs && node /tmp/complimentary-orders-test.mjs",
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs",
+    "test:franchise-viewer": "esbuild scripts/test-franchise-viewer.ts --bundle --platform=node --format=esm --outfile=/tmp/franchise-viewer-test.mjs && node /tmp/franchise-viewer-test.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs"
   },
   "dependencies": {
