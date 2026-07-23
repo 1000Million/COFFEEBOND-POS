@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle2, Edit3, Shield, Store as StoreIcon, UserPlus,
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Role, StaffProfile, Store } from '../../types';
+import FranchiseAccessPanel from '../../components/admin/FranchiseAccessPanel';
 
 type StaffRecord = StaffProfile & { id: string };
 
@@ -35,6 +36,7 @@ const ROLE_LABELS: Record<Role, string> = {
   BARISTA: 'KOT User / Barista',
   KITCHEN: 'KOT User / Kitchen',
   TRAINEE: 'Trainee / No live access',
+  FRANCHISE_VIEWER: 'Franchise Viewer',
 };
 
 const ROLE_CATEGORY_LABELS: Record<Role, string> = {
@@ -44,6 +46,7 @@ const ROLE_CATEGORY_LABELS: Record<Role, string> = {
   BARISTA: 'KOT only',
   KITCHEN: 'KOT only',
   TRAINEE: 'Setup only',
+  FRANCHISE_VIEWER: 'Read-only franchise reporting',
 };
 
 const ROLE_MODULES: Record<Role, string> = {
@@ -53,6 +56,7 @@ const ROLE_MODULES: Record<Role, string> = {
   BARISTA: 'Assigned stores: Barista, Kitchen, and Ready KOT only.',
   KITCHEN: 'Assigned stores: Barista, Kitchen, and Ready KOT only.',
   TRAINEE: 'No live operational workspace until promoted.',
+  FRANCHISE_VIEWER: 'Assigned stores: read-only daily sales through the franchise workspace.',
 };
 
 const roleLabel = (role: Role) => ROLE_LABELS[role] || role.replace('_', ' ');
@@ -86,7 +90,9 @@ export default function StaffManagement() {
     const unsubscribeStaff = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
-        const nextStaff = snapshot.docs.map((staffDoc) => {
+        const nextStaff = snapshot.docs
+          .filter((staffDoc) => staffDoc.data().role !== 'FRANCHISE_VIEWER')
+          .map((staffDoc) => {
           const data = staffDoc.data();
           const assignedStoreIds = normalizeStoreIds(data.assignedStoreIds || data.storeIds);
           const displayName = typeof data.displayName === 'string' ? data.displayName : data.name || '';
@@ -280,7 +286,7 @@ export default function StaffManagement() {
             <h2 className="text-3xl font-black text-[#5c4033]">Staff Management</h2>
           </div>
           <p className="text-sm text-neutral-600">
-            Map existing Firebase Auth users to Coffee Bond staff profiles. This screen does not create Firebase Auth accounts.
+            Manage operational staff profiles and secure read-only franchise reporting access.
           </p>
         </div>
         <button
@@ -300,6 +306,8 @@ export default function StaffManagement() {
           <p className="text-sm font-medium">{error || success}</p>
         </div>
       )}
+
+      <FranchiseAccessPanel stores={stores} />
 
       <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6">
         <form onSubmit={handleSave} className="bg-white border border-neutral-200 rounded-3xl p-5 md:p-6 shadow-sm h-fit">
