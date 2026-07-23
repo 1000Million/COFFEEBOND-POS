@@ -10,6 +10,19 @@ const MAX_PARENT_QUANTITY = 20;
 const MAX_ADD_ON_QUANTITY = 20;
 const MAX_ADD_ON_SELECTIONS = 40;
 const RETAIL_COFFEE_CODE = 'HOUSE_BLEND_BEANS_250G';
+const LEGACY_EXCLUDED_PRODUCT_CODES = new Set(['ALMONDS']);
+const DEFERRED_PRODUCT_CODES = new Set([
+  'MUSHROOM_MELT',
+  'BUTTER_COOKIE',
+  'COOKIEE',
+  'AMERICANO',
+  'PANEER_SANDWICH',
+  'BUTTER_CROISSANT',
+  'V_C_BURST',
+  'ORANGE_ESPRESSO_TONIC',
+  'DOUBLE_CHOCOLATE_COOKIE',
+  'ALMOND_CROISSANT',
+]);
 const BEVERAGE_GROUP_ID = 'beverage_add_on';
 const EXCLUDED_BEVERAGE_CATEGORIES = new Set([
   'ESPRESSO BAR',
@@ -102,6 +115,13 @@ function isRetailCoffee(product) {
   return code === RETAIL_COFFEE_CODE;
 }
 
+function isHardExcludedProduct(product) {
+  const code = cleanText(product.code, 80).toUpperCase();
+  return isRetailCoffee(product)
+    || LEGACY_EXCLUDED_PRODUCT_CODES.has(code)
+    || DEFERRED_PRODUCT_CODES.has(code);
+}
+
 function isExcludedBeverageCategory(product) {
   const category = normalizeCategory(
     product.posCategoryName
@@ -114,7 +134,7 @@ function isExcludedBeverageCategory(product) {
 }
 
 function isExcludedProduct(product) {
-  return isRetailCoffee(product) || isExcludedBeverageCategory(product);
+  return isHardExcludedProduct(product) || isExcludedBeverageCategory(product);
 }
 
 function sanitizeSelections(value) {
@@ -232,18 +252,18 @@ function canonicalizeRequestedCart({
 
     const configuredGroupIds = uniqueStrings(product.addOnGroupIds);
     const selectedGroupIds = new Set(requestedItem.selectedAddOns.map(selection => selection.groupId));
-    if (requestedItem.selectedAddOns.length > 0 && isRetailCoffee(product)) {
+    if (requestedItem.selectedAddOns.length > 0 && isHardExcludedProduct(product)) {
       fail('failed-precondition', 'Add-ons are not available for this product.');
     }
     for (const selectedGroupId of selectedGroupIds) {
       if (!configuredGroupIds.includes(selectedGroupId)) {
+        if (
+          selectedGroupId === BEVERAGE_GROUP_ID
+          && isExcludedBeverageCategory(product)
+        ) {
+          fail('failed-precondition', 'Beverage add-ons are not available for this product category.');
+        }
         fail('failed-precondition', 'One or more selected add-on groups do not belong to this product.');
-      }
-      if (
-        selectedGroupId === BEVERAGE_GROUP_ID
-        && isExcludedBeverageCategory(product)
-      ) {
-        fail('failed-precondition', 'Beverage add-ons are not available for this product category.');
       }
     }
 
@@ -254,9 +274,8 @@ function canonicalizeRequestedCart({
     }
 
     const canonicalAddOns = [];
-    if (!isRetailCoffee(product)) {
+    if (!isHardExcludedProduct(product)) {
       for (const groupId of configuredGroupIds) {
-        if (groupId === BEVERAGE_GROUP_ID && isExcludedBeverageCategory(product)) continue;
         const group = groupsById[groupId];
         const requestedForGroup = selectionsByGroup.get(groupId) || [];
         if (!group || group.isActive !== true) {
@@ -418,6 +437,7 @@ module.exports = {
   createPosAddOnAuthorizationFunction,
   isExcludedBeverageCategory,
   isExcludedProduct,
+  isHardExcludedProduct,
   isRetailCoffee,
   normalizeCategory,
   sanitizeCartItems,

@@ -80,6 +80,23 @@ const baseGroup = {
     },
   ],
 };
+const foodGroup = {
+  id: 'food_add_on',
+  name: 'Food Add On',
+  isActive: true,
+  minimumSelections: 0,
+  maximumSelections: null,
+  options: [
+    {
+      id: 'HONEY',
+      code: 'HONEY',
+      name: 'Honey',
+      price: 50,
+      taxRate: 5,
+      isActive: true,
+    },
+  ],
+};
 
 function requestedItem(overrides = {}) {
   return {
@@ -146,18 +163,121 @@ expectFailure(
   () => canonicalize({ item: requestedItem({ selectedAddOns: [{ groupId: 'food_add_on', optionId: 'HONEY', quantity: 1 }] }) }),
   'do not belong',
 );
+
+const cappuccino = canonicalize({
+  product: {
+    ...baseProduct,
+    id: 'CAPPUCCINO',
+    code: 'CAPPUCCINO',
+    name: 'Cappuccino',
+    posCategoryName: 'Espresso Bar',
+  },
+  item: requestedItem({
+    parentProductId: 'CAPPUCCINO',
+    parentProductCode: 'CAPPUCCINO',
+  }),
+});
+assert.equal(cappuccino.canonicalItems['line-1'].addOns[0].optionId, 'OAT_MILK');
+
+const anotherMappedBeverage = canonicalize({
+  product: { ...baseProduct, posCategoryName: 'Hot Coffee' },
+});
+assert.equal(anotherMappedBeverage.canonicalItems['line-1'].addOns.length, 1);
+
+const bondPizza = canonicalize({
+  product: {
+    ...baseProduct,
+    id: 'BOND_PIZZA',
+    code: 'BOND_PIZZA',
+    name: 'Bond Pizza',
+    posCategoryName: 'Pizza',
+    addOnGroupIds: ['food_add_on'],
+  },
+  item: requestedItem({
+    parentProductId: 'BOND_PIZZA',
+    parentProductCode: 'BOND_PIZZA',
+    selectedAddOns: [{ groupId: 'food_add_on', optionId: 'HONEY', quantity: 1 }],
+  }),
+  group: foodGroup,
+});
+assert.equal(bondPizza.canonicalItems['line-1'].addOns[0].optionId, 'HONEY');
+
 expectFailure(
   () => canonicalize({
-    product: { ...baseProduct, posCategoryName: 'Espesso bar' },
+    product: { ...baseProduct, addOnGroupIds: [] },
+  }),
+  'do not belong',
+);
+expectFailure(
+  () => canonicalize({
+    product: {
+      ...baseProduct,
+      code: 'HOUSE_BLEND_BEANS_250G',
+      addOnGroupIds: ['beverage_add_on'],
+    },
+    item: requestedItem({ parentProductCode: 'HOUSE_BLEND_BEANS_250G' }),
+  }),
+  'not available',
+);
+for (const deferredProductCode of [
+  'MUSHROOM_MELT',
+  'BUTTER_COOKIE',
+  'COOKIEE',
+  'AMERICANO',
+  'PANEER_SANDWICH',
+  'BUTTER_CROISSANT',
+  'V_C_BURST',
+  'ORANGE_ESPRESSO_TONIC',
+  'DOUBLE_CHOCOLATE_COOKIE',
+  'ALMOND_CROISSANT',
+]) {
+  expectFailure(
+    () => canonicalize({
+      product: {
+        ...baseProduct,
+        code: deferredProductCode,
+        addOnGroupIds: ['beverage_add_on'],
+      },
+      item: requestedItem({ parentProductCode: deferredProductCode }),
+    }),
+    'not available',
+  );
+}
+expectFailure(
+  () => canonicalize({
+    product: {
+      ...baseProduct,
+      code: 'ALMONDS',
+      addOnGroupIds: ['beverage_add_on'],
+    },
+    item: requestedItem({ parentProductCode: 'ALMONDS' }),
   }),
   'not available',
 );
 expectFailure(
   () => canonicalize({
-    product: { ...baseProduct, code: 'HOUSE_BLEND_BEANS_250G' },
-    item: requestedItem({ parentProductCode: 'HOUSE_BLEND_BEANS_250G' }),
+    product: {
+      ...baseProduct,
+      addOnGroupIds: ['food_add_on'],
+    },
+    item: requestedItem({
+      selectedAddOns: [{ groupId: 'beverage_add_on', optionId: 'OAT_MILK', quantity: 1 }],
+    }),
   }),
-  'not available',
+  'do not belong',
+);
+expectFailure(
+  () => canonicalize({
+    product: {
+      ...baseProduct,
+      posCategoryName: 'Pizza',
+      addOnGroupIds: ['food_add_on'],
+    },
+    item: requestedItem({
+      selectedAddOns: [{ groupId: 'beverage_add_on', optionId: 'OAT_MILK', quantity: 1 }],
+    }),
+  }),
+  'do not belong',
 );
 expectFailure(
   () => canonicalize({ storeId: 'NOIDA_29' }),
