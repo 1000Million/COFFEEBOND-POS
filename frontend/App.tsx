@@ -46,6 +46,8 @@ const MenuManagementHub = lazy(() => import('./pages/admin/MenuManagementHub'));
 const POSHome = lazy(() => import('./pages/pos/POSHome'));
 const IncomingOnlineOrders = lazy(() => import('./pages/pos/IncomingOnlineOrders'));
 const RunningOrders = lazy(() => import('./pages/pos/RunningOrders'));
+const FranchiseLogin = lazy(() => import('./pages/franchise/FranchiseLogin'));
+const FranchiseDailySales = lazy(() => import('./pages/franchise/FranchiseDailySales'));
 
 function RouteLoading() {
   return (
@@ -91,6 +93,20 @@ function LoginRoute() {
   return <Login />;
 }
 
+function FranchiseLoginRoute() {
+  const { authStatus, staffProfile } = useAuth();
+
+  if (authStatus === 'checking-auth' || authStatus === 'checking-profile') return <AppLoading />;
+  if (authStatus === 'signed-out') return <FranchiseLogin />;
+  if (authStatus === 'missing-profile' || authStatus === 'permission-error') return <MissingProfile />;
+  if (authStatus === 'inactive') return <InactiveProfile />;
+  if (authStatus === 'ready' && staffProfile?.role === 'FRANCHISE_VIEWER') {
+    return <Navigate to="/franchise/daily-sales" replace />;
+  }
+  if (authStatus === 'ready') return <Navigate to="/" replace />;
+  return <FranchiseLogin />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -101,6 +117,10 @@ export default function App() {
             <Route path="/order" element={<CustomerOrder />} />
             <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
             <Route path="/login" element={<LoginRoute />} />
+            <Route path="/franchise/login" element={<FranchiseLoginRoute />} />
+            <Route element={<ProtectedRoute allowedRoles={['FRANCHISE_VIEWER']} signInPath="/franchise/login" />}>
+              <Route path="/franchise/daily-sales" element={<FranchiseDailySales />} />
+            </Route>
 
             {/* Main App Layout - Protected by Auth */}
             <Route element={<ProtectedRoute />}>

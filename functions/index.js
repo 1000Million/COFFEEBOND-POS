@@ -5,6 +5,7 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
 const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
+const { createFranchiseSalesFunctions } = require('./franchiseSales');
 
 admin.initializeApp();
 
@@ -23,6 +24,9 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 exports.parseSupplierInvoiceDraft = createParseSupplierInvoiceDraft({ admin, db, region: REGION });
 exports.createComplimentaryAuthorization = createComplimentaryAuthorizationFunction({ admin, db, region: REGION });
+const franchiseSalesFunctions = createFranchiseSalesFunctions({ admin, db, region: REGION });
+exports.manageFranchiseViewer = franchiseSalesFunctions.manageFranchiseViewer;
+exports.getFranchiseDailySales = franchiseSalesFunctions.getFranchiseDailySales;
 
 function publicStatusMessage(status) {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';

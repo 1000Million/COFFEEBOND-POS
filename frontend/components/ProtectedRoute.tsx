@@ -9,9 +9,10 @@ import InactiveProfile from '../pages/InactiveProfile';
 interface ProtectedRouteProps {
   allowedRoles?: Role[];
   children?: React.ReactNode;
+  signInPath?: string;
 }
 
-export default function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) {
+export default function ProtectedRoute({ allowedRoles, children, signInPath = '/login' }: ProtectedRouteProps) {
   const { authStatus, staffProfile } = useAuth();
 
   if (authStatus === 'checking-auth' || authStatus === 'checking-profile') {
@@ -19,7 +20,7 @@ export default function ProtectedRoute({ allowedRoles, children }: ProtectedRout
   }
 
   if (authStatus === 'signed-out') {
-    return <Navigate to="/login" replace />;
+    return <Navigate to={signInPath} replace />;
   }
 
   if (authStatus === 'missing-profile') {
@@ -41,6 +42,7 @@ export default function ProtectedRoute({ allowedRoles, children }: ProtectedRout
       else if (staffProfile.role === 'STORE_MANAGER' || staffProfile.role === 'CASHIER') fallback = '/pos';
       else if (staffProfile.role === 'BARISTA') fallback = '/kot/barista';
       else if (staffProfile.role === 'KITCHEN') fallback = '/kot/kitchen';
+      else if (staffProfile.role === 'FRANCHISE_VIEWER') fallback = '/franchise/daily-sales';
       
       return <Navigate to={fallback} replace />;
     }
@@ -49,5 +51,5 @@ export default function ProtectedRoute({ allowedRoles, children }: ProtectedRout
   }
 
   // Fallback
-  return <Navigate to="/login" replace />;
+  return <Navigate to={signInPath} replace />;
 }
