@@ -12,10 +12,17 @@ import {
   XCircle,
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
+import {
+  BEVERAGE_ADD_ON_GROUP_ID,
+  BEVERAGE_ADD_ON_OPTIONS,
+  FOOD_ADD_ON_GROUP_ID,
+  FOOD_ADD_ON_OPTIONS,
+} from '../../lib/addOnGroupMapping';
 import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store } from '../../types';
-import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
+import { AddOnGroup, BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
+import addOnApprovalManifest from '../../../data/imports/addon-product-reconciliation-approvals.json';
 
 type StatusTone = 'ready' | 'warning' | 'blocked';
 
@@ -85,6 +92,7 @@ type LoadedData = {
   prepItems: (PrepItem & { id: string })[];
   finishedGoods: (FinishedGood & { id: string })[];
   storeStock: (StoreStock & { id: string } & Record<string, unknown>)[];
+  addOnGroups: AddOnGroup[];
   gstConfig: AppGstConfig;
 };
 
@@ -107,6 +115,11 @@ const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettin
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
+const PHASE_1_ADD_ON_GROUP_IDS = new Set([FOOD_ADD_ON_GROUP_ID, BEVERAGE_ADD_ON_GROUP_ID]);
+const PHASE_1_DEFERRED_PRODUCTS = addOnApprovalManifest.entries
+  .filter((entry) => entry.phase1Disposition === 'DEFERRED_MISSING_FINISHED_GOOD_DATA')
+  .map((entry) => entry.menuProductCode);
+const PHASE_1_PLANNED_OPTION_COUNT = FOOD_ADD_ON_OPTIONS.length + BEVERAGE_ADD_ON_OPTIONS.length;
 
 function cleanValue(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -254,12 +267,13 @@ async function loadGstConfig(): Promise<AppGstConfig> {
 }
 
 async function loadReadinessData(): Promise<LoadedData> {
-  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, gstConfig] = await Promise.all([
+  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, addOnGroupSnap, gstConfig] = await Promise.all([
     getDocs(collection(db, 'stores')),
     getDocs(collection(db, 'rawIngredients')),
     getDocs(collection(db, 'prepItems')),
     getDocs(collection(db, 'finishedGoods')),
     getDocs(collection(db, 'storeStock')),
+    getDocs(collection(db, 'addOnGroups')),
     loadGstConfig(),
   ]);
 
@@ -274,6 +288,7 @@ async function loadReadinessData(): Promise<LoadedData> {
     prepItems: prepSnap.docs.map((snap) => withId(snap.id, snap.data() as PrepItem & Record<string, unknown>)),
     finishedGoods: finishedSnap.docs.map((snap) => withId(snap.id, snap.data() as FinishedGood & Record<string, unknown>)),
     storeStock: stockSnap.docs.map((snap) => withId(snap.id, snap.data() as StoreStock & Record<string, unknown>)),
+    addOnGroups: addOnGroupSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() as AddOnGroup) })),
     gstConfig,
   };
 }
@@ -635,6 +650,25 @@ export default function POSReadiness() {
   const canRefreshCustomerAvailability = isAdmin || isStoreManager;
   const readiness = useMemo(() => data ? buildStoreReadiness(data) : [], [data]);
   const espressoFix = useMemo(() => buildEspressoFixState(data), [data]);
+  const addOnPhase1Readiness = useMemo(() => {
+    const deployedGroups = (data?.addOnGroups || [])
+      .filter((group) => group.id && PHASE_1_ADD_ON_GROUP_IDS.has(group.id));
+    const deployedOptions = deployedGroups.flatMap((group) => group.options || []);
+    const inventoryConfiguredCount = deployedOptions.filter((option) => (
+      option.inventoryItemType
+      && option.inventoryItemCode
+      && Number(option.consumptionQuantity) > 0
+      && option.consumptionUnit
+    )).length;
+    return {
+      deployedGroupCount: deployedGroups.length,
+      deployedOptionCount: deployedOptions.length,
+      inventoryConfiguredCount,
+      inventoryNotConfiguredCount: deployedOptions.length > 0
+        ? deployedOptions.length - inventoryConfiguredCount
+        : PHASE_1_PLANNED_OPTION_COUNT,
+    };
+  }, [data]);
 
   const refresh = async () => {
     setIsLoading(true);
@@ -721,6 +755,7 @@ export default function POSReadiness() {
         storeStock: data.storeStock,
         rawIngredients: data.rawIngredients,
         prepItems: data.prepItems,
+        addOnGroups: data.addOnGroups,
       });
       const staffName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Staff';
 
@@ -976,6 +1011,52 @@ export default function POSReadiness() {
         <div className="text-sm">
           <p className="font-black">POS V2 is the single source for billing.</p>
           <p>The billing screen uses Finished Goods, BOM, prep components, and storeStock for every Coffee Bond store.</p>
+        </div>
+      </div>
+
+      <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-start gap-3">
+          <ShieldAlert size={22} className="mt-0.5 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-black text-neutral-900">Add-on Phase 1 Readiness</h2>
+                <p className="mt-1 text-sm text-neutral-600">
+                  Pricing, GST, receipt, KOT, and reporting are enabled independently of inventory mapping.
+                </p>
+              </div>
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">
+                PRICING ONLY
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Stat label="Groups Deployed" value={`${addOnPhase1Readiness.deployedGroupCount}/2`} tone={addOnPhase1Readiness.deployedGroupCount === 2 ? 'green' : 'amber'} />
+              <Stat label="Options Deployed" value={`${addOnPhase1Readiness.deployedOptionCount}/${PHASE_1_PLANNED_OPTION_COUNT}`} tone={addOnPhase1Readiness.deployedOptionCount === PHASE_1_PLANNED_OPTION_COUNT ? 'green' : 'amber'} />
+              <Stat label="Inventory Configured" value={addOnPhase1Readiness.inventoryConfiguredCount} tone="amber" />
+              <Stat label="Inventory Not Configured" value={addOnPhase1Readiness.inventoryNotConfiguredCount} tone="amber" />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+              <p className="font-black">Inventory limitation</p>
+              <p className="mt-1">
+                All 27 Phase 1 options remain <strong>NOT_CONFIGURED</strong>. Checkout is allowed, and no assumed add-on stock movement is created.
+              </p>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs font-black uppercase tracking-widest text-neutral-500">
+                Deferred products ({PHASE_1_DEFERRED_PRODUCTS.length})
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {PHASE_1_DEFERRED_PRODUCTS.map((productCode) => (
+                  <span key={productCode} className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs font-bold text-neutral-700">
+                    {productCode} · DEFERRED_MISSING_FINISHED_GOOD_DATA
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

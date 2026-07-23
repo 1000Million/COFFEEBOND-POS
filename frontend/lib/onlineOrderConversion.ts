@@ -1,8 +1,10 @@
-import { collection, doc, getDoc, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, runTransaction, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { OnlineOrder, Order, OrderItem, OrderPayment, PrepStation, StaffProfile, Store } from '../types';
 import { FinishedGood } from '../types/menu-management';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from './inventoryDeduction';
+import { addOnTaxForLine, addOnTotal } from './addOns';
+import { authorizePosAddOns, selectedAddOnIds } from './posAddOnAuthorization';
 import { publicStatusMessage, publicTrackingDocRef, updatePublicOrderTracking } from './publicOrderTracking';
 
 type TaxConfig = {
@@ -122,6 +124,34 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
   const newCustomerRef = doc(collection(db, 'customers'));
 
   try {
+    const preflightOnlineOrderSnap = await getDoc(onlineOrderRef);
+    if (!preflightOnlineOrderSnap.exists()) throw new Error('Online order request no longer exists.');
+    const preflightOnlineOrder = {
+      id: preflightOnlineOrderSnap.id,
+      ...preflightOnlineOrderSnap.data(),
+    } as OnlineOrder;
+    if (preflightOnlineOrder.status !== 'PENDING' && preflightOnlineOrder.status !== 'NEEDS_ATTENTION') {
+      throw new Error(`Online order is ${preflightOnlineOrder.status} and cannot be accepted again.`);
+    }
+    const lineRefs = preflightOnlineOrder.items.map(() => doc(collection(newOrderRef, 'items')));
+    const posAddOnAuthorization = await authorizePosAddOns({
+      storeId: preflightOnlineOrder.storeId,
+      orderId: newOrderRef.id,
+      orderNumber: null,
+      items: preflightOnlineOrder.items.map((item, index) => ({
+        orderItemId: lineRefs[index].id,
+        parentProductId: item.finishedGoodCode,
+        parentProductCode: item.finishedGoodCode,
+        quantity: item.quantity,
+        selectedAddOns: selectedAddOnIds(item.addOns),
+      })),
+    });
+    const posAddOnAuthorizationRef = doc(
+      db,
+      'posAddOnAuthorizations',
+      posAddOnAuthorization.authorizationId,
+    );
+
     return await runTransaction(db, async transaction => {
     const onlineOrderSnap = await transaction.get(onlineOrderRef);
     if (!onlineOrderSnap.exists()) throw new Error('Online order request no longer exists.');
@@ -161,14 +191,35 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
 
     const calculatedLines: CalculatedLine[] = [];
 
-    onlineOrder.items.forEach((onlineItem, index) => {
+    if (onlineOrder.items.length !== lineRefs.length) {
+      throw new Error('Online order items changed during acceptance. Please retry.');
+    }
+    onlineOrder.items.forEach((storedOnlineItem, index) => {
       const finishedGood = finishedGoods[index];
-      const quantity = Number(onlineItem.quantity) || 0;
-      const price = Number(finishedGood.salePrice) || Number(onlineItem.unitPrice) || 0;
-      const lineSubtotal = price * quantity;
+      const canonicalItem = posAddOnAuthorization.canonicalItems[lineRefs[index].id];
+      const quantity = Number(storedOnlineItem.quantity) || 0;
+      if (
+        !canonicalItem
+        || canonicalItem.parentProductId !== finishedGood.id
+        || canonicalItem.parentProductCode !== finishedGood.code
+        || canonicalItem.quantity !== quantity
+        || Number(finishedGood.salePrice) !== canonicalItem.baseUnitPrice
+      ) {
+        throw new Error('Online order add-on authorization no longer matches the live menu. Please retry.');
+      }
+      const onlineItem = {
+        ...storedOnlineItem,
+        baseUnitPrice: canonicalItem.baseUnitPrice,
+        unitPrice: canonicalItem.baseUnitPrice,
+        addOns: canonicalItem.addOns,
+      };
+      const baseUnitPrice = canonicalItem.baseUnitPrice;
+      const selectedAddOnTotal = addOnTotal(onlineItem.addOns);
+      const lineSubtotal = (baseUnitPrice + selectedAddOnTotal) * quantity;
       const appliedTaxRate = getAppliedTaxRate(finishedGood as unknown as Record<string, unknown>, storeTaxRate);
       const lineTaxable = lineSubtotal;
-      const lineTax = lineTaxable * (appliedTaxRate / 100);
+      const lineTax = (baseUnitPrice * quantity * appliedTaxRate / 100)
+        + addOnTaxForLine(onlineItem.addOns, quantity, 0);
 
       calculatedLines.push({
         onlineItem,
@@ -185,9 +236,25 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const dateKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const counterRef = doc(db, 'counters', `${store.code}_${dateKey}`);
     const counterSnap = await transaction.get(counterRef);
+    const posAddOnAuthorizationSnap = await transaction.get(posAddOnAuthorizationRef);
+    if (!posAddOnAuthorizationSnap.exists()) {
+      throw new Error('The POS add-on authorization was not found. Please retry.');
+    }
+    const authorizationData = posAddOnAuthorizationSnap.data();
+    const expiresAt = authorizationData.expiresAt;
+    if (
+      authorizationData.provider !== 'SERVER_CANONICAL_ADD_ONS'
+      || authorizationData.used !== false
+      || authorizationData.staffUid !== staffProfile.uid
+      || authorizationData.storeId !== store.id
+      || authorizationData.orderId !== newOrderRef.id
+      || !(expiresAt instanceof Timestamp)
+      || expiresAt.toMillis() <= Date.now()
+    ) {
+      throw new Error('The POS add-on authorization is expired, used, or does not match this online order.');
+    }
     const sequence = counterSnap.exists() ? (Number(counterSnap.data().lastSequence) || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${sequence.toString().padStart(4, '0')}`;
-    const lineRefs = calculatedLines.map(() => doc(collection(newOrderRef, 'items')));
     const orderType = buildOrderType(onlineOrder);
     const deductionPlan = await planInventoryDeductionForSale({
       transaction,
@@ -209,6 +276,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
           code: line.finishedGood.code,
           name: line.finishedGood.name,
         },
+        addOns: line.onlineItem.addOns,
       })),
     });
 
@@ -299,6 +367,8 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       paymentMethodLabel: 'PAY_AT_COUNTER',
       isSplitPayment: false,
       paymentBreakdown: [{ method: 'PAY_AT_COUNTER', amount: 0 }],
+      addOnAuthorizationId: posAddOnAuthorization.authorizationId,
+      addOnTotal: posAddOnAuthorization.canonicalAddOnTotal,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -323,7 +393,13 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         categoryId: line.finishedGood.posCategoryCode || 'MISC',
         categoryName: line.finishedGood.posCategoryName || 'Misc',
         quantity: line.quantity,
-        unitPrice: Number(line.finishedGood.salePrice) || line.onlineItem.unitPrice,
+        unitPrice: Number(line.finishedGood.salePrice) || line.onlineItem.baseUnitPrice || line.onlineItem.unitPrice,
+        baseUnitPrice: Number(line.finishedGood.salePrice) || line.onlineItem.baseUnitPrice || line.onlineItem.unitPrice,
+        addOns: line.onlineItem.addOns || [],
+        addOnAuthorizationId: posAddOnAuthorization.authorizationId,
+        addOnTotal: addOnTotal(line.onlineItem.addOns),
+        unitPriceWithAddOns: (Number(line.finishedGood.salePrice) || line.onlineItem.baseUnitPrice || line.onlineItem.unitPrice)
+          + addOnTotal(line.onlineItem.addOns),
         taxRate: line.appliedTaxRate,
         lineSubtotal: line.lineSubtotal,
         lineDiscount: 0,
@@ -355,6 +431,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
           itemName: line.finishedGood.displayName || line.finishedGood.name,
           itemCode: line.finishedGood.code,
           quantity: line.quantity,
+          addOns: line.onlineItem.addOns || [],
           orderType,
           tableNumber,
           customerName,
@@ -382,6 +459,11 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       createdAt: serverTimestamp(),
     };
     transaction.set(paymentRef, paymentData);
+    transaction.update(posAddOnAuthorizationRef, {
+      used: true,
+      usedAt: serverTimestamp(),
+      orderNumber,
+    });
 
     transaction.update(onlineOrderRef, {
       status: 'CONVERTED',

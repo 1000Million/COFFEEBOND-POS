@@ -23,21 +23,32 @@ import {
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import AddOnSelector from '../../components/add-ons/AddOnSelector';
+import {
+  activeAddOnGroupsForProduct,
+  addOnSelectionKey,
+  addOnTaxForLine,
+  addOnTotal,
+  canonicalAddOnSelections,
+  unitPriceWithAddOns,
+} from '../../lib/addOns';
 import { db, functions } from '../../lib/firebase';
 import {
   deriveCustomerOrderingState,
   prepWindowLabel,
   storeOnlineMessage,
 } from '../../lib/customerOrderingState';
-import { OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
-import { FinishedGood } from '../../types/menu-management';
+import { AddOnSelection, OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
+import { AddOnGroup, FinishedGood } from '../../types/menu-management';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
 type CartLine = {
+  id: string;
   item: CustomerMenuItem;
   quantity: number;
+  addOns: AddOnSelection[];
 };
 
 type ConfirmationState = {
@@ -85,6 +96,7 @@ type PublicAvailabilitySnapshot = {
   expiresAt?: unknown;
   items?: Record<string, PublicAvailabilityItem>;
   menuItems?: Record<string, CustomerMenuItem>;
+  addOnGroups?: Record<string, AddOnGroup>;
 };
 
 type SubmissionLock = {
@@ -104,6 +116,11 @@ type SubmitCustomerOrderRequest = {
   items: Array<{
     itemCode: string;
     quantity: number;
+    addOns?: Array<{
+      groupId: string;
+      optionId: string;
+      quantity: number;
+    }>;
   }>;
   clientIdempotencyKey: string;
 };
@@ -362,7 +379,7 @@ function isValidIndianPhone(value: string): boolean {
 
 function cartSignature(storeId: string, customerPhone: string, orderType: OnlineOrderType, tableNumber: string, cart: CartLine[]): string {
   const cartParts = cart
-    .map(line => `${line.item.code}:${line.quantity}`)
+    .map(line => `${line.item.code}:${line.quantity}:${addOnSelectionKey(line.addOns)}`)
     .sort()
     .join('|');
   return [
@@ -414,6 +431,8 @@ export default function CustomerOrder() {
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
   const [publicAvailability, setPublicAvailability] = useState<PublicAvailabilitySnapshot | null>(null);
+  const [pendingAddOnItem, setPendingAddOnItem] = useState<CustomerMenuItem | null>(null);
+  const [editingAddOnLine, setEditingAddOnLine] = useState<CartLine | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [basketOpen, setBasketOpen] = useState(false);
   const [storeSelectorOpen, setStoreSelectorOpen] = useState(false);
@@ -578,6 +597,10 @@ export default function CustomerOrder() {
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
+  const addOnGroups = useMemo(
+    () => Object.values(publicAvailability?.addOnGroups || {}),
+    [publicAvailability],
+  );
   const selectedStoreMessage = storeOnlineMessage(selectedStore);
   const availabilitySnapshotStale = isSnapshotStale(publicAvailability);
   const availabilityNotice = availabilitySnapshotStale
@@ -641,10 +664,13 @@ export default function CustomerOrder() {
   const selectedStoreHasCoordinates = selectedStore ? !!storeCoordinate(selectedStore) : false;
 
   const totals = useMemo(() => {
-    const subtotal = cart.reduce((sum, line) => sum + toNumber(line.item.salePrice) * line.quantity, 0);
+    const subtotal = cart.reduce((sum, line) => (
+      sum + unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity
+    ), 0);
     const gstTotal = cart.reduce((sum, line) => {
       const rate = itemTaxRate(line.item, selectedStoreTaxRate);
-      return sum + (toNumber(line.item.salePrice) * line.quantity * rate / 100);
+      const baseTax = toNumber(line.item.salePrice) * line.quantity * rate / 100;
+      return sum + baseTax + addOnTaxForLine(line.addOns, line.quantity, 0);
     }, 0);
     return {
       subtotal,
@@ -665,6 +691,8 @@ export default function CustomerOrder() {
     userStoreChoiceRef.current = true;
     setSelectedStoreId(nextStoreId);
     setCart([]);
+    setPendingAddOnItem(null);
+    setEditingAddOnLine(null);
     setCategory('ALL');
     setSearch('');
     setBasketOpen(false);
@@ -689,23 +717,71 @@ export default function CustomerOrder() {
     if (nextType !== 'DINE_IN') setTableNumber('');
   };
 
-  const setCartQuantity = (item: CustomerMenuItem, quantity: number) => {
+  const setLineQuantity = (lineId: string, quantity: number) => {
+    setCart(current => quantity <= 0
+      ? current.filter(line => line.id !== lineId)
+      : current.map(line => line.id === lineId ? { ...line, quantity } : line));
+  };
+
+  const commitCartItem = (
+    item: CustomerMenuItem,
+    requestedAddOns: AddOnSelection[],
+    editingLineId?: string,
+  ) => {
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-    const currentQty = cart.find(line => line.item.code === item.code)?.quantity || 0;
-    if (quantity > currentQty && !availability.available) {
+    if (!availability.available) {
       setError(`${item.displayName || item.name} is currently unavailable: ${availability.reason}.`);
       return;
     }
 
-    const nextQty = Math.max(0, quantity);
+    let canonicalAddOns: AddOnSelection[];
+    try {
+      canonicalAddOns = canonicalAddOnSelections(
+        item.addOnGroupIds,
+        addOnGroups,
+        requestedAddOns,
+        itemTaxRate(item, selectedStoreTaxRate),
+      );
+    } catch (selectionError) {
+      setError(selectionError instanceof Error ? selectionError.message : 'Selected add-ons are unavailable.');
+      return;
+    }
+
     setCart(prev => {
-      if (nextQty === 0) return prev.filter(line => line.item.code !== item.code);
-      const existing = prev.find(line => line.item.code === item.code);
-      if (existing) {
-        return prev.map(line => line.item.code === item.code ? { ...line, quantity: nextQty } : line);
+      if (editingLineId) {
+        return prev.map(line => line.id === editingLineId ? { ...line, addOns: canonicalAddOns } : line);
       }
-      return [...prev, { item, quantity: nextQty }];
+      const selectionKey = addOnSelectionKey(canonicalAddOns);
+      const existing = prev.find(line => (
+        line.item.code === item.code && addOnSelectionKey(line.addOns) === selectionKey
+      ));
+      if (existing) {
+        return prev.map(line => line.id === existing.id ? { ...line, quantity: line.quantity + 1 } : line);
+      }
+      return [...prev, {
+        id: createClientIdempotencyKey(),
+        item,
+        quantity: 1,
+        addOns: canonicalAddOns,
+      }];
     });
+  };
+
+  const addItem = (item: CustomerMenuItem) => {
+    const groups = activeAddOnGroupsForProduct(item.addOnGroupIds, addOnGroups);
+    if (groups.length > 0) {
+      setEditingAddOnLine(null);
+      setPendingAddOnItem(item);
+      return;
+    }
+    commitCartItem(item, []);
+  };
+
+  const editLineAddOns = (line: CartLine) => {
+    const groups = activeAddOnGroupsForProduct(line.item.addOnGroupIds, addOnGroups);
+    if (groups.length === 0) return;
+    setEditingAddOnLine(line);
+    setPendingAddOnItem(line.item);
   };
 
   const submitOrder = async () => {
@@ -769,7 +845,15 @@ export default function CustomerOrder() {
         orderType,
         ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : { tableNumber: null }),
         notes: cleanNotes,
-        items: cart.map(line => ({ itemCode: line.item.code, quantity: line.quantity })),
+        items: cart.map(line => ({
+          itemCode: line.item.code,
+          quantity: line.quantity,
+          addOns: line.addOns.map(addOn => ({
+            groupId: addOn.groupId,
+            optionId: addOn.optionId,
+            quantity: addOn.quantity,
+          })),
+        })),
         clientIdempotencyKey,
       });
       const submittedOrder = result.data;
@@ -857,7 +941,6 @@ export default function CustomerOrder() {
   };
 
   const renderPopularCard = (item: CustomerMenuItem) => {
-    const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
 
@@ -870,7 +953,7 @@ export default function CustomerOrder() {
           <p className="mt-1 text-xs font-bold text-[#8b5e42]">{formatMoney(toNumber(item.salePrice))}</p>
         </div>
         <button
-          onClick={() => setCartQuantity(item, qty + 1)}
+          onClick={() => addItem(item)}
           disabled={!canOrder}
           className="mt-2 flex h-11 w-full items-center justify-center gap-1 rounded-2xl bg-[#3b241c] text-xs font-black text-white disabled:bg-neutral-300"
         >
@@ -882,7 +965,9 @@ export default function CustomerOrder() {
   };
 
   const renderMenuCard = (item: CustomerMenuItem) => {
-    const qty = cart.find(line => line.item.code === item.code)?.quantity || 0;
+    const itemLines = cart.filter(line => line.item.code === item.code);
+    const qty = itemLines.reduce((sum, line) => sum + line.quantity, 0);
+    const firstLine = itemLines[0];
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
     const meta = visualMeta(item);
@@ -898,13 +983,19 @@ export default function CustomerOrder() {
             </div>
             {qty > 0 ? (
               <div className="inline-flex h-11 shrink-0 items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-0.5">
-                <button onClick={() => setCartQuantity(item, qty - 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Decrease ${item.displayName || item.name}`}><Minus size={14} /></button>
+                <button
+                  onClick={() => firstLine && setLineQuantity(firstLine.id, firstLine.quantity - 1)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]"
+                  aria-label={`Decrease ${item.displayName || item.name}`}
+                >
+                  <Minus size={14} />
+                </button>
                 <span className="min-w-6 text-center text-xs font-black">{qty}</span>
-                <button onClick={() => setCartQuantity(item, qty + 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Increase ${item.displayName || item.name}`}><Plus size={14} /></button>
+                <button onClick={() => addItem(item)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Increase ${item.displayName || item.name}`}><Plus size={14} /></button>
               </div>
             ) : (
               <button
-                onClick={() => setCartQuantity(item, 1)}
+                onClick={() => addItem(item)}
                 disabled={!canOrder}
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#3b241c] text-white disabled:bg-neutral-300"
                 aria-label={`Add ${item.displayName || item.name}`}
@@ -947,25 +1038,41 @@ export default function CustomerOrder() {
         <>
           <div className="space-y-3">
             {cart.map(line => (
-              <div key={line.item.code} className="flex gap-3 rounded-2xl bg-[#fffaf5] p-3">
+              <div key={line.id} className="flex gap-3 rounded-2xl bg-[#fffaf5] p-3">
                 {renderItemThumb(line.item, 'h-14 w-14')}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{line.item.displayName || line.item.name}</p>
-                      <p className="mt-1 text-xs font-bold text-neutral-500">{formatMoney(toNumber(line.item.salePrice))} each</p>
+                      <p className="mt-1 text-xs font-bold text-neutral-500">
+                        {formatMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns))} each
+                      </p>
+                      {line.addOns.length > 0 && (
+                        <div className="mt-1 space-y-0.5">
+                          {line.addOns.map(addOn => (
+                            <p key={`${addOn.groupId}-${addOn.optionId}`} className="text-[11px] font-semibold text-neutral-500">
+                              + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''} · {formatMoney(addOn.totalPrice)}
+                            </p>
+                          ))}
+                          <button type="button" onClick={() => editLineAddOns(line)} className="text-[11px] font-black text-[#8b5e42] underline underline-offset-2">
+                            Edit add-ons
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <button onClick={() => setCartQuantity(line.item, 0)} className="rounded-full bg-red-50 p-1.5 text-red-700">
+                    <button onClick={() => setLineQuantity(line.id, 0)} className="rounded-full bg-red-50 p-1.5 text-red-700">
                       <Trash2 size={13} />
                     </button>
                   </div>
                   <div className="mt-3 flex items-center justify-between">
                     <div className="inline-flex items-center rounded-full border border-[#ead8c7] bg-white p-0.5">
-                      <button onClick={() => setCartQuantity(line.item, line.quantity - 1)} className="rounded-full p-1.5"><Minus size={13} /></button>
+                      <button onClick={() => setLineQuantity(line.id, line.quantity - 1)} className="rounded-full p-1.5"><Minus size={13} /></button>
                       <span className="min-w-7 text-center text-xs font-black">{line.quantity}</span>
-                      <button onClick={() => setCartQuantity(line.item, line.quantity + 1)} className="rounded-full p-1.5"><Plus size={13} /></button>
+                      <button onClick={() => setLineQuantity(line.id, line.quantity + 1)} className="rounded-full p-1.5"><Plus size={13} /></button>
                     </div>
-                    <span className="text-sm font-black text-[#2d2019]">{formatMoney(toNumber(line.item.salePrice) * line.quantity)}</span>
+                    <span className="text-sm font-black text-[#2d2019]">
+                      {formatMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1077,7 +1184,14 @@ export default function CustomerOrder() {
                 <div className="space-y-2">
                   {confirmation.items.map((item, index) => (
                     <div key={`${confirmation.id}-${index}-${item.itemName}`} className="flex justify-between gap-3 text-sm">
-                      <span className="font-bold text-neutral-700">{item.quantity} x {item.itemName}</span>
+                      <div>
+                        <span className="font-bold text-neutral-700">{item.quantity} x {item.itemName}</span>
+                        {(item.addOns || []).map(addOn => (
+                          <p key={`${addOn.groupName}-${addOn.optionName}`} className="pl-2 text-xs font-semibold text-neutral-500">
+                            + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                          </p>
+                        ))}
+                      </div>
                       <span className="font-black text-[#2d2019]">{formatMoney(item.lineTotal)}</span>
                     </div>
                   ))}
@@ -1278,6 +1392,26 @@ export default function CustomerOrder() {
           <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
           <span>{formatMoney(totals.grandTotal)}</span>
         </button>
+      )}
+
+      {pendingAddOnItem && (
+        <AddOnSelector
+          mode="CUSTOMER"
+          productName={pendingAddOnItem.displayName || pendingAddOnItem.name}
+          basePrice={toNumber(pendingAddOnItem.salePrice)}
+          taxRate={itemTaxRate(pendingAddOnItem, selectedStoreTaxRate)}
+          groups={activeAddOnGroupsForProduct(pendingAddOnItem.addOnGroupIds, addOnGroups)}
+          initialSelections={editingAddOnLine?.addOns}
+          onCancel={() => {
+            setPendingAddOnItem(null);
+            setEditingAddOnLine(null);
+          }}
+          onConfirm={selections => {
+            commitCartItem(pendingAddOnItem, selections, editingAddOnLine?.id);
+            setPendingAddOnItem(null);
+            setEditingAddOnLine(null);
+          }}
+        />
       )}
 
       {basketOpen && (

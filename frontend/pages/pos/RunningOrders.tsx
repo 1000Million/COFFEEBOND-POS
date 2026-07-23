@@ -252,8 +252,9 @@ function printReceipt(bundle: OrderBundle) {
             <div>
               <p class="bold">${item.itemName}</p>
               <p class="muted">${money(item.quantity)} x ${formatMoney(item.unitPrice)}${effectiveOrderStatus(order) === 'VOIDED' ? ` • ${orderItemDisplayStatus(order, item)}` : ''}</p>
+              ${(item.addOns || []).map(addOn => `<p class="muted">+ ${addOn.optionName}${addOn.quantity > 1 ? ` x ${addOn.quantity}` : ''} ${formatMoney(addOn.totalPrice)}</p>`).join('')}
             </div>
-            <p class="bold">${formatMoney(complimentary ? money(item.quantity) * money(item.unitPrice) : item.lineTotal)}</p>
+            <p class="bold">${formatMoney(complimentary ? money(item.quantity) * money(item.unitPriceWithAddOns ?? item.unitPrice) : item.lineTotal)}</p>
           </div>
         `).join('')}
         <div class="line"></div>
@@ -1258,8 +1259,13 @@ function OrderDetailDrawer({
                   <div>
                     <p className="font-black text-neutral-900">{item.itemName}</p>
                     <p className="text-xs font-bold text-neutral-500">{money(item.quantity)} x {formatMoney(item.unitPrice)} • {orderItemDisplayStatus(order, item)}</p>
+                    {(item.addOns || []).map(addOn => (
+                      <p key={`${addOn.groupId}-${addOn.optionId}`} className="pl-2 text-xs font-bold text-neutral-500">
+                        + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''} · {formatMoney(addOn.totalPrice)}
+                      </p>
+                    ))}
                   </div>
-                  <p className="font-mono font-black">{formatMoney(isComplimentaryOrder(order) ? money(item.quantity) * money(item.unitPrice) : item.lineTotal)}</p>
+                  <p className="font-mono font-black">{formatMoney(isComplimentaryOrder(order) ? money(item.quantity) * money(item.unitPriceWithAddOns ?? item.unitPrice) : item.lineTotal)}</p>
                 </div>
               ))}
             </div>
@@ -1276,6 +1282,11 @@ function OrderDetailDrawer({
                     <div>
                       <p className="font-black">{kotItem.quantity}x {kotItem.itemName}</p>
                       <p className="text-xs font-bold text-neutral-500">{kotItem.station}</p>
+                      {(kotItem.addOns || []).map(addOn => (
+                        <p key={`${addOn.groupId}-${addOn.optionId}`} className="pl-2 text-xs font-bold text-neutral-500">
+                          + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                        </p>
+                      ))}
                     </div>
                     <span className={`rounded-full px-3 py-1 text-xs font-black ${kotSummary([kotItem]).tone}`}>{kotItem.status}</span>
                   </div>

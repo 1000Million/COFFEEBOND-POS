@@ -33,7 +33,7 @@ import {
   prepareProductImageForUpload,
   validateProductImageFile,
 } from '../../lib/productImages';
-import { FinishedGood, PrepItem, ProductImageAudit, RawIngredient, StoreStock } from '../../types/menu-management';
+import { AddOnGroup, FinishedGood, PrepItem, ProductImageAudit, RawIngredient, StoreStock } from '../../types/menu-management';
 import { Store } from '../../types';
 
 type FiniteFilter = 'all' | 'active' | 'inactive';
@@ -112,6 +112,7 @@ export default function ProductImages() {
   const [rawIngredients, setRawIngredients] = useState<RawIngredient[]>([]);
   const [prepItems, setPrepItems] = useState<PrepItem[]>([]);
   const [storeStock, setStoreStock] = useState<(StoreStock & Record<string, unknown>)[]>([]);
+  const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
   const [auditRows, setAuditRows] = useState<ProductImageAudit[]>([]);
   const [selectedProductCode, setSelectedProductCode] = useState<string>('');
   const [search, setSearch] = useState('');
@@ -176,12 +177,13 @@ export default function ProductImages() {
       setError('');
       setAuditWarning('');
       try {
-        const [finishedSnap, storesSnap, rawSnap, prepSnap, stockSnap] = await Promise.all([
+        const [finishedSnap, storesSnap, rawSnap, prepSnap, stockSnap, addOnGroupSnap] = await Promise.all([
           readWithContext('LOAD_FINISHED_GOODS', 'finishedGoods', () => getDocs(query(collection(db, 'finishedGoods'), orderBy('name', 'asc')))),
           readWithContext('LOAD_STORES', 'stores', () => getDocs(query(collection(db, 'stores')))),
           readWithContext('LOAD_RAW_INGREDIENTS', 'rawIngredients', () => getDocs(query(collection(db, 'rawIngredients')))),
           readWithContext('LOAD_PREP_ITEMS', 'prepItems', () => getDocs(query(collection(db, 'prepItems')))),
           readWithContext('LOAD_STORE_STOCK', 'storeStock', () => getDocs(query(collection(db, 'storeStock')))),
+          readWithContext('LOAD_ADD_ON_GROUPS', 'addOnGroups', () => getDocs(query(collection(db, 'addOnGroups')))),
         ]);
 
         const auditSnap = await readWithContext(
@@ -206,6 +208,7 @@ export default function ProductImages() {
         setRawIngredients(rawSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as RawIngredient)));
         setPrepItems(prepSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as PrepItem)));
         setStoreStock(stockSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as StoreStock & Record<string, unknown>)));
+        setAddOnGroups(addOnGroupSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as AddOnGroup)));
         setAuditRows(auditSnap
           ? auditSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as ProductImageAudit))
           : []);
@@ -340,6 +343,7 @@ export default function ProductImages() {
         storeStock,
         rawIngredients,
         prepItems,
+        addOnGroups,
       });
       batch.set(doc(db, 'publicMenuAvailability', store.code), {
         ...snapshot,

@@ -110,8 +110,36 @@ function sanitizedDisplayItem(store, item) {
   if (item.productionMode) display.productionMode = item.productionMode;
   if (toNumber(item.taxRate) > 0) display.taxRate = toNumber(item.taxRate);
   if (imageUrl) display.imageUrl = imageUrl.trim();
+  if (Array.isArray(item.addOnGroupIds)) {
+    display.addOnGroupIds = [...new Set(item.addOnGroupIds.filter((value) => typeof value === 'string' && value.trim()))];
+  }
 
   return display;
+}
+
+function sanitizedAddOnGroup(groupId, group) {
+  return {
+    id: groupId,
+    name: String(group.name || ''),
+    isActive: group.isActive !== false,
+    isRequired: group.isRequired === true,
+    minimumSelections: Math.max(0, toNumber(group.minimumSelections)),
+    maximumSelections: group.maximumSelections === null || group.maximumSelections === undefined
+      ? null
+      : Math.max(0, toNumber(group.maximumSelections)),
+    selectionMode: group.selectionMode === 'SINGLE' ? 'SINGLE' : 'MULTIPLE',
+    options: (Array.isArray(group.options) ? group.options : [])
+      .filter((option) => option && option.isActive !== false)
+      .map((option) => ({
+        id: String(option.id || option.code || ''),
+        code: String(option.code || option.id || ''),
+        name: String(option.name || ''),
+        price: Math.max(0, toNumber(option.price)),
+        attribute: option.attribute === 'EGG' ? 'EGG' : 'VEG',
+        isActive: true,
+        sortOrder: toNumber(option.sortOrder),
+      })),
+  };
 }
 
 function sourceAvailabilityFor(sourceSnapshot, itemCode) {
@@ -145,7 +173,7 @@ function unavailableItem(itemCode, status = 'CURRENTLY_UNAVAILABLE', message = '
   };
 }
 
-function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods }) {
+function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups }) {
   const visibleItems = finishedGoods
     .filter((item) => isActiveSellableAvailable(item.data, targetStore.id))
     .sort((a, b) => {
@@ -171,12 +199,22 @@ function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods }) {
   }
 
   const availabilityValues = Object.values(items);
+  const referencedAddOnGroupIds = new Set(
+    Object.values(menuItems).flatMap((item) => item.addOnGroupIds || []),
+  );
+  const publicAddOnGroups = Object.fromEntries(
+    addOnGroups
+      .filter((group) => referencedAddOnGroupIds.has(group.id) && group.data.isActive !== false)
+      .map((group) => [group.id, sanitizedAddOnGroup(group.id, group.data)]),
+  );
+
   return {
     storeId: targetStore.id,
     storeCode: targetStore.data.code || targetStore.id,
     storeName: targetStore.data.name || targetStore.id,
     items,
     menuItems,
+    addOnGroups: publicAddOnGroups,
     itemCount: availabilityValues.length,
     availableCount: availabilityValues.filter((item) => item.available).length,
     unavailableCount: availabilityValues.filter((item) => !item.available).length,
@@ -191,18 +229,24 @@ function snapshotCount(snapshot, key) {
 function diffSnapshot(current, next) {
   const currentItemCount = snapshotCount(current, 'menuItems');
   const nextItemCount = snapshotCount(next, 'menuItems');
+  const currentAddOnGroupCount = snapshotCount(current, 'addOnGroups');
+  const nextAddOnGroupCount = snapshotCount(next, 'addOnGroups');
   const currentAvailable = toNumber(current?.availableCount);
   const currentUnavailable = toNumber(current?.unavailableCount);
 
   return {
     needsWrite: !current
       || currentItemCount !== nextItemCount
+      || currentAddOnGroupCount !== nextAddOnGroupCount
+      || JSON.stringify(current?.addOnGroups || {}) !== JSON.stringify(next.addOnGroups || {})
       || currentAvailable !== next.availableCount
       || currentUnavailable !== next.unavailableCount
       || current?.storeId !== next.storeId
       || current?.storeCode !== next.storeCode,
     currentItemCount,
     nextItemCount,
+    currentAddOnGroupCount,
+    nextAddOnGroupCount,
     currentAvailable,
     nextAvailable: next.availableCount,
     currentUnavailable,
@@ -220,16 +264,18 @@ async function main() {
   if (!targetStore) fail(`Target store not found: ${TARGET_STORE_CODE}`);
   if (!sourceStore) fail(`Source store not found: ${SOURCE_STORE_CODE}`);
 
-  const [finishedSnap, targetAvailabilitySnap, sourceAvailabilitySnap] = await Promise.all([
+  const [finishedSnap, addOnGroupSnap, targetAvailabilitySnap, sourceAvailabilitySnap] = await Promise.all([
     firestore.collection('finishedGoods').get(),
+    firestore.collection('addOnGroups').get(),
     firestore.collection('publicMenuAvailability').doc(targetStore.data.code || targetStore.id).get(),
     firestore.collection('publicMenuAvailability').doc(sourceStore.data.code || sourceStore.id).get(),
   ]);
 
   const finishedGoods = finishedSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
+  const addOnGroups = addOnGroupSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
   const sourceSnapshot = sourceAvailabilitySnap.exists ? sourceAvailabilitySnap.data() || {} : null;
   const currentSnapshot = targetAvailabilitySnap.exists ? targetAvailabilitySnap.data() || {} : null;
-  const nextSnapshot = buildSnapshot({ targetStore, sourceSnapshot, finishedGoods });
+  const nextSnapshot = buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups });
   const diff = diffSnapshot(currentSnapshot, nextSnapshot);
   const targetPath = `publicMenuAvailability/${targetStore.data.code || targetStore.id}`;
 
@@ -242,6 +288,7 @@ async function main() {
   console.log('');
   console.log(`Existing public menu items: ${diff.currentItemCount}`);
   console.log(`Projected public menu items: ${diff.nextItemCount}`);
+  console.log(`Existing/projected public add-on groups: ${diff.currentAddOnGroupCount}/${diff.nextAddOnGroupCount}`);
   console.log(`Existing available/unavailable: ${diff.currentAvailable}/${diff.currentUnavailable}`);
   console.log(`Projected available/unavailable: ${diff.nextAvailable}/${diff.nextUnavailable}`);
   console.log(`Record affected: ${diff.needsWrite ? targetPath : 'none'}`);

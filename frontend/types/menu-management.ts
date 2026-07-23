@@ -17,9 +17,21 @@ export interface RawIngredient {
 export type BOMComponentType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONENT' | 'FINISHED_GOOD' | 'PACKAGING';
 export type PackagingApplicability = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'ALL';
 
-export interface AddOnGroup {
-  id?: string;
+export type AddOnInventoryItemType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'PACKAGING';
+
+export interface AddOnOption {
+  id: string;
+  code: string;
   name: string;
+  price: number;
+  attribute?: 'VEG' | 'EGG' | string;
+  taxRate?: number;
+  isActive: boolean;
+  sortOrder: number;
+  inventoryItemType?: AddOnInventoryItemType;
+  inventoryItemCode?: string;
+  consumptionQuantity?: number;
+  consumptionUnit?: string;
 }
 
 export interface BOMComponent {
@@ -98,9 +110,14 @@ export interface FinishedGood {
 export interface AddOnGroup {
   id?: string;
   name: string;
-  code: string;
+  code?: string;
   description?: string;
   isActive: boolean;
+  isRequired?: boolean;
+  minimumSelections?: number;
+  maximumSelections?: number | null;
+  selectionMode?: 'SINGLE' | 'MULTIPLE';
+  options: AddOnOption[];
   createdAt?: any;
   updatedAt?: any;
   productIds?: string[];

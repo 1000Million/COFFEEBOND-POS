@@ -116,6 +116,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/complimentaryAuthorizations/$(authorizationId);
     }
 
+    function posAddOnAuthorizationPath(authorizationId) {
+      return /databases/$(database)/documents/posAddOnAuthorizations/$(authorizationId);
+    }
+
     function hasValidComplimentaryAuthorization(data, orderId) {
       return data.complimentaryAuthorizationId is string
         && data.complimentaryAuthorizationId.size() > 0
@@ -185,6 +189,25 @@ service cloud.firestore {
       return getAfter(/databases/$(database)/documents/orders/$(orderId)).data;
     }
 
+    function orderItemAfter(orderId, itemId) {
+      return getAfter(/databases/$(database)/documents/orders/$(orderId)/items/$(itemId)).data;
+    }
+
+    function hasValidPosAddOnAuthorization(data, orderId) {
+      return data.addOnAuthorizationId is string
+        && data.addOnAuthorizationId.size() > 0
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.provider == 'SERVER_CANONICAL_ADD_ONS'
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.staffUid == request.auth.uid
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.storeId == data.storeId
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.orderId == orderId
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.orderNumber == data.orderNumber
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.canonicalAddOnTotal == data.addOnTotal
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.expiresAt is timestamp
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.expiresAt > request.time
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.used == true
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.usedAt is timestamp;
+    }
+
     function orderTotalsUnchanged() {
       return request.resource.data.subtotal == resource.data.subtotal
         && request.resource.data.taxTotal == resource.data.taxTotal
@@ -215,6 +238,7 @@ service cloud.firestore {
         && request.resource.data.createdByUserId == request.auth.uid
         && request.resource.data.status == 'COMPLETED'
         && (isValidSaleOrderCreate(request.resource.data) || isValidComplimentaryOrderCreate(request.resource.data, orderId))
+        && hasValidPosAddOnAuthorization(request.resource.data, orderId)
         && hasValidInventoryConsumptionStatus(request.resource.data);
     }
 
@@ -271,6 +295,34 @@ service cloud.firestore {
         ]);
     }
 
+    function isValidPosAddOnAuthorizationConsume(authorizationId) {
+      return isCheckoutStaff()
+        && resource.data.provider == 'SERVER_CANONICAL_ADD_ONS'
+        && resource.data.used == false
+        && resource.data.staffUid == request.auth.uid
+        && resource.data.expiresAt is timestamp
+        && resource.data.expiresAt > request.time
+        && resource.data.orderId is string
+        && resource.data.orderId.size() > 0
+        && resource.data.canonicalItems is map
+        && resource.data.canonicalAddOnTotal is number
+        && resource.data.canonicalAddOnTotal >= 0
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.used == true
+        && request.resource.data.usedAt is timestamp
+        && request.resource.data.orderNumber is string
+        && request.resource.data.orderNumber.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'used',
+          'usedAt',
+          'orderNumber'
+        ])
+        && getAfter(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.addOnAuthorizationId == authorizationId
+        && getAfter(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.createdByUserId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.storeId == resource.data.storeId
+        && getAfter(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.orderNumber == request.resource.data.orderNumber;
+    }
+
     function isOrderVoidUpdate() {
       return (isAdmin() || isStoreManager())
         && hasStoreAccess(resource.data.storeId)
@@ -324,10 +376,30 @@ service cloud.firestore {
         ])));
     }
 
-    function isValidOrderItemCreate(orderId) {
+    function isValidOrderItemCreate(orderId, itemId) {
       return isCheckoutStaff()
         && hasStoreAccess(orderAfter(orderId).storeId)
         && request.resource.data.status == 'PENDING'
+        && request.resource.data.addOnAuthorizationId == orderAfter(orderId).addOnAuthorizationId
+        && getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems is map
+        && getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems.keys().hasAll([itemId])
+        && request.resource.data.menuItemId == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].parentProductId
+        && request.resource.data.itemCode == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].parentProductCode
+        && request.resource.data.quantity == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].quantity
+        && request.resource.data.baseUnitPrice == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].baseUnitPrice
+        && request.resource.data.unitPrice == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].baseUnitPrice
+        && request.resource.data.taxRate == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].taxRate
+        && request.resource.data.addOns == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].addOns
+        && request.resource.data.addOnTotal == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].addOnTotal
+        && request.resource.data.addOns is list
+        && request.resource.data.addOns.size() <= 40
+        && request.resource.data.baseUnitPrice is number
+        && request.resource.data.baseUnitPrice >= 0
+        && request.resource.data.addOnTotal is number
+        && request.resource.data.addOnTotal >= 0
+        && request.resource.data.unitPriceWithAddOns is number
+        && request.resource.data.unitPriceWithAddOns == request.resource.data.baseUnitPrice + request.resource.data.addOnTotal
+        && request.resource.data.lineSubtotal == request.resource.data.unitPriceWithAddOns * request.resource.data.quantity
         && (!isStoredComplimentaryOrder(orderAfter(orderId))
           || (request.resource.data.lineSubtotal is number
             && request.resource.data.lineSubtotal > 0
@@ -420,7 +492,11 @@ service cloud.firestore {
         && hasStoreAccess(request.resource.data.storeId)
         && request.resource.data.station in ['BARISTA', 'KITCHEN']
         && request.resource.data.status == 'PENDING'
-        && request.resource.data.createdByUserId == request.auth.uid;
+        && request.resource.data.createdByUserId == request.auth.uid
+        && request.resource.data.addOns == orderItemAfter(
+          request.resource.data.orderId,
+          request.resource.data.orderItemId
+        ).addOns;
     }
 
     function isValidKotUpdate() {
@@ -624,6 +700,16 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /addOnGroups/{groupId} {
+      allow read: if isActiveStaff();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /addOnGroupAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
     match /dayClosings/{closingId} {
       allow get: if isCheckoutStaff() && (
         !exists(/databases/$(database)/documents/dayClosings/$(closingId))
@@ -659,6 +745,15 @@ service cloud.firestore {
       allow update: if isValidComplimentaryAuthorizationConsume(authorizationId);
     }
 
+    // Created server-side; the client may only consume its own short-lived checkout authorization.
+    match /posAddOnAuthorizations/{authorizationId} {
+      allow read: if isCheckoutStaff()
+        && resource.data.staffUid == request.auth.uid
+        && hasStoreAccess(resource.data.storeId);
+      allow create, delete: if false;
+      allow update: if isValidPosAddOnAuthorizationConsume(authorizationId);
+    }
+
     // Orders Collection
     match /orders/{orderId} {
       allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
@@ -669,7 +764,7 @@ service cloud.firestore {
       // Order Subcollections
       match /items/{itemId} {
         allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
-        allow create: if isValidOrderItemCreate(orderId);
+        allow create: if isValidOrderItemCreate(orderId, itemId);
         allow update: if isOrderItemStatusUpdate(orderId);
         allow delete: if isAdmin();
       }

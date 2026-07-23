@@ -270,7 +270,14 @@ export default function CustomerOrderStatus() {
               <div className="space-y-2">
                 {order.items.map(item => (
                   <div key={`${order.id}-${item.itemName}`} className="flex justify-between gap-3 rounded-2xl bg-[#fbf5ee] px-3 py-2 text-sm">
-                    <span className="font-bold text-[#2d2019]">{item.quantity} x {item.itemName}</span>
+                    <div>
+                      <span className="font-bold text-[#2d2019]">{item.quantity} x {item.itemName}</span>
+                      {(item.addOns || []).map(addOn => (
+                        <p key={`${addOn.groupName}-${addOn.optionName}`} className="pl-2 text-xs font-semibold text-neutral-500">
+                          + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                        </p>
+                      ))}
+                    </div>
                     <span className="font-black text-[#5c4033]">{formatMoney(item.lineTotal)}</span>
                   </div>
                 ))}

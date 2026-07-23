@@ -76,6 +76,25 @@ export interface ReceiptLegalDetails {
   gstRegistered: boolean;
 }
 
+export type AddOnInventoryItemType = "RAW_INGREDIENT" | "PREP_ITEM" | "PACKAGING";
+export type AddOnInventoryTrackingStatus = "CONFIGURED" | "NOT_CONFIGURED";
+
+export interface AddOnSelection {
+  groupId: string;
+  groupName: string;
+  optionId: string;
+  optionName: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  taxRate: number;
+  inventoryTrackingStatus: AddOnInventoryTrackingStatus;
+  inventoryItemType?: AddOnInventoryItemType;
+  inventoryItemCode?: string;
+  consumptionQuantity?: number;
+  consumptionUnit?: string;
+}
+
 export interface CartItem {
   id: string; // generate unique ID for cart row, or use menu item ID if grouping
   menuItemId: string;
@@ -89,6 +108,10 @@ export interface CartItem {
   itemType?: "NO_STOCK" | "MADE_TO_ORDER" | "DIRECT_STOCK" | string;
   finishedGoodCode?: string;
   bom?: any[];
+  addOns?: AddOnSelection[];
+  baseUnitPrice?: number;
+  addOnTotal?: number;
+  unitPriceWithAddOns?: number;
 }
 
 export interface Customer {
@@ -122,6 +145,8 @@ export interface Order {
   complimentaryDiscount?: number;
   complimentaryReason?: string;
   complimentaryAuthorizationId?: string;
+  addOnAuthorizationId?: string;
+  addOnTotal?: number;
   complimentaryOtpVerified?: boolean;
   complimentaryVerifiedPhone?: string;
   complimentaryOtpProvider?: string;
@@ -195,6 +220,11 @@ export interface OrderItem {
   sourceSystem?: "FINISHED_GOODS" | "LEGACY_MENU_ITEMS";
   finishedGoodCode?: string;
   itemType?: "NO_STOCK" | "MADE_TO_ORDER" | "DIRECT_STOCK" | string;
+  addOns?: AddOnSelection[];
+  addOnAuthorizationId?: string;
+  baseUnitPrice?: number;
+  addOnTotal?: number;
+  unitPriceWithAddOns?: number;
 }
 
 export type KotStatus = "PENDING" | "PREPARING" | "READY" | "SERVED" | "RETURNED" | "WASTAGE_RECORDED" | "REMAKE_REQUESTED" | "CANCELLED";
@@ -235,6 +265,7 @@ export interface KotItem {
   updatedAt: any;
   createdByUserId: string;
   createdByName: string;
+  addOns?: AddOnSelection[];
 }
 
 export interface OrderPayment {
@@ -264,6 +295,10 @@ export interface OnlineOrderItem {
   lineTotal: number;
   prepStation: PrepStation;
   itemType?: string;
+  addOns?: AddOnSelection[];
+  baseUnitPrice?: number;
+  addOnTotal?: number;
+  unitPriceWithAddOns?: number;
 }
 
 export interface OnlineOrder {
@@ -303,6 +338,13 @@ export interface PublicOrderTrackingItem {
   itemName: string;
   quantity: number;
   lineTotal: number;
+  addOns?: Array<{
+    groupName: string;
+    optionName: string;
+    quantity: number;
+    unitPrice: number;
+    totalPrice: number;
+  }>;
 }
 
 export interface PublicOrderTracking {
