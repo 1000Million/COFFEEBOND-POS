@@ -90,9 +90,6 @@ export default function FranchiseLogin() {
             {submitting ? 'Signing in...' : 'Open daily sales'}
           </button>
 
-          <p className="text-center text-xs leading-5 text-neutral-500">
-            This account can view assigned-store sales only. It cannot access POS, customers, inventory, or administration.
-          </p>
           <Link to="/login" className="block text-center text-sm font-bold text-[#5c4033] hover:underline">
             Staff sign in
           </Link>
