@@ -527,6 +527,11 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                                       <div className="min-w-0">
                                         <p className="break-words text-sm font-black leading-snug text-neutral-900">{item.itemName}</p>
                                         <p className="break-words text-[11px] font-bold uppercase tracking-wide text-neutral-400">{item.itemCode}</p>
+                                        {(item.addOns || []).map(addOn => (
+                                          <p key={`${addOn.groupId}-${addOn.optionId}`} className="mt-0.5 break-words pl-2 text-xs font-bold text-[#795C34]">
+                                            + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                                          </p>
+                                        ))}
                                       </div>
                                     </div>
                                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -621,6 +626,11 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                            <div className="min-w-0">
                              <p className="break-words text-lg font-black text-neutral-950">{item.itemName}</p>
                              <p className="break-words text-xs font-bold uppercase tracking-wide text-neutral-400">{item.itemCode}</p>
+                             {(item.addOns || []).map(addOn => (
+                               <p key={`${addOn.groupId}-${addOn.optionId}`} className="mt-0.5 break-words pl-2 text-sm font-bold text-[#795C34]">
+                                 + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                               </p>
+                             ))}
                            </div>
                          </div>
                        </div>

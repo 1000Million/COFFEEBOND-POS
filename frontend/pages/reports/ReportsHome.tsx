@@ -390,6 +390,56 @@ export default function ReportsHome() {
      });
      return Object.entries(summary).sort((a,b) => b[1].count - a[1].count).slice(0, 5);
   }, [filteredItems]);
+
+  const addOnSales = useMemo(() => {
+    const orderById = new Map(commercialCompletedOrders.map(order => [order.id, order]));
+    const summary = new Map<string, {
+      group: string;
+      option: string;
+      quantity: number;
+      gross: number;
+      discount: number;
+      taxable: number;
+      gst: number;
+      net: number;
+      stores: Set<string>;
+    }>();
+    filteredItems.forEach(item => {
+      const order = orderById.get(item.orderId);
+      if (!order) return;
+      const orderSubtotal = Math.max(0, moneyNumber(order.subtotal));
+      const discountRatio = orderSubtotal > 0
+        ? Math.min(1, Math.max(0, orderDiscountTotal(order) / orderSubtotal))
+        : 0;
+      (item.addOns || []).forEach(addOn => {
+        const key = `${addOn.groupId}:${addOn.optionId}`;
+        const current = summary.get(key) || {
+          group: addOn.groupName,
+          option: addOn.optionName,
+          quantity: 0,
+          gross: 0,
+          discount: 0,
+          taxable: 0,
+          gst: 0,
+          net: 0,
+          stores: new Set<string>(),
+        };
+        const gross = moneyNumber(addOn.totalPrice) * moneyNumber(item.quantity);
+        const discount = gross * discountRatio;
+        const taxable = Math.max(0, gross - discount);
+        const gst = taxable * moneyNumber(addOn.taxRate) / 100;
+        current.quantity += moneyNumber(addOn.quantity) * moneyNumber(item.quantity);
+        current.gross += gross;
+        current.discount += discount;
+        current.taxable += taxable;
+        current.gst += gst;
+        current.net += taxable;
+        current.stores.add(order.storeName);
+        summary.set(key, current);
+      });
+    });
+    return [...summary.values()].sort((a, b) => b.net - a.net);
+  }, [commercialCompletedOrders, filteredItems]);
   
   const hourlySales = useMemo(() => {
     const hours = Array.from({length: 24}, (_, i) => ({ hour: i, count: 0, total: 0 }));
@@ -1062,6 +1112,50 @@ export default function ReportsHome() {
                
             </div>
 
+            <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm">
+              <div className="border-b border-neutral-100 p-4">
+                <h3 className="font-bold text-neutral-800">Add-on Sales</h3>
+                <p className="text-xs font-medium text-neutral-500">Paid, completed orders only. Voided and complimentary orders are excluded.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full whitespace-nowrap text-left text-sm">
+                  <thead className="bg-neutral-50 text-xs font-bold uppercase tracking-wider text-neutral-500">
+                    <tr>
+                      <th className="px-4 py-3">Group</th>
+                      <th className="px-4 py-3">Option</th>
+                      <th className="px-4 py-3 text-right">Qty</th>
+                      <th className="px-4 py-3 text-right">Gross</th>
+                      <th className="px-4 py-3 text-right">Discount</th>
+                      <th className="px-4 py-3 text-right">Taxable</th>
+                      <th className="px-4 py-3 text-right">GST</th>
+                      <th className="px-4 py-3 text-right">Net Sales</th>
+                      <th className="px-4 py-3">Store</th>
+                      <th className="px-4 py-3">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {addOnSales.map(row => (
+                      <tr key={`${row.group}-${row.option}`}>
+                        <td className="px-4 py-3 font-bold">{row.group}</td>
+                        <td className="px-4 py-3">{row.option}</td>
+                        <td className="px-4 py-3 text-right font-mono">{row.quantity}</td>
+                        <td className="px-4 py-3 text-right font-mono">₹{row.gross.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-mono">₹{row.discount.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-mono">₹{row.taxable.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-mono">₹{row.gst.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-mono font-bold">₹{row.net.toFixed(2)}</td>
+                        <td className="px-4 py-3">{[...row.stores].join(', ')}</td>
+                        <td className="px-4 py-3">{dateStr}</td>
+                      </tr>
+                    ))}
+                    {addOnSales.length === 0 && (
+                      <tr><td colSpan={10} className="px-4 py-6 text-center font-bold text-neutral-400">No add-on sales for these filters.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Order List */}
             <div className="bg-white border border-neutral-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="p-4 border-b border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -1311,11 +1405,16 @@ export default function ReportsHome() {
                       <div>
                         <p className="font-bold text-neutral-900">{item.itemName}</p>
                         <p className="text-xs text-neutral-500 font-mono">{item.quantity} x ₹{item.unitPrice.toFixed(2)}</p>
+                        {(item.addOns || []).map(addOn => (
+                          <p key={`${addOn.groupId}-${addOn.optionId}`} className="pl-2 text-xs font-semibold text-neutral-500">
+                            + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''} · ₹{addOn.totalPrice.toFixed(2)}
+                          </p>
+                        ))}
                         <p className={`mt-1 text-xs font-black ${isVoidedOrder(selectedOrder) ? 'text-red-700' : 'text-neutral-500'}`}>
                           {orderItemDisplayStatus(selectedOrder, item)}
                         </p>
                       </div>
-                      <span className="font-mono font-bold text-neutral-800">₹{(isComplimentaryOrder(selectedOrder) ? item.unitPrice * item.quantity : item.lineTotal || 0).toFixed(2)}</span>
+                      <span className="font-mono font-bold text-neutral-800">₹{(isComplimentaryOrder(selectedOrder) ? (item.unitPriceWithAddOns ?? item.unitPrice) * item.quantity : item.lineTotal || 0).toFixed(2)}</span>
                     </div>
                   ))}
                 </div>

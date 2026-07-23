@@ -63,6 +63,8 @@ const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
 const complimentaryOrderCreateBody = extractFunction(rules, 'isValidComplimentaryOrderCreate');
 const complimentaryAuthorizationBody = extractFunction(rules, 'hasValidComplimentaryAuthorization');
 const complimentaryAuthorizationConsumeBody = extractFunction(rules, 'isValidComplimentaryAuthorizationConsume');
+const posAddOnAuthorizationBody = extractFunction(rules, 'hasValidPosAddOnAuthorization');
+const posAddOnAuthorizationConsumeBody = extractFunction(rules, 'isValidPosAddOnAuthorizationConsume');
 const storedComplimentaryOrderBody = extractFunction(rules, 'isStoredComplimentaryOrder');
 const orderSettlementBody = extractFunction(rules, 'isOrderSettlementUpdate');
 const orderVoidBody = extractFunction(rules, 'isOrderVoidUpdate');
@@ -91,7 +93,10 @@ const storeInventoryBlock = extractMatchBlock(rules, 'match /storeInventory/{sto
 const pendingConsumptionBlock = extractMatchBlock(rules, 'match /pendingInventoryConsumption/{pendingId}');
 const purchaseDraftsBlock = extractMatchBlock(rules, 'match /purchaseDrafts/{draftId}');
 const productImageAuditBlock = extractMatchBlock(rules, 'match /productImageAudit/{auditId}');
+const addOnGroupsBlock = extractMatchBlock(rules, 'match /addOnGroups/{groupId}');
+const addOnGroupAuditBlock = extractMatchBlock(rules, 'match /addOnGroupAudit/{auditId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
+const posAddOnAuthorizationsBlock = extractMatchBlock(rules, 'match /posAddOnAuthorizations/{authorizationId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const menuImageStorageBlock = extractMatchBlock(storageRules, 'match /menu-images/{productCode}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
@@ -182,6 +187,23 @@ assert(/resource\.data\.staffUid\s*==\s*request\.auth\.uid/.test(complimentaryAu
 assert(/hasStoreAccess\(resource\.data\.storeId\)/.test(complimentaryAuthorizationConsumeBody), 'Authorization consume must reject cross-store access.');
 assert(/affectedKeys\(\)\.hasOnly\(\[/.test(complimentaryAuthorizationConsumeBody), 'Authorization consume must preserve all verification fields.');
 assert(/complimentaryAuthorizationId\s*==\s*authorizationId/.test(complimentaryAuthorizationConsumeBody), 'Consumed authorization must link back from the created complimentary order.');
+assert(/hasValidPosAddOnAuthorization\(request\.resource\.data,\s*orderId\)/.test(orderCreateBody), 'Every checkout-created order must use a server-issued POS add-on authorization.');
+assert(/provider\s*==\s*'SERVER_CANONICAL_ADD_ONS'/.test(posAddOnAuthorizationBody), 'Order creation must require the server canonical add-on provider.');
+assert(/staffUid\s*==\s*request\.auth\.uid/.test(posAddOnAuthorizationBody), 'POS add-on authorization staff UID must match checkout staff.');
+assert(/storeId\s*==\s*data\.storeId/.test(posAddOnAuthorizationBody), 'POS add-on authorization store must match the order.');
+assert(/orderId\s*==\s*orderId/.test(posAddOnAuthorizationBody), 'POS add-on authorization must bind the exact order ID.');
+assert(/orderNumber\s*==\s*data\.orderNumber/.test(posAddOnAuthorizationBody), 'POS add-on authorization must bind the generated order number.');
+assert(/canonicalAddOnTotal\s*==\s*data\.addOnTotal/.test(posAddOnAuthorizationBody), 'Order add-on total must match the server-issued canonical total.');
+assert(/expiresAt\s*>\s*request\.time/.test(posAddOnAuthorizationBody), 'Expired POS add-on authorizations must be denied.');
+assert(/used\s*==\s*true/.test(posAddOnAuthorizationBody), 'Order creation must observe the authorization as atomically consumed.');
+assert(/allow\s+create,\s*delete:\s*if\s+false;/.test(posAddOnAuthorizationsBlock), 'POS add-on authorizations must be server-created and never client-deleted.');
+assert(/allow\s+update:\s*if\s+isValidPosAddOnAuthorizationConsume\(authorizationId\);/.test(posAddOnAuthorizationsBlock), 'POS add-on authorization updates must use the restricted consume helper.');
+assert(/resource\.data\.used\s*==\s*false/.test(posAddOnAuthorizationConsumeBody), 'Used POS add-on authorizations cannot be reused.');
+assert(/resource\.data\.staffUid\s*==\s*request\.auth\.uid/.test(posAddOnAuthorizationConsumeBody), 'POS add-on consume must reject staff mismatch.');
+assert(/hasStoreAccess\(resource\.data\.storeId\)/.test(posAddOnAuthorizationConsumeBody), 'POS add-on consume must reject cross-store access.');
+assert(/resource\.data\.expiresAt\s*>\s*request\.time/.test(posAddOnAuthorizationConsumeBody), 'POS add-on consume must reject expired authorizations.');
+assert(/getAfter\(\/databases\/\$\(database\)\/documents\/orders\/\$\(resource\.data\.orderId\)\)/.test(posAddOnAuthorizationConsumeBody), 'POS add-on consume must be atomic with the exact order create.');
+assert(/data\.addOnAuthorizationId\s*==\s*authorizationId/.test(posAddOnAuthorizationConsumeBody), 'POS add-on authorization must link back from the created order.');
 
 assert(/resource\.data\.paymentStatus in \['UNPAID', 'PARTIAL'\]/.test(orderSettlementBody), 'Settlement must start only from unpaid or partial orders.');
 assert(/request\.resource\.data\.paymentStatus\s*==\s*'PAID'/.test(orderSettlementBody), 'Settlement must only mark an order paid.');
@@ -212,7 +234,7 @@ for (const totalField of ['subtotal', 'taxTotal', 'gstTotal', 'taxableAmount', '
   assert(orderTotalsBody.includes(`request.resource.data.${totalField} == resource.data.${totalField}`), `Order updates must preserve ${totalField}.`);
 }
 
-assert(/allow\s+create:\s*if\s+isValidOrderItemCreate\(orderId\);/.test(orderItemsBlock), 'Order item creation must use the order item create helper.');
+assert(/allow\s+create:\s*if\s+isValidOrderItemCreate\(orderId,\s*itemId\);/.test(orderItemsBlock), 'Order item creation must use the exact order item ID in the hardened helper.');
 assert(/allow\s+update:\s*if\s+isOrderItemStatusUpdate\(orderId\);/.test(orderItemsBlock), 'Order item updates must be status-only.');
 assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(orderItemsBlock), 'Only Admin may delete order items.');
 assert(/hasStoreAccess\(orderAfter\(orderId\)\.storeId\)/.test(orderItemCreateBody), 'Order item create must use the parent order store.');
@@ -258,6 +280,16 @@ assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*\(isAdmin\(\)\s*\|\|\s*has
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(purchaseDraftsBlock), 'Purchase drafts must be server-created only.');
 assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(productImageAuditBlock), 'Product image audit must be admin readable and writable.');
 assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productImageAuditBlock), 'Product image audit must remain append-only.');
+assert(/allow\s+read:\s*if\s+isActiveStaff\(\);/.test(addOnGroupsBlock), 'Active staff must be able to read add-on groups for POS.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s+isAdmin\(\);/.test(addOnGroupsBlock), 'Only active Admin may change add-on groups.');
+assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(addOnGroupAuditBlock), 'Only active Admin may read or append add-on audit records.');
+assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(addOnGroupAuditBlock), 'Add-on audit records must be append-only.');
+assert(/request\.resource\.data\.addOns is list/.test(orderItemCreateBody), 'Order item add-on snapshots must be list-shaped.');
+assert(/canonicalItems\[itemId\]\.addOns/.test(orderItemCreateBody), 'Order item add-ons must exactly match the server-issued canonical item snapshot.');
+assert(/canonicalItems\[itemId\]\.baseUnitPrice/.test(orderItemCreateBody), 'Order item base price must match the server-issued product snapshot.');
+assert(/canonicalItems\[itemId\]\.taxRate/.test(orderItemCreateBody), 'Order item tax rate must match the server-issued product snapshot.');
+assert(/request\.resource\.data\.unitPriceWithAddOns == request\.resource\.data\.baseUnitPrice \+ request\.resource\.data\.addOnTotal/.test(orderItemCreateBody), 'Order item add-on arithmetic must be validated.');
+assert(/request\.resource\.data\.addOns\s*==\s*orderItemAfter/.test(kotCreateBody), 'KOT add-ons must copy the authorized order item snapshot exactly.');
 assert(storageRules.includes('match /purchase-invoices/{storeId}/{draftId}/{fileName}'), 'Storage rules must protect purchase invoice uploads.');
 assert(/allow\s+read:\s*if\s+isActiveStaff\(\)\s*&&\s*hasStoreAccess\(storeId\);/.test(invoiceStorageBlock), 'Invoice files must be readable only by assigned active staff.');
 assert(/allow\s+create,\s*update:\s*if\s+\(isAdmin\(\) \|\| isStoreManager\(\)\)/.test(invoiceStorageBlock), 'Only Admin or Store Manager may upload invoice files.');
@@ -297,6 +329,9 @@ const cases = [
   'Payment records require parent-order store access and valid methods',
   'Complimentary checkout requires zero taxable/GST/payable and a server-side verified OTP authorization',
   'Complimentary authorizations are server-created and only atomically consumed by their exact order',
+  'POS add-on authorizations are server-created, short-lived, staff/store/order-bound, and single-use',
+  'Order item add-on names, prices, tax, and inventory snapshots must exactly match the server authorization',
+  'KOT add-ons must exactly match the authorized order item snapshot',
   'Complimentary orders cannot create payment rows or settlement writes',
   'KOT creates and status updates preserve immutable ticket fields',
   'Stock movements cannot be updated or deleted',

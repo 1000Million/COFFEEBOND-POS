@@ -10,6 +10,7 @@ import {
   ChevronDown,
   List,
   Blocks,
+  ListPlus,
 } from "lucide-react";
 import RawIngredientsTab from "../../components/admin/menu-management/RawIngredientsTab";
 import StoreStockTab from "../../components/admin/menu-management/StoreStockTab";
@@ -18,6 +19,7 @@ import PrepProductionTab from "../../components/admin/menu-management/PrepProduc
 import FinishedGoodsTab from "../../components/admin/menu-management/FinishedGoodsTab";
 import PosMenuSettingsTab from "../../components/admin/menu-management/PosMenuSettingsTab";
 import OverviewTab from "../../components/admin/menu-management/OverviewTab";
+import AddOnsTab from "../../components/admin/menu-management/AddOnsTab";
 
 type TabId =
   | "overview"
@@ -27,6 +29,7 @@ type TabId =
   | "finished"
   | "stock"
   | "pos"
+  | "add-ons"
   | "costing";
 
 export default function MenuManagementHub() {
@@ -41,6 +44,7 @@ export default function MenuManagementHub() {
     { id: "finished", label: "Sellable Items", icon: Coffee },
     { id: "stock", label: "Store Stock", icon: Store },
     { id: "pos", label: "POS V2 Source", icon: LayoutGrid },
+    { id: "add-ons", label: "Add-ons", icon: ListPlus },
     { id: "costing", label: "Costing Dashboard", icon: TrendingUp },
   ];
 
@@ -126,6 +130,8 @@ export default function MenuManagementHub() {
             <StoreStockTab />
           ) : activeTab === "pos" ? (
             <PosMenuSettingsTab />
+          ) : activeTab === "add-ons" ? (
+            <AddOnsTab />
           ) : activeTab === "costing" ? (
             <div className="flex flex-col items-center justify-center p-12 bg-white border border-dashed border-neutral-300 rounded-2xl text-center">
               <TrendingUp

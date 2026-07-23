@@ -5,6 +5,7 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
 const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
+const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization');
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
 
 admin.initializeApp();
@@ -24,6 +25,8 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 exports.parseSupplierInvoiceDraft = createParseSupplierInvoiceDraft({ admin, db, region: REGION });
 exports.createComplimentaryAuthorization = createComplimentaryAuthorizationFunction({ admin, db, region: REGION });
+exports.authorizePosAddOns = createPosAddOnAuthorizationFunction({ admin, db, region: REGION });
+
 const franchiseSalesFunctions = createFranchiseSalesFunctions({ admin, db, region: REGION });
 exports.manageFranchiseViewer = franchiseSalesFunctions.manageFranchiseViewer;
 exports.getFranchiseDailySales = franchiseSalesFunctions.getFranchiseDailySales;
@@ -141,6 +144,32 @@ function itemTaxRate(item, fallbackRate) {
   return pickTaxRate(item, ITEM_TAX_RATE_KEYS) || fallbackRate;
 }
 
+function sanitizeRequestedAddOns(addOns) {
+  if (addOns === undefined) return [];
+  if (!Array.isArray(addOns) || addOns.length > 40) {
+    fail('invalid-argument', 'One or more selected add-ons are invalid.');
+  }
+  const merged = new Map();
+  addOns.forEach((addOn) => {
+    const groupId = cleanText(addOn?.groupId, 80);
+    const optionId = cleanText(addOn?.optionId, 80);
+    const quantity = Number(addOn?.quantity);
+    if (!groupId || !optionId || !Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_QUANTITY) {
+      fail('invalid-argument', 'One or more selected add-ons are invalid.');
+    }
+    const key = `${groupId}:${optionId}`;
+    const existing = merged.get(key);
+    merged.set(key, {
+      groupId,
+      optionId,
+      quantity: (existing?.quantity || 0) + quantity,
+    });
+  });
+  return [...merged.values()].sort((a, b) => (
+    a.groupId.localeCompare(b.groupId) || a.optionId.localeCompare(b.optionId)
+  ));
+}
+
 function sanitizeItemRequest(items) {
   if (!Array.isArray(items) || items.length === 0 || items.length > MAX_ITEMS) {
     fail('invalid-argument', 'Please add between 1 and 30 items.');
@@ -154,10 +183,84 @@ function sanitizeItemRequest(items) {
     if (!Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_QUANTITY) {
       fail('invalid-argument', 'Item quantity is invalid.');
     }
-    merged.set(itemCode, (merged.get(itemCode) || 0) + quantity);
+    const addOns = sanitizeRequestedAddOns(item?.addOns);
+    const key = `${itemCode}:${JSON.stringify(addOns)}`;
+    const existing = merged.get(key);
+    merged.set(key, {
+      itemCode,
+      addOns,
+      quantity: (existing?.quantity || 0) + quantity,
+    });
   });
 
-  return [...merged.entries()].map(([itemCode, quantity]) => ({ itemCode, quantity }));
+  return [...merged.values()];
+}
+
+function canonicalAddOnsForItem(item, requestedAddOns, publicGroups, privateGroups, fallbackTaxRate) {
+  const allowedGroupIds = new Set(Array.isArray(item.addOnGroupIds) ? item.addOnGroupIds : []);
+  const requestedByGroup = new Map();
+  requestedAddOns.forEach((requested) => {
+    if (!allowedGroupIds.has(requested.groupId)) {
+      fail('failed-precondition', 'One or more selected add-ons are unavailable.');
+    }
+    if (!requestedByGroup.has(requested.groupId)) requestedByGroup.set(requested.groupId, []);
+    requestedByGroup.get(requested.groupId).push(requested);
+  });
+
+  const result = [];
+  for (const groupId of allowedGroupIds) {
+    const publicGroup = publicGroups[groupId];
+    const privateGroup = privateGroups[groupId];
+    if (!publicGroup || publicGroup.isActive === false || !privateGroup || privateGroup.isActive === false) {
+      if (requestedByGroup.has(groupId)) fail('failed-precondition', 'One or more selected add-ons are unavailable.');
+      continue;
+    }
+    const requestedForGroup = requestedByGroup.get(groupId) || [];
+    const selectionCount = requestedForGroup.reduce((sum, selected) => sum + selected.quantity, 0);
+    const minimum = Math.max(0, toNumber(privateGroup.minimumSelections));
+    const maximum = privateGroup.maximumSelections === null || privateGroup.maximumSelections === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(minimum, toNumber(privateGroup.maximumSelections));
+    if (selectionCount < minimum || selectionCount > maximum) {
+      fail('failed-precondition', `Selected add-ons for ${privateGroup.name || 'this item'} are invalid.`);
+    }
+    const publicOptions = new Map((publicGroup.options || []).map((option) => [option.id, option]));
+    const privateOptions = new Map((privateGroup.options || []).map((option) => [option.id, option]));
+    requestedForGroup.forEach((requested) => {
+      const publicOption = publicOptions.get(requested.optionId);
+      const option = privateOptions.get(requested.optionId);
+      if (!publicOption || publicOption.isActive === false || !option || option.isActive === false) {
+        fail('failed-precondition', 'One or more selected add-ons are unavailable.');
+      }
+      const unitPrice = Math.max(0, toNumber(option.price));
+      if (unitPrice !== Math.max(0, toNumber(publicOption.price))) {
+        fail('failed-precondition', 'Add-on pricing is being refreshed. Please update your basket.');
+      }
+      const taxRate = itemTaxRate(option, fallbackTaxRate);
+      const inventoryConfigured = ['RAW_INGREDIENT', 'PREP_ITEM', 'PACKAGING'].includes(option.inventoryItemType)
+        && cleanText(option.inventoryItemCode, 80)
+        && toNumber(option.consumptionQuantity) > 0
+        && cleanText(option.consumptionUnit, 20);
+      result.push({
+        groupId,
+        groupName: privateGroup.name,
+        optionId: option.id,
+        optionName: option.name,
+        quantity: requested.quantity,
+        unitPrice,
+        totalPrice: unitPrice * requested.quantity,
+        taxRate,
+        inventoryTrackingStatus: inventoryConfigured ? 'CONFIGURED' : 'NOT_CONFIGURED',
+        ...(inventoryConfigured ? {
+          inventoryItemType: option.inventoryItemType,
+          inventoryItemCode: cleanText(option.inventoryItemCode, 80),
+          consumptionQuantity: toNumber(option.consumptionQuantity),
+          consumptionUnit: cleanText(option.consumptionUnit, 20),
+        } : {}),
+      });
+    });
+  }
+  return result;
 }
 
 function buildOnlineOrderPayload(args) {
@@ -208,6 +311,13 @@ function buildPublicTrackingPayload(args) {
       itemName: item.itemName,
       quantity: item.quantity,
       lineTotal: item.lineTotal,
+      addOns: (item.addOns || []).map((addOn) => ({
+        groupName: addOn.groupName,
+        optionName: addOn.optionName,
+        quantity: addOn.quantity,
+        unitPrice: addOn.unitPrice,
+        totalPrice: addOn.totalPrice,
+      })),
     })),
     subtotal: onlineOrder.subtotal,
     gstTotal: onlineOrder.gstTotal,
@@ -291,8 +401,22 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     const availability = availabilitySnap.data() || {};
     const availabilityItems = availability.items || {};
     const menuItems = availability.menuItems || {};
+    const publicAddOnGroups = availability.addOnGroups || {};
     const gstConfig = gstSnap.exists ? gstSnap.data() : null;
     const storeTaxRate = calculateStoreTaxRate(store, gstConfig);
+    const requestedGroupIds = [...new Set(requestedItems.flatMap((requestedItem) => [
+      ...(Array.isArray(menuItems[requestedItem.itemCode]?.addOnGroupIds)
+        ? menuItems[requestedItem.itemCode].addOnGroupIds
+        : []),
+      ...requestedItem.addOns.map((addOn) => addOn.groupId),
+    ]))];
+    const privateGroupSnaps = await Promise.all(
+      requestedGroupIds.map((groupId) => transaction.get(db.collection('addOnGroups').doc(groupId))),
+    );
+    const privateAddOnGroups = privateGroupSnaps.reduce((acc, snap) => {
+      if (snap.exists) acc[snap.id] = { id: snap.id, ...snap.data() };
+      return acc;
+    }, {});
 
     const onlineItems = requestedItems.map((requested) => {
       const item = menuItems[requested.itemCode];
@@ -302,9 +426,22 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       }
 
       const rate = itemTaxRate(item, storeTaxRate);
-      const unitPrice = toNumber(item.salePrice);
+      const baseUnitPrice = toNumber(item.salePrice);
+      const addOns = canonicalAddOnsForItem(
+        item,
+        requested.addOns,
+        publicAddOnGroups,
+        privateAddOnGroups,
+        rate,
+      );
+      const addOnUnitTotal = addOns.reduce((sum, addOn) => sum + addOn.totalPrice, 0);
+      const unitPrice = baseUnitPrice + addOnUnitTotal;
       const lineSubtotal = unitPrice * requested.quantity;
-      const lineTax = lineSubtotal * rate / 100;
+      const baseLineTax = baseUnitPrice * requested.quantity * rate / 100;
+      const addOnLineTax = addOns.reduce((sum, addOn) => (
+        sum + addOn.totalPrice * requested.quantity * addOn.taxRate / 100
+      ), 0);
+      const lineTax = baseLineTax + addOnLineTax;
       return {
         finishedGoodCode: item.code || requested.itemCode,
         itemName: item.displayName || item.name || requested.itemCode,
@@ -312,6 +449,10 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         categoryName: item.posCategoryName || 'Other',
         quantity: requested.quantity,
         unitPrice,
+        baseUnitPrice,
+        addOns,
+        addOnTotal: addOnUnitTotal,
+        unitPriceWithAddOns: unitPrice,
         taxRate: rate,
         lineSubtotal,
         lineTaxable: lineSubtotal,

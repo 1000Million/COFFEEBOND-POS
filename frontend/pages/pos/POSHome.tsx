@@ -4,8 +4,21 @@ import type { ConfirmationResult } from 'firebase/auth';
 import { Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation, ReceiptLegalDetails } from '../../types';
+import { AddOnSelection, Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation, ReceiptLegalDetails } from '../../types';
+import type { AddOnGroup } from '../../types/menu-management';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
+import {
+  activeAddOnGroupsForProduct,
+  addOnTaxForLine,
+  addOnTotal,
+  canonicalAddOnSelections,
+  unitPriceWithAddOns,
+} from '../../lib/addOns';
+import {
+  authorizePosAddOns,
+  selectedAddOnIds,
+} from '../../lib/posAddOnAuthorization';
+import AddOnSelector from '../../components/add-ons/AddOnSelector';
 import {
   buildComplimentaryTotals,
   ComplimentaryOtpVerification,
@@ -54,6 +67,7 @@ type TotalsInput = {
   price: number;
   quantity: number;
   taxRate?: number | null;
+  addOns?: AddOnSelection[];
 };
 
 type CalculatedTotals = {
@@ -70,6 +84,7 @@ type ReceiptLineSnapshot = {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  addOns?: AddOnSelection[];
 };
 
 type ReceiptOrderSnapshot = {
@@ -428,15 +443,21 @@ function normalizePrepStation(value: unknown): PrepStation {
 }
 
 function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
-  const subtotal = items.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 0), 0);
+  const subtotal = items.reduce(
+    (sum, item) => sum + unitPriceWithAddOns(Number(item.price) || 0, item.addOns) * (Number(item.quantity) || 0),
+    0,
+  );
   const discountPercent = clampDiscountPercent(discountPercentInput);
   const discountAmount = subtotal * (discountPercent / 100);
   const taxableAmount = Math.max(0, subtotal - discountAmount);
   const discountRatio = subtotal > 0 ? discountAmount / subtotal : 0;
   const taxTotal = items.reduce((sum, item) => {
-    const lineSubtotal = (Number(item.price) || 0) * (Number(item.quantity) || 0);
-    const lineTaxable = Math.max(0, lineSubtotal - (lineSubtotal * discountRatio));
-    return sum + lineTaxable * (getItemTaxRate(item, fallbackTaxRate) / 100);
+    const quantity = Number(item.quantity) || 0;
+    const baseSubtotal = (Number(item.price) || 0) * quantity;
+    const baseTaxable = Math.max(0, baseSubtotal - (baseSubtotal * discountRatio));
+    return sum
+      + baseTaxable * (getItemTaxRate(item, fallbackTaxRate) / 100)
+      + addOnTaxForLine(item.addOns, quantity, discountRatio);
   }, 0);
 
   return {
@@ -530,8 +551,11 @@ function buildReceiptSnapshot(
       return {
         itemName: item.itemName,
         quantity,
-        unitPrice,
-        lineTotal: isComplimentary ? quantity * unitPrice : toFiniteNumber(item.lineTotal) ?? quantity * unitPrice,
+        unitPrice: toFiniteNumber(item.baseUnitPrice) ?? unitPrice,
+        lineTotal: isComplimentary
+          ? quantity * unitPriceWithAddOns(toFiniteNumber(item.baseUnitPrice) ?? unitPrice, item.addOns)
+          : toFiniteNumber(item.lineTotal) ?? quantity * unitPriceWithAddOns(unitPrice, item.addOns),
+        addOns: item.addOns || [],
       };
     }),
     payments: isComplimentary
@@ -715,6 +739,9 @@ export default function POSHome() {
   const [complimentaryExpiryClock, setComplimentaryExpiryClock] = useState(0);
 
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
+  const [pendingAddOnItem, setPendingAddOnItem] = useState<MenuItem | null>(null);
+  const [editingAddOnCartItem, setEditingAddOnCartItem] = useState<CartItem | null>(null);
   const [discountPercentStr, setDiscountPercentStr] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const [isSplitPayment, setIsSplitPayment] = useState(false);
@@ -821,7 +848,10 @@ export default function POSHome() {
   const fetchMenuData = async () => {
     setLoading(true);
     try {
-      const fgSnap = await getDocs(query(collection(db, 'finishedGoods')));
+      const [fgSnap, addOnGroupSnap] = await Promise.all([
+        getDocs(query(collection(db, 'finishedGoods'))),
+        getDocs(query(collection(db, 'addOnGroups'))),
+      ]);
 
       let total = 0;
       let activeCount = 0;
@@ -864,12 +894,17 @@ export default function POSHome() {
            itemType: data.itemType,
            bom: data.bom || [],
            finishedGoodCode: data.code,
+           addOnGroupIds: Array.isArray(data.addOnGroupIds) ? data.addOnGroupIds : [],
            createdAt: data.createdAt,
            updatedAt: data.updatedAt
          } as any);
       });
 
       setMenuItems(mappedItems);
+      setAddOnGroups(addOnGroupSnap.docs.map(groupDoc => ({
+        id: groupDoc.id,
+        ...(groupDoc.data() as Omit<AddOnGroup, 'id'>),
+      })));
       setDebugCounts({ total, activeCount, sellableCount, availableCount, mappedCount: mappedItems.length });
     } catch (e: any) {
       console.error(e);
@@ -939,12 +974,16 @@ export default function POSHome() {
     if (cart.length > 0) {
       if (window.confirm("Changing store will clear your current cart. Proceed?")) {
         setCart([]);
+        setPendingAddOnItem(null);
+        setEditingAddOnCartItem(null);
         setCheckoutError(null);
         setTableNumberError(null);
         setIsRecallMenuOpen(false);
         setSelectedStoreId(e.target.value);
       }
     } else {
+      setPendingAddOnItem(null);
+      setEditingAddOnCartItem(null);
       setCheckoutError(null);
       setTableNumberError(null);
       setIsRecallMenuOpen(false);
@@ -1143,7 +1182,11 @@ export default function POSHome() {
   };
 
   // --- Cart Operations ---
-  const addToCart = (item: any) => {
+  const addOnSelectionKey = (addOns: AddOnSelection[] = []) => JSON.stringify(
+    addOns.map(addOn => [addOn.groupId, addOn.optionId, addOn.quantity]).sort(),
+  );
+
+  const commitItemToCart = (item: any, selectedAddOns: AddOnSelection[], editingCartItemId?: string) => {
     setCheckoutError(null);
     const itemId = String(item?.id || item?.code || item?.finishedGoodCode || '').trim();
     const itemCode = String(item?.code || item?.finishedGoodCode || itemId).trim();
@@ -1164,11 +1207,31 @@ export default function POSHome() {
     }
 
     rememberRecentItem(itemId);
+    const canonicalAddOns = canonicalAddOnSelections(
+      item.addOnGroupIds,
+      addOnGroups,
+      selectedAddOns,
+      getItemTaxRate(item, selectedStoreTaxConfig.rate),
+    );
+    const itemAddOnTotal = addOnTotal(canonicalAddOns);
 
     setCart(prev => {
-      const existing = prev.find(ci => ci.menuItemId === itemId);
+      if (editingCartItemId) {
+        return prev.map(cartItem => cartItem.id === editingCartItemId ? {
+          ...cartItem,
+          addOns: canonicalAddOns,
+          baseUnitPrice: itemPrice,
+          addOnTotal: itemAddOnTotal,
+          unitPriceWithAddOns: itemPrice + itemAddOnTotal,
+        } : cartItem);
+      }
+      const selectedKey = addOnSelectionKey(canonicalAddOns);
+      const existing = prev.find(ci => (
+        ci.menuItemId === itemId
+        && addOnSelectionKey(ci.addOns) === selectedKey
+      ));
       if (existing) {
-        return prev.map(ci => ci.menuItemId === itemId ? { ...ci, quantity: ci.quantity + 1 } : ci);
+        return prev.map(ci => ci.id === existing.id ? { ...ci, quantity: ci.quantity + 1 } : ci);
       }
       return [...prev, {
         id: createSafeClientId('cart-item'),
@@ -1182,9 +1245,32 @@ export default function POSHome() {
         sourceSystem: posSource,
         itemType: item.itemType,
         finishedGoodCode: item.finishedGoodCode,
-        bom: item.bom
+        bom: item.bom,
+        addOns: canonicalAddOns,
+        baseUnitPrice: itemPrice,
+        addOnTotal: itemAddOnTotal,
+        unitPriceWithAddOns: itemPrice + itemAddOnTotal,
       }];
     });
+  };
+
+  const addToCart = (item: any) => {
+    const groups = activeAddOnGroupsForProduct(item?.addOnGroupIds, addOnGroups);
+    if (groups.length > 0) {
+      setEditingAddOnCartItem(null);
+      setPendingAddOnItem(item as MenuItem);
+      return;
+    }
+    commitItemToCart(item, []);
+  };
+
+  const editCartItemAddOns = (cartItem: CartItem) => {
+    const menuItem = menuItems.find(item => item.id === cartItem.menuItemId);
+    if (!menuItem) return;
+    const groups = activeAddOnGroupsForProduct(menuItem.addOnGroupIds, addOnGroups);
+    if (groups.length === 0) return;
+    setEditingAddOnCartItem(cartItem);
+    setPendingAddOnItem(menuItem);
   };
 
   const updateQuantity = (cartItemId: string, delta: number) => {
@@ -1298,6 +1384,8 @@ export default function POSHome() {
   const clearCart = (skipConfirm: boolean = false) => {
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
+      setPendingAddOnItem(null);
+      setEditingAddOnCartItem(null);
       setCheckoutError(null);
       setIsRecallMenuOpen(false);
       setDiscountPercentStr('');
@@ -1315,7 +1403,16 @@ export default function POSHome() {
   };
 
   const cartTotals = useMemo(() => {
-    return calculateTotals(cart, discountPercentStr, selectedStoreTaxConfig.rate);
+    return calculateTotals(
+      cart.map(item => ({
+        price: item.baseUnitPrice ?? item.price,
+        quantity: item.quantity,
+        taxRate: item.taxRate,
+        addOns: item.addOns,
+      })),
+      discountPercentStr,
+      selectedStoreTaxConfig.rate,
+    );
   }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);
   const isComplimentarySelected = !isSplitPayment && paymentMethod === 'COMPLIMENTARY';
   const displayedCartTotals = useMemo(() => {
@@ -1546,19 +1643,65 @@ export default function POSHome() {
       if (!selectedStore) throw new Error("Store not found");
 
       // Verify menu items exist and are still active/available, and compute true totals
-      const validatedCart = cart.map(item => {
+      const browserValidatedCart = cart.map(item => {
         const liveItem = menuItems.find(mi => mi.id === item.menuItemId && mi.isActive && mi.availableStoreIds.includes(selectedStoreId));
         if (!liveItem) {
           throw new Error(`Menu item ${item.name} is no longer available at this store.`);
         }
-        return { cartItem: item, liveItem };
+        const canonicalAddOns = canonicalAddOnSelections(
+          liveItem.addOnGroupIds,
+          addOnGroups,
+          item.addOns,
+          getItemTaxRate(liveItem, selectedStoreTaxConfig.rate),
+        );
+        return { cartItem: item, liveItem, canonicalAddOns };
       });
+      const newOrderRef = doc(collection(db, 'orders'));
+      const orderLineRefs = browserValidatedCart.map(() => doc(collection(newOrderRef, 'items')));
+      const posAddOnAuthorization = await authorizePosAddOns({
+        storeId: selectedStore.id,
+        orderId: newOrderRef.id,
+        orderNumber: null,
+        items: browserValidatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => ({
+          orderItemId: orderLineRefs[index].id,
+          parentProductId: liveItem.id,
+          parentProductCode: liveItem.code,
+          quantity: cartItem.quantity,
+          selectedAddOns: selectedAddOnIds(canonicalAddOns),
+        })),
+      });
+      const validatedCart = browserValidatedCart.map(({ cartItem, liveItem }, index) => {
+        const canonicalItem = posAddOnAuthorization.canonicalItems[orderLineRefs[index].id];
+        if (
+          !canonicalItem
+          || canonicalItem.parentProductId !== liveItem.id
+          || canonicalItem.parentProductCode !== liveItem.code
+          || canonicalItem.quantity !== cartItem.quantity
+        ) {
+          throw new Error('The server returned an invalid add-on authorization. Refresh the menu and try again.');
+        }
+        return {
+          cartItem,
+          liveItem: {
+            ...liveItem,
+            price: canonicalItem.baseUnitPrice,
+            taxRate: canonicalItem.taxRate,
+          },
+          canonicalAddOns: canonicalItem.addOns,
+        };
+      });
+      const posAddOnAuthorizationRef = doc(
+        db,
+        'posAddOnAuthorizations',
+        posAddOnAuthorization.authorizationId,
+      );
 
       const trueTotals = calculateTotals(
-        validatedCart.map(({ cartItem, liveItem }) => ({
+        validatedCart.map(({ cartItem, liveItem, canonicalAddOns }) => ({
           price: liveItem.price,
           quantity: cartItem.quantity,
           taxRate: liveItem.taxRate,
+          addOns: canonicalAddOns,
         })),
         discountPercentStr,
         selectedStoreTaxConfig.rate,
@@ -1632,8 +1775,6 @@ export default function POSHome() {
       const dateKey = new Date().toISOString().slice(0,10).replace(/-/g,''); // YYYYMMDD
       const counterId = `${selectedStore.code}_${dateKey}`;
       const counterRef = doc(db, 'counters', counterId);
-      const newOrderRef = doc(collection(db, 'orders'));
-      const orderLineRefs = validatedCart.map(() => doc(collection(newOrderRef, 'items')));
       const complimentaryAuthorizationRef = isComplimentaryCheckout
         ? doc(db, 'complimentaryAuthorizations', complimentaryVerification!.authorizationId)
         : null;
@@ -1675,6 +1816,25 @@ export default function POSHome() {
           }
         }
 
+        if (import.meta.env.DEV) console.log('[CHECKOUT] Transaction: get POS add-on authorization');
+        const posAddOnAuthorizationSnapshot = await transaction.get(posAddOnAuthorizationRef);
+        if (!posAddOnAuthorizationSnapshot.exists()) {
+          throw new Error('The POS add-on authorization was not found. Please retry checkout.');
+        }
+        const posAddOnAuthorizationData = posAddOnAuthorizationSnapshot.data();
+        const posAddOnExpiresAt = posAddOnAuthorizationData.expiresAt;
+        if (
+          posAddOnAuthorizationData.provider !== 'SERVER_CANONICAL_ADD_ONS'
+          || posAddOnAuthorizationData.used !== false
+          || posAddOnAuthorizationData.staffUid !== auth.currentUser!.uid
+          || posAddOnAuthorizationData.storeId !== selectedStore.id
+          || posAddOnAuthorizationData.orderId !== newOrderRef.id
+          || !(posAddOnExpiresAt instanceof Timestamp)
+          || posAddOnExpiresAt.toMillis() <= Date.now()
+        ) {
+          throw new Error('The POS add-on authorization is expired, used, or does not match this sale.');
+        }
+
         let seq = 1;
         if (counterDoc.exists()) {
           seq = (counterDoc.data()?.lastSequence || 0) + 1;
@@ -1694,7 +1854,7 @@ export default function POSHome() {
             uid: auth.currentUser!.uid,
             name: staffProfile.name,
           },
-          lines: validatedCart.map(({ cartItem, liveItem }, index) => {
+          lines: validatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => {
             const liveItemData = liveItem as unknown as Record<string, unknown>;
             return {
               lineKey: orderLineRefs[index].id,
@@ -1709,6 +1869,7 @@ export default function POSHome() {
                   : (Array.isArray(cartItem.bom) ? cartItem.bom : []),
                 finishedGoodCode: liveItemData.finishedGoodCode || cartItem.finishedGoodCode || liveItem.code,
               } as any,
+              addOns: canonicalAddOns,
             };
           }),
         });
@@ -1813,6 +1974,8 @@ export default function POSHome() {
           status: 'COMPLETED',
           paymentStatus,
           commercialStatus: isComplimentaryCheckout ? 'COMPLIMENTARY' : 'SALE',
+          addOnAuthorizationId: posAddOnAuthorization.authorizationId,
+          addOnTotal: posAddOnAuthorization.canonicalAddOnTotal,
           ...(isComplimentaryCheckout && {
             menuValue: trueSubtotal,
             complimentaryDiscount: trueSubtotal,
@@ -1854,6 +2017,12 @@ export default function POSHome() {
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving order data...`);
         traceCheckoutWrite('order save', 'create', newOrderRef.path);
         transaction.set(newOrderRef, orderData);
+        traceCheckoutWrite('POS add-on authorization consume', 'update', posAddOnAuthorizationRef.path);
+        transaction.update(posAddOnAuthorizationRef, {
+          used: true,
+          usedAt: serverTimestamp(),
+          orderNumber,
+        });
         if (complimentaryAuthorizationRef) {
           traceCheckoutWrite('complimentary authorization consume', 'update', complimentaryAuthorizationRef.path);
           transaction.update(complimentaryAuthorizationRef, {
@@ -1867,13 +2036,18 @@ export default function POSHome() {
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
         const newItems: OrderItem[] = [];
-        validatedCart.forEach(({ cartItem: item, liveItem }, index) => {
+        validatedCart.forEach(({ cartItem: item, liveItem, canonicalAddOns }, index) => {
           const lineRef = orderLineRefs[index];
-          const lineSub = liveItem.price * item.quantity;
+          const lineAddOnTotal = addOnTotal(canonicalAddOns);
+          const lineUnitPrice = liveItem.price + lineAddOnTotal;
+          const lineSub = lineUnitPrice * item.quantity;
           const lineDiscount = isComplimentaryCheckout ? lineSub : lineSub * trueDiscountRatio;
           const lineTaxable = Math.max(0, lineSub - lineDiscount);
           const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);
-          const lineTax = isComplimentaryCheckout ? 0 : lineTaxable * (appliedTaxRate / 100);
+          const baseTaxable = Math.max(0, liveItem.price * item.quantity * (1 - trueDiscountRatio));
+          const lineTax = isComplimentaryCheckout
+            ? 0
+            : baseTaxable * (appliedTaxRate / 100) + addOnTaxForLine(canonicalAddOns, item.quantity, trueDiscountRatio);
           const linePrepStation = normalizePrepStation(liveItem.prepStation);
 
           const itemData: OrderItem = {
@@ -1884,6 +2058,11 @@ export default function POSHome() {
             categoryName: liveItem.categoryName,
             quantity: item.quantity,
             unitPrice: liveItem.price,
+            baseUnitPrice: liveItem.price,
+            addOns: canonicalAddOns,
+            addOnAuthorizationId: posAddOnAuthorization.authorizationId,
+            addOnTotal: lineAddOnTotal,
+            unitPriceWithAddOns: lineUnitPrice,
             taxRate: appliedTaxRate,
             lineSubtotal: lineSub,
             lineDiscount,
@@ -1921,6 +2100,7 @@ export default function POSHome() {
               itemName: liveItem.name,
               itemCode: liveItem.code || '',
               quantity: item.quantity,
+              addOns: canonicalAddOns,
               orderType,
               tableNumber: orderType === 'DINE_IN' ? tableNumber.trim() : null,
               customerName: customerNameFinal,
@@ -2410,11 +2590,31 @@ export default function POSHome() {
                         <div className="min-w-0 flex-1">
                           <p className="line-clamp-2 break-words text-[13px] font-black leading-snug text-[#2d1c19]">{item.name}</p>
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500">
-                            <span>₹{item.price} each</span>
+                            <span>₹{unitPriceWithAddOns(item.baseUnitPrice ?? item.price, item.addOns).toFixed(2)} each</span>
+                            {(item.addOns || []).length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => editCartItemAddOns(item)}
+                                className="font-black text-[#8a5a44] underline underline-offset-2"
+                              >
+                                Edit add-ons
+                              </button>
+                            )}
                           </div>
+                          {(item.addOns || []).length > 0 && (
+                            <div className="mt-1 space-y-0.5 pl-2 text-[11px] font-semibold text-neutral-500">
+                              {item.addOns!.map(addOn => (
+                                <p key={`${addOn.groupId}-${addOn.optionId}`}>
+                                  + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''} · ₹{addOn.totalPrice.toFixed(2)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         <div className="shrink-0 text-right">
-                          <p className="font-mono text-sm font-black text-[#3e2723]">₹{(item.price * item.quantity).toFixed(2)}</p>
+                          <p className="font-mono text-sm font-black text-[#3e2723]">
+                            ₹{(unitPriceWithAddOns(item.baseUnitPrice ?? item.price, item.addOns) * item.quantity).toFixed(2)}
+                          </p>
                           <button
                             onClick={() => updateQuantity(item.id, -item.quantity)}
                             aria-label={`Remove ${item.name}`}
@@ -2991,6 +3191,25 @@ export default function POSHome() {
       </div>
       </div>
 
+      {pendingAddOnItem && (
+        <AddOnSelector
+          productName={pendingAddOnItem.name}
+          basePrice={Number(pendingAddOnItem.price) || 0}
+          taxRate={getItemTaxRate(pendingAddOnItem, selectedStoreTaxConfig.rate)}
+          groups={activeAddOnGroupsForProduct(pendingAddOnItem.addOnGroupIds, addOnGroups)}
+          initialSelections={editingAddOnCartItem?.addOns}
+          onCancel={() => {
+            setPendingAddOnItem(null);
+            setEditingAddOnCartItem(null);
+          }}
+          onConfirm={selections => {
+            commitItemToCart(pendingAddOnItem, selections, editingAddOnCartItem?.id);
+            setPendingAddOnItem(null);
+            setEditingAddOnCartItem(null);
+          }}
+        />
+      )}
+
       {/* Sticky Mobile Cart Bar */}
       {!isMobileCartOpen && cart.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 z-30 max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 lg:hidden">
@@ -3048,6 +3267,11 @@ export default function POSHome() {
                      <div>
                        <p className="font-bold leading-tight">{item.itemName}</p>
                        <p className="text-xs text-neutral-500 font-mono">{item.quantity} x ₹{item.unitPrice.toFixed(2)}</p>
+                       {(item.addOns || []).map(addOn => (
+                         <p key={`${addOn.groupId}-${addOn.optionId}`} className="pl-2 text-xs text-neutral-500">
+                           + {addOn.optionName}{addOn.quantity > 1 ? ` x ${addOn.quantity}` : ''} ₹{addOn.totalPrice.toFixed(2)}
+                         </p>
+                       ))}
                      </div>
                      <span className="font-bold font-mono">₹{item.lineTotal.toFixed(2)}</span>
                    </div>

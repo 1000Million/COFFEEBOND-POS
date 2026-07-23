@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import admin from 'firebase-admin';
+import { readFirestoreCollection } from './firestore-read-only.mjs';
 import {
   BEVERAGE_ADD_ON_GROUP_ID,
   FOOD_ADD_ON_GROUP_NAME,
@@ -64,22 +64,14 @@ async function main() {
     process.exit(1);
   }
 
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      projectId: 'coffee-bond-pos',
-      credential: admin.credential.applicationDefault(),
-    });
-  }
-
-  const db = admin.firestore();
-  const [productsSnap, groupsSnap, categoriesSnap] = await Promise.all([
-    db.collection('menuItems').get(),
-    db.collection('addOnGroups').get().catch(() => null),
-    db.collection('categories').get().catch(() => null),
+  const [productDocs, groupDocs, categoryDocs] = await Promise.all([
+    readFirestoreCollection('menuItems'),
+    readFirestoreCollection('addOnGroups'),
+    readFirestoreCollection('categories'),
   ]);
 
-  const addOnGroups = (groupsSnap?.docs || []).map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
-  const categories = (categoriesSnap?.docs || []).map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+  const addOnGroups = groupDocs.map((document) => ({ id: document.id, ...document.data }));
+  const categories = categoryDocs.map((document) => ({ id: document.id, ...document.data }));
   const categoryByCode = new Map();
   for (const category of categories) {
     const code = String(category.code || category.categoryCode || category.id || '').trim();
@@ -93,8 +85,8 @@ async function main() {
   const proposedGroupDocuments = buildProposedAddOnGroupDocuments();
 
   const rows = [];
-  const products = productsSnap.docs
-    .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }))
+  const products = productDocs
+    .map((document) => ({ id: document.id, ...document.data }))
     .filter((product) => product.isActive !== false);
 
   let foodMapped = 0;

@@ -1,7 +1,7 @@
 import { collection, doc, serverTimestamp, Transaction } from 'firebase/firestore';
 import { db } from './firebase';
 import { isPackagingComponentApplicable } from './packagingApplicability';
-import { OrderType, StaffProfile, Store } from '../types';
+import { AddOnSelection, OrderType, StaffProfile, Store } from '../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
 
 export type InventoryDeductionSource = 'POS' | 'CUSTOMER_WEB_ACCEPT';
@@ -65,6 +65,7 @@ export type InventoryDeductionLineInput = {
     name: string;
     [key: string]: unknown;
   };
+  addOns?: AddOnSelection[];
 };
 
 type PlannedMovementEntry = {
@@ -933,6 +934,43 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     });
   };
 
+  const processLineAddOns = async (
+    line: InventoryDeductionLineInput,
+    finishedGoodCode: string,
+    finishedGoodName: string,
+    soldQuantity: number,
+  ): Promise<boolean> => {
+    let processed = false;
+    for (const addOn of line.addOns || []) {
+      if (
+        addOn.inventoryTrackingStatus !== 'CONFIGURED'
+        || !addOn.inventoryItemType
+        || !addOn.inventoryItemCode
+        || !addOn.consumptionUnit
+        || toNumber(addOn.consumptionQuantity) <= 0
+      ) {
+        continue;
+      }
+
+      processed = true;
+      await expandComponent({
+        lineKey: line.lineKey,
+        soldQuantity,
+        finishedGoodCode,
+        finishedGoodName,
+        itemCode: finishedGoodCode,
+        itemName: `${finishedGoodName} + ${addOn.optionName}`,
+        componentType: addOn.inventoryItemType,
+        componentCode: addOn.inventoryItemCode,
+        componentName: addOn.optionName,
+        quantity: toNumber(addOn.consumptionQuantity) * Math.max(1, toNumber(addOn.quantity)) * soldQuantity,
+        unit: addOn.consumptionUnit,
+        prepPath: [],
+      });
+    }
+    return processed;
+  };
+
   for (const line of lines) {
     const finishedGoodCode = String(line.finishedGood.code || '').trim();
     const finishedGoodName = String(line.finishedGood.displayName || line.finishedGood.name || finishedGoodCode).trim();
@@ -976,7 +1014,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     }
 
     if (isNoStockItem(line.finishedGood)) {
-      perLineConsumptionStatus[line.lineKey] = 'NOT_REQUIRED';
+      const processedAddOnInventory = await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
+      perLineConsumptionStatus[line.lineKey] = processedAddOnInventory ? 'APPLIED' : 'NOT_REQUIRED';
       continue;
     }
 
@@ -1001,6 +1040,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
           finishedGoodId: String((line.finishedGood as Record<string, unknown>).id || finishedGoodCode),
           bomVersion: typeof line.finishedGood.bomVersion === 'number' ? line.finishedGood.bomVersion : null,
         })) {
+          await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
           continue;
         }
         continue;
@@ -1058,9 +1098,11 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         finishedGoodId: String((line.finishedGood as Record<string, unknown>).id || finishedGoodCode),
         bomVersion: typeof line.finishedGood.bomVersion === 'number' ? line.finishedGood.bomVersion : null,
       })) {
+        await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
         continue;
       }
       if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'APPLIED';
+      await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
       continue;
     }
 
@@ -1078,10 +1120,14 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         createMissingStockType: 'FINISHED_GOOD',
       });
       if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'APPLIED';
+      await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
       continue;
     }
 
-    if (!perLineConsumptionStatus[line.lineKey]) perLineConsumptionStatus[line.lineKey] = 'NOT_REQUIRED';
+    const processedAddOnInventory = await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
+    if (!perLineConsumptionStatus[line.lineKey]) {
+      perLineConsumptionStatus[line.lineKey] = processedAddOnInventory ? 'APPLIED' : 'NOT_REQUIRED';
+    }
   }
 
   if (blockers.length > 0) {

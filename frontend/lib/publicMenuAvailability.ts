@@ -1,5 +1,6 @@
 import { Store } from '../types';
-import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
+import { AddOnGroup, BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
+import { sanitizeAddOnGroupsForPublic } from './addOns';
 
 export type PublicMenuAvailabilityStatus = 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
 
@@ -39,6 +40,7 @@ export type PublicMenuAvailabilitySnapshot = {
   storeName: string;
   items: Record<string, PublicMenuAvailabilityItem>;
   menuItems: Record<string, PublicMenuDisplayItem>;
+  addOnGroups: Record<string, AddOnGroup>;
   itemCount: number;
   availableCount: number;
   unavailableCount: number;
@@ -50,6 +52,7 @@ type BuildSnapshotInput = {
   storeStock: (StoreStock & { id?: string } & Record<string, unknown>)[];
   rawIngredients?: RawIngredient[];
   prepItems?: PrepItem[];
+  addOnGroups?: AddOnGroup[];
 };
 
 function toNumber(value: unknown): number {
@@ -361,7 +364,7 @@ function evaluateItemAvailability(
 }
 
 export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): PublicMenuAvailabilitySnapshot {
-  const { store, finishedGoods, rawIngredients = [], prepItems = [] } = input;
+  const { store, finishedGoods, rawIngredients = [], prepItems = [], addOnGroups = [] } = input;
   const rawByCode = new Map(rawIngredients.map((item) => [item.code, item]));
   const prepByCode = new Map(prepItems.map((item) => [item.code, item]));
   const finishedByCode = new Map(finishedGoods.map((item) => [item.code, item]));
@@ -378,6 +381,15 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
     acc[item.code] = publicDisplayItem(store, item);
     return acc;
   }, {});
+  const visibleGroupIds = new Set(
+    Object.values(menuItems).flatMap(item => item.addOnGroupIds || []),
+  );
+  const sanitizedGroups = sanitizeAddOnGroupsForPublic(addOnGroups)
+    .filter(group => group.id && visibleGroupIds.has(group.id));
+  const publicAddOnGroups = sanitizedGroups.reduce<Record<string, AddOnGroup>>((acc, group) => {
+    if (group.id) acc[group.id] = group;
+    return acc;
+  }, {});
   const values = Object.values(items);
 
   return {
@@ -386,6 +398,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
     storeName: store.name,
     items,
     menuItems,
+    addOnGroups: publicAddOnGroups,
     itemCount: values.length,
     availableCount: values.filter((item) => item.available).length,
     unavailableCount: values.filter((item) => !item.available).length,
