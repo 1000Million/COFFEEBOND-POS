@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   PRODUCT_IMAGE_ALLOWED_MIME_TYPES,
   PRODUCT_IMAGE_CACHE_CONTROL,
+  PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE,
   PRODUCT_IMAGE_MAX_BYTES,
   PRODUCT_IMAGE_OUTPUT_MIME_TYPE,
   buildProductImageAuditRecord,
@@ -11,6 +12,9 @@ import {
   buildProductImagePatch,
   buildProductImageStoragePath,
   buildProductImageUploadMetadata,
+  calculateCenteredProductImageCrop,
+  calculateProductImageOutputSize,
+  createCenteredProductImageBlob,
   patchPublicMenuAvailabilitySnapshot,
   prepareProductImageForUpload,
   sanitizeProductCodeForPath,
@@ -37,6 +41,9 @@ for (const mimeType of PRODUCT_IMAGE_ALLOWED_MIME_TYPES) {
   assert.ok(validateProductImageFile({ type: mimeType, size: 1024 }).ok, `Expected ${mimeType} to be accepted`);
 }
 assert.equal(validateProductImageFile({ type: 'image/gif', size: 1024 }).ok, false);
+assert.match(validateProductImageFile({ type: 'image/heic', size: 1024 }).message || '', /HEIC/);
+assert.match(validateProductImageFile({ type: 'image/heif', size: 1024 }).message || '', /HEIF/);
+assert.match(validateProductImageFile({ type: 'image\/svg+xml', size: 1024 }).message || '', /SVG/);
 assert.equal(validateProductImageFile({ type: 'image/jpeg', size: 0 }).ok, false);
 assert.equal(validateProductImageFile({ type: 'image/jpeg', size: PRODUCT_IMAGE_MAX_BYTES + 1 }).ok, false);
 
@@ -54,6 +61,93 @@ await assert.rejects(
   () => prepareProductImageForUpload({ type: 'application/pdf', size: 1024 } as File, async () => new Blob(['x'], { type: PRODUCT_IMAGE_OUTPUT_MIME_TYPE })),
   /Only JPG, JPEG, PNG, and WebP/,
 );
+await assert.rejects(
+  () => prepareProductImageForUpload(
+    { type: 'image/jpeg', size: 1024 } as File,
+    async () => new Blob([], { type: PRODUCT_IMAGE_OUTPUT_MIME_TYPE }),
+  ),
+  new RegExp(PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+);
+
+const landscapeCrop = calculateCenteredProductImageCrop(4000, 2000);
+assert.equal(landscapeCrop.sw / landscapeCrop.sh, 4 / 3);
+assert.equal(landscapeCrop.sy, 0);
+assert.ok(landscapeCrop.sx > 0);
+const portraitCrop = calculateCenteredProductImageCrop(2000, 4000);
+assert.equal(portraitCrop.sw / portraitCrop.sh, 4 / 3);
+assert.equal(portraitCrop.sx, 0);
+assert.ok(portraitCrop.sy > 0);
+const largeOutput = calculateProductImageOutputSize(4000, 3000);
+assert.deepEqual(largeOutput, { width: 1600, height: 1200 });
+assert.equal(largeOutput.width / largeOutput.height, 4 / 3);
+const smallOutput = calculateProductImageOutputSize(800, 600);
+assert.deepEqual(smallOutput, { width: 800, height: 600 });
+
+type FakeCanvasResult = Blob | null;
+function conversionHarness(results: FakeCanvasResult[]) {
+  const canvasSizes: Array<[number, number]> = [];
+  const qualities: number[] = [];
+  let cleanedUp = false;
+  const dependencies = {
+    decodeImage: async () => ({
+      source: {} as CanvasImageSource,
+      width: 4000,
+      height: 3000,
+      cleanup: () => {
+        cleanedUp = true;
+      },
+    }),
+    createCanvas: (width: number, height: number) => {
+      canvasSizes.push([width, height]);
+      return {
+        width,
+        height,
+        getContext: () => ({
+          imageSmoothingEnabled: false,
+          imageSmoothingQuality: 'low',
+          drawImage: () => undefined,
+        }),
+        toBlob: (callback: BlobCallback, _mimeType: string, quality: number) => {
+          qualities.push(quality);
+          callback(results.shift() ?? null);
+        },
+      } as unknown as HTMLCanvasElement;
+    },
+  };
+  return { canvasSizes, qualities, dependencies, wasCleanedUp: () => cleanedUp };
+}
+
+const retryHarness = conversionHarness([
+  null,
+  new Blob(['retry-webp'], { type: PRODUCT_IMAGE_OUTPUT_MIME_TYPE }),
+]);
+const retriedBlob = await createCenteredProductImageBlob(
+  { type: 'image/jpeg', size: 1024 } as File,
+  1600,
+  1200,
+  0.9,
+  retryHarness.dependencies,
+);
+assert.equal(retriedBlob.type, PRODUCT_IMAGE_OUTPUT_MIME_TYPE);
+assert.deepEqual(retryHarness.canvasSizes, [[1600, 1200], [1200, 900]]);
+assert.deepEqual(retryHarness.qualities, [0.9, 0.78]);
+assert.equal(retryHarness.wasCleanedUp(), true);
+
+const zeroByteHarness = conversionHarness([
+  new Blob([], { type: PRODUCT_IMAGE_OUTPUT_MIME_TYPE }),
+  new Blob([], { type: PRODUCT_IMAGE_OUTPUT_MIME_TYPE }),
+]);
+await assert.rejects(
+  () => createCenteredProductImageBlob(
+    { type: 'image/png', size: 1024 } as File,
+    1600,
+    1200,
+    0.9,
+    zeroByteHarness.dependencies,
+  ),
+  new RegExp(PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+);
+assert.equal(zeroByteHarness.wasCleanedUp(), true);
 
 const uploadMetadata = buildProductImageUploadMetadata('MENU_007', 'Avocado Salad', 'test');
 assert.equal(uploadMetadata.contentType, 'image/webp');
@@ -165,5 +259,9 @@ const forbiddenApplicationReferences = sourceFiles(path.join(repoRoot, 'frontend
   .filter((filePath) => /\.(ts|tsx|js|jsx)$/.test(filePath))
   .filter((filePath) => fs.readFileSync(filePath, 'utf8').includes(forbiddenStoragePrefix));
 assert.deepEqual(forbiddenApplicationReferences, [], 'Application code must not reference the duplicate image path.');
+const conversionSource = fs.readFileSync(path.join(repoRoot, 'frontend/lib/productImages.ts'), 'utf8');
+assert.match(conversionSource, /createImageBitmap\(file,\s*\{\s*imageOrientation:\s*'from-image'\s*\}\)/);
+assert.match(conversionSource, /new FileReader\(\)/);
+assert.match(conversionSource, /PRODUCT_IMAGE_RETRY_WIDTH/);
 
 console.log('product image helper tests passed');

@@ -3,12 +3,17 @@ import type { PublicMenuAvailabilitySnapshot } from './publicMenuAvailability';
 
 export const PRODUCT_IMAGE_STORAGE_PREFIX = 'menu-images';
 export const PRODUCT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-export const PRODUCT_IMAGE_OUTPUT_WIDTH = 1200;
-export const PRODUCT_IMAGE_OUTPUT_HEIGHT = 900;
+export const PRODUCT_IMAGE_OUTPUT_WIDTH = 1600;
+export const PRODUCT_IMAGE_OUTPUT_HEIGHT = 1200;
 export const PRODUCT_IMAGE_OUTPUT_ASPECT = PRODUCT_IMAGE_OUTPUT_WIDTH / PRODUCT_IMAGE_OUTPUT_HEIGHT;
 export const PRODUCT_IMAGE_OUTPUT_MIME_TYPE = 'image/webp';
 export const PRODUCT_IMAGE_CACHE_CONTROL = 'public,max-age=31536000,immutable';
-export const PRODUCT_IMAGE_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+export const PRODUCT_IMAGE_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+export const PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE = 'This image could not be converted. Export it as JPG or PNG and try again.';
+const PRODUCT_IMAGE_PRIMARY_QUALITY = 0.9;
+const PRODUCT_IMAGE_RETRY_WIDTH = 1200;
+const PRODUCT_IMAGE_RETRY_HEIGHT = 900;
+const PRODUCT_IMAGE_RETRY_QUALITY = 0.78;
 
 export type ProductImageFileCheck = {
   ok: boolean;
@@ -29,6 +34,30 @@ export type ProductImagePersistenceInput = {
   actorUid: string;
   actorEmail: string | null;
   timestamp: unknown;
+};
+
+export type ProductImageCrop = {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+};
+
+export type ProductImageOutputSize = {
+  width: number;
+  height: number;
+};
+
+type DecodedProductImage = {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  cleanup: () => void;
+};
+
+type ProductImageConversionDependencies = {
+  decodeImage?: (file: File) => Promise<DecodedProductImage>;
+  createCanvas?: (width: number, height: number) => HTMLCanvasElement;
 };
 
 export function sanitizeProductCodeForPath(code: string): string {
@@ -76,6 +105,13 @@ export function isAllowedProductImageMimeType(mimeType: string): boolean {
 }
 
 export function validateProductImageFile(file: Pick<File, 'type' | 'size'>): ProductImageFileCheck {
+  const mimeType = String(file.type || '').toLowerCase();
+  if (['image/heic', 'image/heif'].includes(mimeType)) {
+    return { ok: false, message: 'HEIC and HEIF images are not supported. Export the image as JPG or PNG and try again.' };
+  }
+  if (mimeType === 'image/svg+xml') {
+    return { ok: false, message: 'SVG images are not supported. Export the image as JPG, PNG, or WebP and try again.' };
+  }
   if (!isAllowedProductImageMimeType(file.type)) {
     return { ok: false, message: 'Only JPG, JPEG, PNG, and WebP images are supported.' };
   }
@@ -162,63 +198,168 @@ export function patchPublicMenuAvailabilitySnapshot(
 
 export function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
+    const reader = new FileReader();
     const image = new Image();
     image.onload = () => {
-      URL.revokeObjectURL(url);
       resolve(image);
     };
     image.onerror = () => {
-      URL.revokeObjectURL(url);
       reject(new Error('Image decode failed.'));
     };
-    image.src = url;
+    reader.onerror = () => reject(new Error('Image file could not be read.'));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('Image file could not be read.'));
+        return;
+      }
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
   });
+}
+
+async function decodeProductImage(file: File): Promise<DecodedProductImage> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      if (bitmap.width > 0 && bitmap.height > 0) {
+        return {
+          source: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          cleanup: () => bitmap.close(),
+        };
+      }
+      bitmap.close();
+    } catch {
+      // Some store devices expose createImageBitmap but cannot decode every valid JPEG/PNG.
+    }
+  }
+
+  const image = await loadImageFromFile(file);
+  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    throw new Error('Image decode produced invalid dimensions.');
+  }
+  return {
+    source: image,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    cleanup: () => undefined,
+  };
+}
+
+export function calculateCenteredProductImageCrop(
+  sourceWidth: number,
+  sourceHeight: number,
+  targetAspect = PRODUCT_IMAGE_OUTPUT_ASPECT,
+): ProductImageCrop {
+  if (sourceWidth <= 0 || sourceHeight <= 0 || targetAspect <= 0) {
+    throw new Error('Image dimensions are invalid.');
+  }
+  const sourceRatio = sourceWidth / sourceHeight;
+  if (sourceRatio > targetAspect) {
+    const sw = sourceHeight * targetAspect;
+    return { sx: (sourceWidth - sw) / 2, sy: 0, sw, sh: sourceHeight };
+  }
+  const sh = sourceWidth / targetAspect;
+  return { sx: 0, sy: (sourceHeight - sh) / 2, sw: sourceWidth, sh };
+}
+
+export function calculateProductImageOutputSize(
+  cropWidth: number,
+  cropHeight: number,
+  maximumWidth = PRODUCT_IMAGE_OUTPUT_WIDTH,
+  maximumHeight = PRODUCT_IMAGE_OUTPUT_HEIGHT,
+): ProductImageOutputSize {
+  if (cropWidth <= 0 || cropHeight <= 0 || maximumWidth <= 0 || maximumHeight <= 0) {
+    throw new Error('Image dimensions are invalid.');
+  }
+  const scale = Math.min(1, maximumWidth / cropWidth, maximumHeight / cropHeight);
+  const scaledWidth = Math.floor(cropWidth * scale);
+  const width = Math.max(4, Math.floor(scaledWidth / 4) * 4);
+  const height = width * 3 / 4;
+  return {
+    width: Math.min(width, maximumWidth),
+    height: Math.min(height, maximumHeight),
+  };
+}
+
+function defaultCreateCanvas(width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+export function encodeCanvasAsWebP(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
+  return new Promise(resolve => {
+    canvas.toBlob(resolve, PRODUCT_IMAGE_OUTPUT_MIME_TYPE, quality);
+  });
+}
+
+function isValidWebPBlob(blob: Blob | null): blob is Blob {
+  return Boolean(
+    blob
+    && blob.type.toLowerCase() === PRODUCT_IMAGE_OUTPUT_MIME_TYPE
+    && blob.size > 0
+    && blob.size <= PRODUCT_IMAGE_MAX_BYTES,
+  );
+}
+
+async function renderProductImageAttempt(
+  image: DecodedProductImage,
+  maximumWidth: number,
+  maximumHeight: number,
+  quality: number,
+  createCanvas: (width: number, height: number) => HTMLCanvasElement,
+): Promise<Blob | null> {
+  const crop = calculateCenteredProductImageCrop(image.width, image.height);
+  const output = calculateProductImageOutputSize(crop.sw, crop.sh, maximumWidth, maximumHeight);
+  const canvas = createCanvas(output.width, output.height);
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Image crop failed because the canvas context is unavailable.');
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    image.source,
+    crop.sx,
+    crop.sy,
+    crop.sw,
+    crop.sh,
+    0,
+    0,
+    output.width,
+    output.height,
+  );
+  return encodeCanvasAsWebP(canvas, quality);
 }
 
 export async function createCenteredProductImageBlob(
   file: File,
   width = PRODUCT_IMAGE_OUTPUT_WIDTH,
   height = PRODUCT_IMAGE_OUTPUT_HEIGHT,
-  quality = 0.92,
+  quality = PRODUCT_IMAGE_PRIMARY_QUALITY,
+  dependencies: ProductImageConversionDependencies = {},
 ): Promise<Blob> {
-  const image = await loadImageFromFile(file);
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Image crop failed because the canvas context is unavailable.');
+  const decodeImage = dependencies.decodeImage || decodeProductImage;
+  const createCanvas = dependencies.createCanvas || defaultCreateCanvas;
+  const image = await decodeImage(file);
+  try {
+    const primary = await renderProductImageAttempt(image, width, height, quality, createCanvas);
+    if (isValidWebPBlob(primary)) return primary;
 
-  const sourceRatio = image.naturalWidth / image.naturalHeight;
-  const targetRatio = width / height;
-  let sx = 0;
-  let sy = 0;
-  let sw = image.naturalWidth;
-  let sh = image.naturalHeight;
-
-  if (sourceRatio > targetRatio) {
-    sw = image.naturalHeight * targetRatio;
-    sx = (image.naturalWidth - sw) / 2;
-  } else {
-    sh = image.naturalWidth / targetRatio;
-    sy = (image.naturalHeight - sh) / 2;
-  }
-
-  ctx.drawImage(image, sx, sy, sw, sh, 0, 0, width, height);
-
-  return await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          reject(new Error('Failed to encode the product image.'));
-          return;
-        }
-        resolve(blob);
-      },
-      PRODUCT_IMAGE_OUTPUT_MIME_TYPE,
-      quality,
+    const retry = await renderProductImageAttempt(
+      image,
+      PRODUCT_IMAGE_RETRY_WIDTH,
+      PRODUCT_IMAGE_RETRY_HEIGHT,
+      PRODUCT_IMAGE_RETRY_QUALITY,
+      createCanvas,
     );
-  });
+    if (isValidWebPBlob(retry)) return retry;
+    throw new Error(PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE);
+  } finally {
+    image.cleanup();
+  }
 }
 
 export async function prepareProductImageForUpload(
@@ -228,12 +369,18 @@ export async function prepareProductImageForUpload(
   const validation = validateProductImageFile(file);
   if (!validation.ok) throw new Error(validation.message || 'Invalid product image.');
 
-  const blob = await converter(file);
-  if (blob.type !== PRODUCT_IMAGE_OUTPUT_MIME_TYPE) {
-    throw new Error('Product image conversion did not produce WebP output.');
+  let blob: Blob;
+  try {
+    blob = await converter(file);
+  } catch {
+    throw new Error(PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE);
   }
-  if (blob.size <= 0 || blob.size > PRODUCT_IMAGE_MAX_BYTES) {
-    throw new Error('Converted image must be between 1 byte and 10 MB.');
+  if (
+    blob.type.toLowerCase() !== PRODUCT_IMAGE_OUTPUT_MIME_TYPE
+    || blob.size <= 0
+    || blob.size > PRODUCT_IMAGE_MAX_BYTES
+  ) {
+    throw new Error(PRODUCT_IMAGE_CONVERSION_ERROR_MESSAGE);
   }
   return blob;
 }
