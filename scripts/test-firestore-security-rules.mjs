@@ -95,6 +95,8 @@ const purchaseDraftsBlock = extractMatchBlock(rules, 'match /purchaseDrafts/{dra
 const productImageAuditBlock = extractMatchBlock(rules, 'match /productImageAudit/{auditId}');
 const addOnGroupsBlock = extractMatchBlock(rules, 'match /addOnGroups/{groupId}');
 const addOnGroupAuditBlock = extractMatchBlock(rules, 'match /addOnGroupAudit/{auditId}');
+const productAddOnAuditBlock = extractMatchBlock(rules, 'match /productAddOnAudit/{auditId}');
+const finishedGoodsBlock = extractMatchBlock(rules, 'match /finishedGoods/{itemId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const posAddOnAuthorizationsBlock = extractMatchBlock(rules, 'match /posAddOnAuthorizations/{authorizationId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
@@ -122,6 +124,11 @@ assert(!isActiveStaffBody.includes('FRANCHISE_VIEWER'), 'FRANCHISE_VIEWER must n
 assert(/data\.role\s*==\s*'FRANCHISE_VIEWER'/.test(isFranchiseProfileBody), 'Franchise profiles must be identified explicitly.');
 assert(/allow\s+read:\s*if\s+isAdmin\(\);/.test(franchiseAccessAuditBlock), 'Only Admin may read franchise access audit records.');
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(franchiseAccessAuditBlock), 'Franchise audit records must be server-written and client-immutable.');
+
+assert(/allow\s+write:\s*if\s+isAdmin\(\);/.test(finishedGoodsBlock), 'Only active Admin may update finished-good add-on option allowlists.');
+assert(!/isStoreManager\(\)|isCashier\(\)|isFranchise/.test(finishedGoodsBlock), 'Store Manager, Cashier, and Franchise roles must not write finishedGoods.');
+assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(productAddOnAuditBlock), 'Only active Admin may read or create product add-on audits.');
+assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productAddOnAuditBlock), 'Product add-on audits must be append-only.');
 
 assert(/isAdmin\(\)/.test(hasStoreAccessBody), 'Admins should retain all-store access.');
 assert(/isActiveUserProfile\(\)/.test(hasStoreAccessBody), 'Non-admin store access must require an active profile.');

@@ -111,7 +111,22 @@ function sanitizedDisplayItem(store, item) {
   if (toNumber(item.taxRate) > 0) display.taxRate = toNumber(item.taxRate);
   if (imageUrl) display.imageUrl = imageUrl.trim();
   if (Array.isArray(item.addOnGroupIds)) {
-    display.addOnGroupIds = [...new Set(item.addOnGroupIds.filter((value) => typeof value === 'string' && value.trim()))];
+    display.addOnGroupIds = [...new Set(item.addOnGroupIds
+      .filter((value) => typeof value === 'string' && value.trim())
+      .map((value) => value.trim()))];
+    const sourceAllowlist = item.addOnOptionIdsByGroup;
+    display.addOnOptionIdsByGroup = Object.fromEntries(
+      display.addOnGroupIds.map((groupId) => [
+        groupId,
+        [...new Set(
+          (sourceAllowlist && typeof sourceAllowlist === 'object' && Array.isArray(sourceAllowlist[groupId])
+            ? sourceAllowlist[groupId]
+            : [])
+            .filter((value) => typeof value === 'string' && value.trim())
+            .map((value) => value.trim()),
+        )],
+      ]),
+    );
   }
 
   return display;
