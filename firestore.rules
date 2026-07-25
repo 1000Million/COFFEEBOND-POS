@@ -542,8 +542,24 @@ service cloud.firestore {
 
     // Stores
     match /stores/{storeId} {
-      allow read: if isActiveStaff() || resource.data.isActive == true;
-      allow write: if isAdmin();
+      // Anonymous customer ordering may discover active locations. Signed-in
+      // non-admin staff remain limited to their explicit store assignments.
+      // Draft/inactive location configuration is restricted to active Admin users.
+      allow read: if isAdmin()
+        || (!isSignedIn() && resource.data.isActive == true)
+        || (
+          isActiveStaff()
+          && resource.data.isActive == true
+          && hasStoreAccess(storeId)
+        );
+      // All store mutations use Admin SDK callables so provisioning, immutable
+      // codes, readiness gates, activation, and audit history cannot be bypassed.
+      allow create, update, delete: if false;
+    }
+
+    match /storeProvisioningJobs/{jobId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
     }
     
     // Categories

@@ -25,17 +25,32 @@ export interface StaffProfile {
 export interface Store {
   id: string;
   name: string;
+  displayName?: string;
   code: string;
+  storeCode?: string;
   address: string;
+  city?: string;
+  state?: string;
+  pinCode?: string;
+  phone?: string;
+  email?: string;
+  status?: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
   isActive: boolean;
+  posEnabled?: boolean;
+  inventoryMode?: "FINISHED_GOODS";
   latitude?: number;
   longitude?: number;
   lat?: number;
   lng?: number;
   inventoryPolicy?: "STRICT" | "ALLOW_NEGATIVE" | "ALLOW_NEGATIVE_DEFER_BOM";
   onlineOrderingEnabled?: boolean;
+  customerOrderingEnabled?: boolean;
+  publicOrderingEnabled?: boolean;
+  acceptingOrders?: boolean;
+  onlineOrderingPaused?: boolean;
   estimatedPrepMinutes?: number;
   onlineOrderingMessage?: string;
+  legalEntityName?: string;
   legalName?: string;
   tradeName?: string;
   legalAddress?: string;
@@ -43,6 +58,12 @@ export interface Store {
   stateName?: string;
   stateCode?: string;
   gstRegistered?: boolean;
+  receiptName?: string;
+  receiptFooter?: string;
+  timezone?: string;
+  provisioningJobId?: string;
+  sourceTemplateStoreId?: string | null;
+  readiness?: Record<string, boolean>;
   createdAt: any;
   updatedAt: any;
 }
