@@ -5,15 +5,9 @@ import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, Times
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, Order, PaymentMethod, Store } from '../../types';
-import { summarizeCollections } from '../../lib/paymentReversal';
-import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
+import { summarizeReportingRecords } from '../../../functions/reportingCore.mjs';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
-
-type ReportPaymentBreakdown = {
-  method: PaymentMethod | string;
-  amount: number;
-};
 
 type DayCloseSummary = {
   completedBillCount: number;
@@ -50,85 +44,29 @@ function dayClosingId(storeId: string, businessDate: string): string {
   return `${storeId}_${businessDate}`;
 }
 
-function effectiveOrderStatus(order: Order): 'COMPLETED' | 'VOIDED' | 'CANCELLED' {
-  if (order.status === 'VOIDED') return 'VOIDED';
-  if (order.status === 'CANCELLED') return 'CANCELLED';
-  return 'COMPLETED';
-}
-
-function orderTaxTotal(order: Order): number {
-  const gstTotal = moneyNumber(order.gstTotal);
-  return gstTotal > 0 ? gstTotal : moneyNumber(order.taxTotal);
-}
-
-function orderDiscountTotal(order: Order): number {
-  const discountAmount = moneyNumber(order.discountAmount);
-  if (discountAmount > 0) return discountAmount;
-  const discountTotal = moneyNumber(order.discountTotal);
-  if (discountTotal > 0) return discountTotal;
-  return moneyNumber(order.discount);
-}
-
-function orderPaymentBreakdown(order: Order): ReportPaymentBreakdown[] {
-  if (isComplimentaryOrder(order)) return [];
-  const rawBreakdown = (order as Order & { paymentBreakdown?: ReportPaymentBreakdown[] }).paymentBreakdown;
-  if (Array.isArray(rawBreakdown) && rawBreakdown.length > 0) {
-    const normalized = rawBreakdown
-      .map(payment => ({
-        method: payment.method || 'UNKNOWN',
-        amount: moneyNumber(payment.amount),
-      }))
-      .filter(payment => payment.amount > 0);
-    if (normalized.length > 0) return normalized;
-  }
-
-  return [{
-    method: order.paymentMethod || 'UNKNOWN',
-    amount: moneyNumber(order.grandTotal),
-  }];
-}
-
-function emptyPaymentBreakdown(): Record<PaymentMethod, number> {
-  return PAYMENT_METHODS.reduce((acc, method) => {
-    acc[method] = 0;
-    return acc;
-  }, {} as Record<PaymentMethod, number>);
-}
-
 function buildSummary(orders: Order[]): DayCloseSummary {
-  const completedOrders = orders.filter(order => effectiveOrderStatus(order) === 'COMPLETED' && !isComplimentaryOrder(order));
-  const voidedOrders = orders.filter(order => effectiveOrderStatus(order) === 'VOIDED');
-  const commercialVoidedOrders = voidedOrders.filter(order => !isComplimentaryOrder(order));
-  const paymentBreakdown = emptyPaymentBreakdown();
-  const collectionAudit = summarizeCollections(orders);
-
-  completedOrders.forEach(order => {
-    orderPaymentBreakdown(order).forEach(payment => {
-      if (PAYMENT_METHODS.includes(payment.method as PaymentMethod)) {
-        paymentBreakdown[payment.method as PaymentMethod] += payment.amount;
-      }
-    });
-  });
-
-  const grossSales = completedOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
-  const voidedSales = commercialVoidedOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
+  const metrics = summarizeReportingRecords(orders.map(order => ({ order, items: [], payments: [] })));
+  const paymentBreakdown = PAYMENT_METHODS.reduce((summary, method) => {
+    summary[method] = moneyNumber(metrics.paymentBreakdown[method]);
+    return summary;
+  }, {} as Record<PaymentMethod, number>);
 
   return {
-    completedBillCount: completedOrders.length,
-    voidedBillCount: voidedOrders.length,
-    grossSales,
-    voidedSales,
-    netSales: grossSales,
-    gstTotal: completedOrders.reduce((sum, order) => sum + orderTaxTotal(order), 0),
-    discountTotal: completedOrders.reduce((sum, order) => sum + orderDiscountTotal(order), 0),
+    completedBillCount: metrics.orderCount,
+    voidedBillCount: metrics.voidOrderCount,
+    grossSales: metrics.netSales,
+    voidedSales: metrics.voidedOrderValue,
+    netSales: metrics.netSales,
+    gstTotal: metrics.gstCollected,
+    discountTotal: metrics.discounts,
     paymentBreakdown,
     expectedCash: paymentBreakdown.CASH,
-    grossPaymentsReceived: collectionAudit.grossPaymentsReceived,
-    voidedPaymentTotal: collectionAudit.voidedPaymentTotal,
-    refundedOrReversedPayments: collectionAudit.refundedOrReversedPayments,
-    refundPendingPayments: collectionAudit.refundPendingPayments,
-    manualRefundRequiredPayments: collectionAudit.manualRefundRequiredPayments,
-    netCollections: collectionAudit.netCollections,
+    grossPaymentsReceived: metrics.grossPaymentsReceived,
+    voidedPaymentTotal: metrics.voidedPaymentTotal,
+    refundedOrReversedPayments: metrics.refundedOrReversedPayments,
+    refundPendingPayments: metrics.refundPendingPayments,
+    manualRefundRequiredPayments: metrics.manualRefundRequiredPayments,
+    netCollections: metrics.netCollections,
   };
 }
 

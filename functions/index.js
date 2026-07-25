@@ -7,6 +7,7 @@ const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
 const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization');
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
+const { createReportingFunctions } = require('./reporting');
 
 admin.initializeApp();
 
@@ -30,6 +31,11 @@ exports.authorizePosAddOns = createPosAddOnAuthorizationFunction({ admin, db, re
 const franchiseSalesFunctions = createFranchiseSalesFunctions({ admin, db, region: REGION });
 exports.manageFranchiseViewer = franchiseSalesFunctions.manageFranchiseViewer;
 exports.getFranchiseDailySales = franchiseSalesFunctions.getFranchiseDailySales;
+
+const reportingFunctions = createReportingFunctions({ admin, db, region: REGION });
+exports.getReportingSummary = reportingFunctions.getReportingSummary;
+exports.getReportingRows = reportingFunctions.getReportingRows;
+exports.exportReportingData = reportingFunctions.exportReportingData;
 
 function publicStatusMessage(status) {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';

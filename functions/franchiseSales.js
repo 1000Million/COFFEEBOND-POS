@@ -7,7 +7,6 @@ const {
   assignedStoreIds,
   canAccessRequestedStores,
   franchiseAuthEmail,
-  summarizeFranchiseDailySales,
   validateFranchiseUsername,
 } = require('./franchiseSalesPolicy');
 
@@ -422,7 +421,8 @@ function createGetFranchiseDailySales({ admin, db, region }) {
         id: orderDoc.id,
         ...orderDoc.data(),
       })));
-      const summary = summarizeFranchiseDailySales(await loadOrderRecords(db, orders), timeZone);
+      const { buildFranchiseDailyDataset } = await import('./reportingCore.mjs');
+      const summary = buildFranchiseDailyDataset(await loadOrderRecords(db, orders), timeZone);
 
       console.info('franchise-daily-sales-access', {
         viewerUid: profile.uid,

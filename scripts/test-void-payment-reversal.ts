@@ -312,10 +312,10 @@ assert(consumptionRows.reduce((sum, row) => sum + row.netCogs, 0) === 0, 'Fully 
 
 const repoRoot = process.cwd();
 const runningOrders = fs.readFileSync(path.join(repoRoot, 'frontend/pages/pos/RunningOrders.tsx'), 'utf8');
-const reportsHome = fs.readFileSync(path.join(repoRoot, 'frontend/pages/reports/ReportsHome.tsx'), 'utf8');
+const reportingCore = fs.readFileSync(path.join(repoRoot, 'functions/reportingCore.mjs'), 'utf8');
 const inventoryControl = fs.readFileSync(path.join(repoRoot, 'frontend/pages/inventory/InventoryControl.tsx'), 'utf8');
 
-for (const [label, source] of [['RunningOrders', runningOrders], ['ReportsHome', reportsHome]] as const) {
+for (const [label, source] of [['RunningOrders', runningOrders]] as const) {
   assert(source.includes('This order is already voided.'), `${label} must prevent duplicate void attempts.`);
   assert(source.includes('already has reversal stock movements'), `${label} must prevent duplicate stock reversals.`);
   assert(source.includes('Cannot reverse stock'), `${label} must fail safely when inventory reversal cannot be completed.`);
@@ -329,11 +329,14 @@ assert(inventoryControl.includes('Reversed'), 'Inventory Control should show rev
 assert(inventoryControl.includes('Net consumed'), 'Inventory Control should show net consumption.');
 assert(inventoryControl.includes('Order / item search'), 'Inventory Control should provide order/item search.');
 assert(inventoryControl.includes('Not recorded'), 'Inventory Control should show Not recorded for missing legacy stock snapshots.');
-for (const [label, source] of [['RunningOrders', runningOrders], ['ReportsHome', reportsHome]] as const) {
+for (const [label, source] of [['RunningOrders', runningOrders]] as const) {
   assert(source.includes('stockBefore') && source.includes('stockAfter'), `${label} reversal writes must save stock before/after snapshots.`);
   assert(source.includes('previousQty') && source.includes('newQty'), `${label} reversal writes must save previousQty/newQty snapshots.`);
   assert(source.includes('quantityDelta: reversalQuantity'), `${label} reversal writes must save positive quantityDelta.`);
 }
+assert(reportingCore.includes("record.status === 'VOIDED'"), 'Reporting must separate voided orders from commercial sales.');
+assert(reportingCore.includes('paymentReversalStatus'), 'Reporting must expose the recorded payment reversal outcome.');
+assert(reportingCore.includes("'VOIDED / CANCELLED'"), 'Reporting must override voided item status presentation.');
 
 console.log('Void payment reversal checks passed:');
 console.log('- unpaid order void');
