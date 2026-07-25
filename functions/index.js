@@ -198,10 +198,23 @@ function sanitizeItemRequest(items) {
 
 function canonicalAddOnsForItem(item, requestedAddOns, publicGroups, privateGroups, fallbackTaxRate) {
   const allowedGroupIds = new Set(Array.isArray(item.addOnGroupIds) ? item.addOnGroupIds : []);
+  const optionIdsByGroup = item.addOnOptionIdsByGroup
+    && typeof item.addOnOptionIdsByGroup === 'object'
+    && !Array.isArray(item.addOnOptionIdsByGroup)
+    ? item.addOnOptionIdsByGroup
+    : {};
   const requestedByGroup = new Map();
   requestedAddOns.forEach((requested) => {
     if (!allowedGroupIds.has(requested.groupId)) {
       fail('failed-precondition', 'One or more selected add-ons are unavailable.');
+    }
+    const allowedOptionIds = new Set(
+      Array.isArray(optionIdsByGroup[requested.groupId])
+        ? optionIdsByGroup[requested.groupId].filter((optionId) => typeof optionId === 'string')
+        : [],
+    );
+    if (!allowedOptionIds.has(requested.optionId)) {
+      fail('failed-precondition', 'One or more selected add-ons are unavailable for this product.');
     }
     if (!requestedByGroup.has(requested.groupId)) requestedByGroup.set(requested.groupId, []);
     requestedByGroup.get(requested.groupId).push(requested);
@@ -209,6 +222,15 @@ function canonicalAddOnsForItem(item, requestedAddOns, publicGroups, privateGrou
 
   const result = [];
   for (const groupId of allowedGroupIds) {
+    const allowedOptionIds = new Set(
+      Array.isArray(optionIdsByGroup[groupId])
+        ? optionIdsByGroup[groupId].filter((optionId) => typeof optionId === 'string')
+        : [],
+    );
+    if (allowedOptionIds.size === 0) {
+      if (requestedByGroup.has(groupId)) fail('failed-precondition', 'One or more selected add-ons are unavailable.');
+      continue;
+    }
     const publicGroup = publicGroups[groupId];
     const privateGroup = privateGroups[groupId];
     if (!publicGroup || publicGroup.isActive === false || !privateGroup || privateGroup.isActive === false) {

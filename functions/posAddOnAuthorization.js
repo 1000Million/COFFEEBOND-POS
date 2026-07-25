@@ -105,6 +105,15 @@ function uniqueStrings(value) {
   )];
 }
 
+function optionIdsByGroup(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([groupId, optionIds]) => [cleanText(groupId, 80), uniqueStrings(optionIds)])
+      .filter(([groupId]) => groupId),
+  );
+}
+
 function isAvailableAtStore(product, storeId) {
   return Array.isArray(product.availableStoreIds)
     && product.availableStoreIds.includes(storeId);
@@ -251,6 +260,7 @@ function canonicalizeRequestedCart({
     }
 
     const configuredGroupIds = uniqueStrings(product.addOnGroupIds);
+    const configuredOptionIdsByGroup = optionIdsByGroup(product.addOnOptionIdsByGroup);
     const selectedGroupIds = new Set(requestedItem.selectedAddOns.map(selection => selection.groupId));
     if (requestedItem.selectedAddOns.length > 0 && isHardExcludedProduct(product)) {
       fail('failed-precondition', 'Add-ons are not available for this product.');
@@ -265,6 +275,12 @@ function canonicalizeRequestedCart({
         }
         fail('failed-precondition', 'One or more selected add-on groups do not belong to this product.');
       }
+      const allowedOptionIds = new Set(configuredOptionIdsByGroup[selectedGroupId] || []);
+      if (requestedItem.selectedAddOns.some(selection => (
+        selection.groupId === selectedGroupId && !allowedOptionIds.has(selection.optionId)
+      ))) {
+        fail('failed-precondition', 'One or more selected add-on options are not enabled for this product.');
+      }
     }
 
     const selectionsByGroup = new Map();
@@ -278,6 +294,13 @@ function canonicalizeRequestedCart({
       for (const groupId of configuredGroupIds) {
         const group = groupsById[groupId];
         const requestedForGroup = selectionsByGroup.get(groupId) || [];
+        const allowedOptionIds = new Set(configuredOptionIdsByGroup[groupId] || []);
+        if (allowedOptionIds.size === 0) {
+          if (requestedForGroup.length > 0) {
+            fail('failed-precondition', 'Add-on options are not enabled for this product.');
+          }
+          continue;
+        }
         if (!group || group.isActive !== true) {
           if (requestedForGroup.length > 0) {
             fail('failed-precondition', 'One or more selected add-on groups are inactive.');
@@ -440,5 +463,6 @@ module.exports = {
   isHardExcludedProduct,
   isRetailCoffee,
   normalizeCategory,
+  optionIdsByGroup,
   sanitizeCartItems,
 };

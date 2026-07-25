@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle2, Loader2, Save } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { db } from '../../../lib/firebase';
 import type { AddOnGroup, AddOnOption, FinishedGood } from '../../../types/menu-management';
+import ProductAddOnControls from './ProductAddOnControls';
 
 function number(value: unknown): number {
   const parsed = Number(value);
@@ -43,6 +44,7 @@ export default function AddOnsTab() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [productControlsDirty, setProductControlsDirty] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -89,6 +91,12 @@ export default function AddOnsTab() {
     updateGroup({
       options: selectedGroup.options.map(option => option.id === optionId ? { ...option, ...patch } : option),
     });
+  };
+
+  const selectGroup = (groupId: string) => {
+    if (productControlsDirty && !window.confirm('Discard unsaved product add-on changes?')) return;
+    setProductControlsDirty(false);
+    setSelectedGroupId(groupId);
   };
 
   const save = async () => {
@@ -161,7 +169,7 @@ export default function AddOnsTab() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <label className="text-sm font-black text-neutral-700">
             Add-on group
-            <select value={selectedGroupId} onChange={event => setSelectedGroupId(event.target.value)} className="mt-2 block min-h-11 w-full rounded-xl border border-neutral-200 bg-white px-3 sm:min-w-64">
+            <select value={selectedGroupId} onChange={event => selectGroup(event.target.value)} className="mt-2 block min-h-11 w-full rounded-xl border border-neutral-200 bg-white px-3 sm:min-w-64">
               {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
           </label>
@@ -202,6 +210,20 @@ export default function AddOnsTab() {
               {mappedProducts.length === 0 && <span className="text-sm font-bold text-neutral-400">No mapped products yet.</span>}
             </div>
           </div>
+
+          <ProductAddOnControls
+            key={selectedGroup.id}
+            group={selectedGroup}
+            products={mappedProducts}
+            onDirtyChange={setProductControlsDirty}
+            onProductSaved={(productId, addOnOptionIdsByGroup) => {
+              setFinishedGoods(current => current.map(product => (
+                (product.id || product.code) === productId
+                  ? { ...product, addOnOptionIdsByGroup }
+                  : product
+              )));
+            }}
+          />
 
           <button type="button" onClick={save} disabled={saving} className="inline-flex min-h-12 items-center gap-2 rounded-xl bg-[#5c4033] px-5 font-black text-white disabled:opacity-50">
             {saving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}

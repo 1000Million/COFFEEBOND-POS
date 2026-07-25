@@ -738,6 +738,7 @@ export default function CustomerOrder() {
     try {
       canonicalAddOns = canonicalAddOnSelections(
         item.addOnGroupIds,
+        item.addOnOptionIdsByGroup,
         addOnGroups,
         requestedAddOns,
         itemTaxRate(item, selectedStoreTaxRate),
@@ -768,7 +769,11 @@ export default function CustomerOrder() {
   };
 
   const addItem = (item: CustomerMenuItem) => {
-    const groups = activeAddOnGroupsForProduct(item.addOnGroupIds, addOnGroups);
+    const groups = activeAddOnGroupsForProduct(
+      item.addOnGroupIds,
+      item.addOnOptionIdsByGroup,
+      addOnGroups,
+    );
     if (groups.length > 0) {
       setEditingAddOnLine(null);
       setPendingAddOnItem(item);
@@ -778,7 +783,11 @@ export default function CustomerOrder() {
   };
 
   const editLineAddOns = (line: CartLine) => {
-    const groups = activeAddOnGroupsForProduct(line.item.addOnGroupIds, addOnGroups);
+    const groups = activeAddOnGroupsForProduct(
+      line.item.addOnGroupIds,
+      line.item.addOnOptionIdsByGroup,
+      addOnGroups,
+    );
     if (groups.length === 0) return;
     setEditingAddOnLine(line);
     setPendingAddOnItem(line.item);
@@ -1400,7 +1409,11 @@ export default function CustomerOrder() {
           productName={pendingAddOnItem.displayName || pendingAddOnItem.name}
           basePrice={toNumber(pendingAddOnItem.salePrice)}
           taxRate={itemTaxRate(pendingAddOnItem, selectedStoreTaxRate)}
-          groups={activeAddOnGroupsForProduct(pendingAddOnItem.addOnGroupIds, addOnGroups)}
+          groups={activeAddOnGroupsForProduct(
+            pendingAddOnItem.addOnGroupIds,
+            pendingAddOnItem.addOnOptionIdsByGroup,
+            addOnGroups,
+          )}
           initialSelections={editingAddOnLine?.addOns}
           onCancel={() => {
             setPendingAddOnItem(null);

@@ -43,6 +43,9 @@ const baseProduct = {
   isAvailable: true,
   availableStoreIds: [STORE_ID],
   addOnGroupIds: ['beverage_add_on'],
+  addOnOptionIdsByGroup: {
+    beverage_add_on: ['OAT_MILK', 'INACTIVE', 'NO_INVENTORY_MAPPING'],
+  },
 };
 const baseGroup = {
   id: 'beverage_add_on',
@@ -192,6 +195,7 @@ const bondPizza = canonicalize({
     name: 'Bond Pizza',
     posCategoryName: 'Pizza',
     addOnGroupIds: ['food_add_on'],
+    addOnOptionIdsByGroup: { food_add_on: ['HONEY'] },
   },
   item: requestedItem({
     parentProductId: 'BOND_PIZZA',
@@ -258,7 +262,33 @@ expectFailure(
   () => canonicalize({
     product: {
       ...baseProduct,
+      addOnOptionIdsByGroup: { beverage_add_on: ['OAT_MILK'] },
+    },
+    item: requestedItem({
+      selectedAddOns: [{
+        groupId: 'beverage_add_on',
+        optionId: 'NO_INVENTORY_MAPPING',
+        quantity: 1,
+      }],
+    }),
+  }),
+  'not enabled',
+);
+expectFailure(
+  () => canonicalize({
+    product: {
+      ...baseProduct,
+      addOnOptionIdsByGroup: { beverage_add_on: [] },
+    },
+  }),
+  'not enabled',
+);
+expectFailure(
+  () => canonicalize({
+    product: {
+      ...baseProduct,
       addOnGroupIds: ['food_add_on'],
+      addOnOptionIdsByGroup: { food_add_on: ['HONEY'] },
     },
     item: requestedItem({
       selectedAddOns: [{ groupId: 'beverage_add_on', optionId: 'OAT_MILK', quantity: 1 }],
@@ -272,6 +302,7 @@ expectFailure(
       ...baseProduct,
       posCategoryName: 'Pizza',
       addOnGroupIds: ['food_add_on'],
+      addOnOptionIdsByGroup: { food_add_on: ['HONEY'] },
     },
     item: requestedItem({
       selectedAddOns: [{ groupId: 'beverage_add_on', optionId: 'OAT_MILK', quantity: 1 }],
@@ -328,4 +359,5 @@ console.log('- browser-supplied names, prices, tax, and inventory mappings are i
 console.log('- inactive options/groups and invalid selection counts are rejected');
 console.log('- product/group, store, excluded category, and Retail Coffee mismatches are rejected');
 console.log('- canonical add-on totals and inventory snapshots come from server-side group data');
+console.log('- product-specific option allowlists are required and enforced');
 console.log('- pricing-only options retain NOT_CONFIGURED and require no assumed inventory mapping');
