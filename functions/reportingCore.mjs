@@ -184,11 +184,13 @@ export function effectiveOrderStatus(order) {
 }
 
 export function orderDiscount(order) {
-  const explicit = money(order?.discountAmount);
-  if (explicit > 0) return explicit;
-  const total = money(order?.discountTotal);
-  if (total > 0) return total;
-  return money(order?.discount);
+  if (Number.isFinite(Number(order?.discountAmount))) {
+    return money(Math.max(0, Number(order.discountAmount)));
+  }
+  if (Number.isFinite(Number(order?.discountTotal))) {
+    return money(Math.max(0, Number(order.discountTotal)));
+  }
+  return money(Math.max(0, Number(order?.discount) || 0));
 }
 
 export function orderTax(order) {
@@ -1001,7 +1003,7 @@ function splitPaymentRows(records) {
 }
 
 function discountRows(records, orderOnly = false) {
-  const discounted = records.filter((record) => record.discount > 0 && record.commercial !== 'COMPLIMENTARY');
+  const discounted = records.filter((record) => record.commercial === 'PAID' && record.discount > 0);
   if (orderOnly) {
     return discounted.map((record) => ({
       orderNumber: record.orderNumber,
@@ -1016,18 +1018,20 @@ function discountRows(records, orderOnly = false) {
       status: record.status,
     }));
   }
-  return discounted.flatMap((record) => record.items.map((item) => ({
-    orderNumber: record.orderNumber,
-    dateTime: record.createdAt,
-    store: record.storeName,
-    source: record.source,
-    item: item.itemName,
-    discountPercent: item.gross > 0 ? money(item.discount * 100 / item.gross) : 0,
-    discountAmount: item.discount,
-    reason: record.discountReason || '',
-    staff: record.staffName,
-    role: record.staffRole || 'Not recorded',
-  })));
+  return discounted.flatMap((record) => record.items
+    .filter((item) => item.discount > 0)
+    .map((item) => ({
+      orderNumber: record.orderNumber,
+      dateTime: record.createdAt,
+      store: record.storeName,
+      source: record.source,
+      item: item.itemName,
+      discountPercent: item.gross > 0 ? money(item.discount * 100 / item.gross) : 0,
+      discountAmount: item.discount,
+      reason: record.discountReason || '',
+      staff: record.staffName,
+      role: record.staffRole || 'Not recorded',
+    })));
 }
 
 function complimentaryRows(records) {

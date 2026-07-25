@@ -270,6 +270,198 @@ test('biller report uses display name only', billerReport.rows.some((row: any) =
 const discountReport = buildReportDataset('discounted-orders-with-reason', records);
 test('discount report preserves stored reason', discountReport.rows.length === 1 && discountReport.rows[0].reason === 'Launch offer');
 
+const discountRegressionRecords = [
+  record({
+    id: 'zero-discount-with-reason',
+    orderNumber: 'CB-GOLDEN_I-ZERO-REASON',
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    status: 'COMPLETED',
+    paymentStatus: 'PAID',
+    subtotal: 225,
+    discountAmount: 0,
+    discountTotal: 0,
+    discount: 225,
+    discountReason: 'Stale reason must not qualify',
+    taxableAmount: 225,
+    gstTotal: 11.25,
+    grandTotal: 236.25,
+    createdAt,
+  }, [{
+    itemCode: 'CAPPUCCINO',
+    itemName: 'Cappuccino',
+    quantity: 1,
+    unitPrice: 225,
+    lineSubtotal: 225,
+    lineDiscount: 0,
+    lineTaxable: 225,
+    lineTax: 11.25,
+    lineTotal: 236.25,
+  }]),
+  record({
+    id: 'zero-discount-percent',
+    orderNumber: 'CB-GOLDEN_I-ZERO-PERCENT',
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    status: 'COMPLETED',
+    paymentStatus: 'PAID',
+    subtotal: 200,
+    discountPercent: 0,
+    discountAmount: 0,
+    taxableAmount: 200,
+    gstTotal: 10,
+    grandTotal: 210,
+    createdAt,
+  }, [{
+    itemCode: 'AFFOGATO',
+    itemName: 'Affogato',
+    quantity: 1,
+    unitPrice: 200,
+    lineSubtotal: 200,
+    lineDiscount: 0,
+    lineTaxable: 200,
+    lineTax: 10,
+    lineTotal: 210,
+  }]),
+  record({
+    id: 'positive-discount',
+    orderNumber: 'CB-GOLDEN_I-POSITIVE',
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    status: 'COMPLETED',
+    paymentStatus: 'PAID',
+    subtotal: 250,
+    discountAmount: 25,
+    discountReason: 'Approved offer',
+    taxableAmount: 225,
+    gstTotal: 11.25,
+    grandTotal: 236.25,
+    createdAt,
+  }, [{
+    itemCode: 'HOT_LATTE',
+    itemName: 'Hot Latte',
+    quantity: 1,
+    unitPrice: 250,
+    lineSubtotal: 250,
+    lineDiscount: 25,
+    lineTaxable: 225,
+    lineTax: 11.25,
+    lineTotal: 236.25,
+  }]),
+  record({
+    id: 'voided-discount',
+    orderNumber: 'CB-GOLDEN_I-VOID-DISCOUNT',
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    status: 'VOIDED',
+    paymentStatus: 'PAID',
+    subtotal: 250,
+    discountAmount: 25,
+    discountReason: 'Voided offer',
+    taxableAmount: 225,
+    gstTotal: 11.25,
+    grandTotal: 236.25,
+    createdAt,
+  }, [{
+    itemCode: 'HOT_LATTE',
+    itemName: 'Hot Latte',
+    quantity: 1,
+    unitPrice: 250,
+    lineSubtotal: 250,
+    lineDiscount: 25,
+    lineTaxable: 225,
+    lineTax: 11.25,
+    lineTotal: 236.25,
+  }]),
+  record({
+    id: 'complimentary-discount',
+    orderNumber: 'CB-GOLDEN_I-COMP-DISCOUNT',
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    status: 'COMPLETED',
+    commercialStatus: 'COMPLIMENTARY',
+    paymentStatus: 'NOT_REQUIRED',
+    paymentMethod: 'COMPLIMENTARY',
+    subtotal: 225,
+    menuValue: 225,
+    complimentaryDiscount: 225,
+    discountAmount: 225,
+    taxableAmount: 0,
+    gstTotal: 0,
+    grandTotal: 0,
+    createdAt,
+  }, [{
+    itemCode: 'CAPPUCCINO',
+    itemName: 'Cappuccino',
+    quantity: 1,
+    unitPrice: 225,
+    lineSubtotal: 225,
+    lineDiscount: 225,
+    lineTaxable: 0,
+    lineTax: 0,
+    lineTotal: 0,
+  }]),
+];
+const detailedDiscountRegression = buildReportDataset('discount-report', discountRegressionRecords);
+const orderDiscountRegression = buildReportDataset('discounted-orders-with-reason', discountRegressionRecords);
+test(
+  'zero discount with a reason is excluded',
+  !JSON.stringify(orderDiscountRegression.rows).includes('CB-GOLDEN_I-ZERO-REASON'),
+);
+test(
+  'zero discount percent is excluded',
+  !JSON.stringify(orderDiscountRegression.rows).includes('CB-GOLDEN_I-ZERO-PERCENT'),
+);
+test(
+  'a real positive monetary discount is included',
+  orderDiscountRegression.rows.length === 1
+    && orderDiscountRegression.rows[0].orderNumber === 'CB-GOLDEN_I-POSITIVE'
+    && orderDiscountRegression.rows[0].discountAmount === 25,
+);
+test(
+  'voided and complimentary discounts are excluded from commercial discount rows',
+  detailedDiscountRegression.rows.length === 1
+    && detailedDiscountRegression.rows[0].orderNumber === 'CB-GOLDEN_I-POSITIVE',
+);
+test(
+  'discount report totals reconcile with canonical commercial sales calculations',
+  detailedDiscountRegression.summary.discounts === 25
+    && orderDiscountRegression.summary.discounts === 25,
+);
+const discountExport = {
+  report: REPORT_REGISTRY.find(report => report.reportId === 'discount-report'),
+  summary: detailedDiscountRegression.summary,
+  availabilityStatus: detailedDiscountRegression.availabilityStatus,
+  unavailableReason: detailedDiscountRegression.unavailableReason,
+  columns: detailedDiscountRegression.columns,
+  rows: detailedDiscountRegression.rows,
+  accessibleStores: [{ id: 'GOLDEN_I', code: 'GOLDEN_I', name: 'Golden I' }],
+  selectedStoreIds: ['GOLDEN_I'],
+  startDate: '2026-07-24',
+  endDate: '2026-07-24',
+  timeZone: 'Asia/Kolkata',
+  filters: { storeIds: ['GOLDEN_I'] },
+  filterOptions: { sources: [], orderTypes: [], paymentMethods: [], staff: [], categories: [], items: [] },
+  sourceOrderCount: discountRegressionRecords.length,
+  generatedAt: createdAt.toISOString(),
+  pagination: {
+    page: 1,
+    pageSize: 50,
+    totalRows: detailedDiscountRegression.rows.length,
+    totalPages: 1,
+    hasNextPage: false,
+  },
+} as unknown as ReportingResponse;
+const discountCsv = buildReportingCsv(discountExport);
+const discountSheet = buildReportingSheetRows(discountExport);
+test(
+  'discount CSV and spreadsheet exports contain only positive commercial discount rows',
+  discountCsv.includes('CB-GOLDEN_I-POSITIVE')
+    && !discountCsv.includes('CB-GOLDEN_I-ZERO-REASON')
+    && discountSheet.flat().includes('CB-GOLDEN_I-POSITIVE')
+    && !discountSheet.flat().includes('CB-GOLDEN_I-VOID-DISCOUNT'),
+);
+
 const complimentaryReport = buildReportDataset('complimentary-orders', records);
 const serializedComplimentary = JSON.stringify(complimentaryReport.rows);
 test('complimentary report contains no OTP code, token, or authorization ID', !serializedComplimentary.includes('123456') && !serializedComplimentary.includes('private-auth-id') && !serializedComplimentary.includes('complimentaryOtpCode'));
