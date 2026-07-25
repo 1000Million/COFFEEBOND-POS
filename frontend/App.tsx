@@ -20,6 +20,7 @@ const CustomerOrderStatus = lazy(() => import('./pages/customer/CustomerOrderSta
 const KOTScreen = lazy(() => import('./pages/kot/KOTScreen'));
 const ReadyToServe = lazy(() => import('./pages/kot/ReadyToServe'));
 const ReportsHome = lazy(() => import('./pages/reports/ReportsHome'));
+const ReportView = lazy(() => import('./pages/reports/ReportView'));
 const DayClose = lazy(() => import('./pages/reports/DayClose'));
 const AuditControl = lazy(() => import('./pages/reports/AuditControl'));
 const InventoryControl = lazy(() => import('./pages/inventory/InventoryControl'));
@@ -157,8 +158,12 @@ export default function App() {
                   <Route path="/pos/incoming-orders" element={<IncomingOnlineOrders />} />
                 </Route>
 
-                <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>
+                <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER', 'CASHIER']} />}>
                   <Route path="/reports" element={<ReportsHome />} />
+                  <Route path="/reports/:reportId" element={<ReportView />} />
+                </Route>
+
+                <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>
                   <Route path="/reports/day-close" element={<DayClose />} />
                   <Route path="/reports/audit-control" element={<AuditControl />} />
                   <Route path="/inventory" element={<Navigate to="/inventory/control" replace />} />

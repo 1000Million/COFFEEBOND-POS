@@ -9,4 +9,4 @@ coverage/
 .firebaserc
 .firebase/
 data/imports/*.xlsx
-reports/
+/reports/

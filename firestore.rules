@@ -619,6 +619,11 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /reportAccessAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
     // App Settings
     match /appSettings/{document} {
       allow get: if isActiveStaff() || document == 'gstConfig';

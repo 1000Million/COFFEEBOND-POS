@@ -22,7 +22,7 @@ export default function Layout() {
     navLinks.push({ to: '/pos/incoming-orders', label: 'Online', title: 'Online Orders', icon: ShoppingBag });
   }
 
-  if (role === 'ADMIN' || role === 'STORE_MANAGER') {
+  if (role === 'ADMIN' || role === 'STORE_MANAGER' || role === 'CASHIER') {
     navLinks.push({ to: '/reports', label: 'Reports', title: 'Reports', icon: FileText });
   }
 

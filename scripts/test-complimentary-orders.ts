@@ -101,7 +101,7 @@ assert(legal.gstin === store.gstin && legal.legalName === store.legalName, 'Rece
 
 const repoRoot = process.cwd();
 const posSource = fs.readFileSync(path.join(repoRoot, 'frontend/pages/pos/POSHome.tsx'), 'utf8');
-const reportsSource = fs.readFileSync(path.join(repoRoot, 'frontend/pages/reports/ReportsHome.tsx'), 'utf8');
+const reportingCoreSource = fs.readFileSync(path.join(repoRoot, 'functions/reportingCore.mjs'), 'utf8');
 const reversalSource = fs.readFileSync(path.join(repoRoot, 'frontend/lib/paymentReversal.ts'), 'utf8');
 const phoneVerificationSource = fs.readFileSync(path.join(repoRoot, 'frontend/lib/complimentaryPhoneVerification.ts'), 'utf8');
 const functionsIndexSource = fs.readFileSync(path.join(repoRoot, 'functions/index.js'), 'utf8');
@@ -149,8 +149,8 @@ assert(rulesSource.includes("data.staffUid == request.auth.uid"), 'Rules must re
 assert(rulesSource.includes(".data.storeId == data.storeId"), 'Rules must reject authorization store mismatch.');
 assert(rulesSource.includes("customerPhoneE164 == '+91' + data.customerPhone"), 'Rules must reject customer phone mismatch.');
 assert(!phoneVerificationSource.includes('BLOCKED_OTP_PROVIDER_NOT_CONFIGURED') && !posSource.includes('BLOCKED_OTP_PROVIDER_NOT_CONFIGURED'), 'The old provider blocker must be removed.');
-assert(reportsSource.includes('commercialCompletedOrders'), 'Reports must separate commercial and complimentary orders.');
-assert(reportsSource.includes('Complimentary COGS'), 'Reports must expose complimentary COGS separately.');
+assert(reportingCoreSource.includes("record.commercial === 'COMPLIMENTARY'"), 'Reports must separate commercial and complimentary orders.');
+assert(reportingCoreSource.includes('complimentaryCogs'), 'Reports must expose complimentary COGS separately.');
 assert(reversalSource.includes('if (isComplimentaryOrder(order))'), 'Void reversal must recognize complimentary orders.');
 
 console.log('Complimentary order checks passed:');
