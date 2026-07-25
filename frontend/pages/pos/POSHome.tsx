@@ -895,6 +895,7 @@ export default function POSHome() {
            bom: data.bom || [],
            finishedGoodCode: data.code,
            addOnGroupIds: Array.isArray(data.addOnGroupIds) ? data.addOnGroupIds : [],
+           addOnOptionIdsByGroup: data.addOnOptionIdsByGroup || {},
            createdAt: data.createdAt,
            updatedAt: data.updatedAt
          } as any);
@@ -1209,6 +1210,7 @@ export default function POSHome() {
     rememberRecentItem(itemId);
     const canonicalAddOns = canonicalAddOnSelections(
       item.addOnGroupIds,
+      item.addOnOptionIdsByGroup,
       addOnGroups,
       selectedAddOns,
       getItemTaxRate(item, selectedStoreTaxConfig.rate),
@@ -1255,7 +1257,11 @@ export default function POSHome() {
   };
 
   const addToCart = (item: any) => {
-    const groups = activeAddOnGroupsForProduct(item?.addOnGroupIds, addOnGroups);
+    const groups = activeAddOnGroupsForProduct(
+      item?.addOnGroupIds,
+      item?.addOnOptionIdsByGroup,
+      addOnGroups,
+    );
     if (groups.length > 0) {
       setEditingAddOnCartItem(null);
       setPendingAddOnItem(item as MenuItem);
@@ -1267,7 +1273,11 @@ export default function POSHome() {
   const editCartItemAddOns = (cartItem: CartItem) => {
     const menuItem = menuItems.find(item => item.id === cartItem.menuItemId);
     if (!menuItem) return;
-    const groups = activeAddOnGroupsForProduct(menuItem.addOnGroupIds, addOnGroups);
+    const groups = activeAddOnGroupsForProduct(
+      menuItem.addOnGroupIds,
+      menuItem.addOnOptionIdsByGroup,
+      addOnGroups,
+    );
     if (groups.length === 0) return;
     setEditingAddOnCartItem(cartItem);
     setPendingAddOnItem(menuItem);
@@ -1650,6 +1660,7 @@ export default function POSHome() {
         }
         const canonicalAddOns = canonicalAddOnSelections(
           liveItem.addOnGroupIds,
+          liveItem.addOnOptionIdsByGroup,
           addOnGroups,
           item.addOns,
           getItemTaxRate(liveItem, selectedStoreTaxConfig.rate),
@@ -3196,7 +3207,11 @@ export default function POSHome() {
           productName={pendingAddOnItem.name}
           basePrice={Number(pendingAddOnItem.price) || 0}
           taxRate={getItemTaxRate(pendingAddOnItem, selectedStoreTaxConfig.rate)}
-          groups={activeAddOnGroupsForProduct(pendingAddOnItem.addOnGroupIds, addOnGroups)}
+          groups={activeAddOnGroupsForProduct(
+            pendingAddOnItem.addOnGroupIds,
+            pendingAddOnItem.addOnOptionIdsByGroup,
+            addOnGroups,
+          )}
           initialSelections={editingAddOnCartItem?.addOns}
           onCancel={() => {
             setPendingAddOnItem(null);

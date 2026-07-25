@@ -428,6 +428,7 @@ export interface MenuItem {
   isActive: boolean;
   availableStoreIds: string[];
   addOnGroupIds?: string[];
+  addOnOptionIdsByGroup?: Record<string, string[]>;
   addonGroupIds?: string[];
   createdAt: any;
   updatedAt: any;

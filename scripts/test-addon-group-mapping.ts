@@ -276,16 +276,27 @@ const runtimeGroups = Object.values(proposedGroups).map(group => ({
 }));
 const foodRuntimeGroup = runtimeGroups.find(group => group.id === FOOD_ADD_ON_GROUP_ID)!;
 const beverageRuntimeGroup = runtimeGroups.find(group => group.id === BEVERAGE_ADD_ON_GROUP_ID)!;
-assert.equal(activeAddOnGroupsForProduct([FOOD_ADD_ON_GROUP_ID], runtimeGroups as any)[0].id, FOOD_ADD_ON_GROUP_ID);
-assert.equal(activeAddOnGroupsForProduct([], runtimeGroups as any).length, 0);
-assert.equal(activeAddOnGroupsForProduct([BEVERAGE_ADD_ON_GROUP_ID], runtimeGroups as any)[0].id, BEVERAGE_ADD_ON_GROUP_ID);
+const foodOptionIds = { [FOOD_ADD_ON_GROUP_ID]: foodRuntimeGroup.options.map(option => option.id) };
+const beverageOptionIds = { [BEVERAGE_ADD_ON_GROUP_ID]: beverageRuntimeGroup.options.map(option => option.id) };
+assert.equal(activeAddOnGroupsForProduct([FOOD_ADD_ON_GROUP_ID], foodOptionIds, runtimeGroups as any)[0].id, FOOD_ADD_ON_GROUP_ID);
+assert.equal(activeAddOnGroupsForProduct([], {}, runtimeGroups as any).length, 0);
+assert.equal(activeAddOnGroupsForProduct([BEVERAGE_ADD_ON_GROUP_ID], beverageOptionIds, runtimeGroups as any)[0].id, BEVERAGE_ADD_ON_GROUP_ID);
+assert.equal(activeAddOnGroupsForProduct([BEVERAGE_ADD_ON_GROUP_ID], {}, runtimeGroups as any).length, 0);
+assert.deepEqual(
+  activeAddOnGroupsForProduct(
+    [BEVERAGE_ADD_ON_GROUP_ID],
+    { [BEVERAGE_ADD_ON_GROUP_ID]: ['OAT_MILK'] },
+    runtimeGroups as any,
+  )[0].options.map(option => option.id),
+  ['OAT_MILK'],
+);
 
 const inactiveFoodGroup = {
   ...foodRuntimeGroup,
   options: foodRuntimeGroup.options.map(option => option.id === 'HUMMUS' ? { ...option, isActive: false as const } : option),
 };
 assert.equal(
-  activeAddOnGroupsForProduct([FOOD_ADD_ON_GROUP_ID], [inactiveFoodGroup] as any)[0].options.some(option => option.id === 'HUMMUS'),
+  activeAddOnGroupsForProduct([FOOD_ADD_ON_GROUP_ID], foodOptionIds, [inactiveFoodGroup] as any)[0].options.some(option => option.id === 'HUMMUS'),
   false,
 );
 assert.equal(validateAddOnQuantities({ ...foodRuntimeGroup, maximumSelections: 2 } as any, { HUMMUS: 2 }).ok, true);
@@ -303,12 +314,22 @@ assert.equal(addOnTaxForLine(selected, 2, 0), 20);
 assert.equal(addOnTaxForLine(selected, 2, 0.1), 18);
 assert.equal(addOnSelectionKey(selected), 'beverage_add_on:MOCHA:2|beverage_add_on:OAT_MILK:1');
 assert.deepEqual(
-  canonicalAddOnSelections([BEVERAGE_ADD_ON_GROUP_ID], runtimeGroups as any, selected, 5)
+  canonicalAddOnSelections([BEVERAGE_ADD_ON_GROUP_ID], beverageOptionIds, runtimeGroups as any, selected, 5)
     .map(addOn => [addOn.optionId, addOn.unitPrice, addOn.quantity]),
   [['OAT_MILK', 50, 1], ['MOCHA', 75, 2]],
 );
 assert.throws(
-  () => canonicalAddOnSelections([BEVERAGE_ADD_ON_GROUP_ID], runtimeGroups as any, [{ ...selected[0], optionId: 'DISABLED' }], 5),
+  () => canonicalAddOnSelections([BEVERAGE_ADD_ON_GROUP_ID], beverageOptionIds, runtimeGroups as any, [{ ...selected[0], optionId: 'DISABLED' }], 5),
+  /unavailable/,
+);
+assert.throws(
+  () => canonicalAddOnSelections(
+    [BEVERAGE_ADD_ON_GROUP_ID],
+    { [BEVERAGE_ADD_ON_GROUP_ID]: ['OAT_MILK'] },
+    runtimeGroups as any,
+    selected,
+    5,
+  ),
   /unavailable/,
 );
 const publicGroups = sanitizeAddOnGroupsForPublic(runtimeGroups as any);

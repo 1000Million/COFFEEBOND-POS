@@ -730,6 +730,11 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /productAddOnAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
     match /dayClosings/{closingId} {
       allow get: if isCheckoutStaff() && (
         !exists(/databases/$(database)/documents/dayClosings/$(closingId))

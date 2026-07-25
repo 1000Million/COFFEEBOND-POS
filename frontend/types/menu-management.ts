@@ -86,6 +86,7 @@ export interface FinishedGood {
   previousImageUrl?: string | null;
   previousImageStoragePath?: string | null;
   addOnGroupIds?: string[];
+  addOnOptionIdsByGroup?: Record<string, string[]>;
   posCategoryCode: string;
   posCategoryName: string;
   salePrice: number;

@@ -22,17 +22,35 @@ export function uniqueAddOnGroupIds(value: unknown): string[] {
   ));
 }
 
+export function normalizeAddOnOptionIdsByGroup(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([groupId, optionIds]) => [
+        groupId.trim(),
+        Array.from(new Set(
+          (Array.isArray(optionIds) ? optionIds : [])
+            .filter((optionId): optionId is string => typeof optionId === 'string' && optionId.trim().length > 0)
+            .map(optionId => optionId.trim()),
+        )),
+      ] as const)
+      .filter(([groupId]) => groupId.length > 0),
+  );
+}
+
 export function activeAddOnGroupsForProduct(
   addOnGroupIds: unknown,
+  addOnOptionIdsByGroup: unknown,
   groups: AddOnGroup[],
 ): AddOnGroup[] {
   const wanted = new Set(uniqueAddOnGroupIds(addOnGroupIds));
+  const allowedOptions = normalizeAddOnOptionIdsByGroup(addOnOptionIdsByGroup);
   return groups
     .filter(group => group.id && wanted.has(group.id) && group.isActive !== false)
     .map(group => ({
       ...group,
       options: (group.options || [])
-        .filter(option => option.isActive !== false)
+        .filter(option => option.isActive !== false && allowedOptions[group.id || '']?.includes(option.id))
         .sort((a, b) => number(a.sortOrder) - number(b.sortOrder) || a.name.localeCompare(b.name)),
     }))
     .filter(group => group.options.length > 0);
@@ -121,11 +139,12 @@ export function buildAddOnSelections(
 
 export function canonicalAddOnSelections(
   addOnGroupIds: unknown,
+  addOnOptionIdsByGroup: unknown,
   groups: AddOnGroup[],
   requestedSelections: AddOnSelection[] | undefined,
   fallbackTaxRate: number,
 ): AddOnSelection[] {
-  const activeGroups = activeAddOnGroupsForProduct(addOnGroupIds, groups);
+  const activeGroups = activeAddOnGroupsForProduct(addOnGroupIds, addOnOptionIdsByGroup, groups);
   const activeGroupIds = new Set(activeGroups.map(group => group.id));
   const requested = requestedSelections || [];
   if (requested.some(selection => !activeGroupIds.has(selection.groupId))) {
