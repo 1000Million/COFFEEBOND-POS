@@ -27,7 +27,7 @@ const InventoryControl = lazy(() => import('./pages/inventory/InventoryControl')
 const StockCorrection = lazy(() => import('./pages/inventory/StockCorrection'));
 const PurchaseEntry = lazy(() => import('./pages/inventory/PurchaseEntry'));
 const AdminHome = lazy(() => import('./pages/admin/AdminHome'));
-const Stores = lazy(() => import('./pages/admin/Stores'));
+const LocationManagement = lazy(() => import('./pages/admin/LocationManagement'));
 const Categories = lazy(() => import('./pages/admin/Categories'));
 const MenuItems = lazy(() => import('./pages/admin/MenuItems'));
 const InventoryItems = lazy(() => import('./pages/admin/InventoryItems'));
@@ -130,7 +130,8 @@ export default function App() {
 
                 <Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>
                   <Route path="/admin" element={<AdminHome />} />
-                  <Route path="/admin/stores" element={<Stores />} />
+                  <Route path="/admin/locations" element={<LocationManagement />} />
+                  <Route path="/admin/stores" element={<Navigate to="/admin/locations" replace />} />
                   <Route path="/admin/categories" element={<Categories />} />
                   <Route path="/admin/inventory" element={<InventoryItems />} />
                   <Route path="/admin/recipes" element={<Recipes />} />
