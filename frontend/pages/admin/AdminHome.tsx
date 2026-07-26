@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { 
-  Store, Tags, MenuSquare, DatabaseZap, Package, Database, 
+  Tags, MenuSquare, DatabaseZap, Package, Database, MapPinned,
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
   ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench, PackagePlus, ImageUp
 } from 'lucide-react';
@@ -69,12 +69,13 @@ export default function AdminHome() {
           className="grid grid-cols-1 md:grid-cols-2 gap-4"
         >
           <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
-            <Link to="/admin/stores" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+            <Link to="/admin/locations" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
               <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
-                <Store size={20} />
+                <MapPinned size={20} />
               </div>
               <div>
-                <h4 className="font-bold text-neutral-800">Stores</h4>
+                <h4 className="font-bold text-neutral-800">Location Management</h4>
+                <p className="text-xs text-neutral-500">Create, clone, review, and activate locations</p>
               </div>
             </Link>
           </motion.div>
