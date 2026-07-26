@@ -84,7 +84,7 @@ export default function IncomingOnlineOrders() {
     setLoading(true);
     setError(null);
     try {
-      const statuses: OnlineOrder['status'][] = ['PENDING', 'NEEDS_ATTENTION'];
+      const statuses: OnlineOrder['status'][] = ['PENDING', 'NEEDS_ATTENTION', 'PAYMENT_REVIEW_REQUIRED'];
       const snapshots = await Promise.all(statuses.map(status => getDocs(query(
         collection(db, 'onlineOrders'),
         where('storeId', '==', storeId),
@@ -134,7 +134,9 @@ export default function IncomingOnlineOrders() {
     setBlockers(prev => ({ ...prev, [order.id!]: [] }));
     try {
       const result = await acceptOnlineOrder(order.id, staffProfile);
-      setMessage(`Accepted online order and created POS order ${result.orderNumber}. KOT rows: ${result.kotCount}; stock movements: ${result.stockMovementCount}.`);
+      setMessage(order.paymentProvider === 'RAZORPAY'
+        ? 'Accepted online order. The customer can now pay on the tracking page; no KOT or stock deduction has been created yet.'
+        : `Accepted online order and created POS order ${result.orderNumber}. KOT rows: ${result.kotCount}; stock movements: ${result.stockMovementCount}.`);
       await loadOrders(order.storeId);
     } catch (err) {
       if (isOnlineOrderAcceptError(err)) {
@@ -247,17 +249,18 @@ export default function IncomingOnlineOrders() {
           {orders.map(order => {
             const orderBlockers = order.id ? blockers[order.id] || [] : [];
             const isBusy = actioningId === order.id;
+            const requiresPaymentReview = order.status === 'PAYMENT_REVIEW_REQUIRED';
             const ageMinutes = minutesSince(order.createdAt, now);
             const isNew = ageMinutes < 5;
             return (
-              <article key={order.id} className={`rounded-3xl border bg-white p-4 shadow-sm sm:p-5 ${isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
+              <article key={order.id} className={`rounded-3xl border bg-white p-4 shadow-sm sm:p-5 ${requiresPaymentReview ? 'border-red-300 ring-2 ring-red-100' : isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
                 <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="text-xl font-black text-neutral-900">{order.customerName}</h2>
                       {isNew && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">NEW</span>}
-                      <span className={`rounded-full px-3 py-1 text-xs font-black ${order.status === 'NEEDS_ATTENTION' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
-                        {order.status.replace('_', ' ')}
+                      <span className={`rounded-full px-3 py-1 text-xs font-black ${requiresPaymentReview ? 'bg-red-100 text-red-800' : order.status === 'NEEDS_ATTENTION' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+                        {order.status.replaceAll('_', ' ')}
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-sm font-bold text-neutral-600">
@@ -281,6 +284,9 @@ export default function IncomingOnlineOrders() {
                   <div className="text-left md:text-right">
                     <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Total</p>
                     <p className="text-2xl font-black text-[#3e2723]">{formatMoney(order.grandTotal)}</p>
+                    <p className="mt-1 text-xs font-black text-neutral-500">
+                      {order.paymentProvider === 'RAZORPAY' ? 'RAZORPAY AFTER ACCEPTANCE' : 'PAY AT COUNTER'}
+                    </p>
                   </div>
                 </div>
 
@@ -307,33 +313,40 @@ export default function IncomingOnlineOrders() {
                   </div>
                 )}
 
-                <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
-                  <label className="text-sm font-bold text-neutral-700">
-                    Reject reason
-                    <input
-                      value={order.id ? rejectReasons[order.id] || '' : ''}
-                      onChange={(event) => order.id && setRejectReasons(prev => ({ ...prev, [order.id]: event.target.value }))}
-                      placeholder="Required only when rejecting"
-                      className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#5c4033]"
-                    />
-                  </label>
-                  <button
-                    onClick={() => handleReject(order)}
-                    disabled={isBusy}
-                    className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
-                  >
-                    Reject
-                  </button>
-                  <button
-                    onClick={() => handleAccept(order)}
-                    disabled={isBusy}
-                    className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
-                  >
-                    {isBusy ? (
-                      <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>
-                    ) : 'Accept into POS'}
-                  </button>
-                </div>
+                {requiresPaymentReview ? (
+                  <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-900">
+                    Payment was received, but POS/KOT/stock finalisation needs Admin or Store Manager review. Do not take another payment or reject this request.
+                    {order.paymentReviewCode && <p className="mt-2 font-mono text-xs">Review code: {order.paymentReviewCode}</p>}
+                  </div>
+                ) : (
+                  <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+                    <label className="text-sm font-bold text-neutral-700">
+                      Reject reason
+                      <input
+                        value={order.id ? rejectReasons[order.id] || '' : ''}
+                        onChange={(event) => order.id && setRejectReasons(prev => ({ ...prev, [order.id]: event.target.value }))}
+                        placeholder="Required only when rejecting"
+                        className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#5c4033]"
+                      />
+                    </label>
+                    <button
+                      onClick={() => handleReject(order)}
+                      disabled={isBusy}
+                      className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => handleAccept(order)}
+                      disabled={isBusy}
+                      className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
+                    >
+                      {isBusy ? (
+                        <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>
+                      ) : order.paymentProvider === 'RAZORPAY' ? 'Accept and request payment' : 'Accept into POS'}
+                    </button>
+                  </div>
+                )}
               </article>
             );
           })}

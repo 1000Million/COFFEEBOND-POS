@@ -12,7 +12,7 @@ const RESERVED_USERNAMES = new Set([
   'store_manager',
   'system',
 ]);
-const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER'];
+const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER', 'RAZORPAY'];
 
 function money(value) {
   const parsed = Number(value ?? 0);
@@ -103,8 +103,13 @@ function normalizedPaymentRows(order, paymentDocuments = []) {
 
   return source
     .map((payment) => ({
-      method: String(payment?.method || 'UNKNOWN').toUpperCase(),
+      method: payment?.provider === 'RAZORPAY' || order?.paymentProvider === 'RAZORPAY'
+        ? 'RAZORPAY'
+        : String(payment?.method || 'UNKNOWN').toUpperCase(),
       amount: money(payment?.amount),
+      providerMethod: payment?.provider === 'RAZORPAY' || order?.paymentProvider === 'RAZORPAY'
+        ? String(payment?.providerMethod || order?.providerMethod || 'OTHER').toUpperCase()
+        : null,
     }))
     .filter((payment) => payment.amount > 0 && payment.method !== 'COMPLIMENTARY' && payment.method !== 'PAY_AT_COUNTER');
 }

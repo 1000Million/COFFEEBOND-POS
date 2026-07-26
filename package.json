@@ -42,6 +42,7 @@
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs",
     "test:franchise-viewer": "esbuild scripts/test-franchise-viewer.ts --bundle --platform=node --format=esm --outfile=/tmp/franchise-viewer-test.mjs && node /tmp/franchise-viewer-test.mjs",
     "test:reporting-centre": "esbuild scripts/test-reporting-centre.ts --bundle --platform=node --format=esm --outfile=/tmp/reporting-centre-test.mjs && node /tmp/reporting-centre-test.mjs",
+    "test:razorpay-checkout": "node scripts/test-razorpay-checkout.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs",
     "test:product-addon-controls": "node scripts/test-product-addon-controls.mjs"
   },

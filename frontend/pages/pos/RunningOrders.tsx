@@ -166,6 +166,13 @@ function settledTenderRows(payments: OrderPayment[]): OrderPayment[] {
   return payments.filter(payment => payment.method !== 'PAY_AT_COUNTER' && money(payment.amount) > 0);
 }
 
+function paymentTenderLabel(order: Order, payment: Pick<OrderPayment, 'method' | 'provider' | 'providerMethod'>): string {
+  if (payment.provider === 'RAZORPAY' || order.paymentProvider === 'RAZORPAY') {
+    return `RAZORPAY / ${payment.providerMethod || order.providerMethod || 'OTHER'}`;
+  }
+  return payment.method;
+}
+
 function sourceLabel(order: Order): 'CUSTOMER_WEB' | 'POS' {
   const record = order as Order & Record<string, unknown>;
   if (record.source === 'CUSTOMER_WEB' || record.onlineOrderId || record.onlineOrderReference || record.linkedOnlineOrderId) {
@@ -266,7 +273,7 @@ function printReceipt(bundle: OrderBundle) {
         <div class="line"></div>
         ${complimentary
           ? '<p class="center bold">COMPLIMENTARY — NO PAYMENT REQUIRED</p><p class="center muted" style="margin-top:8px;">Payment Status: NOT REQUIRED</p>'
-          : `${paymentRows.map(payment => `<div class="row"><span>${payment.method}</span><span>${formatMoney(payment.amount)}</span></div>`).join('')}<p class="center muted" style="margin-top:16px;">${paymentOutcome}</p>`}
+          : `${paymentRows.map(payment => `<div class="row"><span>${paymentTenderLabel(order, payment as OrderPayment)}</span><span>${formatMoney(payment.amount)}</span></div>`).join('')}<p class="center muted" style="margin-top:16px;">${paymentOutcome}</p>`}
       </body>
     </html>
   `);
@@ -1138,6 +1145,11 @@ export default function RunningOrders() {
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">
                 This marks the order VOIDED, cancels related KOT rows, and reverses original sale stock movements. It does not delete the order.
               </div>
+              {voidBundle.order.paymentProvider === 'RAZORPAY' && voidBundle.order.paymentStatus === 'PAID' && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
+                  Gateway refund required. This action does not refund Razorpay or mark provider funds as refunded.
+                </div>
+              )}
               <label className="block">
                 <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Void reason</span>
                 <textarea
@@ -1315,7 +1327,11 @@ function OrderDetailDrawer({
                   <p className="text-xs">Payment Status: NOT REQUIRED</p>
                 </div>
               ) : (payments.length ? payments : [{ method: order.paymentMethod, amount: order.grandTotal, reference: null, createdAt: null }]).map((payment, index) => (
-                <Row key={`${payment.method}-${index}`} label={payment.method} value={formatMoney(payment.amount)} />
+                <Row
+                  key={`${payment.method}-${index}`}
+                  label={paymentTenderLabel(order, payment as OrderPayment)}
+                  value={formatMoney(payment.amount)}
+                />
               ))}
             </div>
           </section>

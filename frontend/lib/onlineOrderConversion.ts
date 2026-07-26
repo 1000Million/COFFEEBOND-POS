@@ -120,8 +120,6 @@ function buildOnlineOrderTableNumber(onlineOrder: OnlineOrder): string | null {
 
 export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: StaffProfile): Promise<AcceptResult> {
   const onlineOrderRef = doc(db, 'onlineOrders', onlineOrderId);
-  const newOrderRef = doc(collection(db, 'orders'));
-  const newCustomerRef = doc(collection(db, 'customers'));
 
   try {
     const preflightOnlineOrderSnap = await getDoc(onlineOrderRef);
@@ -133,7 +131,17 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     if (preflightOnlineOrder.status !== 'PENDING' && preflightOnlineOrder.status !== 'NEEDS_ATTENTION') {
       throw new Error(`Online order is ${preflightOnlineOrder.status} and cannot be accepted again.`);
     }
-    const lineRefs = preflightOnlineOrder.items.map(() => doc(collection(newOrderRef, 'items')));
+    const isRazorpay = preflightOnlineOrder.paymentProvider === 'RAZORPAY';
+    const plannedOrderId = isRazorpay
+      ? `WEB_RZP_${onlineOrderId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96)}`
+      : null;
+    const newOrderRef = plannedOrderId
+      ? doc(db, 'orders', plannedOrderId)
+      : doc(collection(db, 'orders'));
+    const newCustomerRef = doc(collection(db, 'customers'));
+    const lineRefs = preflightOnlineOrder.items.map((_, index) => plannedOrderId
+      ? doc(newOrderRef, 'items', `${plannedOrderId}_ITEM_${String(index + 1).padStart(2, '0')}`)
+      : doc(collection(newOrderRef, 'items')));
     const posAddOnAuthorization = await authorizePosAddOns({
       storeId: preflightOnlineOrder.storeId,
       orderId: newOrderRef.id,
@@ -292,6 +300,54 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const customerPhone = onlineOrder.customerPhone.trim();
     const customerName = onlineOrder.customerName.trim() || 'Online Guest';
     const customerId = customerPhone ? newCustomerRef.id : null;
+
+    if (isRazorpay) {
+      const cents = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100);
+      if (
+        cents(onlineOrder.subtotal) !== cents(subtotal)
+        || cents(onlineOrder.taxableAmount) !== cents(taxableAmount)
+        || cents(onlineOrder.gstTotal) !== cents(gstTotal)
+        || cents(onlineOrder.grandTotal) !== cents(grandTotal)
+      ) {
+        throw new OnlineOrderAcceptError([{
+          itemName: 'Order total',
+          itemCode: onlineOrder.publicOrderReference || onlineOrder.id || onlineOrderId,
+          blockerType: 'Finished good unavailable',
+          storeId: store.id,
+          storeName: store.name,
+          suggestedAdminAction: 'The live menu price or GST changed after submission. Ask the customer to place a fresh order.',
+        }]);
+      }
+      const paymentExpiresAt = Timestamp.fromMillis(Date.now() + 30 * 60 * 1000);
+      transaction.update(onlineOrderRef, {
+        status: 'ACCEPTED_AWAITING_PAYMENT',
+        paymentStatus: 'AWAITING_PAYMENT',
+        plannedOrderId: newOrderRef.id,
+        addOnAuthorizationId: posAddOnAuthorization.authorizationId,
+        acceptedBy: staffProfile.uid,
+        acceptedByName: staffProfile.name,
+        acceptedAt: serverTimestamp(),
+        paymentExpiresAt,
+        customerStatusMessage: publicStatusMessage('ACCEPTED_AWAITING_PAYMENT'),
+        updatedAt: serverTimestamp(),
+      });
+      if (onlineOrder.trackingToken) {
+        transaction.update(publicTrackingDocRef(onlineOrder.trackingToken), {
+          publicStatus: 'ACCEPTED_AWAITING_PAYMENT',
+          paymentProvider: 'RAZORPAY',
+          paymentStatus: 'AWAITING_PAYMENT',
+          paymentAvailableUntil: paymentExpiresAt,
+          customerStatusMessage: publicStatusMessage('ACCEPTED_AWAITING_PAYMENT'),
+          acceptedAt: serverTimestamp(),
+        });
+      }
+      return {
+        orderId: newOrderRef.id,
+        orderNumber: onlineOrder.publicOrderReference || 'Awaiting payment',
+        stockMovementCount: 0,
+        kotCount: 0,
+      };
+    }
 
     deductionPlan.stockUpdates.forEach((update) => {
       if (update.existed) {

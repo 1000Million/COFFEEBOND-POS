@@ -23,6 +23,8 @@ export function publicTrackingDocRef(trackingToken: string) {
 
 export function publicStatusMessage(status: PublicOrderStatus): string {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';
+  if (status === 'ACCEPTED_AWAITING_PAYMENT') return 'Your order is accepted. Complete payment to begin preparation.';
+  if (status === 'PAYMENT_REVIEW_REQUIRED') return 'Payment was received, but the store must review fulfilment before preparation.';
   if (status === 'ACCEPTED' || status === 'CONVERTED') return 'Your order has been accepted and is being prepared.';
   if (status === 'PREPARING') return 'Your order is being prepared.';
   if (status === 'READY') return 'Your order is ready for pickup.';

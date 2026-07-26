@@ -91,8 +91,18 @@ export type PrepStation = "BARISTA" | "KITCHEN" | "BOTH" | "NONE";
 
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
-export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER";
-export type PaymentStatus = "PAID" | "UNPAID" | "PARTIAL" | "NOT_REQUIRED";
+export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER" | "ONLINE";
+export type PaymentProvider = "PAY_AT_COUNTER" | "RAZORPAY";
+export type PaymentStatus =
+  | "PAID"
+  | "UNPAID"
+  | "PARTIAL"
+  | "NOT_REQUIRED"
+  | "NOT_STARTED"
+  | "AWAITING_PAYMENT"
+  | "PAYMENT_PROCESSING"
+  | "FAILED"
+  | "PAYMENT_REVIEW_REQUIRED";
 export type CommercialStatus = "SALE" | "COMPLIMENTARY";
 
 export interface ReceiptLegalDetails {
@@ -169,6 +179,8 @@ export interface Order {
   orderType: OrderType;
   status: "COMPLETED" | "CANCELLED" | "VOIDED";
   paymentStatus: PaymentStatus;
+  paymentProvider?: PaymentProvider;
+  providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
   commercialStatus?: CommercialStatus;
   menuValue?: number;
   complimentaryDiscount?: number;
@@ -202,7 +214,12 @@ export interface Order {
   paymentMethod: PaymentMethod;
   paymentMethodLabel?: string;
   isSplitPayment?: boolean;
-  paymentBreakdown?: { method: PaymentMethod; amount: number }[];
+  paymentBreakdown?: {
+    method: PaymentMethod;
+    amount: number;
+    provider?: "RAZORPAY";
+    providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
+  }[];
   paymentReversalStatus?: "NOT_REQUIRED" | "REFUNDED" | "REVERSED" | "REFUND_PENDING" | "MANUAL_REFUND_REQUIRED";
   paymentReversalBreakdown?: {
     method: PaymentMethod | string;
@@ -303,11 +320,26 @@ export interface OrderPayment {
   amount: number;
   reference: string | null;
   paymentIndex?: number;
+  provider?: "RAZORPAY";
+  providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
+  providerPaymentId?: string;
+  providerOrderId?: string;
+  status?: "PAID";
+  settledAt?: any;
+  settledBy?: string;
+  settledByName?: string;
   createdAt: any;
 }
 
 export type OnlineOrderType = "PICKUP" | "DINE_IN";
-export type OnlineOrderStatus = "PENDING" | "ACCEPTED" | "CONVERTED" | "REJECTED" | "NEEDS_ATTENTION";
+export type OnlineOrderStatus =
+  | "PENDING"
+  | "ACCEPTED"
+  | "ACCEPTED_AWAITING_PAYMENT"
+  | "CONVERTED"
+  | "REJECTED"
+  | "NEEDS_ATTENTION"
+  | "PAYMENT_REVIEW_REQUIRED";
 export type PublicOrderStatus = OnlineOrderStatus | "PREPARING" | "READY" | "SERVED" | "CANCELLED";
 
 export interface OnlineOrderItem {
@@ -346,6 +378,20 @@ export interface OnlineOrder {
   grandTotal: number;
   status: OnlineOrderStatus;
   source: "CUSTOMER_WEB";
+  paymentProvider?: PaymentProvider;
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
+  paymentIntentId?: string | null;
+  paymentExpiresAt?: any;
+  plannedOrderId?: string | null;
+  addOnAuthorizationId?: string | null;
+  acceptedBy?: string | null;
+  acceptedByName?: string | null;
+  acceptedAt?: any;
+  providerPaymentId?: string | null;
+  providerOrderId?: string | null;
+  providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
+  paymentReviewCode?: string | null;
   trackingToken?: string | null;
   publicOrderReference?: string | null;
   linkedOrderId?: string | null;
@@ -388,6 +434,9 @@ export interface PublicOrderTracking {
   gstTotal: number;
   total: number;
   publicStatus: PublicOrderStatus;
+  paymentProvider?: PaymentProvider;
+  paymentStatus?: PaymentStatus;
+  paymentAvailableUntil?: any;
   submittedAt: any;
   acceptedAt?: any;
   readyAt?: any;

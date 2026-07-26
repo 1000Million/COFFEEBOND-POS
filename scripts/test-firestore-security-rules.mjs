@@ -101,6 +101,8 @@ const productAddOnAuditBlock = extractMatchBlock(rules, 'match /productAddOnAudi
 const finishedGoodsBlock = extractMatchBlock(rules, 'match /finishedGoods/{itemId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const posAddOnAuthorizationsBlock = extractMatchBlock(rules, 'match /posAddOnAuthorizations/{authorizationId}');
+const razorpayPaymentIntentsBlock = extractMatchBlock(rules, 'match /razorpayPaymentIntents/{intentId}');
+const razorpayWebhookEventsBlock = extractMatchBlock(rules, 'match /razorpayWebhookEvents/{eventId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const menuImageStorageBlock = extractMatchBlock(storageRules, 'match /menu-images/{productCode}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
@@ -154,6 +156,11 @@ assert(!/isValidPublicOnlineOrderCreate\(\)/.test(onlineOrdersBlock), 'Legacy pu
 assert(/allow\s+get:\s*if\s+true;/.test(publicTrackingBlock), 'Public order tracking should allow exact-token document reads.');
 assert(/allow\s+list:\s*if\s+false;/.test(publicTrackingBlock), 'Public order tracking collection listing must remain denied.');
 assert(/isSafePublicTrackingDocument\(request\.resource\.data,\s*trackingToken\)/.test(publicTrackingBlock), 'Public tracking writes must use the sanitized document validator.');
+for (const safePaymentField of ['paymentProvider', 'paymentStatus', 'paymentAvailableUntil']) {
+  assert(safePublicTrackingBody.includes(`'${safePaymentField}'`), `Public tracking may expose only the approved ${safePaymentField} payment status field.`);
+}
+assert(/paymentProvider in \['PAY_AT_COUNTER', 'RAZORPAY'\]/.test(safePublicTrackingBody), 'Public tracking payment provider must use the approved enum.');
+assert(/paymentStatus in \[/.test(safePublicTrackingBody) && /'PAYMENT_REVIEW_REQUIRED'/.test(safePublicTrackingBody), 'Public tracking payment status must use the approved enum.');
 
 const forbiddenPublicTrackingFields = [
   'customerName',
@@ -176,6 +183,11 @@ const forbiddenPublicTrackingFields = [
 for (const field of forbiddenPublicTrackingFields) {
   assert(!safePublicTrackingBody.includes(`'${field}'`) && !safePublicTrackingBody.includes(`"${field}"`), `Public tracking documents must not allow ${field}.`);
 }
+
+assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(razorpayPaymentIntentsBlock), 'Razorpay payment intents must be server-only.');
+assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(razorpayWebhookEventsBlock), 'Razorpay webhook audit events must be server-only.');
+assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayPaymentIntentsBlock), 'Franchise Viewer must not access private Razorpay intents.');
+assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayWebhookEventsBlock), 'Franchise Viewer must not access private Razorpay webhook audits.');
 
 assert(/allow\s+create:\s*if\s+isValidOrderCreate\(orderId\);/.test(ordersBlock), 'Order creation must use the hardened order create helper with the exact order ID.');
 assert(/allow\s+update:\s*if\s+isOrderSettlementUpdate\(\)\s*\|\|\s*isOrderVoidUpdate\(\);/.test(ordersBlock), 'Order updates must be limited to settlement or void helpers.');

@@ -38,7 +38,7 @@ import {
   prepWindowLabel,
   storeOnlineMessage,
 } from '../../lib/customerOrderingState';
-import { AddOnSelection, OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
+import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
@@ -65,6 +65,8 @@ type ConfirmationState = {
   gstTotal: number;
   total: number;
   status: PublicOrderStatus;
+  paymentProvider: PaymentProvider;
+  paymentStatus: 'NOT_STARTED';
 };
 
 type GstConfig = {
@@ -123,6 +125,7 @@ type SubmitCustomerOrderRequest = {
     }>;
   }>;
   clientIdempotencyKey: string;
+  paymentProvider: PaymentProvider;
 };
 
 type SubmitCustomerOrderResponse = {
@@ -136,6 +139,8 @@ type SubmitCustomerOrderResponse = {
   gstTotal: number;
   total: number;
   status: PublicOrderStatus;
+  paymentProvider: PaymentProvider;
+  paymentStatus: 'NOT_STARTED';
   customerStatusMessage: string;
   estimatedPrepMinutes?: number;
   storeMessage: string;
@@ -377,7 +382,14 @@ function isValidIndianPhone(value: string): boolean {
   return /^[6-9]\d{9}$/.test(normalizeIndianPhone(value));
 }
 
-function cartSignature(storeId: string, customerPhone: string, orderType: OnlineOrderType, tableNumber: string, cart: CartLine[]): string {
+function cartSignature(
+  storeId: string,
+  customerPhone: string,
+  orderType: OnlineOrderType,
+  tableNumber: string,
+  paymentProvider: PaymentProvider,
+  cart: CartLine[],
+): string {
   const cartParts = cart
     .map(line => `${line.item.code}:${line.quantity}:${addOnSelectionKey(line.addOns)}`)
     .sort()
@@ -387,6 +399,7 @@ function cartSignature(storeId: string, customerPhone: string, orderType: Online
     normalizeIndianPhone(customerPhone),
     orderType,
     orderType === 'DINE_IN' ? tableNumber.trim().toUpperCase() : 'PICKUP',
+    paymentProvider,
     cartParts,
   ].join('::');
 }
@@ -427,6 +440,7 @@ export default function CustomerOrder() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
+  const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('PAY_AT_COUNTER');
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -821,7 +835,7 @@ export default function CustomerOrder() {
         : `${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
     }
 
-    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, cart);
+    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, paymentProvider, cart);
     const lockKey = submissionLockKey(signature);
     let clientIdempotencyKey = createClientIdempotencyKey();
     try {
@@ -864,6 +878,7 @@ export default function CustomerOrder() {
           })),
         })),
         clientIdempotencyKey,
+        paymentProvider,
       });
       const submittedOrder = result.data;
 
@@ -881,6 +896,8 @@ export default function CustomerOrder() {
         gstTotal: submittedOrder.gstTotal,
         total: submittedOrder.total,
         status: submittedOrder.status,
+        paymentProvider: submittedOrder.paymentProvider,
+        paymentStatus: submittedOrder.paymentStatus,
       });
       try {
         window.localStorage.setItem(lockKey, JSON.stringify({
@@ -1118,6 +1135,38 @@ export default function CustomerOrder() {
                 className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
               />
             )}
+            <fieldset className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
+              <legend className="px-1 text-xs font-black uppercase tracking-wider text-neutral-500">Payment</legend>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentProvider('PAY_AT_COUNTER')}
+                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
+                    paymentProvider === 'PAY_AT_COUNTER'
+                      ? 'bg-[#3b261d] text-white'
+                      : 'bg-[#fbf5ee] text-[#5c4033]'
+                  }`}
+                >
+                  Pay at counter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentProvider('RAZORPAY')}
+                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
+                    paymentProvider === 'RAZORPAY'
+                      ? 'bg-[#3b261d] text-white'
+                      : 'bg-[#fbf5ee] text-[#5c4033]'
+                  }`}
+                >
+                  Pay online
+                </button>
+              </div>
+              <p className="mt-2 text-xs font-medium text-neutral-500">
+                {paymentProvider === 'RAZORPAY'
+                  ? 'You will pay securely after the store accepts your order.'
+                  : 'Payment is collected at the store after acceptance.'}
+              </p>
+            </fieldset>
             <textarea
               value={notes}
               onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
@@ -1214,7 +1263,9 @@ export default function CustomerOrder() {
                 </div>
               </div>
               <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
-                Payment: Pay at counter after the store accepts your request.
+                {confirmation.paymentProvider === 'RAZORPAY'
+                  ? 'Payment: The store will review your order first. Pay Online appears on tracking after acceptance.'
+                  : 'Payment: Pay at counter after the store accepts your request.'}
               </div>
             </div>
 

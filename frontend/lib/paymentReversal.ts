@@ -53,7 +53,9 @@ function normalizePaymentRows(order: Order, payments?: OrderPayment[]): PaymentR
 
   return sourceRows
     .map((payment) => {
-      const method = String(payment.method || 'UNKNOWN');
+      const method = payment.provider === 'RAZORPAY' || order.paymentProvider === 'RAZORPAY'
+        ? 'RAZORPAY'
+        : String(payment.method || 'UNKNOWN');
       const amount = money(payment.amount);
       return {
         method,
@@ -70,7 +72,7 @@ function tenderReversalStatus(method: string): PaymentReversalStatus {
   if (method === 'CASH') return 'REFUNDED';
   if (method === 'CREDIT') return 'REVERSED';
   if (method === 'COMPLIMENTARY') return 'NOT_REQUIRED';
-  if (method === 'UPI' || method === 'CARD' || method === 'SWIGGY' || method === 'ZOMATO') {
+  if (method === 'UPI' || method === 'CARD' || method === 'SWIGGY' || method === 'ZOMATO' || method === 'ONLINE' || method === 'RAZORPAY') {
     return 'MANUAL_REFUND_REQUIRED';
   }
   return 'REFUND_PENDING';
@@ -79,7 +81,7 @@ function tenderReversalStatus(method: string): PaymentReversalStatus {
 function statusReason(status: PaymentReversalStatus): string {
   if (status === 'REFUNDED') return 'Cash received for the voided order should be returned to the customer.';
   if (status === 'REVERSED') return 'Non-cash liability/complimentary tender reversed for the voided order.';
-  if (status === 'MANUAL_REFUND_REQUIRED') return 'External payment must be refunded manually and verified outside POS.';
+  if (status === 'MANUAL_REFUND_REQUIRED') return 'Gateway refund required. Refund and verification must be completed outside POS.';
   if (status === 'REFUND_PENDING') return 'Refund is pending manual confirmation.';
   return 'No payment was collected for this order.';
 }

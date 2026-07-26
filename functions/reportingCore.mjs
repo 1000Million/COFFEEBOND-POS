@@ -7,7 +7,7 @@ export const MAX_EXPORT_ROWS = 5000;
 
 const INTERNAL_REPORT_ROLES = ['ADMIN', 'STORE_MANAGER', 'CASHIER'];
 const MANAGER_REPORT_ROLES = ['ADMIN', 'STORE_MANAGER'];
-const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER'];
+const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER', 'RAZORPAY'];
 
 const report = (
   reportId,
@@ -221,9 +221,14 @@ function orderTypeLabel(order) {
 
 function reversalRows(order) {
   if (isComplimentaryOrder(order)) return [];
+  const reversalMethod = (method) => (
+    order?.paymentProvider === 'RAZORPAY' || String(method || '').toUpperCase() === 'RAZORPAY'
+      ? 'RAZORPAY'
+      : String(method || 'UNKNOWN').toUpperCase()
+  );
   if (Array.isArray(order?.paymentReversalBreakdown) && order.paymentReversalBreakdown.length > 0) {
     return order.paymentReversalBreakdown.map((row) => ({
-      method: String(row?.method || 'UNKNOWN').toUpperCase(),
+      method: reversalMethod(row?.method),
       originalAmount: money(row?.originalAmount),
       reversalAmount: money(row?.amount),
       status: String(row?.reversalStatus || order?.paymentReversalStatus || 'REFUND_PENDING'),
@@ -233,7 +238,7 @@ function reversalRows(order) {
   if (effectiveOrderStatus(order) !== 'VOIDED') return [];
   const amount = money(order?.paymentReversalTotal);
   return amount > 0 ? [{
-    method: String(order?.paymentMethod || 'UNKNOWN').toUpperCase(),
+    method: reversalMethod(order?.paymentMethod),
     originalAmount: money(order?.grandTotal),
     reversalAmount: amount,
     status: String(order?.paymentReversalStatus || 'REFUND_PENDING'),
@@ -250,9 +255,15 @@ export function normalizedPaymentRows(order, paymentDocuments = []) {
       : [{ method: order?.paymentMethod, amount: order?.grandTotal }];
   return source
     .map((payment) => ({
-      method: String(payment?.method || 'UNKNOWN').toUpperCase(),
+      method: payment?.provider === 'RAZORPAY' || order?.paymentProvider === 'RAZORPAY'
+        ? 'RAZORPAY'
+        : String(payment?.method || 'UNKNOWN').toUpperCase(),
       amount: money(payment?.amount),
       reference: payment?.reference ? String(payment.reference).slice(0, 80) : null,
+      provider: payment?.provider === 'RAZORPAY' || order?.paymentProvider === 'RAZORPAY' ? 'RAZORPAY' : null,
+      providerMethod: payment?.provider === 'RAZORPAY' || order?.paymentProvider === 'RAZORPAY'
+        ? String(payment?.providerMethod || order?.providerMethod || 'OTHER').toUpperCase()
+        : null,
     }))
     .filter((payment) => (
       payment.amount > 0
@@ -375,7 +386,7 @@ export function normalizeOrderRecord(record) {
     status,
     commercial,
     paymentStatus: paymentOutcome(order),
-    paymentMethods: [...new Set(payments.map((payment) => payment.method))],
+      paymentMethods: [...new Set(payments.map((payment) => payment.method))],
     payments,
     reversals,
     menuValue: orderMenuValue(order),
@@ -818,7 +829,9 @@ function invoiceRows(records, storeLegalDetails = {}) {
         taxable: record.taxable,
         gst: record.gst,
         total: record.total,
-        paymentBreakdown: record.payments.map((row) => `${row.method} ${row.amount.toFixed(2)}`).join(' + '),
+        paymentBreakdown: record.payments.map((row) => (
+          `${row.method}${row.providerMethod ? ` / ${row.providerMethod}` : ''} ${row.amount.toFixed(2)}`
+        )).join(' + '),
       };
     });
 }
@@ -922,11 +935,12 @@ function paymentRows(records) {
   });
   return aggregate(
     flat,
-    ({ record, payment }) => `${record.storeId}|${dateKey(record.createdAt)}|${payment.method}`,
+    ({ record, payment }) => `${record.storeId}|${dateKey(record.createdAt)}|${payment.method}|${payment.providerMethod || ''}`,
     ({ record, payment }) => ({
       businessDate: dateKey(record.createdAt),
       store: record.storeName,
       method: payment.method,
+      providerMethod: payment.providerMethod,
       grossPayments: 0,
       reversals: 0,
       refundsPending: 0,
