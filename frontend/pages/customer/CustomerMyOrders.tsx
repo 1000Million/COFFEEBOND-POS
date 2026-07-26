@@ -4,7 +4,7 @@ import { httpsCallable } from 'firebase/functions';
 import { Clock, Loader2, ShoppingBag } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
-import { customerAuth, customerFunctions } from '../../lib/customerAuth';
+import { customerAuth, customerFunctions, waitForCustomerAuthRestoration } from '../../lib/customerAuth';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { OnlineOrderStatus, PaymentStatus } from '../../types';
 
@@ -29,27 +29,52 @@ function money(value: number): string {
 }
 
 export default function CustomerMyOrders() {
-  const [signedIn, setSignedIn] = useState(Boolean(customerAuth.currentUser));
+  const [authRestored, setAuthRestored] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
   const [orders, setOrders] = useState<CustomerOrderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => onAuthStateChanged(customerAuth, (user) => {
-    setSignedIn(Boolean(user));
-    if (!user) {
-      setOrders([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    listMyCustomerOrders().then(result => {
-      setOrders(result.data.orders);
-      result.data.orders.forEach(order => rememberCustomerOrder(order.trackingToken));
-      setError(null);
+  useEffect(() => {
+    let active = true;
+    let unsubscribe = () => {};
+
+    waitForCustomerAuthRestoration().then(() => {
+      if (!active) return;
+      setAuthRestored(true);
+      unsubscribe = onAuthStateChanged(customerAuth, (user) => {
+        if (!active) return;
+        setSignedIn(Boolean(user));
+        if (!user) {
+          setOrders([]);
+          setError(null);
+          setLoading(false);
+          return;
+        }
+        setLoading(true);
+        listMyCustomerOrders().then(result => {
+          if (!active) return;
+          setOrders(result.data.orders);
+          result.data.orders.forEach(order => rememberCustomerOrder(order.trackingToken));
+          setError(null);
+        }).catch(() => {
+          if (active) setError('We could not load your orders. Please retry.');
+        }).finally(() => {
+          if (active) setLoading(false);
+        });
+      });
     }).catch(() => {
-      setError('We could not load your orders. Please retry.');
-    }).finally(() => setLoading(false));
-  }), []);
+      if (!active) return;
+      setAuthRestored(true);
+      setLoading(false);
+      setError('We could not restore your verified session. Please retry.');
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   return (
     <main className="min-h-[100dvh] bg-[#f8efe6] px-4 py-5 text-neutral-900">
@@ -67,7 +92,13 @@ export default function CustomerMyOrders() {
           </Link>
         </header>
 
-        {!signedIn ? (
+        {!authRestored || loading ? (
+          <div className="rounded-3xl bg-white p-8 text-center shadow-sm">
+            <Loader2 className="mx-auto animate-spin text-[#5c4033]" />
+          </div>
+        ) : error ? (
+          <p className="rounded-2xl bg-red-50 p-4 text-sm font-bold text-red-800">{error}</p>
+        ) : !signedIn ? (
           <section className="rounded-3xl bg-white p-6 text-center shadow-sm ring-1 ring-[#eadfd2]">
             <ShoppingBag className="mx-auto text-[#9a6a45]" size={32} />
             <h2 className="mt-3 text-lg font-black">Verify your mobile first</h2>
@@ -76,12 +107,6 @@ export default function CustomerMyOrders() {
               Verify on order page
             </Link>
           </section>
-        ) : loading ? (
-          <div className="rounded-3xl bg-white p-8 text-center shadow-sm">
-            <Loader2 className="mx-auto animate-spin text-[#5c4033]" />
-          </div>
-        ) : error ? (
-          <p className="rounded-2xl bg-red-50 p-4 text-sm font-bold text-red-800">{error}</p>
         ) : orders.length === 0 ? (
           <section className="rounded-3xl bg-white p-6 text-center shadow-sm">
             <h2 className="font-black">No paid orders yet</h2>

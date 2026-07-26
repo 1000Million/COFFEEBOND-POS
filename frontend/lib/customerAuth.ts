@@ -26,7 +26,7 @@ export const customerFunctions: Functions = getFunctions(
   import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-central1',
 );
 
-void setPersistence(customerAuth, browserLocalPersistence);
+export const customerAuthPersistenceReady = setPersistence(customerAuth, browserLocalPersistence);
 
 export type CustomerProfile = {
   customerUid: string;
@@ -39,6 +39,29 @@ export const resolveCustomerProfile = httpsCallable<
   { displayName?: string; defaultOrderType?: 'PICKUP' | 'DINE_IN' },
   CustomerProfile
 >(customerFunctions, 'resolveCustomerProfile');
+
+export async function waitForCustomerAuthRestoration() {
+  await customerAuthPersistenceReady;
+  await customerAuth.authStateReady();
+  return customerAuth.currentUser;
+}
+
+export async function restoreCustomerProfile(): Promise<CustomerProfile | null> {
+  const user = await waitForCustomerAuthRestoration();
+  if (!user) return null;
+  try {
+    const result = await resolveCustomerProfile({});
+    return result.data;
+  } catch {
+    if (!user.phoneNumber) return null;
+    return {
+      customerUid: user.uid,
+      normalisedPhone: user.phoneNumber,
+      displayName: user.displayName || '',
+      defaultOrderType: 'PICKUP',
+    };
+  }
+}
 
 export function normalizedIndianE164(value: string): string | null {
   const digits = value.replace(/\D/g, '');

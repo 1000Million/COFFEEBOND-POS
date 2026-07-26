@@ -34,7 +34,18 @@ import {
   unitPriceWithAddOns,
 } from '../../lib/addOns';
 import { db, functions } from '../../lib/firebase';
-import { CustomerProfile, customerFunctions } from '../../lib/customerAuth';
+import { CustomerProfile, customerFunctions, restoreCustomerProfile } from '../../lib/customerAuth';
+import {
+  CheckoutHydrationState,
+  CustomerCheckoutDraft,
+  CustomerCheckoutDraftInput,
+  PersistedCheckoutAddOn,
+  checkoutCatalogMarker,
+  clearCustomerCheckoutDraft,
+  readCustomerCheckoutDraft,
+  restoreCustomerCheckoutDraft,
+  writeCustomerCheckoutDraft,
+} from '../../lib/customerCheckoutPersistence';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import {
   loadRazorpayCheckout,
@@ -277,6 +288,36 @@ function itemTaxRate(item: CustomerMenuItem, fallbackRate: number): number {
   return itemRate > 0 ? itemRate : fallbackRate;
 }
 
+function cartLineCatalogMarker(
+  item: CustomerMenuItem,
+  addOns: AddOnSelection[],
+  fallbackTaxRate: number,
+): string {
+  return checkoutCatalogMarker([
+    item.code,
+    toNumber(item.salePrice),
+    itemTaxRate(item, fallbackTaxRate),
+    addOns
+      .map(addOn => [addOn.groupId, addOn.optionId, addOn.quantity, addOn.unitPrice, addOn.taxRate])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1]))),
+  ]);
+}
+
+function persistedCheckoutLines(cart: CartLine[], fallbackTaxRate: number) {
+  return cart.map(line => ({
+    lineId: line.id,
+    productId: line.item.id,
+    productCode: line.item.code,
+    quantity: line.quantity,
+    addOns: line.addOns.map(addOn => ({
+      groupId: addOn.groupId,
+      optionId: addOn.optionId,
+      quantity: addOn.quantity,
+    })),
+    catalogMarker: cartLineCatalogMarker(line.item, line.addOns, fallbackTaxRate),
+  }));
+}
+
 function isStoreAvailable(item: CustomerMenuItem, storeId: string): boolean {
   return Array.isArray(item.availableStoreIds) && item.availableStoreIds.includes(storeId);
 }
@@ -481,15 +522,38 @@ export default function CustomerOrder() {
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
   const [storePreferenceMessage, setStorePreferenceMessage] = useState('');
   const [locatingStore, setLocatingStore] = useState(false);
+  const [checkoutHydration, setCheckoutHydration] = useState<CheckoutHydrationState>('NOT_STARTED');
+  const [loadedMenuStoreId, setLoadedMenuStoreId] = useState('');
+  const [checkoutDraftNotice, setCheckoutDraftNotice] = useState('');
+  const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
+  const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
+  const hydrationAppliedRef = useRef(false);
 
   useEffect(() => {
     if (!storePreferenceMessage) return undefined;
     const timeout = window.setTimeout(() => setStorePreferenceMessage(''), 2800);
     return () => window.clearTimeout(timeout);
   }, [storePreferenceMessage]);
+
+  useEffect(() => {
+    let active = true;
+    restoreCustomerProfile().then(profile => {
+      if (!active || !profile) return;
+      setVerifiedCustomer(profile);
+      setCustomerPhone(profile.normalisedPhone.replace('+91', ''));
+      setCustomerName(current => current.trim() ? current : profile.displayName);
+    }).catch(() => {
+      // The OTP panel remains available when a previous customer session cannot be restored.
+    }).finally(() => {
+      if (active) setCustomerAuthRestored(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -510,9 +574,27 @@ export default function CustomerOrder() {
         const gstData = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : {};
 
         const savedStoreId = defaultStoreIdFromStorage(loadedStores);
+        const draftResult = readCustomerCheckoutDraft(window.localStorage);
+        const draftStore = draftResult.draft
+          ? loadedStores.find(store => store.id === draftResult.draft?.selectedStoreId)
+          : null;
+        if (draftResult.draft && draftStore) {
+          pendingCheckoutDraftRef.current = draftResult.draft;
+          setCheckoutHydration('RESTORING');
+        } else {
+          if (draftResult.draft && !draftStore) {
+            clearCustomerCheckoutDraft(window.localStorage);
+            setCheckoutDraftNotice('Your saved basket used a store that is no longer available, so it was removed.');
+          }
+          pendingCheckoutDraftRef.current = null;
+          setCheckoutHydration('RESTORED');
+        }
+        const initialStoreId = draftStore?.id || savedStoreId || loadedStores[0]?.id || '';
         setStores(loadedStores);
-        setSelectedStoreId(prev => prev || savedStoreId || loadedStores[0]?.id || '');
-        if (savedStoreId) {
+        setSelectedStoreId(prev => prev || initialStoreId);
+        if (draftStore) {
+          setStorePreferenceMessage(`Restoring your basket from ${draftStore.name}.`);
+        } else if (savedStoreId) {
           const savedStore = loadedStores.find(store => store.id === savedStoreId);
           setStorePreferenceMessage(savedStore ? `Using your default store: ${savedStore.name}.` : '');
         }
@@ -540,9 +622,11 @@ export default function CustomerOrder() {
     const loadAvailability = async () => {
       if (!selectedStoreId) {
         setPublicAvailability(null);
+        setLoadedMenuStoreId('');
         return;
       }
 
+      setLoadedMenuStoreId('');
       setAvailabilityLoading(true);
       try {
         const selectedStore = stores.find(store => store.id === selectedStoreId);
@@ -560,6 +644,7 @@ export default function CustomerOrder() {
           .map(item => ({ ...item, bom: [], bomVersion: 0, recipeCost: 0, grossMargin: 0, cogsPercent: 0 } as CustomerMenuItem))
           .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
         setItems(publicItems);
+        setLoadedMenuStoreId(selectedStoreId);
       } catch (err) {
         console.warn('Customer menu availability snapshot is unavailable; the store will confirm availability.', err);
         if (active) setPublicAvailability(null);
@@ -606,6 +691,10 @@ export default function CustomerOrder() {
           setStorePreferenceMessage(`${closest.store.name} is nearest, but your basket is already started.`);
           return;
         }
+        if (closest.store.id !== selectedStoreId) {
+          clearCustomerCheckoutDraft(window.localStorage);
+          setCheckoutDraftNotice('');
+        }
         setSelectedStoreId(closest.store.id);
         setCategory('ALL');
         setSearch('');
@@ -626,12 +715,13 @@ export default function CustomerOrder() {
   };
 
   useEffect(() => {
+    if (checkoutHydration !== 'RESTORED') return;
     if (stores.length === 0 || triedAutoLocationRef.current) return;
     if (defaultStoreIdFromStorage(stores)) return;
     if (!stores.some(store => storeCoordinate(store))) return;
     triedAutoLocationRef.current = true;
     selectClosestStore({ automatic: true });
-  }, [stores]);
+  }, [checkoutHydration, stores]);
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
@@ -666,6 +756,98 @@ export default function CustomerOrder() {
       return acc;
     }, {});
   }, [storeItems, selectedStoreId, publicAvailability]);
+
+  useEffect(() => {
+    const draft = pendingCheckoutDraftRef.current;
+    if (
+      checkoutHydration !== 'RESTORING'
+      || hydrationAppliedRef.current
+      || !draft
+      || loadedMenuStoreId !== selectedStoreId
+      || draft.selectedStoreId !== selectedStoreId
+    ) {
+      return;
+    }
+
+    hydrationAppliedRef.current = true;
+    const restored = restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>(draft, {
+      items: storeItems,
+      itemId: item => item.id,
+      itemCode: item => item.code,
+      isItemAvailable: item => (
+        itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)
+      ).available,
+      restoreAddOns: (item, savedAddOns: PersistedCheckoutAddOn[]) => {
+        const activeGroups = activeAddOnGroupsForProduct(
+          item.addOnGroupIds,
+          item.addOnOptionIdsByGroup,
+          addOnGroups,
+        );
+        const activeOptions = new Map(activeGroups.map(group => [
+          group.id || '',
+          new Set(group.options.map(option => option.id)),
+        ]));
+        const validAddOns = savedAddOns.filter(addOn => activeOptions.get(addOn.groupId)?.has(addOn.optionId));
+        try {
+          const canonical = canonicalAddOnSelections(
+            item.addOnGroupIds,
+            item.addOnOptionIdsByGroup,
+            addOnGroups,
+            validAddOns as AddOnSelection[],
+            itemTaxRate(item, selectedStoreTaxRate),
+          );
+          return {
+            addOns: canonical,
+            removedCount: savedAddOns.length - validAddOns.length,
+            lineValid: true,
+          };
+        } catch {
+          return {
+            addOns: [],
+            removedCount: savedAddOns.length,
+            lineValid: false,
+          };
+        }
+      },
+      catalogMarker: (item, currentAddOns) => cartLineCatalogMarker(item, currentAddOns, selectedStoreTaxRate),
+    });
+
+    setCart(restored.lines);
+    setPaymentProvider(draft.paymentProvider);
+    setOrderType(draft.orderType);
+    setCustomerName(draft.customerName);
+    setNotes(draft.notes);
+    if (draft.orderType !== 'DINE_IN') setTableNumber('');
+
+    const removedItems = restored.notices.filter(notice => notice.code === 'ITEM_REMOVED').length;
+    const removedAddOns = restored.notices.filter(notice => notice.code === 'ADD_ON_REMOVED').length;
+    const changedPrices = restored.notices.filter(notice => notice.code === 'PRICE_CHANGED').length;
+    const messages = [];
+    if (restored.lines.length > 0) messages.push('Your basket was restored using current menu prices and availability.');
+    if (removedItems > 0) messages.push(`${removedItems} unavailable item${removedItems === 1 ? ' was' : 's were'} removed.`);
+    if (removedAddOns > 0) messages.push(`${removedAddOns} unavailable add-on selection${removedAddOns === 1 ? ' was' : 's were'} removed.`);
+    if (changedPrices > 0) messages.push(`Current pricing changed for ${changedPrices} saved item${changedPrices === 1 ? '' : 's'}.`);
+    setCheckoutDraftNotice(messages.join(' '));
+
+    writeCustomerCheckoutDraft(window.localStorage, {
+      selectedStoreId: draft.selectedStoreId,
+      paymentProvider: draft.paymentProvider,
+      orderType: draft.orderType,
+      customerName: draft.customerName,
+      notes: draft.notes,
+      lines: persistedCheckoutLines(restored.lines, selectedStoreTaxRate),
+    });
+    pendingCheckoutDraftRef.current = null;
+    setCheckoutHydration('RESTORED');
+  }, [
+    addOnGroups,
+    checkoutHydration,
+    itemAvailability,
+    loadedMenuStoreId,
+    selectedStoreId,
+    selectedStoreTaxRate,
+    storeItems,
+  ]);
 
   const categories = useMemo(() => {
     const names = Array.from(new Set(storeItems.map(item => categoryGroupName(item))));
@@ -718,6 +900,38 @@ export default function CustomerOrder() {
     };
   }, [cart, selectedStoreTaxRate]);
 
+  const checkoutDraftInput = useMemo<CustomerCheckoutDraftInput>(() => ({
+    selectedStoreId,
+    paymentProvider,
+    orderType,
+    customerName,
+    notes,
+    lines: persistedCheckoutLines(cart, selectedStoreTaxRate),
+  }), [
+    cart,
+    customerName,
+    notes,
+    orderType,
+    paymentProvider,
+    selectedStoreId,
+    selectedStoreTaxRate,
+  ]);
+
+  useEffect(() => {
+    if (
+      checkoutHydration !== 'RESTORED'
+      || !selectedStoreId
+      || cart.length === 0
+      || confirmation
+    ) {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => {
+      writeCustomerCheckoutDraft(window.localStorage, checkoutDraftInput);
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [cart.length, checkoutDraftInput, checkoutHydration, confirmation, selectedStoreId]);
+
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   const handleStoreChange = (nextStoreId: string) => {
@@ -727,6 +941,8 @@ export default function CustomerOrder() {
       if (!shouldSwitch) return;
     }
     userStoreChoiceRef.current = true;
+    clearCustomerCheckoutDraft(window.localStorage);
+    setCheckoutDraftNotice('');
     setSelectedStoreId(nextStoreId);
     setCart([]);
     setPendingAddOnItem(null);
@@ -756,9 +972,16 @@ export default function CustomerOrder() {
   };
 
   const setLineQuantity = (lineId: string, quantity: number) => {
-    setCart(current => quantity <= 0
-      ? current.filter(line => line.id !== lineId)
-      : current.map(line => line.id === lineId ? { ...line, quantity } : line));
+    setCart(current => {
+      const next = quantity <= 0
+        ? current.filter(line => line.id !== lineId)
+        : current.map(line => line.id === lineId ? { ...line, quantity } : line);
+      if (current.length > 0 && next.length === 0) {
+        clearCustomerCheckoutDraft(window.localStorage);
+        setCheckoutDraftNotice('');
+      }
+      return next;
+    });
   };
 
   const commitCartItem = (
@@ -909,8 +1132,11 @@ export default function CustomerOrder() {
           clientIdempotencyKey,
         })).data;
         if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
+          const trackingPath = checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`;
           rememberCustomerOrder(checkoutResult.trackingToken);
-          navigate(checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`);
+          clearCustomerCheckoutDraft(window.localStorage);
+          setCart([]);
+          navigate(trackingPath);
           return;
         }
         validateRazorpayOrderResponse(checkoutResult);
@@ -977,12 +1203,14 @@ export default function CustomerOrder() {
           ))));
           checkout.open();
         });
+        const trackingPath = verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`;
         rememberCustomerOrder(verifiedOrder.trackingToken);
+        clearCustomerCheckoutDraft(window.localStorage);
         setCart([]);
         setNotes('');
         setTableNumber('');
         setBasketOpen(false);
-        navigate(verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`);
+        navigate(trackingPath);
         return;
       }
 
@@ -1034,6 +1262,8 @@ export default function CustomerOrder() {
       } catch {
         // Ignore lock persistence failures after a successful server submission.
       }
+      rememberCustomerOrder(submittedOrder.trackingToken);
+      clearCustomerCheckoutDraft(window.localStorage);
       setCart([]);
       setNotes('');
       setTableNumber('');
@@ -1274,7 +1504,11 @@ export default function CustomerOrder() {
                   : 'Payment is collected at the store after acceptance.'}
               </p>
             </fieldset>
-            {paymentProvider === 'RAZORPAY' ? (
+            {paymentProvider === 'RAZORPAY' && !customerAuthRestored ? (
+              <div className="rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold text-neutral-500">
+                Restoring your verified mobile session...
+              </div>
+            ) : paymentProvider === 'RAZORPAY' ? (
               <CustomerOtpPanel
                 mobile={customerPhone}
                 verifiedPhone={verifiedCustomer?.normalisedPhone || null}
@@ -1530,6 +1764,11 @@ export default function CustomerOrder() {
               {availabilityNotice}
             </div>
           ) : null}
+          {checkoutDraftNotice && (
+            <div role="status" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
+              {checkoutDraftNotice}
+            </div>
+          )}
 
           <label className="flex h-12 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
             <Search size={18} className="shrink-0 text-[#8b5e42]" />

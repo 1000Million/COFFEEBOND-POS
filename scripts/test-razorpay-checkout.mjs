@@ -22,6 +22,7 @@ const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
 const incoming = source('frontend/pages/pos/IncomingOnlineOrders.tsx');
 const conversion = source('frontend/lib/onlineOrderConversion.ts');
 const persistence = source('frontend/lib/customerOrderPersistence.ts');
+const checkoutPersistence = source('frontend/lib/customerCheckoutPersistence.ts');
 const reportingSource = source('functions/reportingCore.mjs');
 const reportingLoader = source('functions/reporting.js');
 const franchiseSource = source('functions/franchiseSalesPolicy.js');
@@ -433,6 +434,56 @@ test('70. Concurrency leases and captured-payment review recovery are present', 
   assert.match(backend, /status: 'REFUND_REQUESTING'/);
   assert.match(backend, /status: REVIEW_STATUS,[\s\S]{0,160}failureCode: 'PAID_ORDER_CREATION_FAILED'/);
 });
+test('71. Checkout draft uses a versioned localStorage key', () => {
+  assert.match(checkoutPersistence, /coffeeBondCustomerCheckoutDraft:v1/);
+  assert.match(checkoutPersistence, /CUSTOMER_CHECKOUT_DRAFT_VERSION = 1/);
+});
+test('72. Checkout draft expires after 24 hours', () => {
+  assert.match(checkoutPersistence, /24 \* 60 \* 60 \* 1000/);
+  assert.match(checkoutPersistence, /status: 'EXPIRED'/);
+});
+test('73. Checkout hydration prevents the initial empty cart from overwriting storage', () => {
+  assert.match(customerOrder, /CheckoutHydrationState/);
+  assert.match(customerOrder, /checkoutHydration !== 'RESTORED'/);
+  assert.match(customerOrder, /cart\.length === 0/);
+});
+test('74. Restored cart is rebuilt from current menu products and add-ons', () => {
+  assert.match(customerOrder, /restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>/);
+  assert.match(customerOrder, /canonicalAddOnSelections/);
+  assert.match(checkoutPersistence, /isItemAvailable/);
+});
+test('75. Pay Online tracks the order before clearing the persisted draft', () => {
+  const remember = customerOrder.indexOf('rememberCustomerOrder(verifiedOrder.trackingToken)');
+  const clear = customerOrder.indexOf('clearCustomerCheckoutDraft(window.localStorage)', remember);
+  assert.ok(remember > 0 && clear > remember);
+});
+test('76. Pay-at-Counter tracks the order before clearing the persisted draft', () => {
+  const remember = customerOrder.indexOf('rememberCustomerOrder(submittedOrder.trackingToken)');
+  const clear = customerOrder.indexOf('clearCustomerCheckoutDraft(window.localStorage)', remember);
+  assert.ok(remember > 0 && clear > remember);
+});
+test('77. Customer authentication waits for browser persistence restoration', () => {
+  assert.match(customerAuth, /customerAuthPersistenceReady/);
+  assert.match(customerAuth, /await customerAuth\.authStateReady\(\)/);
+  assert.match(customerOrder, /restoreCustomerProfile\(\)/);
+});
+test('78. My Orders does not decide signed-out state before auth restoration', () => {
+  assert.match(myOrders, /waitForCustomerAuthRestoration\(\)/);
+  assert.match(myOrders, /authRestored/);
+});
+test('79. Persisted checkout contains references, not authoritative prices or payment secrets', () => {
+  assert.match(checkoutPersistence, /productId/);
+  assert.match(checkoutPersistence, /productCode/);
+  assert.match(checkoutPersistence, /optionId/);
+  assert.doesNotMatch(checkoutPersistence.match(/export type CustomerCheckoutDraft = \{[\s\S]*?\n\};/)?.[0] || '', /salePrice|unitPrice|gst|total|otp|signature|token|customerUid/i);
+});
+test('80. Failed payment paths do not clear the persisted checkout draft', () => {
+  const failedFlow = customerOrder.slice(
+    customerOrder.indexOf('const verifiedOrder = await new Promise'),
+    customerOrder.indexOf('rememberCustomerOrder(verifiedOrder.trackingToken)'),
+  );
+  assert.doesNotMatch(failedFlow, /clearCustomerCheckoutDraft/);
+});
 
 let passed = 0;
 for (const { name, run } of tests) {
@@ -446,5 +497,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 70);
+assert.equal(tests.length, 80);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);
