@@ -210,7 +210,7 @@ test('43. Payment failed creates no online order', () => {
   assert.doesNotMatch(failedBranch, /collection\('onlineOrders'\)|createPaidOnlineOrder/);
 });
 test('44. Modal dismiss creates no online order', () => {
-  assert.match(customerOrder, /Payment window closed\. Your basket is still here and no order was created/);
+  assert.match(customerOrder, /Payment cancelled\. No order was placed\. Your cart has been saved\./);
 });
 test('45. Customer cart is retained after failed or dismissed payment', () => {
   assert.doesNotMatch(customerOrder.match(/modal:[\s\S]{0,260}/)?.[0] || '', /setCart\(\[\]\)/);

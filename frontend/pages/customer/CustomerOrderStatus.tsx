@@ -3,7 +3,8 @@ import { onSnapshot } from 'firebase/firestore';
 import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Clock, Copy, Loader2, RefreshCw, ShoppingBag, Store as StoreIcon, XCircle } from 'lucide-react';
 import { PublicOrderStatus, PublicOrderTracking } from '../../types';
-import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
+import CustomerHeader from '../../components/customer/CustomerHeader';
+import { CustomerProfile, restoreCustomerProfile } from '../../lib/customerAuth';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
 
@@ -100,6 +101,22 @@ export default function CustomerOrderStatus() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
+  const [profile, setProfile] = useState<CustomerProfile | null>(null);
+  const [authRestored, setAuthRestored] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    restoreCustomerProfile().then(restoredProfile => {
+      if (active) setProfile(restoredProfile);
+    }).catch(() => {
+      // Tracking remains available even if the optional account session cannot be restored.
+    }).finally(() => {
+      if (active) setAuthRestored(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!trackingToken) {
@@ -166,22 +183,22 @@ export default function CustomerOrderStatus() {
   };
 
   return (
-    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] px-4 py-4 font-sans text-neutral-900">
-      <div className="mx-auto max-w-md min-w-0 lg:max-w-4xl">
-        <header className="mb-4 flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div className="min-w-0">
-              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
-              <h1 className="truncate text-lg font-black text-[#2d2019]">Track order</h1>
-            </div>
-          </div>
+    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] font-sans text-neutral-900">
+      <CustomerHeader
+        title="Track order"
+        profile={profile}
+        authRestored={authRestored}
+        onProfileUpdated={setProfile}
+        onSignedOut={() => setProfile(null)}
+        rightSlot={(
           <button onClick={copyTrackingLink} className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#eadfd2]">
             <Copy size={14} />
             Copy
           </button>
-        </header>
+        )}
+      />
 
+      <div className="mx-auto max-w-md min-w-0 px-4 py-4 lg:max-w-4xl">
         {copyMessage && (
           <p className="mb-4 break-all rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
             {copyMessage}

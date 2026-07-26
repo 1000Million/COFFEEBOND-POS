@@ -358,6 +358,48 @@ async function resolveCustomerProfileHandler({ request, db, admin }) {
   };
 }
 
+async function updateCustomerProfileHandler({ request, db, admin }) {
+  const identity = verifiedCustomerIdentity(request);
+  const data = request.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    fail('invalid-argument', 'Profile details are required.');
+  }
+  const allowedFields = new Set(['displayName', 'defaultOrderType']);
+  const disallowedFields = Object.keys(data).filter(field => !allowedFields.has(field));
+  if (disallowedFields.length > 0) {
+    fail('invalid-argument', 'Only the customer name and default order type can be updated.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(data, 'displayName')) {
+    fail('invalid-argument', 'Customer name is required.');
+  }
+  const rawDisplayName = String(data.displayName || '').trim().replace(/\s+/g, ' ');
+  if (!rawDisplayName || rawDisplayName.length > 80) {
+    fail('invalid-argument', 'Customer name must be between 1 and 80 characters.');
+  }
+  if (!['PICKUP', 'DINE_IN'].includes(data.defaultOrderType)) {
+    fail('invalid-argument', 'Choose Pickup or Dine-in as the default order type.');
+  }
+
+  const profileRef = db.collection(CUSTOMER_PROFILE_COLLECTION).doc(identity.uid);
+  const profileSnapshot = await profileRef.get();
+  const current = profileSnapshot.exists ? profileSnapshot.data() : {};
+  const profile = {
+    customerUid: identity.uid,
+    normalisedPhone: identity.phoneNumber,
+    displayName: rawDisplayName,
+    defaultOrderType: data.defaultOrderType,
+    createdAt: current.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  await profileRef.set(profile, { merge: true });
+  return {
+    customerUid: profile.customerUid,
+    normalisedPhone: profile.normalisedPhone,
+    displayName: profile.displayName,
+    defaultOrderType: profile.defaultOrderType,
+  };
+}
+
 async function createCheckoutSession({
   request,
   db,
@@ -1075,6 +1117,10 @@ function createRazorpayPaymentFirstFunctions({
     resolveCustomerProfileHandler({ request, db, admin })
   ));
 
+  const updateCustomerProfile = onCall({ region }, request => (
+    updateCustomerProfileHandler({ request, db, admin })
+  ));
+
   const createCustomerCheckoutSession = onCall({
     region,
     timeoutSeconds: 120,
@@ -1286,6 +1332,7 @@ function createRazorpayPaymentFirstFunctions({
     listMyCustomerOrders,
     razorpayWebhook,
     resolveCustomerProfile,
+    updateCustomerProfile,
     verifyCustomerRazorpayPayment,
   };
 }
@@ -1313,6 +1360,7 @@ module.exports = {
   paidPendingMessage,
   publicStatusMessage,
   resolveCustomerProfileHandler,
+  updateCustomerProfileHandler,
   updateRefundFromWebhook,
   verifiedCustomerIdentity,
   verifySessionPayment,

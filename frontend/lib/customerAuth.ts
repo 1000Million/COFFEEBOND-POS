@@ -35,10 +35,20 @@ export type CustomerProfile = {
   defaultOrderType: 'PICKUP' | 'DINE_IN';
 };
 
+export type CustomerProfileUpdate = {
+  displayName: string;
+  defaultOrderType: 'PICKUP' | 'DINE_IN';
+};
+
 export const resolveCustomerProfile = httpsCallable<
   { displayName?: string; defaultOrderType?: 'PICKUP' | 'DINE_IN' },
   CustomerProfile
 >(customerFunctions, 'resolveCustomerProfile');
+
+export const updateCustomerProfile = httpsCallable<CustomerProfileUpdate, CustomerProfile>(
+  customerFunctions,
+  'updateCustomerProfile',
+);
 
 export async function waitForCustomerAuthRestoration() {
   await customerAuthPersistenceReady;
@@ -106,6 +116,10 @@ export async function verifyCustomerOtp(
 
 export async function invalidateCustomerVerification(): Promise<void> {
   if (customerAuth.currentUser) await signOut(customerAuth);
+}
+
+export async function signOutCustomer(): Promise<void> {
+  await invalidateCustomerVerification();
 }
 
 export function customerPhoneFromAuth(): string {

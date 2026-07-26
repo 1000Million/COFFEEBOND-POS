@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import AddOnSelector from '../../components/add-ons/AddOnSelector';
+import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import {
   activeAddOnGroupsForProduct,
@@ -60,7 +61,6 @@ import {
 } from '../../lib/customerOrderingState';
 import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
-import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
@@ -525,6 +525,7 @@ export default function CustomerOrder() {
   const [checkoutHydration, setCheckoutHydration] = useState<CheckoutHydrationState>('NOT_STARTED');
   const [loadedMenuStoreId, setLoadedMenuStoreId] = useState('');
   const [checkoutDraftNotice, setCheckoutDraftNotice] = useState('');
+  const [paymentNotice, setPaymentNotice] = useState('');
   const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
@@ -1110,6 +1111,7 @@ export default function CustomerOrder() {
     submittingRef.current = true;
     setSaving(true);
     setError(null);
+    setPaymentNotice('');
     try {
       if (paymentProvider === 'RAZORPAY') {
         const checkoutResult = (await createCustomerCheckoutSession({
@@ -1194,12 +1196,12 @@ export default function CustomerOrder() {
             },
             modal: {
               ondismiss: () => finish(() => reject(new Error(
-                'Payment window closed. Your basket is still here and no order was created.',
+                'Payment cancelled. No order was placed. Your cart has been saved.',
               ))),
             },
           });
           checkout.on('payment.failed', () => finish(() => reject(new Error(
-            'Payment was not completed. Your basket is still here.',
+            'Payment was not completed. No order was placed. You can try again.',
           ))));
           checkout.open();
         });
@@ -1270,7 +1272,16 @@ export default function CustomerOrder() {
       setBasketOpen(false);
     } catch (err) {
       if (import.meta.env.DEV) console.error('Failed to submit online order', err);
-      setError(customerSubmitErrorMessage(err));
+      const message = err instanceof Error ? err.message : '';
+      if (
+        message === 'Payment cancelled. No order was placed. Your cart has been saved.'
+        || message === 'Payment was not completed. No order was placed. You can try again.'
+      ) {
+        setPaymentNotice(message);
+        setError(null);
+      } else {
+        setError(customerSubmitErrorMessage(err));
+      }
     } finally {
       submittingRef.current = false;
       setSaving(false);
@@ -1476,7 +1487,6 @@ export default function CustomerOrder() {
                   type="button"
                   onClick={() => {
                     setPaymentProvider('PAY_AT_COUNTER');
-                    setVerifiedCustomer(null);
                   }}
                   className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
                     paymentProvider === 'PAY_AT_COUNTER'
@@ -1562,6 +1572,12 @@ export default function CustomerOrder() {
             )}
           </div>
 
+          {paymentNotice && (
+            <p role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
+              {paymentNotice}
+            </p>
+          )}
+
           <button
             onClick={submitOrder}
             disabled={
@@ -1593,13 +1609,22 @@ export default function CustomerOrder() {
     return (
       <div className="min-h-[100dvh] bg-[#f8efe6] px-4 py-5 font-sans text-neutral-900">
         <div className="mx-auto max-w-md">
-          <header className="mb-4 flex items-center gap-3">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div>
-              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
-              <h1 className="text-lg font-black text-[#2d2019]">Order ahead</h1>
-            </div>
-          </header>
+          <div className="-mx-4 -mt-5 mb-4">
+            <CustomerHeader
+              title="Order ahead"
+              profile={verifiedCustomer}
+              authRestored={customerAuthRestored}
+              onProfileUpdated={(profile) => {
+                setVerifiedCustomer(profile);
+                setCustomerName(profile.displayName);
+                handleOrderTypeChange(profile.defaultOrderType);
+              }}
+              onSignedOut={() => {
+                setVerifiedCustomer(null);
+                setCustomerPhone('');
+              }}
+            />
+          </div>
 
           <div className="rounded-3xl bg-white p-5 text-center shadow-sm ring-1 ring-[#eadfd2]">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
@@ -1695,15 +1720,21 @@ export default function CustomerOrder() {
 
   return (
     <div className={`min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] ${itemCount > 0 ? 'pb-24' : 'pb-6'} lg:pb-8`}>
-      <header className="sticky top-0 z-30 border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur">
-        <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-3 lg:max-w-6xl">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-8 w-8 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div className="min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#8b5e42]">Coffee Bond</p>
-              <h1 className="truncate text-base font-black leading-tight text-[#271a16]">Order ahead</h1>
-            </div>
-          </div>
+      <CustomerHeader
+        sticky
+        title="Order ahead"
+        profile={verifiedCustomer}
+        authRestored={customerAuthRestored}
+        onProfileUpdated={(profile) => {
+          setVerifiedCustomer(profile);
+          setCustomerName(profile.displayName);
+          handleOrderTypeChange(profile.defaultOrderType);
+        }}
+        onSignedOut={() => {
+          setVerifiedCustomer(null);
+          setCustomerPhone('');
+        }}
+        rightSlot={(
           <button
             onClick={() => setBasketOpen(true)}
             className="relative inline-flex h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
@@ -1716,8 +1747,8 @@ export default function CustomerOrder() {
               </span>
             )}
           </button>
-        </div>
-      </header>
+        )}
+      />
 
       <main className="mx-auto grid w-full min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
         <section className="min-w-0 space-y-4">

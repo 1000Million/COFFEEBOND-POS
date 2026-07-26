@@ -48,6 +48,7 @@ exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOr
 
 const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
 exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
+exports.updateCustomerProfile = razorpayCheckoutFunctions.updateCustomerProfile;
 exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;
 exports.verifyCustomerRazorpayPayment = razorpayCheckoutFunctions.verifyCustomerRazorpayPayment;
 exports.listMyCustomerOrders = razorpayCheckoutFunctions.listMyCustomerOrders;

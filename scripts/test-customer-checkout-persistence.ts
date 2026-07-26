@@ -228,8 +228,8 @@ test('18. Razorpay modal dismissal and payment failure retain the draft', () => 
     customerOrderSource.indexOf('rememberCustomerOrder(verifiedOrder.trackingToken)'),
   );
   assert.doesNotMatch(checkoutFlow, /clearCustomerCheckoutDraft/);
-  assert.match(checkoutFlow, /Payment window closed/);
-  assert.match(checkoutFlow, /Payment was not completed/);
+  assert.match(checkoutFlow, /Payment cancelled\. No order was placed\. Your cart has been saved\./);
+  assert.match(checkoutFlow, /Payment was not completed\. No order was placed\. You can try again\./);
 });
 
 test('19. Verification or network failure retains the draft', () => {
