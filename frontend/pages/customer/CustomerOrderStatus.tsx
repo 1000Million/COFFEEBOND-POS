@@ -1,35 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { httpsCallable } from 'firebase/functions';
 import { onSnapshot } from 'firebase/firestore';
 import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Clock, Copy, Loader2, RefreshCw, ShoppingBag, Store as StoreIcon, XCircle } from 'lucide-react';
 import { PublicOrderStatus, PublicOrderTracking } from '../../types';
 import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
-import { functions } from '../../lib/firebase';
+import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
-import {
-  canPayRazorpayOrder,
-  isRazorpayPaymentExpired,
-  loadRazorpayCheckout,
-  RazorpayCheckoutSuccess,
-  RazorpayOrderResponse,
-  validateRazorpayOrderResponse,
-} from '../../lib/razorpayCheckout';
-
-const createRazorpayOrder = httpsCallable<
-  { trackingToken: string; publicOrderReference: string },
-  RazorpayOrderResponse
->(functions, 'createRazorpayOrder');
-const verifyRazorpayPayment = httpsCallable<
-  {
-    trackingToken: string;
-    publicOrderReference: string;
-    razorpay_payment_id: string;
-    razorpay_order_id: string;
-    razorpay_signature: string;
-  },
-  { alreadyFinalized?: boolean; reviewRequired?: boolean; orderId?: string; orderNumber?: string }
->(functions, 'verifyRazorpayPayment');
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -41,8 +17,13 @@ function formatDate(value: any): string {
 }
 
 function statusLabel(status: PublicOrderStatus): string {
-  if (status === 'ACCEPTED_AWAITING_PAYMENT') return 'Accepted, payment due';
+  if (status === 'PAYMENT_PROCESSING') return 'Confirming payment';
+  if (status === 'PAID_PENDING_ACCEPTANCE') return 'Paid, awaiting store';
   if (status === 'PAYMENT_REVIEW_REQUIRED') return 'Payment under review';
+  if (status === 'REFUND_PENDING') return 'Refund in progress';
+  if (status === 'REFUNDED') return 'Refunded';
+  if (status === 'REFUND_FAILED') return 'Refund needs attention';
+  if (status === 'CANCELLED_REFUNDED') return 'Cancelled and refunded';
   if (status === 'CONVERTED' || status === 'ACCEPTED') return 'Order confirmed';
   if (status === 'PREPARING') return 'Preparing';
   if (status === 'READY') return 'Ready for pickup';
@@ -61,13 +42,13 @@ function statusMessage(order: PublicOrderTracking): string {
 function statusTone(status: PublicOrderStatus): string {
   if (status === 'CONVERTED' || status === 'ACCEPTED' || status === 'PREPARING') return 'bg-emerald-50 text-emerald-900';
   if (status === 'READY' || status === 'SERVED') return 'bg-[#f0fdf4] text-emerald-950';
-  if (status === 'REJECTED' || status === 'CANCELLED') return 'bg-red-50 text-red-900';
-  if (status === 'NEEDS_ATTENTION' || status === 'PAYMENT_REVIEW_REQUIRED') return 'bg-amber-50 text-amber-900';
+  if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELLED_REFUNDED' || status === 'REFUNDED') return 'bg-red-50 text-red-900';
+  if (status === 'NEEDS_ATTENTION' || status === 'PAYMENT_REVIEW_REQUIRED' || status === 'REFUND_PENDING' || status === 'REFUND_FAILED') return 'bg-amber-50 text-amber-900';
   return 'bg-blue-50 text-blue-900';
 }
 
 function stepState(orderStatus: PublicOrderStatus, step: 'SENT' | 'CONFIRMED' | 'PREPARING' | 'READY_SOON' | 'READY_FOR_PICKUP' | 'REJECTED'): 'done' | 'active' | 'pending' | 'rejected' {
-  if (orderStatus === 'REJECTED' || orderStatus === 'CANCELLED') {
+  if (['REJECTED', 'CANCELLED', 'CANCELLED_REFUNDED', 'REFUNDED', 'REFUND_FAILED'].includes(orderStatus)) {
     if (step === 'REJECTED') return 'rejected';
     if (step === 'SENT' || step === 'CONFIRMED') return 'done';
     return 'pending';
@@ -86,7 +67,12 @@ function stepState(orderStatus: PublicOrderStatus, step: 'SENT' | 'CONFIRMED' | 
     return 'pending';
   }
 
-  if (orderStatus === 'ACCEPTED_AWAITING_PAYMENT' || orderStatus === 'PAYMENT_REVIEW_REQUIRED') {
+  if (
+    orderStatus === 'PAYMENT_PROCESSING'
+    || orderStatus === 'PAID_PENDING_ACCEPTANCE'
+    || orderStatus === 'PAYMENT_REVIEW_REQUIRED'
+    || orderStatus === 'REFUND_PENDING'
+  ) {
     if (step === 'SENT') return 'done';
     if (step === 'CONFIRMED') return 'active';
     return 'pending';
@@ -114,9 +100,6 @@ export default function CustomerOrderStatus() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
-  const [paymentBusy, setPaymentBusy] = useState(false);
-  const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
-  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!trackingToken) {
@@ -127,6 +110,7 @@ export default function CustomerOrderStatus() {
 
     setLoading(true);
     setError(null);
+    rememberCustomerOrder(trackingToken);
     const unsubscribe = onSnapshot(
       publicTrackingDocRef(trackingToken),
       (snapshot) => {
@@ -150,12 +134,10 @@ export default function CustomerOrderStatus() {
   }, [trackingToken]);
 
   const tone = useMemo(() => order ? statusTone(order.publicStatus) : 'bg-white text-neutral-900', [order]);
-  const canPayOnline = useMemo(() => order ? canPayRazorpayOrder(order) : false, [order]);
-  const paymentExpired = useMemo(() => order ? isRazorpayPaymentExpired(order) : false, [order]);
 
   const visibleSteps = useMemo(() => {
     if (!order) return [];
-    if (order.publicStatus === 'REJECTED' || order.publicStatus === 'CANCELLED') {
+    if (['REJECTED', 'CANCELLED', 'CANCELLED_REFUNDED', 'REFUNDED', 'REFUND_FAILED'].includes(order.publicStatus)) {
       return [
         { key: 'SENT' as const, title: 'Request sent', body: 'We received your basket.' },
         { key: 'CONFIRMED' as const, title: 'Store reviewed', body: 'The team checked your request.' },
@@ -180,83 +162,6 @@ export default function CustomerOrderStatus() {
       setCopyMessage('Tracking link copied.');
     } catch {
       setCopyMessage(trackingUrl);
-    }
-  };
-
-  const payOnline = async () => {
-    if (!order || !trackingToken || paymentBusy || !canPayRazorpayOrder(order)) return;
-    setPaymentBusy(true);
-    setPaymentError(null);
-    setPaymentMessage('Preparing secure checkout...');
-    try {
-      const createResult = (await createRazorpayOrder({
-        trackingToken,
-        publicOrderReference: order.publicOrderReference,
-      })).data;
-      if (createResult.alreadyPaid) {
-        setPaymentMessage('Payment is already confirmed. Refreshing order status...');
-        return;
-      }
-      validateRazorpayOrderResponse(createResult);
-      await loadRazorpayCheckout();
-      const RazorpayCheckout = window.Razorpay;
-      if (!RazorpayCheckout) throw new Error('Online payment could not load. Please retry.');
-
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const finish = (callback: () => void) => {
-          if (settled) return;
-          settled = true;
-          callback();
-        };
-        const checkout = new RazorpayCheckout({
-          key: createResult.keyId,
-          order_id: createResult.razorpayOrderId,
-          amount: createResult.amount,
-          currency: createResult.currency,
-          name: 'Coffee Bond',
-          description: `Order ${order.publicOrderReference}`,
-          prefill: createResult.prefill,
-          theme: { color: '#3b261d' },
-          handler: (result: RazorpayCheckoutSuccess) => {
-            setPaymentMessage('Confirming payment securely...');
-            verifyRazorpayPayment({
-              trackingToken,
-              publicOrderReference: order.publicOrderReference,
-              razorpay_payment_id: result.razorpay_payment_id,
-              razorpay_order_id: result.razorpay_order_id,
-              razorpay_signature: result.razorpay_signature,
-            }).then((verified) => {
-              finish(() => {
-                if (verified.data.reviewRequired) {
-                  setPaymentMessage('Payment received. The store is reviewing fulfilment.');
-                } else {
-                  setPaymentMessage('Payment confirmed. Your order is moving to preparation.');
-                }
-                resolve();
-              });
-            }).catch(() => {
-              finish(() => reject(new Error('Payment confirmation is delayed. Refresh this page shortly.')));
-            });
-          },
-          modal: {
-            ondismiss: () => finish(() => {
-              setPaymentMessage('Payment window closed. Your order remains unpaid.');
-              resolve();
-            }),
-          },
-        });
-        checkout.on('payment.failed', () => finish(() => {
-          setPaymentMessage(null);
-          reject(new Error('Payment was not completed. No charge was confirmed; you can retry.'));
-        }));
-        checkout.open();
-      });
-    } catch (err) {
-      setPaymentMessage(null);
-      setPaymentError(err instanceof Error ? err.message : 'Could not start online payment. Please retry.');
-    } finally {
-      setPaymentBusy(false);
     }
   };
 
@@ -304,7 +209,7 @@ export default function CustomerOrderStatus() {
             <section className={`rounded-3xl p-5 shadow-sm ring-1 ring-[#eadfd2] ${tone}`}>
               <div className="flex items-start gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/75">
-                  {order.publicStatus === 'REJECTED' || order.publicStatus === 'CANCELLED' ? (
+                  {['REJECTED', 'CANCELLED', 'CANCELLED_REFUNDED', 'REFUNDED', 'REFUND_FAILED'].includes(order.publicStatus) ? (
                     <XCircle size={24} className="text-red-700" />
                   ) : order.publicStatus === 'CONVERTED' || order.publicStatus === 'ACCEPTED' || order.publicStatus === 'PREPARING' || order.publicStatus === 'READY' || order.publicStatus === 'SERVED' ? (
                     <CheckCircle2 size={24} className="text-emerald-700" />
@@ -339,41 +244,42 @@ export default function CustomerOrderStatus() {
                           ? 'Confirming payment'
                           : order.paymentStatus === 'PAYMENT_REVIEW_REQUIRED'
                             ? 'Payment under review'
-                            : 'Pay securely with Razorpay'}
+                            : order.paymentStatus === 'REFUND_PENDING'
+                              ? 'Refund in progress'
+                              : order.paymentStatus === 'REFUNDED'
+                                ? 'Payment refunded'
+                                : order.paymentStatus === 'REFUND_FAILED'
+                                  ? 'Refund needs attention'
+                                  : 'Payment status'}
                     </h3>
                     <p className="mt-1 text-sm text-neutral-500">
                       {order.paymentStatus === 'PAID'
-                        ? 'No further payment is required.'
+                        ? 'Payment is captured. The store is reviewing the order.'
                         : order.paymentStatus === 'PAYMENT_PROCESSING'
                           ? 'Waiting for secure provider confirmation.'
                           : order.paymentStatus === 'PAYMENT_REVIEW_REQUIRED'
                             ? 'The store is reviewing fulfilment.'
-                            : 'Payment starts only after store acceptance.'}
+                            : order.paymentStatus === 'REFUND_PENDING'
+                              ? 'A full refund has been initiated.'
+                              : order.paymentStatus === 'REFUNDED'
+                                ? 'The provider confirmed the full refund.'
+                                : 'No further payment is required.'}
                     </p>
                   </div>
                   <span className={`rounded-full px-3 py-1 text-xs font-black ${
                     order.paymentStatus === 'PAID'
                       ? 'bg-emerald-100 text-emerald-800'
                       : order.paymentStatus === 'PAYMENT_REVIEW_REQUIRED'
+                        || order.paymentStatus === 'REFUND_PENDING'
+                        || order.paymentStatus === 'REFUND_FAILED'
                         ? 'bg-amber-100 text-amber-800'
+                        : order.paymentStatus === 'REFUNDED'
+                          ? 'bg-red-100 text-red-800'
                         : 'bg-blue-100 text-blue-800'
                   }`}>
                     {(order.paymentStatus || 'NOT_STARTED').replaceAll('_', ' ')}
                   </span>
                 </div>
-                {paymentError && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-800">{paymentError}</p>}
-                {paymentMessage && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">{paymentMessage}</p>}
-                {canPayOnline && (
-                  <button
-                    type="button"
-                    onClick={payOnline}
-                    disabled={paymentBusy}
-                    className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-[#3b261d] px-4 py-3 text-sm font-black text-white disabled:bg-neutral-300"
-                  >
-                    {paymentBusy ? <Loader2 size={17} className="animate-spin" /> : null}
-                    {paymentBusy ? 'Opening secure payment...' : `Pay Online · ${formatMoney(order.total)}`}
-                  </button>
-                )}
                 {order.paymentStatus === 'PAYMENT_PROCESSING' && (
                   <p className="mt-3 rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-900">
                     Payment confirmation is in progress. Please do not pay again.
@@ -382,11 +288,6 @@ export default function CustomerOrderStatus() {
                 {order.paymentStatus === 'PAYMENT_REVIEW_REQUIRED' && (
                   <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
                     Payment was received. The store is reviewing fulfilment; no further payment is required.
-                  </p>
-                )}
-                {paymentExpired && order.paymentStatus !== 'PAID' && (
-                  <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
-                    This payment link has expired. Please contact the store.
                   </p>
                 )}
               </section>
@@ -480,6 +381,9 @@ export default function CustomerOrderStatus() {
               </button>
               <Link to="/order" className="rounded-2xl bg-[#3b261d] px-4 py-3 text-center text-sm font-black text-white">
                 Place another order
+              </Link>
+              <Link to="/order/my-orders" className="rounded-2xl border border-[#eadfd2] bg-white px-4 py-3 text-center text-sm font-black text-[#5c4033]">
+                My Orders
               </Link>
             </div>
           </div>

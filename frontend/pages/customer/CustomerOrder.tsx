@@ -22,8 +22,9 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import AddOnSelector from '../../components/add-ons/AddOnSelector';
+import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import {
   activeAddOnGroupsForProduct,
   addOnSelectionKey,
@@ -33,6 +34,14 @@ import {
   unitPriceWithAddOns,
 } from '../../lib/addOns';
 import { db, functions } from '../../lib/firebase';
+import { CustomerProfile, customerFunctions } from '../../lib/customerAuth';
+import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
+import {
+  loadRazorpayCheckout,
+  RazorpayCheckoutSuccess,
+  RazorpayOrderResponse,
+  validateRazorpayOrderResponse,
+} from '../../lib/razorpayCheckout';
 import {
   deriveCustomerOrderingState,
   prepWindowLabel,
@@ -150,6 +159,19 @@ const submitCustomerOrderCallable = httpsCallable<SubmitCustomerOrderRequest, Su
   functions,
   'submitCustomerOrder',
 );
+const createCustomerCheckoutSession = httpsCallable<
+  Omit<SubmitCustomerOrderRequest, 'customerPhone' | 'paymentProvider'> & { storeId: string },
+  RazorpayOrderResponse
+>(customerFunctions, 'createCustomerCheckoutSession');
+const verifyCustomerRazorpayPayment = httpsCallable<
+  RazorpayCheckoutSuccess & { sessionId: string },
+  {
+    onlineOrderId: string;
+    trackingToken: string;
+    trackingPath: string;
+    customerStatusMessage: string;
+  }
+>(customerFunctions, 'verifyCustomerRazorpayPayment');
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
@@ -431,6 +453,7 @@ function customerSubmitErrorMessage(err: unknown): string {
 }
 
 export default function CustomerOrder() {
+  const navigate = useNavigate();
   const [stores, setStores] = useState<Store[]>([]);
   const [items, setItems] = useState<CustomerMenuItem[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
@@ -441,6 +464,7 @@ export default function CustomerOrder() {
   const [customerPhone, setCustomerPhone] = useState('');
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('PAY_AT_COUNTER');
+  const [verifiedCustomer, setVerifiedCustomer] = useState<CustomerProfile | null>(null);
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -816,6 +840,9 @@ export default function CustomerOrder() {
     const cleanPhone = normalizeIndianPhone(customerPhone);
     const cleanTableNumber = tableNumber.trim().replace(/\s+/g, ' ');
     const cleanNotes = notes.trim().slice(0, MAX_NOTE_LENGTH);
+    if (paymentProvider === 'RAZORPAY' && !verifiedCustomer) {
+      return setError('Verify your mobile number before paying online.');
+    }
     if (!cleanCustomerName) return setError('Please enter your name.');
     if (!isValidIndianPhone(customerPhone)) return setError('Please enter a valid 10-digit Indian mobile number.');
     if (orderType === 'DINE_IN' && !cleanTableNumber) return setError('Please enter your table number for dine in.');
@@ -861,6 +888,104 @@ export default function CustomerOrder() {
     setSaving(true);
     setError(null);
     try {
+      if (paymentProvider === 'RAZORPAY') {
+        const checkoutResult = (await createCustomerCheckoutSession({
+          storeId: selectedStore.id,
+          storeCode: selectedStore.code,
+          customerName: cleanCustomerName,
+          orderType,
+          ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : { tableNumber: null }),
+          notes: cleanNotes,
+          items: cart.map(line => ({
+            itemCode: line.item.code,
+            parentProductId: line.item.id,
+            quantity: line.quantity,
+            addOns: line.addOns.map(addOn => ({
+              groupId: addOn.groupId,
+              optionId: addOn.optionId,
+              quantity: addOn.quantity,
+            })),
+          })),
+          clientIdempotencyKey,
+        })).data;
+        if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
+          rememberCustomerOrder(checkoutResult.trackingToken);
+          navigate(checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`);
+          return;
+        }
+        validateRazorpayOrderResponse(checkoutResult);
+        if (!checkoutResult.sessionId) throw new Error('Secure checkout session was not returned.');
+        await loadRazorpayCheckout();
+        const RazorpayCheckout = window.Razorpay;
+        if (!RazorpayCheckout) throw new Error('Online payment could not load. Please retry.');
+        const verifiedOrder = await new Promise<Awaited<ReturnType<typeof verifyCustomerRazorpayPayment>>['data']>((resolve, reject) => {
+          let settled = false;
+          const finish = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            callback();
+          };
+          const checkout = new RazorpayCheckout({
+            key: checkoutResult.keyId,
+            order_id: checkoutResult.razorpayOrderId,
+            amount: checkoutResult.amount,
+            currency: checkoutResult.currency,
+            name: 'Coffee Bond',
+            description: `Coffee Bond · ${selectedStore.name}`,
+            customer_id: checkoutResult.customerId,
+            remember_customer: checkoutResult.rememberCustomer,
+            prefill: checkoutResult.prefill,
+            readonly: checkoutResult.readonly,
+            ...(checkoutResult.magicCheckoutEnabled ? {
+              one_click_checkout: checkoutResult.oneClickCheckout,
+              line_items: checkoutResult.lineItems,
+            } : {}),
+            config: {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay securely',
+                    instruments: [
+                      { method: 'upi' },
+                      { method: 'card' },
+                      { method: 'netbanking' },
+                    ],
+                  },
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: true },
+              },
+            },
+            theme: { color: '#3b261d' },
+            handler: (providerResult) => {
+              verifyCustomerRazorpayPayment({
+                sessionId: checkoutResult.sessionId!,
+                ...providerResult,
+              }).then(result => finish(() => resolve(result.data)))
+                .catch(() => finish(() => reject(new Error(
+                  'Payment confirmation is delayed. Your paid order will be recovered automatically.',
+                ))));
+            },
+            modal: {
+              ondismiss: () => finish(() => reject(new Error(
+                'Payment window closed. Your basket is still here and no order was created.',
+              ))),
+            },
+          });
+          checkout.on('payment.failed', () => finish(() => reject(new Error(
+            'Payment was not completed. Your basket is still here.',
+          ))));
+          checkout.open();
+        });
+        rememberCustomerOrder(verifiedOrder.trackingToken);
+        setCart([]);
+        setNotes('');
+        setTableNumber('');
+        setBasketOpen(false);
+        navigate(verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`);
+        return;
+      }
+
       const result = await submitCustomerOrderCallable({
         storeCode: selectedStore.code,
         customerName: cleanCustomerName,
@@ -1114,33 +1239,15 @@ export default function CustomerOrder() {
           </div>
 
           <div className="mt-4 space-y-3">
-            <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-            <input
-              value={customerPhone}
-              onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="10-digit mobile number"
-              inputMode="numeric"
-              autoComplete="tel"
-              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-            />
-            <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
-              <option value="PICKUP">Takeaway / pickup</option>
-              <option value="DINE_IN">Dine in</option>
-            </select>
-            {orderType === 'DINE_IN' && (
-              <input
-                value={tableNumber}
-                onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
-                placeholder="Table number"
-                className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-              />
-            )}
             <fieldset className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
               <legend className="px-1 text-xs font-black uppercase tracking-wider text-neutral-500">Payment</legend>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setPaymentProvider('PAY_AT_COUNTER')}
+                  onClick={() => {
+                    setPaymentProvider('PAY_AT_COUNTER');
+                    setVerifiedCustomer(null);
+                  }}
                   className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
                     paymentProvider === 'PAY_AT_COUNTER'
                       ? 'bg-[#3b261d] text-white'
@@ -1163,29 +1270,86 @@ export default function CustomerOrder() {
               </div>
               <p className="mt-2 text-xs font-medium text-neutral-500">
                 {paymentProvider === 'RAZORPAY'
-                  ? 'You will pay securely after the store accepts your order.'
+                  ? 'Verify your mobile, then pay securely. The paid order goes straight to the store for confirmation.'
                   : 'Payment is collected at the store after acceptance.'}
               </p>
             </fieldset>
-            <textarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
-              placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
-              rows={3}
-              maxLength={MAX_NOTE_LENGTH}
-              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-            />
-            <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
+            {paymentProvider === 'RAZORPAY' ? (
+              <CustomerOtpPanel
+                mobile={customerPhone}
+                verifiedPhone={verifiedCustomer?.normalisedPhone || null}
+                onMobileChange={(mobile) => {
+                  setCustomerPhone(mobile);
+                  setVerifiedCustomer(null);
+                }}
+                onVerified={(profile) => {
+                  setVerifiedCustomer(profile);
+                  setCustomerPhone(profile.normalisedPhone.replace('+91', ''));
+                  if (!customerName.trim() && profile.displayName) setCustomerName(profile.displayName);
+                  if (profile.defaultOrderType) handleOrderTypeChange(profile.defaultOrderType);
+                  setError(null);
+                }}
+              />
+            ) : (
+              <input
+                value={customerPhone}
+                onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                placeholder="10-digit mobile number"
+                inputMode="numeric"
+                autoComplete="tel"
+                className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+              />
+            )}
+            {(paymentProvider === 'PAY_AT_COUNTER' || verifiedCustomer) && (
+              <>
+                <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+                <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
+                  <option value="PICKUP">Takeaway / pickup</option>
+                  <option value="DINE_IN">Dine in</option>
+                </select>
+                {orderType === 'DINE_IN' && (
+                  <input
+                    value={tableNumber}
+                    onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
+                    placeholder="Table number"
+                    className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+                  />
+                )}
+                <textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
+                  placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
+                  rows={3}
+                  maxLength={MAX_NOTE_LENGTH}
+                  className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+                />
+                <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
+              </>
+            )}
           </div>
 
           <button
             onClick={submitOrder}
-            disabled={saving || loading || cart.length === 0 || !selectedStoreOnline}
+            disabled={
+              saving
+              || loading
+              || cart.length === 0
+              || !selectedStoreOnline
+              || (paymentProvider === 'RAZORPAY' && !verifiedCustomer)
+            }
             className="mt-4 w-full rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
-            {saving ? 'Sending request...' : 'Send order request'}
+            {saving
+              ? paymentProvider === 'RAZORPAY' ? 'Opening secure payment...' : 'Sending request...'
+              : paymentProvider === 'RAZORPAY'
+                ? `Pay ${formatMoney(totals.grandTotal)} Online`
+                : 'Send order request'}
           </button>
-          <p className="mt-3 text-center text-xs font-medium text-neutral-500">The store will confirm your order shortly.</p>
+          <p className="mt-3 text-center text-xs font-medium text-neutral-500">
+            {paymentProvider === 'RAZORPAY'
+              ? 'Your cart clears only after payment is verified and the order is created.'
+              : 'The store will confirm your order shortly.'}
+          </p>
         </>
       )}
     </div>

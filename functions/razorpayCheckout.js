@@ -99,9 +99,9 @@ async function resolveOnlineOrderByTracking({ db, trackingToken, publicOrderRefe
   return { ref: snapshot.ref, order };
 }
 
-function razorpayClient(keyId, keySecret, RazorpayClass = Razorpay) {
+function razorpayClient(keyId, keySecret, RazorpayClass = Razorpay, options = {}) {
   if (!keyId || !keySecret) fail('failed-precondition', 'Online payment is not configured.');
-  return new RazorpayClass({ key_id: keyId, key_secret: keySecret });
+  return new RazorpayClass({ key_id: keyId, key_secret: keySecret, ...options });
 }
 
 function paymentIntentResponse(intent, order, keyId) {
@@ -320,7 +320,13 @@ async function finalizePaidOnlineOrder({
     if (intent.providerOrderId !== providerOrder.id || providerPayment.order_id !== intent.providerOrderId) {
       fail('failed-precondition', 'Provider order does not match this payment intent.');
     }
-    if (!isRazorpayOrderEligible(onlineOrder) && onlineOrder.paymentStatus !== 'PAYMENT_PROCESSING') {
+    const isPaymentFirstAcceptance = onlineOrder.status === 'PAID_PENDING_ACCEPTANCE'
+      && onlineOrder.paymentStatus === PAID_STATUS;
+    if (
+      !isPaymentFirstAcceptance
+      && !isRazorpayOrderEligible(onlineOrder)
+      && onlineOrder.paymentStatus !== 'PAYMENT_PROCESSING'
+    ) {
       fail('failed-precondition', 'This Coffee Bond order cannot be finalised.');
     }
     if (existingPosOrderSnapshot.exists) {
@@ -337,7 +343,9 @@ async function finalizePaidOnlineOrder({
       fail('failed-precondition', 'The selected store is not active.');
     }
     const store = { id: storeSnapshot.id, ...storeSnapshot.data() };
-    const finishedGoodRefs = onlineOrder.items.map(item => db.collection('finishedGoods').doc(item.finishedGoodCode));
+    const finishedGoodRefs = onlineOrder.items.map(item => (
+      db.collection('finishedGoods').doc(item.finishedGoodId || item.finishedGoodCode)
+    ));
     const finishedGoodSnapshots = await Promise.all(finishedGoodRefs.map(ref => transaction.get(ref)));
     if (finishedGoodSnapshots.some(snapshot => !snapshot.exists)) {
       transaction.update(intentRef, {
@@ -464,8 +472,11 @@ async function finalizePaidOnlineOrder({
     const counterSnapshot = await transaction.get(counterRef);
     const sequence = counterSnapshot.exists ? Number(counterSnapshot.data().lastSequence || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${String(sequence).padStart(4, '0')}`;
-    const acceptedBy = cleanText(onlineOrder.acceptedBy, 128) || 'SYSTEM_RAZORPAY';
-    const acceptedByName = cleanText(onlineOrder.acceptedByName, 120) || 'Online payment';
+    const acceptedBy = cleanText(onlineOrder.acceptedBy, 128);
+    const acceptedByName = cleanText(onlineOrder.acceptedByName, 120);
+    if (!acceptedBy || !acceptedByName) {
+      fail('failed-precondition', 'Staff acceptance is required before operational fulfilment.');
+    }
     const inventoryPlan = await planOnlineOrderInventory({
       transaction,
       db,
@@ -1113,5 +1124,6 @@ module.exports = {
   publicStatusMessage,
   resolveOnlineOrderByTracking,
   resolveWebhookPaymentId,
+  razorpayClient,
   verifyAndFinalize,
 };

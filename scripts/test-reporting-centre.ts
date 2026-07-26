@@ -469,10 +469,16 @@ test('complimentary report contains no OTP code, token, or authorization ID', !s
 const onlineOrders = [
   { publicOrderReference: 'CBWEB-ACCEPTED', storeId: 'GOLDEN_I', storeName: 'Golden I', status: 'CONVERTED', source: 'CUSTOMER_WEB', customerPhone: '9999999999', grandTotal: 210, createdAt, convertedAt: new Date(createdAt.getTime() + 5 * 60000) },
   { publicOrderReference: 'CBWEB-REJECTED', storeId: 'GOLDEN_I', storeName: 'Golden I', status: 'REJECTED', source: 'CUSTOMER_WEB', customerPhone: '9876543210', rejectReason: 'Store busy', grandTotal: 100, createdAt },
+  { publicOrderReference: 'CBWEB-PAID', storeId: 'GOLDEN_I', storeName: 'Golden I', status: 'PAID_PENDING_ACCEPTANCE', paymentStatus: 'PAID', paymentProvider: 'RAZORPAY', providerMethod: 'UPI', source: 'CUSTOMER_WEB', customerPhone: '9123456789', grandTotal: 350, createdAt, paymentCapturedAt: createdAt },
+  { publicOrderReference: 'CBWEB-REFUNDED', storeId: 'GOLDEN_I', storeName: 'Golden I', status: 'CANCELLED_REFUNDED', paymentStatus: 'REFUNDED', paymentProvider: 'RAZORPAY', providerMethod: 'CARD', source: 'CUSTOMER_WEB', customerPhone: '9234567890', grandTotal: 200, createdAt, paymentCapturedAt: createdAt },
 ];
 const onlineReport = buildReportDataset('online-order', records, { onlineOrders });
 test('online accepted and rejected counts are accurate', onlineReport.rows.filter((row: any) => row.accepted).length === 1 && onlineReport.rows.filter((row: any) => row.rejected).length === 1);
+test('paid pending acceptance is distinct from accepted online orders', onlineReport.rows.some((row: any) => row.paidPendingAcceptance && row.paymentCaptured && !row.accepted));
 test('online report does not expose tracking tokens or private document IDs', !JSON.stringify(onlineReport.rows).includes('trackingToken') && !JSON.stringify(onlineReport.rows).includes('"id"'));
+const gatewayCollectionReport = buildReportDataset('payment-collection', records, { onlineOrders });
+test('captured unlinked Razorpay money appears in gateway collections', gatewayCollectionReport.rows.some((row: any) => row.method === 'RAZORPAY' && row.grossPayments === 350));
+test('processed unlinked Razorpay refund reduces gateway collections once', gatewayCollectionReport.rows.some((row: any) => row.method === 'RAZORPAY' && row.reversals === 200 && row.netCollections === 0));
 
 for (const reportId of ['locality-wise', 'corporate-customer-gst', 'advance-order-summary']) {
   const unavailable = buildReportDataset(reportId, records);
@@ -482,6 +488,8 @@ for (const reportId of ['locality-wise', 'corporate-customer-gst', 'advance-orde
 const franchise = buildFranchiseDailyDataset(records);
 test('Franchise summary uses the same canonical net sales', franchise.metrics.netSales === metrics.netSales);
 test('Franchise summary uses the same canonical GST', franchise.metrics.gstCollected === metrics.gstCollected);
+const franchiseWithGateway = buildFranchiseDailyDataset(records, 'Asia/Kolkata', onlineOrders);
+test('Franchise gateway collections include unlinked captures without changing sales', franchiseWithGateway.metrics.gatewayPaymentsCaptured === 550 && franchiseWithGateway.metrics.netSales === metrics.netSales);
 
 const fakeExport = {
   report: REPORT_REGISTRY[10],

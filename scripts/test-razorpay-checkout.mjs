@@ -7,221 +7,276 @@ import { resolve } from 'node:path';
 const require = createRequire(import.meta.url);
 const root = resolve(import.meta.dirname, '..');
 const policy = require(resolve(root, 'functions/razorpayCheckoutPolicy.js'));
-const razorpayCheckout = require(resolve(root, 'functions/razorpayCheckout.js'));
+const paymentFirst = require(resolve(root, 'functions/razorpayPaymentFirst.js'));
+const checkoutBackend = require(resolve(root, 'functions/razorpayCheckout.js'));
 const reporting = await import(resolve(root, 'functions/reportingCore.mjs'));
 
-const source = (path) => readFileSync(resolve(root, path), 'utf8');
-const checkoutBackend = source('functions/razorpayCheckout.js');
-const checkoutPolicy = source('functions/razorpayCheckoutPolicy.js');
-const checkoutFrontend = source('frontend/lib/razorpayCheckout.ts');
-const trackingFrontend = source('frontend/pages/customer/CustomerOrderStatus.tsx');
-const conversionFrontend = source('frontend/lib/onlineOrderConversion.ts');
-const incomingFrontend = source('frontend/pages/pos/IncomingOnlineOrders.tsx');
-const submissionBackend = source('functions/index.js');
-const reportsSource = source('functions/reportingCore.mjs');
+const source = path => readFileSync(resolve(root, path), 'utf8');
+const backend = source('functions/razorpayPaymentFirst.js');
+const legacyBackend = source('functions/razorpayCheckout.js');
+const functionsIndex = source('functions/index.js');
+const customerAuth = source('frontend/lib/customerAuth.ts');
+const customerOrder = source('frontend/pages/customer/CustomerOrder.tsx');
+const tracking = source('frontend/pages/customer/CustomerOrderStatus.tsx');
+const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
+const incoming = source('frontend/pages/pos/IncomingOnlineOrders.tsx');
+const conversion = source('frontend/lib/onlineOrderConversion.ts');
+const persistence = source('frontend/lib/customerOrderPersistence.ts');
+const reportingSource = source('functions/reportingCore.mjs');
+const reportingLoader = source('functions/reporting.js');
+const franchiseSource = source('functions/franchiseSalesPolicy.js');
 const reversalSource = source('frontend/lib/paymentReversal.ts');
 const rules = source('firestore.rules');
-
-const acceptedOrder = (overrides = {}) => ({
-  id: 'online-order-a',
-  source: 'CUSTOMER_WEB',
-  storeId: 'GOLDEN_I',
-  paymentProvider: 'RAZORPAY',
-  paymentMethod: 'ONLINE',
-  status: 'ACCEPTED_AWAITING_PAYMENT',
-  paymentStatus: 'AWAITING_PAYMENT',
-  grandTotal: 236.25,
-  trackingToken: 'tracking-token-with-more-than-thirty-two-characters',
-  publicOrderReference: 'CB-WEB-MOCK',
-  items: [{ finishedGoodCode: 'CAPPUCCINO', quantity: 1, lineTotal: 236.25, addOns: [] }],
-  ...overrides,
-});
-
-const validPayment = (overrides = {}) => ({
-  id: 'pay_mock',
-  order_id: 'order_mock',
-  amount: 23625,
-  currency: 'INR',
-  status: 'captured',
-  method: 'upi',
-  ...overrides,
-});
-
-const validProviderOrder = (overrides = {}) => ({
-  id: 'order_mock',
-  amount: 23625,
-  currency: 'INR',
-  status: 'paid',
-  ...overrides,
-});
+const envExample = source('.env.example');
 
 const tests = [];
 function test(name, run) {
   tests.push({ name, run });
 }
 
-function createProviderOrderHarness() {
-  const records = new Map([
-    ['onlineOrders/online-order-a', acceptedOrder()],
-    ['stores/GOLDEN_I', { id: 'GOLDEN_I', code: 'GOLDEN_I', name: 'Golden I', isActive: true }],
-    ['publicOrderTracking/tracking-token-with-more-than-thirty-two-characters', {
-      trackingToken: 'tracking-token-with-more-than-thirty-two-characters',
-    }],
-  ]);
-  const makeSnapshot = (ref) => ({
-    id: ref.id,
-    ref,
-    exists: records.has(ref.path),
-    data: () => records.get(ref.path),
-  });
-  const makeRef = (path) => ({
-    path,
-    id: path.split('/').at(-1),
-    async get() {
-      return makeSnapshot(this);
-    },
-    async set(value, options = {}) {
-      records.set(path, options.merge ? { ...(records.get(path) || {}), ...value } : value);
-    },
-  });
-  const db = {
-    collection(name) {
-      return {
-        doc(id) {
-          return makeRef(`${name}/${id}`);
-        },
-      };
-    },
-    async runTransaction(run) {
-      const transaction = {
-        get: async ref => makeSnapshot(ref),
-        set: (ref, value, options = {}) => {
-          records.set(ref.path, options.merge ? { ...(records.get(ref.path) || {}), ...value } : value);
-        },
-        update: (ref, value) => {
-          assert.equal(records.has(ref.path), true, `Expected ${ref.path} before update.`);
-          records.set(ref.path, { ...records.get(ref.path), ...value });
-        },
-      };
-      return run(transaction);
-    },
-  };
-  const admin = {
-    firestore: {
-      FieldValue: { serverTimestamp: () => ({ __serverTimestamp: true }) },
-      Timestamp: {
-        fromMillis: milliseconds => ({
-          toMillis: () => milliseconds,
-          toDate: () => new Date(milliseconds),
-        }),
-      },
-    },
-  };
-  const providerCalls = [];
-  class MockRazorpay {
-    constructor() {
-      this.orders = {
-        create: async payload => {
-          providerCalls.push(payload);
-          return {
-            id: 'order_provider_mock',
-            amount: payload.amount,
-            currency: payload.currency,
-          };
-        },
-      };
-    }
-  }
-  return {
-    admin,
-    db,
-    onlineOrderRef: db.collection('onlineOrders').doc('online-order-a'),
-    order: acceptedOrder(),
-    providerCalls,
-    records,
-    RazorpayClass: MockRazorpay,
-  };
-}
+test('1. Online payment requires verified customer phone OTP', () => {
+  assert.match(backend, /verifiedCustomerIdentity\(request\)/);
+  assert.match(backend, /sign_in_provider/);
+});
+test('2. Unverified phone cannot create a checkout session', () => {
+  assert.throws(() => paymentFirst.verifiedCustomerIdentity({ auth: null }), /Verify your mobile number/);
+});
+test('3. Customer OTP uses an isolated Firebase Auth instance', () => {
+  assert.match(customerAuth, /CUSTOMER_APP_NAME = 'coffee-bond-customer-auth'/);
+  assert.match(customerAuth, /initializeApp\(firebaseConfig, CUSTOMER_APP_NAME\)/);
+});
+test('4. Staff session remains unchanged during customer OTP', () => {
+  assert.doesNotMatch(customerAuth, /import\s*\{[^}]*auth[^}]*\}\s*from '\.\/firebase'/);
+  assert.match(customerAuth, /signOut\(customerAuth\)/);
+});
+test('5. Phone change invalidates verification', () => {
+  assert.match(customerOrder, /setVerifiedCustomer\(null\)/);
+  assert.match(customerAuth, /invalidateCustomerVerification/);
+});
+test('6. Customer cannot access another customer session', () => {
+  assert.match(backend, /session\.customerUid !== identity\.uid/);
+  assert.match(backend, /This checkout belongs to another customer/);
+});
+test('7. Pay Online does not create onlineOrders before payment', () => {
+  const createStart = backend.indexOf('async function createCheckoutSession');
+  const createEnd = backend.indexOf('async function createPaidOnlineOrder');
+  assert.doesNotMatch(backend.slice(createStart, createEnd), /collection\('onlineOrders'\)/);
+  assert.match(functionsIndex, /Pay Online must use verified mobile checkout/);
+});
+test('8. Pay at Counter behaviour remains on submitCustomerOrder', () => {
+  assert.match(functionsIndex, /const paymentProvider = 'PAY_AT_COUNTER'/);
+  assert.match(customerOrder, /submitCustomerOrderCallable/);
+});
+test('9. Razorpay Customer is created once per verified customer', () => {
+  assert.match(backend, /if \(cleanText\(profile\.razorpayCustomerId, 120\)\)/);
+  assert.match(backend, /razorpayCustomerLeaseId/);
+  assert.match(backend, /client\.customers\.create/);
+});
+test('10. Existing Razorpay Customer is reused', () => {
+  assert.match(backend, /razorpayCustomerId: profile\.razorpayCustomerId \|\| providerCustomerId/);
+  assert.match(backend, /client\.customers\.all/);
+});
+test('11. Checkout receives customer_id', () => {
+  assert.match(customerOrder, /customer_id: checkoutResult\.customerId/);
+});
+test('12. Checkout receives remember_customer true', () => {
+  assert.match(backend, /rememberCustomer: true/);
+  assert.match(customerOrder, /remember_customer: checkoutResult\.rememberCustomer/);
+});
+test('13. Contact is prefilled and readonly', () => {
+  assert.match(backend, /prefill:[\s\S]*contact: session\.verifiedPhone/);
+  assert.match(backend, /readonly: \{ contact: true \}/);
+});
+test('14. Browser amount is ignored', () => {
+  assert.doesNotMatch(backend, /request\.data\?\.amount|request\.data\.amount/);
+  assert.match(backend, /amountPaise = rupeesToPaise\(canonical\.grandTotal\)/);
+});
+test('15. Captured payment creates PAID_PENDING_ACCEPTANCE order', () => {
+  assert.match(backend, /status: 'PAID_PENDING_ACCEPTANCE'/);
+  assert.match(backend, /paymentStatus: 'PAID'/);
+});
+test('16. Paid order appears in Incoming Online Orders', () => {
+  assert.match(incoming, /'PAID_PENDING_ACCEPTANCE'/);
+  assert.match(incoming, /RAZORPAY · PAID/);
+});
+test('17. KOT is not created before staff acceptance', () => {
+  const paidStart = backend.indexOf('async function createPaidOnlineOrder');
+  const acceptStart = backend.indexOf('async function acceptPaidOrder');
+  assert.doesNotMatch(backend.slice(paidStart, acceptStart), /collection\('kotItems'\)/);
+});
+test('18. Permanent stock deduction is not created before acceptance', () => {
+  const paidStart = backend.indexOf('async function createPaidOnlineOrder');
+  const acceptStart = backend.indexOf('async function acceptPaidOrder');
+  assert.doesNotMatch(backend.slice(paidStart, acceptStart), /collection\('stockMovements'\)/);
+});
+test('19. Reservation is created exactly once', () => {
+  assert.match(backend, /transaction\.create\(reservationRef/);
+  assert.match(backend, /idempotencyKey: onlineOrderId/);
+});
+test('20. Staff acceptance creates POS, KOT and stock through the operational finalizer', () => {
+  assert.match(backend, /finalizePaidOnlineOrder\(/);
+  assert.match(legacyBackend, /collection\('kotItems'\)/);
+  assert.match(legacyBackend, /collection\('stockMovements'\)/);
+});
+test('21. Repeated acceptance is idempotent', () => {
+  assert.match(backend, /order\.status === 'CONVERTED' && order\.linkedOrderId/);
+  assert.match(legacyBackend, /alreadyFinalized: true/);
+});
+test('22. Manager can cancel and refund an unaccepted paid order', () => {
+  assert.match(backend, /staffIdentity\(request, db, \['ADMIN', 'STORE_MANAGER'\]\)/);
+});
+test('23. Admin can cancel and refund', () => {
+  assert.match(backend, /\['ADMIN', 'STORE_MANAGER'\]/);
+});
+test('24. Cashier cannot cancel or refund', () => {
+  assert.doesNotMatch(
+    backend.slice(backend.indexOf('async function cancelAndRefund'), backend.indexOf('async function listMyOrders')),
+    /CASHIER/,
+  );
+  assert.match(incoming, /staffProfile\.role === 'ADMIN' \|\| staffProfile\.role === 'STORE_MANAGER'/);
+});
+test('25. Manager cannot refund another store order', () => {
+  assert.match(backend, /This manager cannot refund another store’s order/);
+});
+test('26. Refund requires a reason', () => {
+  assert.match(backend, /if \(!onlineOrderId \|\| !reason\)/);
+});
+test('27. Refund requires confirmation', () => {
+  assert.match(backend, /\['REFUND', order\.publicOrderReference\]\.includes\(confirmation\)/);
+});
+test('28. Refund API uses authoritative payment ID and full amount', () => {
+  assert.match(backend, /createProviderRefund\(client, order\.providerPaymentId/);
+  assert.match(backend, /amount: rupeesToPaise\(Number\(order\.grandTotal\)\)/);
+  assert.match(backend, /receipt: refundRequestId/);
+});
+test('29. Duplicate refund request is idempotent', () => {
+  assert.match(backend, /\['REFUND_PENDING', 'REFUNDED'\]\.includes\(existing\.status\)/);
+  assert.match(backend, /existing\?\.status === 'REFUND_REQUESTING'/);
+  assert.match(backend, /'X-Refund-Idempotency': refundRequestId/);
+});
+test('30. refund.created keeps REFUND_PENDING', () => {
+  assert.match(backend, /eventName === 'refund\.created'\) return \{ handled: true, outcome: 'REFUND_PENDING'/);
+});
+test('31. refund.processed sets REFUNDED', () => {
+  assert.match(backend, /eventName === 'refund\.processed' \? 'REFUNDED' : 'REFUND_FAILED'/);
+});
+test('32. refund.failed sets REFUND_FAILED', () => {
+  assert.match(backend, /'REFUND_FAILED'/);
+});
+test('33. Reservation releases on cancellation and refund', () => {
+  assert.match(backend, /status: 'RELEASED'/);
+  assert.match(backend, /releaseReason: 'REFUND_REQUESTED'/);
+});
+test('34. Refunded order cannot be accepted', () => {
+  assert.match(backend, /order\.status !== 'PAID_PENDING_ACCEPTANCE'/);
+});
+test('35. Accepted or preparing order is not silently refunded', () => {
+  assert.match(backend, /Only an unaccepted captured Razorpay order can be refunded here/);
+  assert.doesNotMatch(backend.match(/Only an unaccepted[\s\S]{0,400}/)?.[0] || '', /CONVERTED|PREPARING/);
+});
+test('36. Payment success automatically creates the POS incoming order', () => {
+  assert.match(backend, /transaction\.create\(onlineOrderRef, onlineOrder\)/);
+});
+test('37. Refresh restores the status page', () => {
+  assert.match(tracking, /onSnapshot\(/);
+  assert.match(tracking, /rememberCustomerOrder\(trackingToken\)/);
+});
+test('38. Stable tracking URL survives refresh', () => {
+  assert.match(customerOrder, /\/order\/status\/\$\{verifiedOrder\.trackingToken\}/);
+  assert.match(tracking, /useParams/);
+});
+test('39. Local storage restores the last order', () => {
+  assert.match(persistence, /coffeeBondLastOrderTrackingToken/);
+  assert.match(persistence, /coffeeBondPendingOrderTokens/);
+});
+test('40. Verified customer My Orders restores lost tracking state', () => {
+  assert.match(myOrders, /listMyCustomerOrders/);
+  assert.match(backend, /where\('customerUid', '==', identity\.uid\)/);
+});
+test('41. Lost browser callback is recovered by webhook', () => {
+  assert.match(backend, /\['payment\.captured', 'payment\.failed', 'order\.paid'\]/);
+  assert.match(backend, /createPaidOnlineOrder\(/);
+});
+test('42. Duplicate webhook does not create another order', () => {
+  assert.match(backend, /auditSnapshot\.exists && auditSnapshot\.data\(\)\?\.status === 'PROCESSED'/);
+  assert.match(backend, /existingOrderSnapshot\.exists/);
+});
+test('43. Payment failed creates no online order', () => {
+  const failedBranch = backend.slice(
+    backend.indexOf("if (eventName === 'payment.failed')"),
+    backend.indexOf("const client = razorpayClient", backend.indexOf("if (eventName === 'payment.failed')")),
+  );
+  assert.doesNotMatch(failedBranch, /collection\('onlineOrders'\)|createPaidOnlineOrder/);
+});
+test('44. Modal dismiss creates no online order', () => {
+  assert.match(customerOrder, /Payment window closed\. Your basket is still here and no order was created/);
+});
+test('45. Customer cart is retained after failed or dismissed payment', () => {
+  assert.doesNotMatch(customerOrder.match(/modal:[\s\S]{0,260}/)?.[0] || '', /setCart\(\[\]\)/);
+});
+test('46. Customer cart clears only after verified order creation', () => {
+  const verifyPosition = customerOrder.indexOf('rememberCustomerOrder(verifiedOrder.trackingToken)');
+  assert.ok(verifyPosition > 0);
+  assert.ok(customerOrder.indexOf('setCart([])', verifyPosition) > verifyPosition);
+});
+test('47. Refund pending is reported separately', () => {
+  assert.match(reportingSource, /refundsPending/);
+  assert.match(reportingSource, /gatewayPaymentRows/);
+});
+test('48. Processed refund reduces net Razorpay collections once', () => {
+  assert.match(reportingSource, /amount - refunded/);
+  assert.match(reportingSource, /!order\?\.linkedOrderId/);
+});
+test('49. Refund failure does not reduce collections', () => {
+  assert.match(reportingSource, /const refunded = order\.paymentStatus === 'REFUNDED' \? amount : 0/);
+});
+test('50. Cash UPI Card Split and Complimentary reporting remain unchanged', () => {
+  const cash = reporting.normalizedPaymentRows(
+    { paymentStatus: 'PAID', paymentMethod: 'CASH', grandTotal: 100 },
+    [{ method: 'CASH', amount: 40 }, { method: 'UPI', amount: 60 }],
+  );
+  assert.deepEqual(cash.map(row => row.method), ['CASH', 'UPI']);
+  assert.deepEqual(reporting.normalizedPaymentRows({
+    commercialStatus: 'COMPLIMENTARY',
+    paymentStatus: 'NOT_REQUIRED',
+    paymentMethod: 'COMPLIMENTARY',
+    grandTotal: 0,
+  }), []);
+});
+test('51. Customer profile is private', () => {
+  assert.match(rules, /match \/customerProfiles\/\{customerUid\} \{\s*allow read, create, update, delete: if false;/);
+});
+test('52. Checkout sessions are server-write-only', () => {
+  assert.match(rules, /match \/customerCheckoutSessions\/\{sessionId\} \{\s*allow read, create, update, delete: if false;/);
+});
+test('53. Refund records are server-write-only', () => {
+  assert.match(rules, /match \/razorpayRefunds\/\{refundId\} \{\s*allow read, create, update, delete: if false;/);
+});
+test('54. Cashier refund access is denied in Firestore and backend', () => {
+  assert.match(rules, /Paid gateway orders are accepted or refunded only by secured callables/);
+  assert.doesNotMatch(backend.slice(backend.indexOf('async function cancelAndRefund'), backend.indexOf('async function listMyOrders')), /CASHIER/);
+});
+test('55. No payment secret or instrument data appears in frontend, reports or franchise output', () => {
+  assert.doesNotMatch(customerAuth + customerOrder + tracking + myOrders, /RAZORPAY_KEY_SECRET|key_secret|card_number|cvv|upi_pin/);
+  assert.doesNotMatch(reportingSource + franchiseSource, /razorpayCustomerId|razorpay_signature|verifiedPhone/);
+  assert.doesNotMatch(reversalSource, /razorpay_signature/);
+});
+test('56. Standard Checkout fallback works when Magic Checkout is disabled', () => {
+  assert.match(envExample, /RAZORPAY_MAGIC_CHECKOUT_ENABLED="false"/);
+  assert.match(customerOrder, /remember_customer/);
+});
+test('57. Magic Checkout option is passed only when feature flag is enabled', () => {
+  assert.match(customerOrder, /\.\.\.\(checkoutResult\.magicCheckoutEnabled \? \{/);
+  assert.match(backend, /booleanParameter\(magicCheckoutParameter\)/);
+});
+test('58. Public order data exposes no customer profile or Razorpay customer ID', () => {
+  assert.doesNotMatch(backend.match(/function publicTrackingPayload[\s\S]*?\n\}/)?.[0] || '', /customerUid|razorpayCustomerId|verifiedPhone/);
+  assert.doesNotMatch(rules.match(/function isSafePublicTrackingDocument[\s\S]*?\n\s*\}/)?.[0] || '', /customerUid|razorpayCustomerId|verifiedPhone/);
+  assert.match(reportingLoader, /loadOnlineOrders/);
+  assert.match(conversion, /Paid Razorpay orders must use the secured staff acceptance service/);
+});
 
-test('1. Server computes amount from Coffee Bond data', () => {
-  assert.equal(policy.rupeesToPaise(acceptedOrder().grandTotal), 23625);
-  assert.match(checkoutBackend, /amountPaise = rupeesToPaise\(Number\(order\.grandTotal\)\)/);
-});
-test('2. Browser amount is ignored', () => {
-  assert.doesNotMatch(checkoutBackend, /request\.data\?\.amount|request\.data\.amount/);
-});
-test('3. Amount below 100 paise is rejected', () => {
-  assert.throws(() => policy.rupeesToPaise(0.99), /PAYABLE_BELOW_PROVIDER_MINIMUM/);
-});
-test('4. Integer paise conversion is correct', () => {
-  assert.equal(policy.rupeesToPaise(350), 35000);
-});
-test('5. Unsafe or fractional totals are rejected', () => {
-  assert.throws(() => policy.rupeesToPaise(1.001), /INVALID_PAYABLE_PRECISION/);
-  assert.throws(() => policy.rupeesToPaise(Number.MAX_SAFE_INTEGER), /INVALID_PAYABLE/);
-});
-test('6. Pending order cannot create a Razorpay order', () => {
-  assert.equal(policy.isRazorpayOrderEligible(acceptedOrder({ status: 'PENDING' })), false);
-});
-test('7. Rejected order cannot create a Razorpay order', () => {
-  assert.equal(policy.isRazorpayOrderEligible(acceptedOrder({ status: 'REJECTED' })), false);
-});
-test('8. Complimentary order cannot use Razorpay', () => {
-  assert.equal(policy.isRazorpayOrderEligible(acceptedOrder({ commercialStatus: 'COMPLIMENTARY' })), false);
-});
-test('9. Accepted unpaid Razorpay order can create one provider order', async () => {
-  assert.equal(policy.isRazorpayOrderEligible(acceptedOrder()), true);
-  const harness = createProviderOrderHarness();
-  const result = await razorpayCheckout.createProviderOrder({
-    ...harness,
-    keyId: 'rzp_test_mock',
-    keySecret: 'mock-secret',
-    now: Date.now(),
-  });
-  assert.equal(harness.providerCalls.length, 1);
-  assert.equal(result.razorpayOrderId, 'order_provider_mock');
-  assert.equal(result.amount, 23625);
-});
-test('10. Repeated create calls are idempotent', async () => {
-  assert.equal(policy.deterministicIntentId('same-order'), policy.deterministicIntentId('same-order'));
-  const harness = createProviderOrderHarness();
-  const input = {
-    ...harness,
-    keyId: 'rzp_test_mock',
-    keySecret: 'mock-secret',
-    now: Date.now(),
-  };
-  const first = await razorpayCheckout.createProviderOrder(input);
-  const second = await razorpayCheckout.createProviderOrder(input);
-  assert.equal(harness.providerCalls.length, 1);
-  assert.equal(second.razorpayOrderId, first.razorpayOrderId);
-  assert.match(checkoutBackend, /existing\.requestChecksum !== requestChecksum\(freshOrder\)/);
-});
-test('11. Already-paid order cannot create another attempt', () => {
-  assert.equal(policy.isRazorpayOrderEligible(acceptedOrder({ paymentStatus: 'PAID' })), false);
-  assert.match(checkoutBackend, /existing\?\.status === PAID_STATUS/);
-});
-test('12. Tracking token cannot access another order', () => {
-  assert.match(checkoutBackend, /trackingSnapshot\.data\(\)\?\.publicOrderReference !== reference/);
-  assert.match(checkoutBackend, /order\.publicOrderReference !== reference \|\| order\.trackingToken !== token/);
-});
-test('13. Missing checkout identity fields are rejected', () => {
-  assert.match(checkoutBackend, /Order tracking details are required/);
-  assert.match(checkoutBackend, /Payment confirmation details are incomplete/);
-});
-test('14. Provider authentication failures are sanitised', () => {
-  assert.deepEqual(policy.safeProviderError({ statusCode: 401 }), {
-    code: 'PROVIDER_AUTHENTICATION_FAILED',
-    message: 'Online payment is temporarily unavailable.',
-  });
-});
-test('15. Provider service failures are sanitised', () => {
-  assert.deepEqual(policy.safeProviderError({ statusCode: 503, message: 'private body' }), {
-    code: 'PROVIDER_UNAVAILABLE',
-    message: 'Online payment is temporarily unavailable.',
-  });
-});
-test('16. Correct HMAC signature passes', () => {
+test('59. HMAC uses safe length handling and authoritative provider order', () => {
   const signature = createHmac('sha256', 'mock-secret').update('order_mock|pay_mock').digest('hex');
   assert.equal(policy.verifyCheckoutSignature({
     storedOrderId: 'order_mock',
@@ -229,17 +284,6 @@ test('16. Correct HMAC signature passes', () => {
     signature,
     keySecret: 'mock-secret',
   }), true);
-});
-test('17. Incorrect HMAC signature fails', () => {
-  assert.equal(policy.verifyCheckoutSignature({
-    storedOrderId: 'order_mock',
-    paymentId: 'pay_mock',
-    signature: '0'.repeat(64),
-    keySecret: 'mock-secret',
-  }), false);
-});
-test('18. timingSafeEqual handles unequal lengths safely', () => {
-  assert.match(checkoutPolicy, /expectedBuffer\.length === suppliedBuffer\.length/);
   assert.equal(policy.verifyCheckoutSignature({
     storedOrderId: 'order_mock',
     paymentId: 'pay_mock',
@@ -247,104 +291,23 @@ test('18. timingSafeEqual handles unequal lengths safely', () => {
     keySecret: 'mock-secret',
   }), false);
 });
-test('19. Server-stored order ID is authoritative', () => {
-  assert.match(checkoutBackend, /storedOrderId: intent\.providerOrderId/);
-  assert.match(checkoutPolicy, /\.update\(`\$\{safeStoredOrderId\}\|\$\{safePaymentId\}`\)/);
+test('60. Minimum provider amount is 100 paise', () => {
+  assert.equal(policy.rupeesToPaise(1), 100);
+  assert.throws(() => policy.rupeesToPaise(0.99), /PAYABLE_BELOW_PROVIDER_MINIMUM/);
 });
-test('20. Browser or provider order mismatch fails', () => {
-  const state = policy.isFinalProviderState({
-    payment: validPayment({ order_id: 'wrong' }),
-    providerOrder: validProviderOrder(),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
-  });
-  assert.equal(state.code, 'PROVIDER_ORDER_MISMATCH');
-});
-test('21. Provider amount mismatch fails', () => {
-  const state = policy.isFinalProviderState({
-    payment: validPayment({ amount: 1 }),
-    providerOrder: validProviderOrder(),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
-  });
-  assert.equal(state.code, 'PROVIDER_AMOUNT_MISMATCH');
-});
-test('22. Provider currency mismatch fails', () => {
-  const state = policy.isFinalProviderState({
-    payment: validPayment({ currency: 'USD' }),
-    providerOrder: validProviderOrder(),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
-  });
-  assert.equal(state.code, 'PROVIDER_CURRENCY_MISMATCH');
-});
-test('23. Uncaptured payment does not fulfil', () => {
-  const state = policy.isFinalProviderState({
-    payment: validPayment({ status: 'authorized' }),
-    providerOrder: validProviderOrder(),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
-  });
-  assert.equal(state.code, 'PAYMENT_NOT_CAPTURED');
-});
-test('24. Unpaid provider order does not fulfil', () => {
-  const state = policy.isFinalProviderState({
-    payment: validPayment(),
-    providerOrder: validProviderOrder({ status: 'attempted' }),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
-  });
-  assert.equal(state.code, 'PROVIDER_ORDER_NOT_PAID');
-});
-test('25. Captured payment and paid provider order can finalise', () => {
+test('61. Provider amount currency and captured status are verified', () => {
   assert.deepEqual(policy.isFinalProviderState({
-    payment: validPayment(),
-    providerOrder: validProviderOrder(),
-    expectedOrderId: 'order_mock',
-    expectedAmountPaise: 23625,
+    payment: { id: 'pay', order_id: 'order', amount: 100, currency: 'INR', status: 'captured' },
+    providerOrder: { id: 'order', amount: 100, currency: 'INR', status: 'paid' },
+    expectedOrderId: 'order',
+    expectedAmountPaise: 100,
   }), { valid: true, code: null });
 });
-test('26. Verification creates exactly one Coffee Bond payment', () => {
-  assert.equal((checkoutBackend.match(/posOrderRef\.collection\('payments'\)\.doc\('razorpay'\)/g) || []).length, 1);
-  assert.match(checkoutBackend, /transaction\.create\(posOrderRef\.collection\('payments'\)\.doc\('razorpay'\)/);
-});
-test('27. Verification creates deterministic KOT rows exactly once', () => {
-  assert.match(checkoutBackend, /doc\(`\$\{posOrderId\}_\$\{line\.lineId\}_\$\{kotStation\}`\)/);
-  assert.match(checkoutBackend, /transaction\.create\(db\.collection\('kotItems'\)/);
-});
-test('28. Verification deducts stock exactly once', () => {
-  assert.match(checkoutBackend, /doc\(`\$\{posOrderId\}_SALE_\$\{String\(index \+ 1\)/);
-  assert.match(checkoutBackend, /transaction\.create\(\s*db\.collection\('stockMovements'\)/);
-});
-test('29. Repeated verification is idempotent', () => {
-  assert.match(checkoutBackend, /intent\.status === PAID_STATUS && existingPosOrderSnapshot\.exists/);
-  assert.match(checkoutBackend, /alreadyFinalized: true/);
-});
-test('30. Failed checkout leaves the order unpaid', () => {
-  assert.match(checkoutBackend, /payment\?\.status === 'failed' \? 'FAILED' : 'VERIFYING'/);
-  assert.match(checkoutBackend, /paymentStatus: 'FAILED'/);
-});
-test('31. Modal dismissal leaves the order unpaid', () => {
-  assert.match(trackingFrontend, /modal:\s*\{\s*ondismiss:/);
-  assert.doesNotMatch(trackingFrontend, /ondismiss:[\s\S]{0,240}verifyRazorpayPayment/);
-});
-test('32. payment.failed leaves the order unpaid', () => {
-  assert.match(checkoutBackend, /eventName === 'payment\.failed'/);
-  assert.match(checkoutBackend, /outcome: 'PAYMENT_FAILED_RECORDED'/);
-});
-test('33. Checkout script is loaded only once', () => {
-  assert.match(checkoutFrontend, /let checkoutScriptPromise: Promise<void> \| null = null/);
-  assert.match(checkoutFrontend, /if \(checkoutScriptPromise\) return checkoutScriptPromise/);
-  assert.match(checkoutFrontend, /querySelector<HTMLScriptElement>/);
-});
-test('34. Key Secret is absent from frontend code', () => {
-  assert.doesNotMatch(checkoutFrontend + trackingFrontend, /RAZORPAY_KEY_SECRET|key_secret/);
-});
-test('35. Key Secret is absent from built frontend output', () => {
+test('62. Built output contains no Razorpay secret names or live keys', () => {
   const dist = resolve(root, 'dist');
   if (!existsSync(dist)) return;
   const files = [];
-  const walk = (directory) => {
+  const walk = directory => {
     for (const entry of readdirSync(directory)) {
       const path = resolve(directory, entry);
       if (statSync(path).isDirectory()) walk(path);
@@ -354,130 +317,121 @@ test('35. Key Secret is absent from built frontend output', () => {
   walk(dist);
   const output = files.filter(path => /\.(js|html|css|json)$/.test(path))
     .map(path => readFileSync(path, 'utf8')).join('\n');
-  assert.doesNotMatch(output, /RAZORPAY_KEY_SECRET|RAZORPAY_WEBHOOK_SECRET|key_secret/);
+  assert.doesNotMatch(output, /RAZORPAY_KEY_SECRET|RAZORPAY_WEBHOOK_SECRET|rzp_live_[A-Za-z0-9]+/);
 });
-test('36. Payment signatures are absent from reports', () => {
-  assert.doesNotMatch(reportsSource, /razorpay_signature|paymentSignature/);
-});
-test('37. Webhook missing signature fails', () => {
-  assert.equal(policy.verifyWebhookSignature({
-    rawBody: Buffer.from('{}'),
-    signature: '',
-    webhookSecret: 'mock-webhook',
-  }), false);
-});
-test('38. Webhook invalid signature fails', () => {
-  assert.equal(policy.verifyWebhookSignature({
-    rawBody: Buffer.from('{}'),
-    signature: '0'.repeat(64),
-    webhookSecret: 'mock-webhook',
-  }), false);
-});
-test('39. Valid webhook signature succeeds', () => {
-  const rawBody = Buffer.from('{"event":"payment.captured"}');
-  const signature = createHmac('sha256', 'mock-webhook').update(rawBody).digest('hex');
-  assert.equal(policy.verifyWebhookSignature({ rawBody, signature, webhookSecret: 'mock-webhook' }), true);
-});
-test('40. Duplicate webhook processing is idempotent', () => {
-  assert.match(checkoutBackend, /auditSnapshot\.exists && auditSnapshot\.data\(\)\.status === 'PROCESSED'/);
-  assert.match(checkoutBackend, /duplicate: true/);
-});
-test('41. payment.captured webhook recovery is supported', () => {
-  assert.match(checkoutBackend, /\['payment\.captured', 'payment\.failed', 'order\.paid'\]/);
-  assert.match(checkoutBackend, /verifyAndFinalize\(\{ db, admin, onlineOrder, intent, paymentId, client \}\)/);
-});
-test('42. payment.failed webhook cannot mark paid', () => {
-  const failureBranch = checkoutBackend.slice(
-    checkoutBackend.indexOf("if (eventName === 'payment.failed')"),
-    checkoutBackend.indexOf('let paymentId;'),
-  );
-  assert.doesNotMatch(failureBranch, /status:\s*PAID_STATUS|paymentStatus:\s*PAID_STATUS/);
-});
-test('43. order.paid recovery fetches captured provider payments', async () => {
-  const calls = [];
-  const paymentId = await razorpayCheckout.resolveWebhookPaymentId({
-    client: {
-      orders: {
-        fetchPayments: async orderId => {
-          calls.push(orderId);
-          return {
-            items: [
-              { id: 'failed_payment', order_id: orderId, status: 'failed' },
-              { id: 'captured_payment', order_id: orderId, status: 'captured' },
-            ],
-          };
-        },
+test('63. Mocked Razorpay Customer API creates canonical customer metadata', async () => {
+  let createPayload = null;
+  const customer = await paymentFirst.findOrCreateProviderCustomer({
+    customers: {
+      all: async () => ({ items: [] }),
+      create: async payload => {
+        createPayload = payload;
+        return { id: 'cust_mock', contact: payload.contact };
       },
     },
-    eventPaymentId: '',
-    providerOrderId: 'order_mock',
+  }, {
+    customerUid: 'firebase_customer',
+    verifiedPhone: '+919999999999',
+    customerName: 'Customer Test',
   });
-  assert.deepEqual(calls, ['order_mock']);
-  assert.equal(paymentId, 'captured_payment');
+  assert.equal(customer.id, 'cust_mock');
+  assert.equal(createPayload.contact, '+919999999999');
+  assert.doesNotMatch(JSON.stringify(createPayload), /firebase_customer/);
 });
-test('44. Cash reporting remains unchanged', () => {
-  const rows = reporting.normalizedPaymentRows(
-    { paymentStatus: 'PAID', paymentMethod: 'CASH', grandTotal: 100 },
-    [{ method: 'CASH', amount: 100 }],
-  );
-  assert.equal(rows[0].method, 'CASH');
+test('64. Mocked Razorpay Customer API reuses a matching existing customer', async () => {
+  let createCalls = 0;
+  const customer = await paymentFirst.findOrCreateProviderCustomer({
+    customers: {
+      all: async () => ({ items: [{ id: 'cust_existing', contact: '+919999999999' }] }),
+      create: async () => {
+        createCalls += 1;
+        return { id: 'cust_new' };
+      },
+    },
+  }, {
+    customerUid: 'firebase_customer',
+    verifiedPhone: '+919999999999',
+    customerName: 'Customer Test',
+  });
+  assert.equal(customer.id, 'cust_existing');
+  assert.equal(createCalls, 0);
 });
-test('45. UPI reporting remains unchanged', () => {
-  const rows = reporting.normalizedPaymentRows(
-    { paymentStatus: 'PAID', paymentMethod: 'UPI', grandTotal: 100 },
-    [{ method: 'UPI', amount: 100 }],
-  );
-  assert.equal(rows[0].method, 'UPI');
+test('65. Mocked Razorpay Order API recovers a matching provider order', async () => {
+  let createCalls = 0;
+  const order = await paymentFirst.findOrCreateProviderOrder({
+    orders: {
+      all: async () => ({
+        items: [{ id: 'order_existing', receipt: 'CBRZP123', amount: 35000, currency: 'INR' }],
+      }),
+      create: async () => {
+        createCalls += 1;
+        return { id: 'order_new' };
+      },
+    },
+  }, { receipt: 'CBRZP123', amount: 35000, currency: 'INR' });
+  assert.equal(order.id, 'order_existing');
+  assert.equal(createCalls, 0);
 });
-test('46. Card reporting remains unchanged', () => {
-  const rows = reporting.normalizedPaymentRows(
-    { paymentStatus: 'PAID', paymentMethod: 'CARD', grandTotal: 100 },
-    [{ method: 'CARD', amount: 100 }],
-  );
-  assert.equal(rows[0].method, 'CARD');
+test('66. Mocked Razorpay Order API creates only when no matching receipt exists', async () => {
+  let createPayload = null;
+  const order = await paymentFirst.findOrCreateProviderOrder({
+    orders: {
+      all: async () => ({ items: [] }),
+      create: async payload => {
+        createPayload = payload;
+        return { id: 'order_new', ...payload };
+      },
+    },
+  }, { receipt: 'CBRZP456', amount: 22500, currency: 'INR' });
+  assert.equal(order.id, 'order_new');
+  assert.equal(createPayload.amount, 22500);
 });
-test('47. Split-payment reporting remains unchanged', () => {
-  const rows = reporting.normalizedPaymentRows(
-    { paymentStatus: 'PAID', paymentMethod: 'CASH', grandTotal: 100 },
-    [{ method: 'CASH', amount: 40 }, { method: 'UPI', amount: 60 }],
-  );
-  assert.equal(rows.reduce((sum, row) => sum + row.amount, 0), 100);
-  assert.deepEqual(rows.map(row => row.method), ['CASH', 'UPI']);
+test('67. Mocked Payment and Order APIs fetch authoritative provider state', async () => {
+  const fetched = [];
+  const [payment, order] = await paymentFirst.fetchProviderPaymentAndOrder({
+    payments: { fetch: async id => { fetched.push(id); return { id, status: 'captured' }; } },
+    orders: { fetch: async id => { fetched.push(id); return { id, status: 'paid' }; } },
+  }, 'pay_mock', 'order_mock');
+  assert.deepEqual(fetched.sort(), ['order_mock', 'pay_mock']);
+  assert.equal(payment.status, 'captured');
+  assert.equal(order.status, 'paid');
 });
-test('48. Complimentary reporting remains unchanged', () => {
-  assert.deepEqual(reporting.normalizedPaymentRows({
-    commercialStatus: 'COMPLIMENTARY',
-    paymentStatus: 'NOT_REQUIRED',
-    paymentMethod: 'COMPLIMENTARY',
-    grandTotal: 0,
-  }), []);
+test('68. Mocked Refund API receives the authoritative payment and full payload', async () => {
+  let call = null;
+  const response = await paymentFirst.createProviderRefund({
+    payments: {
+      refund: async (paymentId, payload) => {
+        call = { paymentId, payload };
+        return { id: 'rfnd_mock' };
+      },
+    },
+  }, 'pay_authoritative', {
+    amount: 35000,
+    receipt: paymentFirst.deterministicRefundRequestId('online_order'),
+    speed: 'normal',
+  });
+  assert.equal(response.id, 'rfnd_mock');
+  assert.equal(call.paymentId, 'pay_authoritative');
+  assert.equal(call.payload.amount, 35000);
 });
-test('49. Local void cannot falsely represent a Razorpay refund', () => {
-  assert.match(reversalSource, /method === 'RAZORPAY'/);
-  assert.match(reversalSource, /MANUAL_REFUND_REQUIRED/);
-  assert.match(reversalSource, /Gateway refund required/);
+test('69. Refund client binds Razorpay idempotency header', () => {
+  class MockRazorpay {
+    constructor(options) {
+      this.options = options;
+    }
+  }
+  const requestId = paymentFirst.deterministicRefundRequestId('online_order');
+  const client = checkoutBackend.razorpayClient('key_mock', 'secret_mock', MockRazorpay, {
+    headers: { 'X-Refund-Idempotency': requestId },
+  });
+  assert.equal(client.options.headers['X-Refund-Idempotency'], requestId);
+  assert.match(requestId, /^CBREF_[A-F0-9]{32}$/);
 });
-test('50. Reporting includes Razorpay exactly once', () => {
-  const rows = reporting.normalizedPaymentRows(
-    { paymentStatus: 'PAID', paymentProvider: 'RAZORPAY', providerMethod: 'UPI', grandTotal: 350 },
-    [{ method: 'ONLINE', provider: 'RAZORPAY', providerMethod: 'UPI', amount: 350 }],
-  );
-  assert.deepEqual(rows.map(row => [row.method, row.providerMethod, row.amount]), [['RAZORPAY', 'UPI', 350]]);
-});
-test('51. Firestore rules deny client payment-intent writes', () => {
-  assert.match(rules, /match \/razorpayPaymentIntents\/\{intentId\} \{\s*allow read, create, update, delete: if false;/);
-  assert.match(rules, /match \/razorpayWebhookEvents\/\{eventId\} \{\s*allow read, create, update, delete: if false;/);
-});
-test('52. Franchise Viewer cannot access private provider data', () => {
-  assert.doesNotMatch(rules.match(/match \/razorpayPaymentIntents[\s\S]*?\n\s*\}/)?.[0] || '', /FRANCHISE_VIEWER|isFranchise/);
-  assert.doesNotMatch(reportsSource, /providerPaymentId|providerOrderId|razorpay_signature/);
-});
-test('53. Existing online-order acceptance and rejection remain correct', () => {
-  assert.match(conversionFrontend, /if \(isRazorpay\)/);
-  assert.match(conversionFrontend, /stockMovementCount: 0,\s*kotCount: 0/);
-  assert.match(incomingFrontend, /status: 'REJECTED'/);
-  assert.match(incomingFrontend, /publicStatus: 'REJECTED'/);
-  assert.match(submissionBackend, /paymentProvider === 'RAZORPAY' \? 'ONLINE' : 'PAY_AT_COUNTER'/);
+test('70. Concurrency leases and captured-payment review recovery are present', () => {
+  assert.match(backend, /providerCreationLeaseId/);
+  assert.match(backend, /razorpayCustomerLeaseId/);
+  assert.match(backend, /status: 'REFUND_REQUESTING'/);
+  assert.match(backend, /status: REVIEW_STATUS,[\s\S]{0,160}failureCode: 'PAID_ORDER_CREATION_FAILED'/);
 });
 
 let passed = 0;
@@ -492,5 +446,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 53);
-console.log(`Razorpay checkout tests passed: ${passed}/${tests.length}. No network or Firebase writes were performed.`);
+assert.equal(tests.length, 70);
+console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

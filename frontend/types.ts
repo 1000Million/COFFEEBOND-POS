@@ -102,6 +102,9 @@ export type PaymentStatus =
   | "AWAITING_PAYMENT"
   | "PAYMENT_PROCESSING"
   | "FAILED"
+  | "REFUND_PENDING"
+  | "REFUNDED"
+  | "REFUND_FAILED"
   | "PAYMENT_REVIEW_REQUIRED";
 export type CommercialStatus = "SALE" | "COMPLIMENTARY";
 
@@ -336,9 +339,15 @@ export type OnlineOrderStatus =
   | "PENDING"
   | "ACCEPTED"
   | "ACCEPTED_AWAITING_PAYMENT"
+  | "PAYMENT_PROCESSING"
+  | "PAID_PENDING_ACCEPTANCE"
   | "CONVERTED"
   | "REJECTED"
   | "NEEDS_ATTENTION"
+  | "REFUND_PENDING"
+  | "REFUNDED"
+  | "REFUND_FAILED"
+  | "CANCELLED_REFUNDED"
   | "PAYMENT_REVIEW_REQUIRED";
 export type PublicOrderStatus = OnlineOrderStatus | "PREPARING" | "READY" | "SERVED" | "CANCELLED";
 
@@ -391,6 +400,12 @@ export interface OnlineOrder {
   providerPaymentId?: string | null;
   providerOrderId?: string | null;
   providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
+  customerUid?: string;
+  verifiedPhone?: string;
+  checkoutSessionId?: string;
+  paymentCapturedAt?: any;
+  refundStatus?: "REFUND_PENDING" | "REFUNDED" | "REFUND_FAILED";
+  refundReason?: string;
   paymentReviewCode?: string | null;
   trackingToken?: string | null;
   publicOrderReference?: string | null;

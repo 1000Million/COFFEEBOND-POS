@@ -417,18 +417,35 @@ function createGetFranchiseDailySales({ admin, db, region }) {
           .where('createdAt', '<', admin.firestore.Timestamp.fromDate(end))
           .get()
       )));
+      const onlineOrderSnapshots = await Promise.all(requestedStoreIds.map((storeId) => (
+        db.collection('onlineOrders')
+          .where('storeId', '==', storeId)
+          .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(start))
+          .where('createdAt', '<', admin.firestore.Timestamp.fromDate(end))
+          .orderBy('createdAt', 'asc')
+          .get()
+      )));
       const orders = orderSnapshots.flatMap((snapshot) => snapshot.docs.map((orderDoc) => ({
         id: orderDoc.id,
         ...orderDoc.data(),
       })));
+      const onlineOrders = onlineOrderSnapshots.flatMap((snapshot) => snapshot.docs.map((orderDoc) => ({
+        id: orderDoc.id,
+        ...orderDoc.data(),
+      })));
       const { buildFranchiseDailyDataset } = await import('./reportingCore.mjs');
-      const summary = buildFranchiseDailyDataset(await loadOrderRecords(db, orders), timeZone);
+      const summary = buildFranchiseDailyDataset(
+        await loadOrderRecords(db, orders),
+        timeZone,
+        onlineOrders,
+      );
 
       console.info('franchise-daily-sales-access', {
         viewerUid: profile.uid,
         storeIds: requestedStoreIds,
         businessDate: date,
         orderCount: orders.length,
+        onlineOrderCount: onlineOrders.length,
       });
 
       return {

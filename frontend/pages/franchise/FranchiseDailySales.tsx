@@ -330,6 +330,8 @@ export default function FranchiseDailySales() {
               <MetricCard label="Average order value" value={money(metrics.averageOrderValue)} />
               <MetricCard label="Complimentary orders" value={String(metrics.complimentaryOrderCount)} note={money(metrics.complimentaryMenuValue)} />
               <MetricCard label="Voided orders" value={String(metrics.voidOrderCount)} note={money(metrics.voidedOrderValue)} />
+              <MetricCard label="Gateway captured" value={money(metrics.gatewayPaymentsCaptured)} note={`${metrics.paidPendingAcceptance} awaiting acceptance`} />
+              <MetricCard label="Refunds pending" value={money(metrics.gatewayRefundsPending)} note={`${metrics.gatewayRefundFailures} failed`} />
             </section>
 
             <section className="grid gap-4 lg:grid-cols-2">
@@ -353,6 +355,9 @@ export default function FranchiseDailySales() {
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
                   Net collections after voided payments: <strong>{money(metrics.netCollections)}</strong>
+                </p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Processed gateway refunds: <strong>{money(metrics.gatewayRefundsProcessed)}</strong>
                 </p>
               </div>
             </section>

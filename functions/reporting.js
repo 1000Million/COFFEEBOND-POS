@@ -256,7 +256,7 @@ async function loadOrderRecords(admin, db, context) {
 }
 
 async function loadOnlineOrders(admin, db, context) {
-  if (!['online-order', 'customer-order'].includes(context.reportId)) return [];
+  if (!['online-order', 'customer-order', 'payment-collection', 'refund-reversal'].includes(context.reportId)) return [];
   const snapshots = await Promise.all(context.selected.map((storeId) => (
     db.collection('onlineOrders')
       .where('storeId', '==', storeId)

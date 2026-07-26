@@ -30,6 +30,11 @@ export type FranchiseDailyMetrics = {
   grossPaymentsReceived: number;
   voidedPaymentTotal: number;
   netCollections: number;
+  gatewayPaymentsCaptured: number;
+  gatewayRefundsProcessed: number;
+  gatewayRefundsPending: number;
+  gatewayRefundFailures: number;
+  paidPendingAcceptance: number;
 };
 
 export type FranchiseOrderSummary = {

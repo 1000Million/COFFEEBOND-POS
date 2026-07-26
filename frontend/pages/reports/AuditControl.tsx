@@ -402,7 +402,29 @@ export default function AuditControl() {
     });
     return breakdown;
   }, [completedOrders]);
-  const collectionAudit = useMemo(() => summarizeCollections(orders), [orders]);
+  const collectionAudit = useMemo(() => {
+    const base = summarizeCollections(orders);
+    const unlinkedGateway = onlineOrders.filter(order => (
+      order.paymentProvider === 'RAZORPAY'
+      && !order.linkedOrderId
+      && ['PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED'].includes(order.paymentStatus || '')
+    ));
+    const gatewayGross = unlinkedGateway.reduce((sum, order) => sum + money(order.grandTotal), 0);
+    const gatewayRefunded = unlinkedGateway
+      .filter(order => order.paymentStatus === 'REFUNDED')
+      .reduce((sum, order) => sum + money(order.grandTotal), 0);
+    const gatewayPending = unlinkedGateway
+      .filter(order => order.paymentStatus === 'REFUND_PENDING')
+      .reduce((sum, order) => sum + money(order.grandTotal), 0);
+    return {
+      ...base,
+      grossPaymentsReceived: base.grossPaymentsReceived + gatewayGross,
+      voidedPaymentTotal: base.voidedPaymentTotal + gatewayRefunded,
+      refundedOrReversedPayments: base.refundedOrReversedPayments + gatewayRefunded,
+      refundPendingPayments: base.refundPendingPayments + gatewayPending,
+      netCollections: base.netCollections + gatewayGross - gatewayRefunded,
+    };
+  }, [onlineOrders, orders]);
 
   const grossSales = completedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
   const voidedSales = commercialVoidedOrders.reduce((sum, order) => sum + money(order.grandTotal), 0);
@@ -426,7 +448,13 @@ export default function AuditControl() {
     : [];
   const reversalMovements = stockMovements.filter(movement => movement.movementType === 'ORDER_VOID_REVERSAL');
   const voidedOrdersWithoutReversal = voidedOrders.filter(order => !reversalMovements.some(movement => movement.referenceId === order.id));
-  const pendingOnlineOrders = onlineOrders.filter(order => order.status === 'PENDING' || order.status === 'NEEDS_ATTENTION');
+  const pendingOnlineOrders = onlineOrders.filter(order => (
+    order.status === 'PENDING'
+    || order.status === 'NEEDS_ATTENTION'
+    || order.status === 'PAID_PENDING_ACCEPTANCE'
+  ));
+  const paidPendingAcceptance = onlineOrders.filter(order => order.status === 'PAID_PENDING_ACCEPTANCE');
+  const failedGatewayRefunds = onlineOrders.filter(order => order.status === 'REFUND_FAILED');
   const stalePendingOnlineOrders = pendingOnlineOrders.filter(order => ageMinutes(order.createdAt) > 15);
   const rejectedOnlineOrders = onlineOrders.filter(order => order.status === 'REJECTED');
   const acceptedOnlineOrders = onlineOrders.filter(order => order.status === 'ACCEPTED' || order.status === 'CONVERTED');
@@ -441,7 +469,9 @@ export default function AuditControl() {
   const voidCheck: AuditStatus = voidsMissingReason.length > 0 ? 'FAIL' : voidedOrders.length > 0 ? 'WARNING' : 'PASS';
   const stockCheck: AuditStatus = voidedOrdersWithoutReversal.length > 0 ? 'FAIL' : reversalMovements.length > 0 ? 'WARNING' : 'PASS';
   const gstCheck: AuditStatus = gstRate > 0 ? zeroGstOrders.length > 0 ? 'FAIL' : 'PASS' : 'WARNING';
-  const onlineCheck: AuditStatus = stalePendingOnlineOrders.length > 0 ? 'FAIL' : pendingOnlineOrders.length > 0 ? 'WARNING' : 'PASS';
+  const onlineCheck: AuditStatus = failedGatewayRefunds.length > 0 || stalePendingOnlineOrders.length > 0
+    ? 'FAIL'
+    : pendingOnlineOrders.length > 0 ? 'WARNING' : 'PASS';
   const kotCheck: AuditStatus = oldPendingKotItems.length > 0 ? 'FAIL' : (pendingKotItems.length + preparingKotItems.length + readyKotItems.length) > 0 ? 'WARNING' : 'PASS';
   const dayCloseCheck: AuditStatus = !dayClosing ? 'FAIL' : Math.abs(cashVariance) >= 0.01 && !String(dayClosing.notes || '').trim() ? 'WARNING' : 'PASS';
 
@@ -519,6 +549,8 @@ export default function AuditControl() {
               <SummaryCard label="Actual Cash" value={dayClosing ? formatMoney(actualCash) : '-'} />
               <SummaryCard label="Cash Variance" value={dayClosing ? formatMoney(cashVariance) : '-'} tone={!dayClosing ? 'red' : Math.abs(cashVariance) < 0.01 ? 'green' : 'amber'} />
               <SummaryCard label="Pending Online" value={pendingOnlineOrders.length} tone={pendingOnlineOrders.length > 0 ? 'amber' : 'neutral'} />
+              <SummaryCard label="Paid Awaiting Acceptance" value={paidPendingAcceptance.length} tone={paidPendingAcceptance.length > 0 ? 'amber' : 'neutral'} />
+              <SummaryCard label="Gateway Refund Failures" value={failedGatewayRefunds.length} tone={failedGatewayRefunds.length > 0 ? 'red' : 'neutral'} />
               <SummaryCard label="Rejected Online" value={rejectedOnlineOrders.length} tone={rejectedOnlineOrders.length > 0 ? 'amber' : 'neutral'} />
               <SummaryCard label="Unsettled Pay Counter" value={unsettledPayAtCounterOrders.length} tone={unsettledPayAtCounterOrders.length > 0 ? 'red' : 'neutral'} />
               <SummaryCard label="Stock Reversals" value={reversalMovements.length} tone={reversalMovements.length > 0 ? 'amber' : 'neutral'} />

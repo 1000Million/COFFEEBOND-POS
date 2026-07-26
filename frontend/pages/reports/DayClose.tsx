@@ -4,7 +4,7 @@ import { ArrowLeft, Calendar, CheckCircle2, Loader2, Save, Store as StoreIcon } 
 import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, Timestamp, where } from 'firebase/firestore';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { DayClosing, Order, PaymentMethod, Store } from '../../types';
+import { DayClosing, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
 import { summarizeReportingRecords } from '../../../functions/reportingCore.mjs';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'ONLINE', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
@@ -44,11 +44,23 @@ function dayClosingId(storeId: string, businessDate: string): string {
   return `${storeId}_${businessDate}`;
 }
 
-function buildSummary(orders: Order[]): DayCloseSummary {
+function buildSummary(orders: Order[], onlineOrders: OnlineOrder[]): DayCloseSummary {
   const metrics = summarizeReportingRecords(orders.map(order => ({ order, items: [], payments: [] })));
+  const unlinkedGatewayOrders = onlineOrders.filter(order => (
+    order.paymentProvider === 'RAZORPAY'
+    && !order.linkedOrderId
+    && ['PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED'].includes(order.paymentStatus || '')
+  ));
+  const gatewayGross = unlinkedGatewayOrders.reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
+  const gatewayRefunded = unlinkedGatewayOrders
+    .filter(order => order.paymentStatus === 'REFUNDED')
+    .reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
+  const gatewayPending = unlinkedGatewayOrders
+    .filter(order => order.paymentStatus === 'REFUND_PENDING')
+    .reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
   const paymentBreakdown = PAYMENT_METHODS.reduce((summary, method) => {
     summary[method] = moneyNumber(method === 'ONLINE'
-      ? metrics.paymentBreakdown.RAZORPAY
+      ? metrics.paymentBreakdown.RAZORPAY + gatewayGross
       : metrics.paymentBreakdown[method]);
     return summary;
   }, {} as Record<PaymentMethod, number>);
@@ -63,12 +75,12 @@ function buildSummary(orders: Order[]): DayCloseSummary {
     discountTotal: metrics.discounts,
     paymentBreakdown,
     expectedCash: paymentBreakdown.CASH,
-    grossPaymentsReceived: metrics.grossPaymentsReceived,
-    voidedPaymentTotal: metrics.voidedPaymentTotal,
-    refundedOrReversedPayments: metrics.refundedOrReversedPayments,
-    refundPendingPayments: metrics.refundPendingPayments,
+    grossPaymentsReceived: metrics.grossPaymentsReceived + gatewayGross,
+    voidedPaymentTotal: metrics.voidedPaymentTotal + gatewayRefunded,
+    refundedOrReversedPayments: metrics.refundedOrReversedPayments + gatewayRefunded,
+    refundPendingPayments: metrics.refundPendingPayments + gatewayPending,
     manualRefundRequiredPayments: metrics.manualRefundRequiredPayments,
-    netCollections: metrics.netCollections,
+    netCollections: metrics.netCollections + gatewayGross - gatewayRefunded,
   };
 }
 
@@ -78,6 +90,7 @@ export default function DayClose() {
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
+  const [onlineOrders, setOnlineOrders] = useState<OnlineOrder[]>([]);
   const [existingClosing, setExistingClosing] = useState<DayClosing | null>(null);
   const [actualCash, setActualCash] = useState('');
   const [notes, setNotes] = useState('');
@@ -97,7 +110,7 @@ export default function DayClose() {
     return accessibleStores.find(store => store.id === selectedStoreId) || null;
   }, [accessibleStores, selectedStoreId]);
 
-  const summary = useMemo(() => buildSummary(orders), [orders]);
+  const summary = useMemo(() => buildSummary(orders, onlineOrders), [onlineOrders, orders]);
   const actualCashNumber = moneyNumber(actualCash);
   const cashVariance = actualCashNumber - summary.expectedCash;
   const canUpdateExistingClosing = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
@@ -146,13 +159,22 @@ export default function DayClose() {
       const endTs = Timestamp.fromDate(endOfDay);
 
       try {
-        const ordersSnap = await getDocs(query(
-          collection(db, 'orders'),
-          where('storeId', '==', selectedStoreId),
-          where('createdAt', '>=', startTs),
-          where('createdAt', '<=', endTs),
-        ));
+        const [ordersSnap, onlineOrdersSnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'orders'),
+            where('storeId', '==', selectedStoreId),
+            where('createdAt', '>=', startTs),
+            where('createdAt', '<=', endTs),
+          )),
+          getDocs(query(
+            collection(db, 'onlineOrders'),
+            where('storeId', '==', selectedStoreId),
+            where('createdAt', '>=', startTs),
+            where('createdAt', '<=', endTs),
+          )),
+        ]);
         const loadedOrders = ordersSnap.docs.map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as Order));
+        const loadedOnlineOrders = onlineOrdersSnap.docs.map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as OnlineOrder));
 
         const closingRef = doc(db, 'dayClosings', dayClosingId(selectedStoreId, dateStr));
         const closingSnap = await getDoc(closingRef);
@@ -162,6 +184,7 @@ export default function DayClose() {
 
         if (active) {
           setOrders(loadedOrders);
+          setOnlineOrders(loadedOnlineOrders);
           setExistingClosing(closing);
           setActualCash(closing ? String(closing.actualCash ?? '') : '');
           setNotes(closing?.notes || '');

@@ -10,6 +10,7 @@ export type RazorpayCheckoutSuccess = {
 };
 
 export type RazorpayOrderResponse = {
+  sessionId?: string;
   razorpayOrderId?: string;
   amount?: number;
   currency?: 'INR';
@@ -21,8 +22,20 @@ export type RazorpayOrderResponse = {
     name?: string;
     contact?: string;
   };
+  customerId?: string;
+  rememberCustomer?: boolean;
+  readonly?: { contact?: boolean };
+  magicCheckoutEnabled?: boolean;
+  oneClickCheckout?: boolean;
+  lineItems?: Array<{
+    sku: string;
+    name: string;
+    quantity: number;
+    price: number;
+  }>;
   alreadyPaid?: boolean;
-  linkedOrderId?: string | null;
+  trackingToken?: string | null;
+  trackingPath?: string | null;
 };
 
 export type RazorpayOptions = {
@@ -36,6 +49,26 @@ export type RazorpayOptions = {
   prefill?: {
     name?: string;
     contact?: string;
+  };
+  customer_id?: string;
+  remember_customer?: boolean;
+  readonly?: { contact?: boolean };
+  one_click_checkout?: boolean;
+  line_items?: Array<{
+    sku: string;
+    name: string;
+    quantity: number;
+    price: number;
+  }>;
+  config?: {
+    display?: {
+      blocks?: Record<string, {
+        name: string;
+        instruments: Array<{ method: string }>;
+      }>;
+      sequence?: string[];
+      preferences?: { show_default_blocks?: boolean };
+    };
   };
   theme?: { color: string };
   handler: (response: RazorpayCheckoutSuccess) => void;

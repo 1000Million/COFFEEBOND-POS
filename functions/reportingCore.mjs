@@ -515,10 +515,30 @@ export function summarizeReportingRecords(records, filters = {}) {
   return summarizeNormalizedRecords(filterNormalizedRecords(normalizeRecords(records), filters));
 }
 
-export function buildFranchiseDailyDataset(rawRecords, timeZone = REPORT_TIME_ZONE) {
+export function buildFranchiseDailyDataset(rawRecords, timeZone = REPORT_TIME_ZONE, onlineOrders = []) {
   const records = normalizeRecords(rawRecords);
   const summary = summarizeNormalizedRecords(records);
   const completedCommercial = records.filter((record) => record.status === 'COMPLETED' && record.commercial === 'PAID');
+  const unlinkedGatewayRows = gatewayPaymentRows(onlineOrders);
+  const gatewayGrossPayments = money(unlinkedGatewayRows.reduce((sum, row) => sum + row.grossPayments, 0));
+  const gatewayRefundsProcessed = money(unlinkedGatewayRows.reduce((sum, row) => sum + row.reversals, 0));
+  const gatewayRefundsPending = money(unlinkedGatewayRows.reduce((sum, row) => sum + row.refundsPending, 0));
+  const gatewayNetCollections = money(unlinkedGatewayRows.reduce((sum, row) => sum + row.netCollections, 0));
+  const gatewayRefundFailures = onlineOrders.filter((order) => (
+    order?.paymentProvider === 'RAZORPAY'
+    && !order?.linkedOrderId
+    && order?.paymentStatus === 'REFUND_FAILED'
+  )).length;
+  const paidPendingAcceptance = onlineOrders.filter((order) => (
+    order?.paymentProvider === 'RAZORPAY'
+    && !order?.linkedOrderId
+    && order?.status === 'PAID_PENDING_ACCEPTANCE'
+    && order?.paymentStatus === 'PAID'
+  )).length;
+  const paymentBreakdown = {
+    ...summary.paymentBreakdown,
+    RAZORPAY: money((summary.paymentBreakdown.RAZORPAY || 0) + gatewayGrossPayments),
+  };
   const hourlySales = aggregate(
     completedCommercial,
     (record) => hourKey(record.createdAt, timeZone),
@@ -551,8 +571,8 @@ export function buildFranchiseDailyDataset(rawRecords, timeZone = REPORT_TIME_ZO
       netSales: summary.netSales,
       taxableSales: summary.taxableSales,
       gstCollected: summary.gstCollected,
-      totalCollected: summary.totalCollected,
-      paymentBreakdown: summary.paymentBreakdown,
+      totalCollected: money(summary.totalCollected + gatewayGrossPayments),
+      paymentBreakdown,
       splitOrderCount: completedCommercial.filter((record) => record.payments.length > 1).length,
       paidTransactionCount: summary.paidTransactionCount,
       averageOrderValue: summary.averageOrderValue,
@@ -565,9 +585,14 @@ export function buildFranchiseDailyDataset(rawRecords, timeZone = REPORT_TIME_ZO
         .reduce((sum, record) => sum + record.netSales, 0)),
       posSales: money(completedCommercial.filter((record) => record.source !== 'CUSTOMER_WEB')
         .reduce((sum, record) => sum + record.netSales, 0)),
-      grossPaymentsReceived: summary.grossPaymentsReceived,
+      grossPaymentsReceived: money(summary.grossPaymentsReceived + gatewayGrossPayments),
       voidedPaymentTotal: summary.voidedPaymentTotal,
-      netCollections: summary.netCollections,
+      netCollections: money(summary.netCollections + gatewayNetCollections),
+      gatewayPaymentsCaptured: gatewayGrossPayments,
+      gatewayRefundsProcessed,
+      gatewayRefundsPending,
+      gatewayRefundFailures,
+      paidPendingAcceptance,
     },
     hourlySales,
     categorySales,
@@ -924,7 +949,34 @@ function subOrderRows(records) {
   }));
 }
 
-function paymentRows(records) {
+function gatewayPaymentRows(onlineOrders) {
+  return (onlineOrders || [])
+    .filter((order) => (
+      order?.paymentProvider === 'RAZORPAY'
+      && order?.paymentStatus
+      && !order?.linkedOrderId
+      && ['PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED'].includes(String(order.paymentStatus))
+    ))
+    .map((order) => {
+      const amount = money(order?.grandTotal);
+      const refunded = order.paymentStatus === 'REFUNDED' ? amount : 0;
+      const pending = order.paymentStatus === 'REFUND_PENDING' ? amount : 0;
+      return {
+        businessDate: dateKey(dateFromValue(order?.paymentCapturedAt || order?.createdAt)),
+        store: String(order?.storeName || order?.storeId || ''),
+        method: 'RAZORPAY',
+        providerMethod: String(order?.providerMethod || 'OTHER'),
+        grossPayments: amount,
+        reversals: refunded,
+        refundsPending: pending,
+        netCollections: money(amount - refunded),
+        orderCount: 1,
+        operationalStatus: String(order?.status || 'PAID_PENDING_ACCEPTANCE'),
+      };
+    });
+}
+
+function paymentRows(records, onlineOrders = []) {
   const flat = records.flatMap((record) => {
     const reversalsByMethod = new Map(record.reversals.map((row) => [row.method, row]));
     return record.payments.map((payment) => ({
@@ -933,7 +985,7 @@ function paymentRows(records) {
       reversal: reversalsByMethod.get(payment.method),
     }));
   });
-  return aggregate(
+  const posRows = aggregate(
     flat,
     ({ record, payment }) => `${record.storeId}|${dateKey(record.createdAt)}|${payment.method}|${payment.providerMethod || ''}`,
     ({ record, payment }) => ({
@@ -965,6 +1017,7 @@ function paymentRows(records) {
     refundsPending: money(row.refundsPending),
     netCollections: money(row.netCollections),
   }));
+  return [...posRows, ...gatewayPaymentRows(onlineOrders)];
 }
 
 function billerRows(records) {
@@ -1097,8 +1150,8 @@ function voidRows(records, itemWise = false) {
   }));
 }
 
-function refundRows(records) {
-  return records.flatMap((record) => record.reversals.map((reversal) => ({
+function refundRows(records, onlineOrders = []) {
+  const posRows = records.flatMap((record) => record.reversals.map((reversal) => ({
     orderNumber: record.orderNumber,
     store: record.storeName,
     dateTime: record.voidedAt || record.createdAt,
@@ -1111,6 +1164,33 @@ function refundRows(records) {
       : 0,
     reference: record.orderNumber,
   })));
+  const gatewayRows = (onlineOrders || [])
+    .filter((order) => (
+      order?.paymentProvider === 'RAZORPAY'
+      && ['REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED'].includes(String(order?.paymentStatus))
+    ))
+    .map((order) => ({
+      orderNumber: String(order?.publicOrderReference || 'Customer order'),
+      store: String(order?.storeName || order?.storeId || ''),
+      dateTime: dateFromValue(order?.refundRequestedAt || order?.paymentCapturedAt || order?.createdAt)?.toISOString() || null,
+      method: 'RAZORPAY',
+      originalPayment: money(order?.grandTotal),
+      reversalAmount: order?.paymentStatus === 'REFUNDED' ? money(order?.grandTotal) : 0,
+      status: String(order?.paymentStatus),
+      pendingRefund: order?.paymentStatus === 'REFUND_PENDING' ? money(order?.grandTotal) : 0,
+      reference: String(order?.publicOrderReference || 'Customer order'),
+    }));
+  return [...posRows, ...gatewayRows];
+}
+
+function gatewayCollectionMetrics(onlineOrders = []) {
+  const rows = gatewayPaymentRows(onlineOrders);
+  return {
+    grossPaymentsReceived: money(rows.reduce((sum, row) => sum + row.grossPayments, 0)),
+    refundedOrReversedPayments: money(rows.reduce((sum, row) => sum + row.reversals, 0)),
+    refundPendingPayments: money(rows.reduce((sum, row) => sum + row.refundsPending, 0)),
+    netCollections: money(rows.reduce((sum, row) => sum + row.netCollections, 0)),
+  };
 }
 
 function tagRows(records) {
@@ -1217,6 +1297,9 @@ function onlineOrderRows(onlineOrders) {
       store: String(order?.storeName || order?.storeId || ''),
       source: String(order?.source || 'CUSTOMER_WEB'),
       status: String(order?.status || 'PENDING'),
+      paymentCaptured: order?.paymentProvider === 'RAZORPAY'
+        && ['PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED'].includes(String(order?.paymentStatus)),
+      paidPendingAcceptance: String(order?.status) === 'PAID_PENDING_ACCEPTANCE',
       accepted: ['ACCEPTED', 'CONVERTED'].includes(String(order?.status)),
       rejected: String(order?.status) === 'REJECTED',
       rejectionReason: order?.rejectReason ? String(order.rejectReason).slice(0, 240) : '',
@@ -1224,6 +1307,9 @@ function onlineOrderRows(onlineOrders) {
         ? Math.max(0, Math.round((convertedAt.getTime() - submittedAt.getTime()) / 60000))
         : null,
       paymentStatus: String(order?.paymentStatus || 'PAY_AT_COUNTER'),
+      paymentProvider: order?.paymentProvider === 'RAZORPAY' ? 'RAZORPAY' : 'PAY_AT_COUNTER',
+      providerMethod: order?.paymentProvider === 'RAZORPAY' ? String(order?.providerMethod || 'OTHER') : '',
+      refundStatus: order?.refundStatus ? String(order.refundStatus) : '',
       sales: money(order?.grandTotal),
       orderType: String(order?.orderType || 'PICKUP'),
       customerPhone: maskIndianMobile(order?.customerPhone),
@@ -1384,7 +1470,7 @@ export function buildReportDataset(reportId, rawRecords, context = {}) {
       rows = subOrderRows(records);
       break;
     case 'payment-collection':
-      rows = paymentRows(records);
+      rows = paymentRows(records, context.onlineOrders || []);
       break;
     case 'day-sales-biller-wise':
       rows = billerRows(records);
@@ -1408,7 +1494,7 @@ export function buildReportDataset(reportId, rawRecords, context = {}) {
       rows = voidRows(records, true);
       break;
     case 'refund-reversal':
-      rows = refundRows(records);
+      rows = refundRows(records, context.onlineOrders || []);
       break;
     case 'online-order':
     case 'customer-order':
@@ -1423,9 +1509,19 @@ export function buildReportDataset(reportId, rawRecords, context = {}) {
       rows = [];
   }
 
+  const summary = summarizeNormalizedRecords(records);
+  const gatewayMetrics = gatewayCollectionMetrics(context.onlineOrders || []);
+  const combinedSummary = {
+    ...summary,
+    grossPaymentsReceived: money(summary.grossPaymentsReceived + gatewayMetrics.grossPaymentsReceived),
+    refundedOrReversedPayments: money(summary.refundedOrReversedPayments + gatewayMetrics.refundedOrReversedPayments),
+    refundPendingPayments: money(summary.refundPendingPayments + gatewayMetrics.refundPendingPayments),
+    refundsPending: money(summary.refundsPending + gatewayMetrics.refundPendingPayments),
+    netCollections: money(summary.netCollections + gatewayMetrics.netCollections),
+  };
   return {
     definition,
-    summary: summarizeNormalizedRecords(records),
+    summary: combinedSummary,
     columns: columnsForRows(rows, dynamicColumns.length > 0 ? [
       { key: 'itemCode', label: 'Item Code', type: 'text' },
       { key: 'itemName', label: 'Item Name', type: 'text' },

@@ -8,7 +8,7 @@ const { createComplimentaryAuthorizationFunction } = require('./complimentaryAut
 const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization');
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
 const { createReportingFunctions } = require('./reporting');
-const { createRazorpayCheckoutFunctions } = require('./razorpayCheckout');
+const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 
 admin.initializeApp();
@@ -46,9 +46,13 @@ exports.updateStoreConfiguration = storeProvisioningFunctions.updateStoreConfigu
 exports.activateStore = storeProvisioningFunctions.activateStore;
 exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOrdering;
 
-const razorpayCheckoutFunctions = createRazorpayCheckoutFunctions({ admin, db, region: REGION });
-exports.createRazorpayOrder = razorpayCheckoutFunctions.createRazorpayOrder;
-exports.verifyRazorpayPayment = razorpayCheckoutFunctions.verifyRazorpayPayment;
+const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
+exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
+exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;
+exports.verifyCustomerRazorpayPayment = razorpayCheckoutFunctions.verifyCustomerRazorpayPayment;
+exports.listMyCustomerOrders = razorpayCheckoutFunctions.listMyCustomerOrders;
+exports.acceptPaidRazorpayOrder = razorpayCheckoutFunctions.acceptPaidRazorpayOrder;
+exports.cancelAndRefundRazorpayOrder = razorpayCheckoutFunctions.cancelAndRefundRazorpayOrder;
 exports.razorpayWebhook = razorpayCheckoutFunctions.razorpayWebhook;
 
 function publicStatusMessage(status) {
@@ -405,7 +409,10 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
   const tableNumber = orderType === 'DINE_IN' ? cleanText(data.tableNumber, MAX_TABLE_LENGTH) : '';
   const notes = cleanText(data.notes, MAX_NOTE_LENGTH);
   const clientIdempotencyKey = cleanText(data.clientIdempotencyKey, 200);
-  const paymentProvider = data.paymentProvider === 'RAZORPAY' ? 'RAZORPAY' : 'PAY_AT_COUNTER';
+  if (data.paymentProvider === 'RAZORPAY') {
+    fail('failed-precondition', 'Pay Online must use verified mobile checkout.');
+  }
+  const paymentProvider = 'PAY_AT_COUNTER';
   const requestedItems = sanitizeItemRequest(data.items);
 
   if (!storeCode) fail('invalid-argument', 'Please select a store.');

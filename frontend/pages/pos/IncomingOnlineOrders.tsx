@@ -1,11 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { httpsCallable } from 'firebase/functions';
 import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { AlertCircle, CheckCircle2, Clock, Loader2, Phone, RefreshCw, ShoppingBag, StickyNote, Store as StoreIcon, XCircle } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { db, functions } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { OnlineOrder, Store } from '../../types';
 import { acceptOnlineOrder, isOnlineOrderAcceptError, OnlineOrderAcceptBlocker } from '../../lib/onlineOrderConversion';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
+
+const acceptPaidRazorpayOrder = httpsCallable<
+  { onlineOrderId: string },
+  { orderId: string; orderNumber: string; kotCount: number; stockMovementCount: number }
+>(functions, 'acceptPaidRazorpayOrder');
+const cancelAndRefundRazorpayOrder = httpsCallable<
+  { onlineOrderId: string; reason: string; confirmation: string },
+  { status: 'REFUND_PENDING'; refundId: string; alreadyRequested: boolean }
+>(functions, 'cancelAndRefundRazorpayOrder');
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -14,6 +24,11 @@ function formatMoney(value: number): string {
 function formatTime(value: any): string {
   const date = value?.toDate ? value.toDate() : null;
   return date ? date.toLocaleString() : 'Just now';
+}
+
+function maskPhone(value: string): string {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length >= 10 ? `••••••${digits.slice(-4)}` : 'Verified customer';
 }
 
 function minutesSince(value: any, now: Date): number {
@@ -54,6 +69,7 @@ export default function IncomingOnlineOrders() {
   const [error, setError] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<Record<string, OnlineOrderAcceptBlocker[]>>({});
   const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
+  const [refundConfirmations, setRefundConfirmations] = useState<Record<string, string>>({});
   const [now, setNow] = useState(new Date());
 
   const accessibleStores = useMemo(() => {
@@ -84,7 +100,13 @@ export default function IncomingOnlineOrders() {
     setLoading(true);
     setError(null);
     try {
-      const statuses: OnlineOrder['status'][] = ['PENDING', 'NEEDS_ATTENTION', 'PAYMENT_REVIEW_REQUIRED'];
+      const statuses: OnlineOrder['status'][] = [
+        'PENDING',
+        'NEEDS_ATTENTION',
+        'PAID_PENDING_ACCEPTANCE',
+        'PAYMENT_REVIEW_REQUIRED',
+        'REFUND_FAILED',
+      ];
       const snapshots = await Promise.all(statuses.map(status => getDocs(query(
         collection(db, 'onlineOrders'),
         where('storeId', '==', storeId),
@@ -133,10 +155,14 @@ export default function IncomingOnlineOrders() {
     setError(null);
     setBlockers(prev => ({ ...prev, [order.id!]: [] }));
     try {
+      if (order.paymentProvider === 'RAZORPAY') {
+        const paidResult = await acceptPaidRazorpayOrder({ onlineOrderId: order.id });
+        setMessage(`Accepted paid order and created POS order ${paidResult.data.orderNumber}. KOT rows: ${paidResult.data.kotCount}; stock movements: ${paidResult.data.stockMovementCount}.`);
+        await loadOrders(order.storeId);
+        return;
+      }
       const result = await acceptOnlineOrder(order.id, staffProfile);
-      setMessage(order.paymentProvider === 'RAZORPAY'
-        ? 'Accepted online order. The customer can now pay on the tracking page; no KOT or stock deduction has been created yet.'
-        : `Accepted online order and created POS order ${result.orderNumber}. KOT rows: ${result.kotCount}; stock movements: ${result.stockMovementCount}.`);
+      setMessage(`Accepted online order and created POS order ${result.orderNumber}. KOT rows: ${result.kotCount}; stock movements: ${result.stockMovementCount}.`);
       await loadOrders(order.storeId);
     } catch (err) {
       if (isOnlineOrderAcceptError(err)) {
@@ -146,6 +172,37 @@ export default function IncomingOnlineOrders() {
         console.error('Failed to accept online order', err);
         setError(err instanceof Error ? err.message : 'Could not accept the online order.');
       }
+    } finally {
+      setActioningId(null);
+    }
+  };
+
+  const handleRefund = async (order: OnlineOrder) => {
+    if (!staffProfile || !order.id) return;
+    const reason = (rejectReasons[order.id] || '').trim();
+    const confirmation = (refundConfirmations[order.id] || '').trim();
+    if (!reason) {
+      setError('Enter the reason the store cannot fulfil this paid order.');
+      return;
+    }
+    if (!['REFUND', order.publicOrderReference].includes(confirmation)) {
+      setError('Type REFUND or the order reference to confirm the full refund.');
+      return;
+    }
+    setActioningId(order.id);
+    setMessage(null);
+    setError(null);
+    try {
+      await cancelAndRefundRazorpayOrder({
+        onlineOrderId: order.id,
+        reason,
+        confirmation,
+      });
+      setMessage('Full Razorpay refund initiated. The order remains REFUND PENDING until provider confirmation.');
+      await loadOrders(order.storeId);
+    } catch (err) {
+      console.error('Failed to initiate Razorpay refund', err);
+      setError(err instanceof Error ? err.message : 'Could not initiate the full refund.');
     } finally {
       setActioningId(null);
     }
@@ -265,7 +322,7 @@ export default function IncomingOnlineOrders() {
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-sm font-bold text-neutral-600">
                       <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1">
-                        <Phone size={14} /> {order.customerPhone}
+                        <Phone size={14} /> {order.paymentProvider === 'RAZORPAY' ? maskPhone(order.customerPhone) : order.customerPhone}
                       </span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1">
                         <Clock size={14} /> {elapsedLabel(order.createdAt, now)}
@@ -285,8 +342,13 @@ export default function IncomingOnlineOrders() {
                     <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Total</p>
                     <p className="text-2xl font-black text-[#3e2723]">{formatMoney(order.grandTotal)}</p>
                     <p className="mt-1 text-xs font-black text-neutral-500">
-                      {order.paymentProvider === 'RAZORPAY' ? 'RAZORPAY AFTER ACCEPTANCE' : 'PAY AT COUNTER'}
+                      {order.paymentProvider === 'RAZORPAY'
+                        ? `RAZORPAY · PAID${order.providerMethod ? ` · ${order.providerMethod}` : ''}`
+                        : 'PAY AT COUNTER'}
                     </p>
+                    {order.paymentCapturedAt && (
+                      <p className="mt-1 text-xs font-bold text-neutral-400">Paid {formatTime(order.paymentCapturedAt)}</p>
+                    )}
                   </div>
                 </div>
 
@@ -295,6 +357,11 @@ export default function IncomingOnlineOrders() {
                     <div key={`${order.id}-${item.finishedGoodCode}`} className="flex min-w-0 items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 py-2 text-sm">
                       <span className="min-w-0 break-words font-bold text-neutral-800">{item.quantity} x {item.itemName}</span>
                       <span className="font-black">{formatMoney(item.lineTotal)}</span>
+                      {(item.addOns || []).map(addOn => (
+                        <span key={`${addOn.groupId}-${addOn.optionId}`} className="basis-full pl-4 text-xs font-bold text-neutral-500">
+                          + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                        </span>
+                      ))}
                     </div>
                   ))}
                 </div>
@@ -313,7 +380,7 @@ export default function IncomingOnlineOrders() {
                   </div>
                 )}
 
-                {requiresPaymentReview ? (
+                {requiresPaymentReview && order.paymentProvider !== 'RAZORPAY' ? (
                   <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-900">
                     Payment was received, but POS/KOT/stock finalisation needs Admin or Store Manager review. Do not take another payment or reject this request.
                     {order.paymentReviewCode && <p className="mt-2 font-mono text-xs">Review code: {order.paymentReviewCode}</p>}
@@ -321,7 +388,7 @@ export default function IncomingOnlineOrders() {
                 ) : (
                   <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
                     <label className="text-sm font-bold text-neutral-700">
-                      Reject reason
+                      {order.paymentProvider === 'RAZORPAY' ? 'Cancellation and full-refund reason' : 'Reject reason'}
                       <input
                         value={order.id ? rejectReasons[order.id] || '' : ''}
                         onChange={(event) => order.id && setRejectReasons(prev => ({ ...prev, [order.id]: event.target.value }))}
@@ -329,22 +396,48 @@ export default function IncomingOnlineOrders() {
                         className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#5c4033]"
                       />
                     </label>
-                    <button
-                      onClick={() => handleReject(order)}
-                      disabled={isBusy}
-                      className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
-                    >
-                      Reject
-                    </button>
-                    <button
-                      onClick={() => handleAccept(order)}
-                      disabled={isBusy}
-                      className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
-                    >
-                      {isBusy ? (
-                        <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>
-                      ) : order.paymentProvider === 'RAZORPAY' ? 'Accept and request payment' : 'Accept into POS'}
-                    </button>
+                    {order.paymentProvider !== 'RAZORPAY' && (
+                      <button
+                        onClick={() => handleReject(order)}
+                        disabled={isBusy}
+                        className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
+                      >
+                        Reject
+                      </button>
+                    )}
+                    {(order.paymentProvider !== 'RAZORPAY' || order.status === 'PAID_PENDING_ACCEPTANCE') && (
+                      <button
+                        onClick={() => handleAccept(order)}
+                        disabled={isBusy}
+                        className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
+                      >
+                        {isBusy ? (
+                          <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>
+                        ) : order.paymentProvider === 'RAZORPAY' ? 'Accept paid order' : 'Accept into POS'}
+                      </button>
+                    )}
+                    {order.paymentProvider === 'RAZORPAY'
+                      && (staffProfile.role === 'ADMIN' || staffProfile.role === 'STORE_MANAGER') && (
+                        <>
+                          <label className="text-sm font-bold text-neutral-700 lg:col-span-2">
+                            Refund confirmation
+                            <input
+                              value={order.id ? refundConfirmations[order.id] || '' : ''}
+                              onChange={(event) => order.id && setRefundConfirmations(prev => ({ ...prev, [order.id!]: event.target.value }))}
+                              placeholder={`Type REFUND or ${order.publicOrderReference}`}
+                              className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#5c4033]"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handleRefund(order)}
+                            disabled={isBusy}
+                            className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
+                          >
+                            Cancel &amp; full refund
+                          </button>
+                        </>
+                      )}
                   </div>
                 )}
               </article>
