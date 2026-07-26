@@ -147,12 +147,23 @@ async function resolveSourceStore(db, templateMode, sourceStoreId) {
   return { id: sourceSnap.id, ...(sourceSnap.data() || {}) };
 }
 
-function validateProvisioningInput(data = {}) {
+function validateProvisioningInput(data = {}, { mode = 'CREATE' } = {}) {
   const locationValidation = validateLocationDetails(data.location || {});
-  if (!locationValidation.valid) {
+  const hardLocationIssues = locationValidation.issues.filter((issue) => (
+    issue.field === 'displayName' || issue.field === 'storeCode'
+  ));
+  if (hardLocationIssues.length > 0) {
+    fail('invalid-argument', hardLocationIssues.map((issue) => issue.message).join(' '));
+  }
+  if (mode === 'CREATE' && !locationValidation.valid) {
     fail('invalid-argument', locationValidation.errors.join(' '));
   }
-  const selectedModules = sanitizeModules(data.selectedModules || RECOMMENDED_MODULE_IDS);
+  let selectedModules;
+  try {
+    selectedModules = sanitizeModules(data.selectedModules || RECOMMENDED_MODULE_IDS);
+  } catch (error) {
+    fail('invalid-argument', safeError(error));
+  }
   const inventoryValidation = validateInventoryOption({
     inventoryOption: data.inventoryOption,
     destinationStoreCode: locationValidation.details.storeCode,
@@ -160,8 +171,15 @@ function validateProvisioningInput(data = {}) {
     reason: data.inventoryReason,
   });
   if (!inventoryValidation.valid) fail('invalid-argument', inventoryValidation.errors.join(' '));
+  const validationErrors = [...locationValidation.issues];
   if (selectedModules.includes('LEGAL_RECEIPT') && data.confirmLegalEntity !== true) {
-    fail('failed-precondition', 'Confirm that the new location uses the same legal entity and GST registration.');
+    const legalIssue = {
+      field: 'confirmLegalEntity',
+      code: 'LEGAL_ENTITY_CONFIRMATION_REQUIRED',
+      message: 'Confirm that the new location uses the same legal entity and GST registration.',
+    };
+    if (mode === 'CREATE') fail('failed-precondition', legalIssue.message);
+    validationErrors.push(legalIssue);
   }
   return {
     location: locationValidation.details,
@@ -171,6 +189,8 @@ function validateProvisioningInput(data = {}) {
     templateMode: data.templateMode === 'COPY' ? 'COPY' : 'BLANK',
     sourceStoreId: cleanText(data.sourceStoreId, 80),
     confirmDuplicateName: data.confirmDuplicateName === true,
+    validationErrors,
+    validationWarnings: [],
   };
 }
 
@@ -397,6 +417,30 @@ function buildPreviewResponse({
     writesByCollection,
   });
 
+  const validationErrors = [...(input.validationErrors || [])];
+  if (duplicateNameWarning && !input.confirmDuplicateName) {
+    validationErrors.push({
+      field: 'confirmDuplicateName',
+      code: 'DUPLICATE_NAME_CONFIRMATION_REQUIRED',
+      message: `${duplicateNameWarning} Confirm the duplicate normalized name to continue.`,
+    });
+  }
+  moduleCompatibility.errors.forEach((message) => {
+    validationErrors.push({
+      field: 'selectedModules',
+      code: 'MODULE_COMPATIBILITY_ERROR',
+      message,
+    });
+  });
+  if (duplicateInventoryTargetIds.length > 0) {
+    validationErrors.push({
+      field: 'inventoryOption',
+      code: 'DUPLICATE_INVENTORY_TARGETS',
+      message: `Inventory structure contains duplicate destination row IDs: ${[...new Set(duplicateInventoryTargetIds)].join(', ')}`,
+    });
+  }
+  const canCreate = validationErrors.length === 0;
+
   return {
     destinationStore: {
       id: input.location.storeCode,
@@ -440,18 +484,29 @@ function buildPreviewResponse({
     customerOrderingInitialStatus: 'DISABLED',
     staffAssignmentCount: 0,
     warnings,
+    validationErrors,
+    validationWarnings: [...(input.validationWarnings || []), ...warnings],
     neverCopiedCollections: NEVER_COPY_COLLECTIONS,
-    safeToCreateDraft: moduleCompatibility.valid
-      && duplicateInventoryTargetIds.length === 0
-      && (!duplicateNameWarning || input.confirmDuplicateName),
+    safeToCreateDraft: canCreate,
+    canCreate,
+    applyReadiness: canCreate ? 'READY' : 'BLOCKED_MISSING_DESTINATION_DETAILS',
+    sourceStoreId: sourceStore?.id || null,
+    sourceStoreCode: sourceStore?.code || sourceStore?.storeCode || sourceStore?.id || null,
+    destinationStoreId: input.location.storeCode,
+    destinationConflictCount: 0,
+    countsByCollection: writesByCollection,
+    totalProposedWrites: estimatedWrites,
+    dryRunChecksum: planChecksum,
+    firestoreWritesPerformed: 0,
   };
 }
 
 async function buildProvisioningContext(db, rawData, {
   allowExistingStoreId = '',
   allowUnconfirmedDuplicateName = false,
+  validationMode = 'CREATE',
 } = {}) {
-  const input = validateProvisioningInput(rawData);
+  const input = validateProvisioningInput(rawData, { mode: validationMode });
   const duplicateStores = await getDuplicateStores(db, input.location.storeCode, input.location.displayName);
   const conflictingCodeMatches = duplicateStores.codeMatches.filter((storeDoc) => storeDoc.id !== allowExistingStoreId);
   const conflictingNameMatches = duplicateStores.nameMatches.filter((storeDoc) => storeDoc.id !== allowExistingStoreId);
@@ -632,6 +687,7 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     await requireActiveAdmin(db, request);
     const context = await buildProvisioningContext(db, request.data || {}, {
       allowUnconfirmedDuplicateName: true,
+      validationMode: 'PREVIEW',
     });
     return context.preview;
   });

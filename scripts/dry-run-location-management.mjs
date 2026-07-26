@@ -10,7 +10,11 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { destinationInventoryId } = require('../functions/storeProvisioning.js');
-const { NEVER_COPY_COLLECTIONS, RECOMMENDED_MODULE_IDS } = require('../functions/storeProvisioningPolicy.js');
+const {
+  NEVER_COPY_COLLECTIONS,
+  RECOMMENDED_MODULE_IDS,
+  validateLocationDetails,
+} = require('../functions/storeProvisioningPolicy.js');
 
 const PROJECT_ID = 'coffee-bond-pos';
 const SOURCE_STORE_CODE = 'NOIDA_51';
@@ -173,6 +177,11 @@ async function main() {
       countsByCollection,
       proposedWrites,
     };
+    const locationValidation = validateLocationDetails({
+      displayName: DESTINATION_STORE_NAME,
+      storeCode: DESTINATION_STORE_ID,
+      timezone: 'Asia/Kolkata',
+    });
     const missingRequiredDetails = [
       'Full address',
       'City',
@@ -250,6 +259,9 @@ async function main() {
         'Add-on and KOT assignments are global Finished Good references in the current schema and create no duplicate documents.',
       ],
       dryRunChecksum: checksum(planCore),
+      canCreate: false,
+      validationErrors: locationValidation.issues,
+      validationWarnings: [],
       applyReadiness: destinationConflicts.length > 0
         ? 'BLOCKED_DESTINATION_CONFLICT'
         : 'BLOCKED_MISSING_DESTINATION_DETAILS',

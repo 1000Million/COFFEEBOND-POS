@@ -37,6 +37,8 @@ function validLocation(overrides = {}) {
     receiptFooter: '',
     timezone: 'Asia/Kolkata',
     inventoryMode: 'FINISHED_GOODS',
+    gstDecisionReviewed: true,
+    receiptReviewComplete: true,
     ...overrides,
   };
 }
@@ -343,6 +345,161 @@ test('29. UI uses callables and contains no direct store write API', () => {
   for (const directWrite of ['setDoc(', 'addDoc(', 'updateDoc(', 'deleteDoc(']) {
     assert.ok(!locationSource.includes(directWrite), `Unexpected direct write API: ${directWrite}`);
   }
+});
+
+test('30. Incomplete destination details remain previewable with structured validation issues', () => {
+  const incomplete = validLocation({
+    address: '',
+    city: '',
+    state: '',
+    pinCode: '',
+    phone: '',
+    email: '',
+    gstDecisionReviewed: false,
+    receiptReviewComplete: false,
+  });
+  const input = provisioning.validateProvisioningInput({
+    location: incomplete,
+    templateMode: 'COPY',
+    sourceStoreId: 'SOURCE_REAL_ID',
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+    inventoryOption: 'STRUCTURE_ONLY',
+  }, { mode: 'PREVIEW' });
+  assert.deepEqual(
+    input.validationErrors.map((issue) => issue.field),
+    ['address', 'city', 'state', 'pinCode', 'phone', 'email', 'gstDecisionReviewed', 'receiptReviewComplete'],
+  );
+});
+
+test('31. Incomplete preview returns a full blocked zero-write plan', () => {
+  const incompleteInput = provisioning.validateProvisioningInput({
+    location: validLocation({
+      address: '',
+      city: '',
+      state: '',
+      pinCode: '',
+      phone: '',
+      email: '',
+      gstDecisionReviewed: false,
+      receiptReviewComplete: false,
+    }),
+    templateMode: 'COPY',
+    sourceStoreId: 'SOURCE_REAL_ID',
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+    inventoryOption: 'STRUCTURE_ONLY',
+  }, { mode: 'PREVIEW' });
+  const sourceConfig = sourceConfiguration({
+    menuDocs: [
+      { collection: 'finishedGoods', id: 'FG_1', data: {} },
+      { collection: 'menuItems', id: 'MENU_1', data: {} },
+    ],
+    inventoryDocs: [
+      { collection: 'storeStock', id: 'STOCK_1', data: { stockItemType: 'RAW', stockItemCode: 'RAW_1' } },
+      { collection: 'storeStock', id: 'STOCK_2', data: { stockItemType: 'PREP', stockItemCode: 'PREP_1' } },
+    ],
+  });
+  const result = provisioning.buildPreviewResponse({
+    input: incompleteInput,
+    sourceStore: { id: 'SOURCE_REAL_ID', code: 'NOIDA_51', name: 'Noida Sector 51' },
+    sourceConfiguration: sourceConfig,
+    duplicateNameWarning: '',
+  });
+  assert.equal(result.canCreate, false);
+  assert.equal(result.safeToCreateDraft, false);
+  assert.equal(result.applyReadiness, 'BLOCKED_MISSING_DESTINATION_DETAILS');
+  assert.equal(result.firestoreWritesPerformed, 0);
+  assert.equal(result.sourceStoreId, 'SOURCE_REAL_ID');
+  assert.equal(result.sourceStoreCode, 'NOIDA_51');
+  assert.equal(result.destinationStoreId, 'BAKED_BY_BOND_51');
+  assert.deepEqual(result.countsByCollection, {
+    stores: 1,
+    storeProvisioningJobs: 1,
+    finishedGoods: 1,
+    menuItems: 1,
+    categories: 0,
+    storeStock: 2,
+    stockMovements: 0,
+  });
+  assert.equal(result.totalProposedWrites, 6);
+  assert.equal(result.dryRunChecksum, result.planChecksum);
+});
+
+test('32. Repeated incomplete previews produce the same checksum', () => {
+  const raw = {
+    location: validLocation({
+      address: '',
+      gstDecisionReviewed: false,
+      receiptReviewComplete: false,
+    }),
+    templateMode: 'COPY',
+    sourceStoreId: 'SOURCE_REAL_ID',
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+    inventoryOption: 'STRUCTURE_ONLY',
+  };
+  const input = provisioning.validateProvisioningInput(raw, { mode: 'PREVIEW' });
+  const first = provisioning.buildPreviewResponse({
+    input,
+    sourceStore: { id: 'SOURCE_REAL_ID', code: 'NOIDA_51', name: 'Noida Sector 51' },
+    sourceConfiguration: sourceConfiguration(),
+    duplicateNameWarning: '',
+  });
+  const second = provisioning.buildPreviewResponse({
+    input: provisioning.validateProvisioningInput(raw, { mode: 'PREVIEW' }),
+    sourceStore: { id: 'SOURCE_REAL_ID', code: 'NOIDA_51', name: 'Noida Sector 51' },
+    sourceConfiguration: sourceConfiguration(),
+    duplicateNameWarning: '',
+  });
+  assert.equal(first.planChecksum, second.planChecksum);
+});
+
+test('33. Create validation remains strict for the same incomplete payload', () => {
+  assert.throws(() => provisioning.validateProvisioningInput({
+    location: validLocation({ address: '' }),
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+    inventoryOption: 'STRUCTURE_ONLY',
+  }), /Address is required/);
+});
+
+test('34. Complete valid destination details produce a create-ready preview', () => {
+  const input = provisioning.validateProvisioningInput({
+    location: validLocation(),
+    templateMode: 'COPY',
+    sourceStoreId: 'SOURCE_REAL_ID',
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+    inventoryOption: 'STRUCTURE_ONLY',
+  }, { mode: 'PREVIEW' });
+  const result = provisioning.buildPreviewResponse({
+    input,
+    sourceStore: { id: 'SOURCE_REAL_ID', code: 'NOIDA_51', name: 'Noida Sector 51' },
+    sourceConfiguration: sourceConfiguration(),
+    duplicateNameWarning: '',
+  });
+  assert.equal(result.canCreate, true);
+  assert.equal(result.applyReadiness, 'READY');
+  assert.deepEqual(result.validationErrors, []);
+});
+
+test('35. Invalid store code and unsupported modules remain hard preview failures', () => {
+  assert.throws(() => provisioning.validateProvisioningInput({
+    location: validLocation({ storeCode: 'invalid code' }),
+    selectedModules: policy.RECOMMENDED_MODULE_IDS,
+  }, { mode: 'PREVIEW' }), /Store code must use uppercase/);
+  assert.throws(() => provisioning.validateProvisioningInput({
+    location: validLocation(),
+    selectedModules: ['UNSUPPORTED'],
+  }, { mode: 'PREVIEW' }), /Unsupported copy modules/);
+});
+
+test('36. Duplicate code and invalid source checks remain hard backend failures', () => {
+  assert.match(provisioningSource, /if \(conflictingCodeMatches\.length > 0\)[\s\S]*fail\('already-exists'/);
+  assert.match(provisioningSource, /if \(!sourceSnap\.exists\) fail\('not-found'/);
+});
+
+test('37. Wizard renders structured validation inline and disables Create while blocked', () => {
+  assert.match(locationSource, /Preview generated\. Complete the required destination details before creating this location\./);
+  assert.match(locationSource, /preview\.validationErrors\.map/);
+  assert.match(locationSource, /disabled=\{actioning === 'create' \|\| !preview\?\.canCreate\}/);
+  assert.match(locationSource, /role="alert"[\s\S]*wizardError/);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

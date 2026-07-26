@@ -52,6 +52,14 @@ type LocationForm = {
   receiptFooter: string;
   timezone: string;
   inventoryMode: 'FINISHED_GOODS';
+  gstDecisionReviewed: boolean;
+  receiptReviewComplete: boolean;
+};
+
+type ValidationIssue = {
+  field: string;
+  code: string;
+  message: string;
 };
 
 type LocationSummary = {
@@ -77,8 +85,20 @@ type ProvisioningPreview = {
   customerOrderingInitialStatus: string;
   staffAssignmentCount: number;
   warnings: string[];
+  validationErrors: ValidationIssue[];
+  validationWarnings: string[];
   neverCopiedCollections: string[];
   safeToCreateDraft: boolean;
+  canCreate: boolean;
+  applyReadiness: string;
+  sourceStoreId: string | null;
+  sourceStoreCode: string | null;
+  destinationStoreId: string;
+  destinationConflictCount: number;
+  countsByCollection: Record<string, number>;
+  totalProposedWrites: number;
+  dryRunChecksum: string;
+  firestoreWritesPerformed: number;
 };
 
 const MODULES: Array<{
@@ -129,6 +149,8 @@ const defaultForm: LocationForm = {
   receiptFooter: '',
   timezone: 'Asia/Kolkata',
   inventoryMode: 'FINISHED_GOODS',
+  gstDecisionReviewed: false,
+  receiptReviewComplete: false,
 };
 
 const previewStoreProvisioning = httpsCallable<Record<string, unknown>, ProvisioningPreview>(
@@ -201,6 +223,7 @@ export default function LocationManagement() {
   const [confirmLegalEntity, setConfirmLegalEntity] = useState(false);
   const [confirmDuplicateName, setConfirmDuplicateName] = useState(false);
   const [preview, setPreview] = useState<ProvisioningPreview | null>(null);
+  const [wizardError, setWizardError] = useState('');
   const [provisioningJobId, setProvisioningJobId] = useState(newProvisioningJobId());
   const [actioning, setActioning] = useState('');
   const [editStore, setEditStore] = useState<Store | null>(null);
@@ -305,6 +328,7 @@ export default function LocationManagement() {
     setConfirmLegalEntity(false);
     setConfirmDuplicateName(false);
     setPreview(null);
+    setWizardError('');
     setProvisioningJobId(newProvisioningJobId());
   };
 
@@ -322,6 +346,7 @@ export default function LocationManagement() {
 
   const toggleModule = (moduleId: ModuleId) => {
     setPreview(null);
+    setWizardError('');
     setSelectedModules((current) => (
       current.includes(moduleId)
         ? current.filter((id) => id !== moduleId)
@@ -332,7 +357,7 @@ export default function LocationManagement() {
 
   const handlePreview = async () => {
     setActioning('preview');
-    setError('');
+    setWizardError('');
     setMessage('');
     try {
       const result = await previewStoreProvisioning(requestPayload());
@@ -340,16 +365,16 @@ export default function LocationManagement() {
       setWizardStep(4);
     } catch (err: any) {
       console.error('Location preview failed', err);
-      setError(err?.message || 'Could not preview this location.');
+      setWizardError(err?.message || 'Could not preview this location.');
     } finally {
       setActioning('');
     }
   };
 
   const handleCreateDraft = async () => {
-    if (!preview?.safeToCreateDraft) return;
+    if (!preview?.canCreate) return;
     setActioning('create');
-    setError('');
+    setWizardError('');
     try {
       const result = await createStoreFromTemplate(requestPayload());
       setMessage(result.data.message);
@@ -357,10 +382,21 @@ export default function LocationManagement() {
       await loadLocations();
     } catch (err: any) {
       console.error('Location creation failed', err);
-      setError(err?.message || 'Could not create the draft location.');
+      setWizardError(err?.message || 'Could not create the draft location.');
     } finally {
       setActioning('');
     }
+  };
+
+  const validationFields = useMemo(
+    () => new Set((preview?.validationErrors || []).map((issue) => issue.field)),
+    [preview],
+  );
+
+  const updateForm = (field: keyof LocationForm, value: string | boolean) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setPreview(null);
+    setWizardError('');
   };
 
   const handleActivate = async (storeId: string) => {
@@ -742,6 +778,12 @@ export default function LocationManagement() {
               ))}
             </div>
 
+            {wizardError && (
+              <div role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">
+                {wizardError}
+              </div>
+            )}
+
             <section className="mt-3 rounded-lg border border-neutral-200 bg-white p-4 sm:p-6">
               {wizardStep === 1 && (
                 <div>
@@ -767,27 +809,60 @@ export default function LocationManagement() {
                         <input
                           value={String(form[key as keyof LocationForm] ?? '')}
                           readOnly={key === 'inventoryMode'}
-                          onChange={(event) => setForm((current) => ({
-                            ...current,
-                            [key]: key === 'storeCode' ? normalizedCode(event.target.value) : event.target.value,
-                          }))}
+                          aria-invalid={validationFields.has(key)}
+                          onChange={(event) => updateForm(
+                            key as keyof LocationForm,
+                            key === 'storeCode' ? normalizedCode(event.target.value) : event.target.value,
+                          )}
                           placeholder={placeholder}
-                          className="h-11 w-full rounded-lg border border-neutral-200 px-3 outline-none focus:border-[#5c4033]"
+                          className={`h-11 w-full rounded-lg border px-3 outline-none focus:border-[#5c4033] ${
+                            validationFields.has(key) ? 'border-red-300 bg-red-50/40' : 'border-neutral-200'
+                          }`}
                         />
                       </label>
                     ))}
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={form.gstRegistered}
-                        onChange={(event) => setForm((current) => ({ ...current, gstRegistered: event.target.checked }))}
-                        className="h-5 w-5 accent-[#5c4033]"
-                      />
-                      <span className="text-sm font-bold">GST registered</span>
+                    <label>
+                      <span className="mb-1 block text-xs font-black uppercase tracking-wide text-neutral-500">GST registration status</span>
+                      <select
+                        value={form.gstDecisionReviewed ? (form.gstRegistered ? 'REGISTERED' : 'NOT_REGISTERED') : ''}
+                        aria-invalid={validationFields.has('gstDecisionReviewed')}
+                        onChange={(event) => {
+                          const reviewed = event.target.value !== '';
+                          setForm((current) => ({
+                            ...current,
+                            gstDecisionReviewed: reviewed,
+                            gstRegistered: event.target.value === 'REGISTERED',
+                            gstin: event.target.value === 'REGISTERED' ? current.gstin : '',
+                          }));
+                          setPreview(null);
+                          setWizardError('');
+                        }}
+                        className={`h-11 w-full rounded-lg border bg-white px-3 ${
+                          validationFields.has('gstDecisionReviewed') ? 'border-red-300 bg-red-50/40' : 'border-neutral-200'
+                        }`}
+                      >
+                        <option value="">Select registration status</option>
+                        <option value="NOT_REGISTERED">Not GST registered</option>
+                        <option value="REGISTERED">GST registered</option>
+                      </select>
                     </label>
                     <label>
                       <span className="mb-1 block text-xs font-black uppercase tracking-wide text-neutral-500">Inventory mode</span>
                       <input readOnly value="FINISHED_GOODS" className="h-11 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 font-mono text-sm" />
+                    </label>
+                    <label className={`flex items-start gap-3 rounded-lg border p-3 sm:col-span-2 ${
+                      validationFields.has('receiptReviewComplete') ? 'border-red-300 bg-red-50/40' : 'border-neutral-200'
+                    }`}>
+                      <input
+                        type="checkbox"
+                        checked={form.receiptReviewComplete}
+                        onChange={(event) => updateForm('receiptReviewComplete', event.target.checked)}
+                        className="mt-0.5 h-5 w-5 accent-[#5c4033]"
+                      />
+                      <span>
+                        <span className="block text-sm font-black">Receipt details reviewed</span>
+                        <span className="mt-1 block text-xs text-neutral-500">Confirm that the receipt name and footer are intentionally set or left blank for this Draft.</span>
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -910,16 +985,34 @@ export default function LocationManagement() {
               {wizardStep === 4 && preview && (
                 <div>
                   <div className="flex items-start gap-3">
-                    <CheckCircle2 className="mt-0.5 text-emerald-600" />
+                    {preview.canCreate
+                      ? <CheckCircle2 className="mt-0.5 text-emerald-600" />
+                      : <AlertTriangle className="mt-0.5 text-amber-600" />}
                     <div>
                       <h3 className="text-lg font-black">Dry-run preview</h3>
                       <p className="text-sm text-neutral-500">No writes have occurred. Review every proposed collection change.</p>
                     </div>
                   </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  {!preview.canCreate && (
+                    <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-black">Preview generated. Complete the required destination details before creating this location.</p>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                            {preview.validationErrors.map((issue) => <li key={`${issue.field}:${issue.code}`}>{issue.message}</li>)}
+                          </ul>
+                        </div>
+                        <button onClick={() => setWizardStep(1)} className="h-10 rounded-lg border border-amber-400 bg-white px-3 text-sm font-black">
+                          Edit destination details
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="rounded-lg border border-neutral-200 p-3"><p className="text-xs font-bold text-neutral-500">Destination</p><p className="mt-1 font-black">{String(preview.destinationStore.displayName)}</p><p className="font-mono text-xs">{String(preview.destinationStore.storeCode)}</p></div>
                     <div className="rounded-lg border border-neutral-200 p-3"><p className="text-xs font-bold text-neutral-500">Template</p><p className="mt-1 font-black">{preview.sourceTemplate?.name || 'Blank location'}</p><p className="font-mono text-xs">{preview.sourceTemplate?.id || 'None'}</p></div>
-                    <div className="rounded-lg border border-neutral-200 p-3"><p className="text-xs font-bold text-neutral-500">Estimated writes</p><p className="mt-1 text-2xl font-black">{preview.counts.estimatedWrites}</p></div>
+                    <div className="rounded-lg border border-neutral-200 p-3"><p className="text-xs font-bold text-neutral-500">Proposed writes</p><p className="mt-1 text-2xl font-black">{preview.totalProposedWrites}</p></div>
+                    <div className="rounded-lg border border-neutral-200 p-3"><p className="text-xs font-bold text-neutral-500">Readiness</p><p className={`mt-1 text-sm font-black ${preview.canCreate ? 'text-emerald-700' : 'text-amber-700'}`}>{preview.applyReadiness}</p><p className="mt-1 text-xs text-neutral-500">Writes performed: {preview.firestoreWritesPerformed}</p></div>
                   </div>
                   <div className="mt-4 max-w-full overflow-x-auto rounded-lg border border-neutral-200">
                     <table className="w-full min-w-[540px] text-sm">
@@ -959,6 +1052,12 @@ export default function LocationManagement() {
                   <div className="mt-4 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm">
                     Staff assignments: <strong>{preview.staffAssignmentCount}</strong>. Customer ordering: <strong>{preview.customerOrderingInitialStatus}</strong>. Legal/GST copied: <strong>{preview.legalGstSelected ? 'Yes' : 'No'}</strong>.
                   </div>
+                  {preview.inventoryOption === 'STRUCTURE_ONLY' && (
+                    <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                      <strong>Zero-stock plan confirmed:</strong> destination inventory rows start with opening and current quantities of zero. No stock movement history is copied.
+                    </div>
+                  )}
+                  <p className="mt-3 break-all font-mono text-[11px] text-neutral-400">Dry-run checksum: {preview.dryRunChecksum}</p>
                 </div>
               )}
 
@@ -995,7 +1094,7 @@ export default function LocationManagement() {
                   </button>
                 )}
                 {wizardStep === 4 && (
-                  <button onClick={handleCreateDraft} disabled={actioning === 'create' || !preview?.safeToCreateDraft} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
+                  <button onClick={handleCreateDraft} disabled={actioning === 'create' || !preview?.canCreate} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
                     {actioning === 'create' && <Loader2 size={16} className="animate-spin" />} Create Draft
                   </button>
                 )}

@@ -194,25 +194,43 @@ function validateLocationDetails(input = {}) {
     receiptFooter: text(input.receiptFooter, 240),
     timezone: text(input.timezone || 'Asia/Kolkata', 60),
     inventoryMode: 'FINISHED_GOODS',
+    gstDecisionReviewed: input.gstDecisionReviewed === true,
+    receiptReviewComplete: input.receiptReviewComplete === true,
   };
-  const errors = [];
+  const issues = [];
+  const addIssue = (field, code, message) => issues.push({ field, code, message });
 
-  if (details.displayName.length < 2) errors.push('Location display name is required.');
+  if (details.displayName.length < 2) {
+    addIssue('displayName', 'DISPLAY_NAME_REQUIRED', 'Location display name is required.');
+  }
   if (!STORE_CODE_PATTERN.test(details.storeCode)) {
-    errors.push('Store code must use uppercase letters, numbers, and underscores only.');
+    addIssue('storeCode', 'INVALID_STORE_CODE', 'Store code must use uppercase letters, numbers, and underscores only.');
   }
-  if (!details.address) errors.push('Address is required.');
-  if (!details.city) errors.push('City is required.');
-  if (!details.state) errors.push('State is required.');
-  if (!/^[1-9][0-9]{5}$/.test(details.pinCode)) errors.push('A valid six-digit PIN code is required.');
-  if (!/^[0-9+() -]{8,20}$/.test(details.phone)) errors.push('A valid store phone is required.');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(details.email)) errors.push('A valid store email is required.');
-  if (!details.timezone) errors.push('Business timezone is required.');
+  if (!details.address) addIssue('address', 'ADDRESS_REQUIRED', 'Address is required.');
+  if (!details.city) addIssue('city', 'CITY_REQUIRED', 'City is required.');
+  if (!details.state) addIssue('state', 'STATE_REQUIRED', 'State is required.');
+  if (!/^[1-9][0-9]{5}$/.test(details.pinCode)) {
+    addIssue('pinCode', 'INVALID_PIN_CODE', 'A valid six-digit PIN code is required.');
+  }
+  if (!/^[0-9+() -]{8,20}$/.test(details.phone)) {
+    addIssue('phone', 'INVALID_PHONE', 'A valid store phone is required.');
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(details.email)) {
+    addIssue('email', 'INVALID_EMAIL', 'A valid store email is required.');
+  }
+  if (!details.timezone) addIssue('timezone', 'TIMEZONE_REQUIRED', 'Business timezone is required.');
+  if (!details.gstDecisionReviewed) {
+    addIssue('gstDecisionReviewed', 'GST_DECISION_REQUIRED', 'Confirm whether this location is GST registered.');
+  }
   if (details.gstRegistered && !/^[0-9]{2}[A-Z0-9]{10}[0-9A-Z][Z][0-9A-Z]$/.test(details.gstin)) {
-    errors.push('A valid GSTIN is required for a GST-registered location.');
+    addIssue('gstin', 'INVALID_GSTIN', 'A valid GSTIN is required for a GST-registered location.');
+  }
+  if (!details.receiptReviewComplete) {
+    addIssue('receiptReviewComplete', 'RECEIPT_REVIEW_REQUIRED', 'Confirm that receipt name and footer have been reviewed.');
   }
 
-  return { details, errors, valid: errors.length === 0 };
+  const errors = issues.map((issue) => issue.message);
+  return { details, issues, errors, valid: issues.length === 0 };
 }
 
 function validateInventoryOption({
