@@ -1,12 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { httpsCallable } from 'firebase/functions';
-import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { AlertCircle, CheckCircle2, Clock, Loader2, Phone, RefreshCw, ShoppingBag, StickyNote, Store as StoreIcon, XCircle } from 'lucide-react';
 import { db, functions } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { OnlineOrder, Store } from '../../types';
 import { acceptOnlineOrder, isOnlineOrderAcceptError, OnlineOrderAcceptBlocker } from '../../lib/onlineOrderConversion';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
+import {
+  compareIncomingOrders,
+  isPaidIncomingOrder,
+  paidOrderEscalation,
+  paidOrderWaitingMillis,
+} from '../../lib/razorpayLatency';
 
 const acceptPaidRazorpayOrder = httpsCallable<
   { onlineOrderId: string },
@@ -23,6 +29,13 @@ const cancelAndRefundRazorpayOrder = httpsCallable<
   { onlineOrderId: string; reason: string; confirmation: string },
   { status: 'REFUND_PENDING'; refundId: string; alreadyRequested: boolean }
 >(functions, 'cancelAndRefundRazorpayOrder');
+const ACTIVE_ORDER_STATUSES: OnlineOrder['status'][] = [
+  'PENDING',
+  'NEEDS_ATTENTION',
+  'PAID_PENDING_ACCEPTANCE',
+  'PAYMENT_REVIEW_REQUIRED',
+  'REFUND_FAILED',
+];
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -65,6 +78,32 @@ function blockerSummary(blocker: OnlineOrderAcceptBlocker): string {
   return `${blocker.itemName}: ${blocker.blockerType} (${component}).${quantities} ${blocker.suggestedAdminAction}`;
 }
 
+async function playPaidOrderNotification(): Promise<void> {
+  try {
+    const AudioContextClass = window.AudioContext
+      || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    await context.resume();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, context.currentTime);
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.35);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.36);
+    oscillator.addEventListener('ended', () => {
+      void context.close();
+    }, { once: true });
+  } catch {
+    // Browsers may suppress audio until the next staff interaction.
+  }
+}
+
 export default function IncomingOnlineOrders() {
   const { staffProfile } = useAuth();
   const [stores, setStores] = useState<Store[]>([]);
@@ -78,6 +117,8 @@ export default function IncomingOnlineOrders() {
   const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
   const [refundConfirmations, setRefundConfirmations] = useState<Record<string, string>>({});
   const [now, setNow] = useState(new Date());
+  const [listenerRevision, setListenerRevision] = useState(0);
+  const notifiedPaidOrderIdsRef = useRef(new Set<string>());
 
   const accessibleStores = useMemo(() => {
     if (!staffProfile) return [];
@@ -98,42 +139,6 @@ export default function IncomingOnlineOrders() {
     setSelectedStoreId(prev => prev || allowed[0]?.id || '');
   };
 
-  const loadOrders = async (storeId = selectedStoreId) => {
-    if (!storeId) {
-      setOrders([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const statuses: OnlineOrder['status'][] = [
-        'PENDING',
-        'NEEDS_ATTENTION',
-        'PAID_PENDING_ACCEPTANCE',
-        'PAYMENT_REVIEW_REQUIRED',
-        'REFUND_FAILED',
-      ];
-      const snapshots = await Promise.all(statuses.map(status => getDocs(query(
-        collection(db, 'onlineOrders'),
-        where('storeId', '==', storeId),
-        where('status', '==', status),
-      ))));
-      const loadedOrders = snapshots.flatMap(snap => snap.docs.map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as OnlineOrder)));
-      loadedOrders.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
-        const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
-        return bTime - aTime;
-      });
-      setOrders(loadedOrders);
-    } catch (err) {
-      console.error('Failed to load online orders', err);
-      setError('Could not load incoming online orders for this store.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
     loadStores().catch(err => {
       console.error('Failed to load stores for online orders', err);
@@ -143,15 +148,67 @@ export default function IncomingOnlineOrders() {
   }, [staffProfile]);
 
   useEffect(() => {
-    loadOrders().catch(err => {
-      console.error('Failed to load online orders', err);
-      setError('Could not load incoming online orders.');
+    if (!selectedStoreId) {
+      setOrders([]);
       setLoading(false);
-    });
-  }, [selectedStoreId]);
+      return undefined;
+    }
+    setLoading(true);
+    setError(null);
+    setOrders([]);
+    notifiedPaidOrderIdsRef.current = new Set();
+    const ordersByStatus = new Map<OnlineOrder['status'], OnlineOrder[]>();
+    const loadedStatuses = new Set<OnlineOrder['status']>();
+    let initialSnapshotComplete = false;
+    const unsubscriptions = ACTIVE_ORDER_STATUSES.map(status => onSnapshot(query(
+      collection(db, 'onlineOrders'),
+      where('storeId', '==', selectedStoreId),
+      where('status', '==', status),
+    ), snapshot => {
+      ordersByStatus.set(status, snapshot.docs.map(orderDoc => ({
+        id: orderDoc.id,
+        ...orderDoc.data(),
+      } as OnlineOrder)));
+      loadedStatuses.add(status);
+      const loadedOrders = ACTIVE_ORDER_STATUSES
+        .flatMap(activeStatus => ordersByStatus.get(activeStatus) || [])
+        .sort(compareIncomingOrders);
+      const paidOrders = loadedOrders.filter(isPaidIncomingOrder);
+      if (!initialSnapshotComplete && loadedStatuses.size === ACTIVE_ORDER_STATUSES.length) {
+        paidOrders.forEach(order => order.id && notifiedPaidOrderIdsRef.current.add(order.id));
+        initialSnapshotComplete = true;
+        setLoading(false);
+      } else if (initialSnapshotComplete) {
+        const newPaidOrders = paidOrders.filter(order => (
+          order.id && !notifiedPaidOrderIdsRef.current.has(order.id)
+        ));
+        newPaidOrders.forEach(order => {
+          if (!order.id) return;
+          notifiedPaidOrderIdsRef.current.add(order.id);
+          console.info('incoming-online-order-timing', {
+            stage: 'paid_order_listener_received',
+            serverToListenerMs: paidOrderWaitingMillis(order),
+          });
+        });
+        if (newPaidOrders.length > 0) void playPaidOrderNotification();
+      }
+      setOrders(loadedOrders);
+    }, err => {
+      console.error('Failed to listen for online orders', {
+        code: err.code,
+        storeId: selectedStoreId,
+        status,
+      });
+      setError('Could not keep incoming online orders live for this store.');
+      setLoading(false);
+    }));
+    return () => {
+      unsubscriptions.forEach(unsubscribe => unsubscribe());
+    };
+  }, [selectedStoreId, listenerRevision]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30000);
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -165,17 +222,14 @@ export default function IncomingOnlineOrders() {
       if (order.paymentProvider === 'RAZORPAY') {
         const paidResult = await acceptPaidRazorpayOrder({ onlineOrderId: order.id });
         if (paidResult.data.reviewRequired) {
-          await loadOrders(order.storeId);
           setError('Payment is captured, but acceptance is blocked by current inventory. No POS order, KOT, or stock deduction was created. Fix stock and retry, or ask a Manager/Admin to issue a full refund.');
           return;
         }
         setMessage(`Accepted paid order and created POS order ${paidResult.data.orderNumber}. KOT rows: ${paidResult.data.kotCount}; stock movements: ${paidResult.data.stockMovementCount}.`);
-        await loadOrders(order.storeId);
         return;
       }
       const result = await acceptOnlineOrder(order.id, staffProfile);
       setMessage(`Accepted online order and created POS order ${result.orderNumber}. KOT rows: ${result.kotCount}; stock movements: ${result.stockMovementCount}.`);
-      await loadOrders(order.storeId);
     } catch (err) {
       if (isOnlineOrderAcceptError(err)) {
         setBlockers(prev => ({ ...prev, [order.id!]: err.blockers }));
@@ -211,7 +265,6 @@ export default function IncomingOnlineOrders() {
         confirmation,
       });
       setMessage('Full Razorpay refund initiated. The order remains REFUND PENDING until provider confirmation.');
-      await loadOrders(order.storeId);
     } catch (err) {
       console.error('Failed to initiate Razorpay refund', err);
       setError(err instanceof Error ? err.message : 'Could not initiate the full refund.');
@@ -246,7 +299,6 @@ export default function IncomingOnlineOrders() {
         customerStatusMessage: publicStatusMessage('REJECTED'),
       });
       setMessage('Online order rejected. No POS order, KOT, or stock movement was created.');
-      await loadOrders(order.storeId);
     } catch (err) {
       console.error('Failed to reject online order', err);
       setError(err instanceof Error ? err.message : 'Could not reject the online order.');
@@ -265,7 +317,7 @@ export default function IncomingOnlineOrders() {
           <p className="text-sm text-neutral-500">Customer requests stay pending until staff accepts them into POS V2.</p>
         </div>
         <button
-          onClick={() => loadOrders()}
+          onClick={() => setListenerRevision(current => current + 1)}
           className="inline-flex items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-2 text-sm font-black text-neutral-700"
         >
           <RefreshCw size={16} />
@@ -321,13 +373,29 @@ export default function IncomingOnlineOrders() {
             const requiresPaymentReview = order.status === 'PAYMENT_REVIEW_REQUIRED';
             const ageMinutes = minutesSince(order.createdAt, now);
             const isNew = ageMinutes < 5;
+            const isPaid = isPaidIncomingOrder(order);
+            const waitingMillis = isPaid ? paidOrderWaitingMillis(order, now.getTime()) : 0;
+            const escalation = paidOrderEscalation(waitingMillis);
+            const escalationClass = escalation === 'URGENT'
+              ? 'border-red-400 ring-2 ring-red-200'
+              : escalation === 'ATTENTION'
+                ? 'border-amber-400 ring-2 ring-amber-100'
+                : '';
             return (
-              <article key={order.id} className={`rounded-3xl border bg-white p-4 shadow-sm sm:p-5 ${requiresPaymentReview ? 'border-red-300 ring-2 ring-red-100' : isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
+              <article key={order.id} className={`rounded-3xl border bg-white p-4 shadow-sm sm:p-5 ${requiresPaymentReview ? 'border-red-300 ring-2 ring-red-100' : isPaid ? escalationClass || 'border-emerald-300' : isNew ? 'border-amber-300 ring-2 ring-amber-100' : 'border-neutral-100'}`}>
                 <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="text-xl font-black text-neutral-900">{order.customerName}</h2>
                       {isNew && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">NEW</span>}
+                      {isPaid && <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">PAID</span>}
+                      {isPaid && escalation !== 'NORMAL' && (
+                        <span className={`rounded-full px-3 py-1 text-xs font-black ${
+                          escalation === 'URGENT' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {escalation === 'URGENT' ? 'URGENT · OVER 2 MIN' : 'ATTENTION · OVER 1 MIN'}
+                        </span>
+                      )}
                       <span className={`rounded-full px-3 py-1 text-xs font-black ${requiresPaymentReview ? 'bg-red-100 text-red-800' : order.status === 'NEEDS_ATTENTION' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                         {order.status.replaceAll('_', ' ')}
                       </span>
@@ -337,7 +405,7 @@ export default function IncomingOnlineOrders() {
                         <Phone size={14} /> {order.paymentProvider === 'RAZORPAY' ? maskPhone(order.customerPhone) : order.customerPhone}
                       </span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1">
-                        <Clock size={14} /> {elapsedLabel(order.createdAt, now)}
+                        <Clock size={14} /> {elapsedLabel(isPaid ? order.paymentCapturedAt || order.createdAt : order.createdAt, now)}
                       </span>
                       <span className="rounded-full bg-neutral-100 px-3 py-1">{order.orderType.replace('_', ' ')}</span>
                     </div>
@@ -422,7 +490,9 @@ export default function IncomingOnlineOrders() {
                       <button
                         onClick={() => handleAccept(order)}
                         disabled={isBusy}
-                        className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
+                        className={`min-h-12 rounded-xl px-6 py-3 text-sm font-black text-white shadow-sm disabled:opacity-60 ${
+                          isPaid ? 'bg-emerald-700 ring-2 ring-emerald-200' : 'bg-[#5c4033]'
+                        }`}
                       >
                         {isBusy ? (
                           <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>

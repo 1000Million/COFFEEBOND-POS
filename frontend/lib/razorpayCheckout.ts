@@ -3,6 +3,18 @@ import { PublicOrderTracking } from '../types';
 const CHECKOUT_SCRIPT_URL = 'https://checkout.razorpay.com/v1/checkout.js';
 let checkoutScriptPromise: Promise<void> | null = null;
 
+function browserNow(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function logScriptTiming(stage: string, startedAt: number, source: 'network' | 'cached' | 'ready'): void {
+  console.info('razorpay-checkout-timing', {
+    stage,
+    durationMs: Math.max(0, Math.round(browserNow() - startedAt)),
+    source,
+  });
+}
+
 export type RazorpayCheckoutSuccess = {
   razorpay_payment_id: string;
   razorpay_order_id: string;
@@ -36,6 +48,7 @@ export type RazorpayOrderResponse = {
   alreadyPaid?: boolean;
   trackingToken?: string | null;
   trackingPath?: string | null;
+  serverTiming?: Record<string, number>;
 };
 
 export type RazorpayOptions = {
@@ -85,17 +98,26 @@ declare global {
 }
 
 export function loadRazorpayCheckout(): Promise<void> {
+  const startedAt = browserNow();
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return Promise.reject(new Error('Online payment requires a browser.'));
   }
-  if (window.Razorpay) return Promise.resolve();
-  if (checkoutScriptPromise) return checkoutScriptPromise;
+  if (window.Razorpay) {
+    logScriptTiming('checkout_script_ready', startedAt, 'ready');
+    return Promise.resolve();
+  }
+  if (checkoutScriptPromise) {
+    return checkoutScriptPromise.then(() => {
+      logScriptTiming('checkout_script_reused', startedAt, 'cached');
+    });
+  }
 
   checkoutScriptPromise = new Promise<void>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${CHECKOUT_SCRIPT_URL}"]`);
     const script = existing || document.createElement('script');
     const handleLoad = () => {
       if (window.Razorpay) {
+        logScriptTiming('checkout_script_loaded', startedAt, 'network');
         resolve();
       } else {
         checkoutScriptPromise = null;
@@ -117,6 +139,10 @@ export function loadRazorpayCheckout(): Promise<void> {
     }
   });
   return checkoutScriptPromise;
+}
+
+export function preloadRazorpayCheckout(): Promise<void> {
+  return loadRazorpayCheckout();
 }
 
 function timestampMillis(value: unknown): number | null {

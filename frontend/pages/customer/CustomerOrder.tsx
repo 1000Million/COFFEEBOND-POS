@@ -50,10 +50,15 @@ import {
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import {
   loadRazorpayCheckout,
+  preloadRazorpayCheckout,
   RazorpayCheckoutSuccess,
   RazorpayOrderResponse,
   validateRazorpayOrderResponse,
 } from '../../lib/razorpayCheckout';
+import {
+  RAZORPAY_PROGRESS_MESSAGES,
+  RazorpayPaymentStage,
+} from '../../lib/razorpayLatency';
 import {
   deriveCustomerOrderingState,
   prepWindowLabel,
@@ -181,6 +186,7 @@ const verifyCustomerRazorpayPayment = httpsCallable<
     trackingToken: string;
     trackingPath: string;
     customerStatusMessage: string;
+    serverTiming?: Record<string, number>;
   }
 >(customerFunctions, 'verifyCustomerRazorpayPayment');
 
@@ -191,6 +197,52 @@ const CATEGORY_ORDER = ['ALL', 'Coffee', 'Cold Coffee', 'Matcha & Tea', 'Food', 
 const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
+const PAYMENT_RECOVERY_DELAYS_MS = [0, 1500, 3000, 5000];
+
+function checkoutNow(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function logCheckoutTiming(stage: string, startedAt: number, details: Record<string, unknown> = {}): void {
+  console.info('razorpay-checkout-timing', {
+    stage,
+    durationMs: Math.max(0, Math.round(checkoutNow() - startedAt)),
+    ...details,
+  });
+}
+
+function retryablePaymentVerificationError(error: unknown): boolean {
+  const code = String((error as { code?: string })?.code || '');
+  return ![
+    'functions/invalid-argument',
+    'functions/permission-denied',
+    'functions/unauthenticated',
+    'invalid-argument',
+    'permission-denied',
+    'unauthenticated',
+  ].some(value => code.includes(value));
+}
+
+async function verifyPaidOrderWithRecovery(
+  payload: RazorpayCheckoutSuccess & { sessionId: string },
+  onRetry: (attempt: number) => void,
+) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < PAYMENT_RECOVERY_DELAYS_MS.length; attempt += 1) {
+    const delayMs = PAYMENT_RECOVERY_DELAYS_MS[attempt];
+    if (delayMs > 0) {
+      onRetry(attempt + 1);
+      await new Promise(resolve => window.setTimeout(resolve, delayMs));
+    }
+    try {
+      return await verifyCustomerRazorpayPayment(payload);
+    } catch (error) {
+      lastError = error;
+      if (!retryablePaymentVerificationError(error)) throw error;
+    }
+  }
+  throw lastError;
+}
 
 type StoreCoordinate = {
   latitude: number;
@@ -526,6 +578,7 @@ export default function CustomerOrder() {
   const [loadedMenuStoreId, setLoadedMenuStoreId] = useState('');
   const [checkoutDraftNotice, setCheckoutDraftNotice] = useState('');
   const [paymentNotice, setPaymentNotice] = useState('');
+  const [paymentStage, setPaymentStage] = useState<RazorpayPaymentStage | null>(null);
   const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
@@ -555,6 +608,19 @@ export default function CustomerOrder() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!verifiedCustomer) return;
+    const startedAt = checkoutNow();
+    preloadRazorpayCheckout()
+      .then(() => logCheckoutTiming('checkout_script_preloaded_after_otp', startedAt))
+      .catch(error => {
+        console.warn('razorpay-checkout-preload-failed', {
+          stage: 'checkout_script_preload',
+          code: String((error as { code?: string })?.code || 'SCRIPT_LOAD_FAILED'),
+        });
+      });
+  }, [verifiedCustomer]);
 
   useEffect(() => {
     let active = true;
@@ -1112,9 +1178,16 @@ export default function CustomerOrder() {
     setSaving(true);
     setError(null);
     setPaymentNotice('');
+    setPaymentStage(paymentProvider === 'RAZORPAY' ? 'PREPARING' : null);
     try {
       if (paymentProvider === 'RAZORPAY') {
-        const checkoutResult = (await createCustomerCheckoutSession({
+        const payClickedAt = checkoutNow();
+        const scriptPromise = loadRazorpayCheckout();
+        const sessionStartedAt = checkoutNow();
+        const slowPreparationTimer = window.setTimeout(() => {
+          setPaymentStage('PREPARING_SLOW');
+        }, 2000);
+        const sessionPromise = createCustomerCheckoutSession({
           storeId: selectedStore.id,
           storeCode: selectedStore.code,
           customerName: cleanCustomerName,
@@ -1132,9 +1205,20 @@ export default function CustomerOrder() {
             })),
           })),
           clientIdempotencyKey,
-        })).data;
+        });
+        let sessionResult: Awaited<typeof sessionPromise>;
+        try {
+          [sessionResult] = await Promise.all([sessionPromise, scriptPromise]);
+        } finally {
+          window.clearTimeout(slowPreparationTimer);
+        }
+        logCheckoutTiming('checkout_session_callable', sessionStartedAt, {
+          serverTiming: sessionResult.data.serverTiming || null,
+        });
+        const checkoutResult = sessionResult.data;
         if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
           const trackingPath = checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`;
+          setPaymentStage('SENT');
           rememberCustomerOrder(checkoutResult.trackingToken);
           clearCustomerCheckoutDraft(window.localStorage);
           setCart([]);
@@ -1143,7 +1227,6 @@ export default function CustomerOrder() {
         }
         validateRazorpayOrderResponse(checkoutResult);
         if (!checkoutResult.sessionId) throw new Error('Secure checkout session was not returned.');
-        await loadRazorpayCheckout();
         const RazorpayCheckout = window.Razorpay;
         if (!RazorpayCheckout) throw new Error('Online payment could not load. Please retry.');
         const verifiedOrder = await new Promise<Awaited<ReturnType<typeof verifyCustomerRazorpayPayment>>['data']>((resolve, reject) => {
@@ -1186,13 +1269,30 @@ export default function CustomerOrder() {
             },
             theme: { color: '#3b261d' },
             handler: (providerResult) => {
-              verifyCustomerRazorpayPayment({
+              const successCallbackAt = checkoutNow();
+              logCheckoutTiming('razorpay_success_callback', payClickedAt);
+              setPaymentStage('VERIFYING');
+              const slowVerificationTimer = window.setTimeout(() => {
+                setPaymentStage('VERIFYING_SLOW');
+              }, 8000);
+              verifyPaidOrderWithRecovery({
                 sessionId: checkoutResult.sessionId!,
                 ...providerResult,
-              }).then(result => finish(() => resolve(result.data)))
-                .catch(() => finish(() => reject(new Error(
-                  'Payment confirmation is delayed. Your paid order will be recovered automatically.',
-                ))));
+              }, () => setPaymentStage('VERIFYING_SLOW'))
+                .then(result => {
+                  window.clearTimeout(slowVerificationTimer);
+                  logCheckoutTiming('verify_payment_callable', successCallbackAt, {
+                    serverTiming: result.data.serverTiming || null,
+                  });
+                  setPaymentStage('SENDING');
+                  finish(() => resolve(result.data));
+                })
+                .catch(() => {
+                  window.clearTimeout(slowVerificationTimer);
+                  finish(() => reject(new Error(
+                    'Payment confirmation is delayed. Your paid order will be recovered automatically. Do not pay again.',
+                  )));
+                });
             },
             modal: {
               ondismiss: () => finish(() => reject(new Error(
@@ -1203,7 +1303,9 @@ export default function CustomerOrder() {
           checkout.on('payment.failed', () => finish(() => reject(new Error(
             'Payment was not completed. No order was placed. You can try again.',
           ))));
+          setPaymentStage('CHECKOUT_OPEN');
           checkout.open();
+          logCheckoutTiming('razorpay_modal_opened', payClickedAt);
         });
         const trackingPath = verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`;
         rememberCustomerOrder(verifiedOrder.trackingToken);
@@ -1212,6 +1314,8 @@ export default function CustomerOrder() {
         setNotes('');
         setTableNumber('');
         setBasketOpen(false);
+        setPaymentStage('SENT');
+        logCheckoutTiming('paid_order_ready_for_tracking', payClickedAt);
         navigate(trackingPath);
         return;
       }
@@ -1277,9 +1381,15 @@ export default function CustomerOrder() {
         message === 'Payment cancelled. No order was placed. Your cart has been saved.'
         || message === 'Payment was not completed. No order was placed. You can try again.'
       ) {
+        setPaymentStage(null);
+        setPaymentNotice(message);
+        setError(null);
+      } else if (message.includes('Your paid order will be recovered automatically')) {
+        setPaymentStage('VERIFYING_SLOW');
         setPaymentNotice(message);
         setError(null);
       } else {
+        setPaymentStage(null);
         setError(customerSubmitErrorMessage(err));
       }
     } finally {
@@ -1572,6 +1682,12 @@ export default function CustomerOrder() {
             )}
           </div>
 
+          {paymentStage && (
+            <p role="status" className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold leading-relaxed text-blue-900">
+              {RAZORPAY_PROGRESS_MESSAGES[paymentStage]}
+            </p>
+          )}
+
           {paymentNotice && (
             <p role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
               {paymentNotice}
@@ -1586,11 +1702,14 @@ export default function CustomerOrder() {
               || cart.length === 0
               || !selectedStoreOnline
               || (paymentProvider === 'RAZORPAY' && !verifiedCustomer)
+              || paymentStage === 'VERIFYING_SLOW'
             }
             className="mt-4 w-full rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
             {saving
-              ? paymentProvider === 'RAZORPAY' ? 'Opening secure payment...' : 'Sending request...'
+              ? paymentProvider === 'RAZORPAY'
+                ? RAZORPAY_PROGRESS_MESSAGES[paymentStage || 'PREPARING']
+                : 'Sending request...'
               : paymentProvider === 'RAZORPAY'
                 ? `Pay ${formatMoney(totals.grandTotal)} Online`
                 : 'Send order request'}

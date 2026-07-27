@@ -61,6 +61,20 @@ function sleep(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+function durationSince(startedAt) {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function logCheckoutLatency(flow, sessionId, storeId, timing, outcome = 'SUCCESS') {
+  console.info('razorpay-checkout-latency', {
+    flow,
+    outcome,
+    sessionHash: sha256(sessionId).slice(0, 16),
+    storeId,
+    ...timing,
+  });
+}
+
 function verifiedCustomerIdentity(request) {
   const uid = cleanText(request.auth?.uid, 128);
   const phoneNumber = cleanText(request.auth?.token?.phone_number, 32);
@@ -110,9 +124,13 @@ function publicStatusMessage(status) {
   return 'We are checking your order status.';
 }
 
-async function findOrCreateProviderCustomer(client, { customerUid, verifiedPhone, customerName }) {
+async function findOrCreateProviderCustomer(
+  client,
+  { customerUid, verifiedPhone, customerName },
+  { recoverExisting = true } = {},
+) {
   let providerCustomer = null;
-  if (typeof client.customers?.all === 'function') {
+  if (recoverExisting && typeof client.customers?.all === 'function') {
     const existing = await client.customers.all({ contact: verifiedPhone, count: 10 });
     providerCustomer = (existing?.items || []).find(customer => (
       cleanText(customer?.contact, 32) === verifiedPhone
@@ -125,8 +143,8 @@ async function findOrCreateProviderCustomer(client, { customerUid, verifiedPhone
   });
 }
 
-async function findOrCreateProviderOrder(client, payload) {
-  const existingOrders = typeof client.orders?.all === 'function'
+async function findOrCreateProviderOrder(client, payload, { recoverExisting = true } = {}) {
+  const existingOrders = recoverExisting && typeof client.orders?.all === 'function'
     ? await client.orders.all({ receipt: payload.receipt, count: 10 })
     : null;
   const recovered = (existingOrders?.items || []).find(order => (
@@ -137,10 +155,18 @@ async function findOrCreateProviderOrder(client, payload) {
   return recovered || client.orders.create(payload);
 }
 
-function fetchProviderPaymentAndOrder(client, paymentId, providerOrderId) {
+function fetchProviderPaymentAndOrder(client, paymentId, providerOrderId, timing = {}) {
+  const paymentStartedAt = Date.now();
+  const orderStartedAt = Date.now();
   return Promise.all([
-    client.payments.fetch(paymentId),
-    client.orders.fetch(providerOrderId),
+    client.payments.fetch(paymentId).then(payment => {
+      timing.razorpayPaymentFetchDurationMs = durationSince(paymentStartedAt);
+      return payment;
+    }),
+    client.orders.fetch(providerOrderId).then(order => {
+      timing.razorpayOrderFetchDurationMs = durationSince(orderStartedAt);
+      return order;
+    }),
   ]);
 }
 
@@ -256,6 +282,10 @@ async function resolveRazorpayCustomer({
     ) {
       return { customerId: null, acquired: false };
     }
+    const recoverExisting = Boolean(
+      profile.razorpayCustomerSetupStartedAt
+      || profile.razorpayCustomerLeaseId,
+    );
     transaction.set(profileRef, {
       customerUid,
       normalisedPhone: verifiedPhone,
@@ -263,10 +293,12 @@ async function resolveRazorpayCustomer({
       defaultOrderType: profile.defaultOrderType || 'PICKUP',
       razorpayCustomerLeaseId: leaseId,
       razorpayCustomerLeaseUntil: admin.firestore.Timestamp.fromMillis(now + PROVIDER_CREATION_LEASE_MS),
+      razorpayCustomerSetupStartedAt: profile.razorpayCustomerSetupStartedAt
+        || admin.firestore.FieldValue.serverTimestamp(),
       createdAt: profile.createdAt || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    return { customerId: null, acquired: true };
+    return { customerId: null, acquired: true, recoverExisting };
   });
   if (lease.customerId) return lease.customerId;
 
@@ -285,19 +317,19 @@ async function resolveRazorpayCustomer({
       customerUid,
       verifiedPhone,
       customerName,
-    });
+    }, { recoverExisting: lease.recoverExisting });
     const providerCustomerId = cleanText(providerCustomer?.id, 120);
     if (!providerCustomerId) {
       fail('unavailable', 'Online payment customer setup is temporarily unavailable.');
     }
-    await db.runTransaction(async transaction => {
+    const savedCustomerId = await db.runTransaction(async transaction => {
       const snapshot = await transaction.get(profileRef);
       const profile = snapshot.exists ? snapshot.data() : {};
       if (
         profile.razorpayCustomerId
         && profile.razorpayCustomerId !== providerCustomerId
       ) {
-        return;
+        return profile.razorpayCustomerId;
       }
       if (profile.razorpayCustomerLeaseId !== leaseId && !profile.razorpayCustomerId) {
         fail('aborted', 'Customer payment setup changed. Please retry.');
@@ -313,9 +345,9 @@ async function resolveRazorpayCustomer({
         createdAt: profile.createdAt || admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
+      return profile.razorpayCustomerId || providerCustomerId;
     });
-    const saved = await profileRef.get();
-    return cleanText(saved.data()?.razorpayCustomerId, 120) || providerCustomerId;
+    return cleanText(savedCustomerId, 120) || providerCustomerId;
   } catch (error) {
     await db.runTransaction(async transaction => {
       const snapshot = await transaction.get(profileRef);
@@ -410,16 +442,25 @@ async function createCheckoutSession({
   magicEnabled,
   now = Date.now(),
 }) {
+  const flowStartedAt = Date.now();
+  const timing = {};
   const identity = verifiedCustomerIdentity(request);
   const idempotencyKey = cleanText(request.data?.clientIdempotencyKey, 200);
   if (idempotencyKey.length < 12) fail('invalid-argument', 'Please retry secure checkout.');
   const sessionId = customerSessionId(identity.uid, idempotencyKey);
   const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
+  const canonicalizationStartedAt = Date.now();
   const canonical = await canonicalizeCustomerCheckout({
     db,
     data: request.data,
     sessionId,
   });
+  timing.canonicalizationDurationMs = durationSince(canonicalizationStartedAt);
+  const finishResponse = (response, outcome = 'SUCCESS') => {
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('CREATE_CHECKOUT_SESSION', sessionId, canonical.store.id, timing, outcome);
+    return { ...response, serverTiming: { ...timing } };
+  };
   const amountPaise = rupeesToPaise(canonical.grandTotal);
   const checksum = requestChecksum({
     storeId: canonical.store.id,
@@ -429,6 +470,7 @@ async function createCheckoutSession({
   const providerCreationLeaseId = `order_${randomBytes(12).toString('hex')}`;
   const receipt = deterministicReceipt(sessionId);
   const expiresAt = admin.firestore.Timestamp.fromMillis(now + CHECKOUT_SESSION_TTL_MS);
+  const sessionClaimStartedAt = Date.now();
   const claim = await db.runTransaction(async transaction => {
     const snapshot = await transaction.get(sessionRef);
     const existing = snapshot.exists ? { sessionId: snapshot.id, ...snapshot.data() } : null;
@@ -488,24 +530,35 @@ async function createCheckoutSession({
       expiresAt,
       providerCreationLeaseId,
       providerCreationLeaseUntil: admin.firestore.Timestamp.fromMillis(now + PROVIDER_CREATION_LEASE_MS),
+      providerCreationStartedAt: existing?.providerCreationStartedAt
+        || admin.firestore.FieldValue.serverTimestamp(),
       createdAt: existing?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     transaction.set(sessionRef, session, { merge: false });
-    return { kind: 'CREATE', session };
+    return { kind: 'CREATE', session, recoverExisting: Boolean(existing) };
   });
-  if (claim.kind === 'REUSE') return sessionResponse(claim.session, keyId, magicEnabled);
+  timing.sessionClaimDurationMs = durationSince(sessionClaimStartedAt);
+  if (claim.kind === 'REUSE') {
+    return finishResponse(sessionResponse(claim.session, keyId, magicEnabled), 'REUSED');
+  }
   if (claim.kind === 'PAID') {
-    return {
+    return finishResponse({
       alreadyPaid: true,
       trackingToken: claim.session.trackingToken || null,
       trackingPath: claim.session.trackingToken ? `/order/status/${claim.session.trackingToken}` : null,
-    };
+    }, 'ALREADY_PAID');
   }
-  if (claim.kind === 'WAIT') return waitForCheckoutSession(sessionRef, keyId, magicEnabled);
+  if (claim.kind === 'WAIT') {
+    const waitStartedAt = Date.now();
+    const response = await waitForCheckoutSession(sessionRef, keyId, magicEnabled);
+    timing.concurrentLeaseWaitDurationMs = durationSince(waitStartedAt);
+    return finishResponse(response, 'LEASE_RECOVERED');
+  }
 
   const client = razorpayClient(keyId, keySecret, RazorpayClass);
   try {
+    const customerStartedAt = Date.now();
     const razorpayCustomerId = await resolveRazorpayCustomer({
       db,
       admin,
@@ -515,20 +568,25 @@ async function createCheckoutSession({
       client,
       now,
     });
-    await db.collection(CUSTOMER_PROFILE_COLLECTION).doc(identity.uid).set({
-      displayName: canonical.customerName,
-      defaultOrderType: canonical.orderType,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    const providerOrder = await findOrCreateProviderOrder(client, {
-      amount: amountPaise,
-      currency: CURRENCY,
-      receipt,
-      customer_id: razorpayCustomerId,
-      notes: {
-        coffee_bond_checkout: sha256(sessionId).slice(0, 24),
-      },
-    });
+    timing.razorpayCustomerResolutionDurationMs = durationSince(customerStartedAt);
+    const providerOrderStartedAt = Date.now();
+    const [providerOrder] = await Promise.all([
+      findOrCreateProviderOrder(client, {
+        amount: amountPaise,
+        currency: CURRENCY,
+        receipt,
+        customer_id: razorpayCustomerId,
+        notes: {
+          coffee_bond_checkout: sha256(sessionId).slice(0, 24),
+        },
+      }, { recoverExisting: claim.recoverExisting }),
+      db.collection(CUSTOMER_PROFILE_COLLECTION).doc(identity.uid).set({
+        displayName: canonical.customerName,
+        defaultOrderType: canonical.orderType,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }),
+    ]);
+    timing.razorpayOrderCreationDurationMs = durationSince(providerOrderStartedAt);
     if (
       !providerOrder?.id
       || Number(providerOrder.amount) !== amountPaise
@@ -543,6 +601,7 @@ async function createCheckoutSession({
       status: 'PAYMENT_STARTED',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    const sessionPersistStartedAt = Date.now();
     await sessionRef.set({
       razorpayOrderId: providerOrder.id,
       razorpayCustomerId,
@@ -551,7 +610,8 @@ async function createCheckoutSession({
       providerCreationLeaseUntil: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    return sessionResponse(created, keyId, magicEnabled);
+    timing.sessionPersistDurationMs = durationSince(sessionPersistStartedAt);
+    return finishResponse(sessionResponse(created, keyId, magicEnabled));
   } catch (error) {
     const safe = safeProviderError(error);
     await sessionRef.set({
@@ -566,6 +626,8 @@ async function createCheckoutSession({
       storeId: canonical.store.id,
       failureCode: safe.code,
     });
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('CREATE_CHECKOUT_SESSION', sessionId, canonical.store.id, timing, 'FAILED');
     fail('unavailable', safe.message);
   }
 }
@@ -577,6 +639,7 @@ async function createPaidOnlineOrder({
   providerPayment,
   providerOrder,
   now = Date.now(),
+  timing = {},
 }) {
   const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
   const onlineOrderId = customerOnlineOrderId(sessionId);
@@ -585,11 +648,14 @@ async function createPaidOnlineOrder({
   const intentRef = db.collection(PAYMENT_INTENT_COLLECTION).doc(sessionId);
   const reservationRef = db.collection(RESERVATION_COLLECTION).doc(onlineOrderId);
 
-  return db.runTransaction(async transaction => {
+  const finalizationStartedAt = Date.now();
+  const result = await db.runTransaction(async transaction => {
+    const readsStartedAt = Date.now();
     const [sessionSnapshot, existingOrderSnapshot] = await Promise.all([
       transaction.get(sessionRef),
       transaction.get(onlineOrderRef),
     ]);
+    timing.finalizationReadDurationMs = durationSince(readsStartedAt);
     if (!sessionSnapshot.exists) fail('not-found', 'Checkout session no longer exists.');
     const session = { sessionId: sessionSnapshot.id, ...sessionSnapshot.data() };
     if (existingOrderSnapshot.exists) {
@@ -639,7 +705,9 @@ async function createPaidOnlineOrder({
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     transaction.create(onlineOrderRef, onlineOrder);
+    const publicTrackingStartedAt = Date.now();
     transaction.create(trackingRef.doc(session.trackingToken), publicTrackingPayload(onlineOrder, admin));
+    timing.publicTrackingWriteQueuedDurationMs = durationSince(publicTrackingStartedAt);
     transaction.set(intentRef, {
       checkoutSessionId: sessionId,
       coffeeBondOnlineOrderId: onlineOrderId,
@@ -692,9 +760,14 @@ async function createPaidOnlineOrder({
       customerStatusMessage: paidPendingMessage(),
     };
   });
+  timing.firestoreFinalizationDurationMs = durationSince(finalizationStartedAt);
+  timing.publicOrderTrackingCreationDurationMs = timing.firestoreFinalizationDurationMs;
+  return result;
 }
 
 async function verifySessionPayment({ request, db, admin, keyId, keySecret, RazorpayClass }) {
+  const flowStartedAt = Date.now();
+  const timing = {};
   const identity = verifiedCustomerIdentity(request);
   const sessionId = cleanText(request.data?.sessionId, 120);
   const paymentId = cleanText(request.data?.razorpay_payment_id, 120);
@@ -703,7 +776,9 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
   if (!sessionId || !paymentId || !suppliedOrderId || !signature) {
     fail('invalid-argument', 'Payment confirmation details are incomplete.');
   }
+  const sessionReadStartedAt = Date.now();
   const sessionSnapshot = await db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId).get();
+  timing.sessionReadDurationMs = durationSince(sessionReadStartedAt);
   if (!sessionSnapshot.exists) fail('not-found', 'Checkout session was not found.');
   const session = { sessionId: sessionSnapshot.id, ...sessionSnapshot.data() };
   if (session.customerUid !== identity.uid) fail('permission-denied', 'This checkout belongs to another customer.');
@@ -725,6 +800,7 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
       client,
       paymentId,
       session.razorpayOrderId,
+      timing,
     );
   } catch (error) {
     console.error('razorpay-payment-first-provider-verify-failed', {
@@ -732,6 +808,8 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
       storeId: session.storeId,
       failureCode: safeProviderError(error).code,
     });
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('VERIFY_PAYMENT', sessionId, session.storeId, timing, 'PROVIDER_FETCH_FAILED');
     fail('unavailable', 'Payment confirmation is delayed. Please refresh shortly.');
   }
   const finalState = isFinalProviderState({
@@ -746,10 +824,22 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
       failureCode: finalState.code,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('VERIFY_PAYMENT', sessionId, session.storeId, timing, 'PROVIDER_NOT_FINAL');
     fail('failed-precondition', 'Payment is not captured and paid yet.');
   }
   try {
-    return await createPaidOnlineOrder({ db, admin, sessionId, providerPayment: payment, providerOrder });
+    const result = await createPaidOnlineOrder({
+      db,
+      admin,
+      sessionId,
+      providerPayment: payment,
+      providerOrder,
+      timing,
+    });
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('VERIFY_PAYMENT', sessionId, session.storeId, timing);
+    return { ...result, serverTiming: { ...timing } };
   } catch (error) {
     try {
       await sessionSnapshot.ref.set({
@@ -770,6 +860,8 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
       storeId: session.storeId,
       failureCode: cleanText(error?.code || error?.message, 120) || 'UNKNOWN',
     });
+    timing.totalDurationMs = durationSince(flowStartedAt);
+    logCheckoutLatency('VERIFY_PAYMENT', sessionId, session.storeId, timing, 'FAILED');
     fail('unavailable', 'Payment was received, but order confirmation is delayed. The store has been alerted.');
   }
 }
@@ -1128,6 +1220,7 @@ function createRazorpayPaymentFirstFunctions({
     region,
     timeoutSeconds: 120,
     memory: '1GiB',
+    minInstances: 1,
     secrets: [keySecretParameter],
   }, request => createCheckoutSession({
     request,
@@ -1143,6 +1236,7 @@ function createRazorpayPaymentFirstFunctions({
     region,
     timeoutSeconds: 180,
     memory: '1GiB',
+    minInstances: 1,
     secrets: [keySecretParameter],
   }, request => verifySessionPayment({
     request,
