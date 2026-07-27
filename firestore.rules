@@ -106,7 +106,7 @@ service cloud.firestore {
     }
 
     function isValidPaymentMethod(method) {
-      return method in ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
+      return method in ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER', 'ONLINE'];
     }
 
     function isValidPaymentReversalStatus(status) {
@@ -563,6 +563,9 @@ service cloud.firestore {
         'readyAt',
         'servedAt',
         'publicOrderNumber',
+        'paymentProvider',
+        'paymentStatus',
+        'paymentAvailableUntil',
         'customerStatusMessage'
       ])
       && data.trackingToken == trackingToken
@@ -592,7 +595,10 @@ service cloud.firestore {
       && data.subtotal >= 0
       && data.gstTotal >= 0
       && data.total >= 0
-      && data.publicStatus in ['PENDING', 'ACCEPTED', 'CONVERTED', 'PREPARING', 'READY', 'SERVED', 'REJECTED', 'NEEDS_ATTENTION', 'CANCELLED']
+      && data.publicStatus in ['PENDING', 'PAYMENT_PROCESSING', 'PAID_PENDING_ACCEPTANCE', 'ACCEPTED', 'ACCEPTED_AWAITING_PAYMENT', 'CONVERTED', 'PREPARING', 'READY', 'SERVED', 'COMPLETED', 'REJECTED', 'NEEDS_ATTENTION', 'CANCELLED', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'CANCELLED_REFUNDED', 'PAYMENT_REVIEW_REQUIRED']
+      && (!data.keys().hasAny(['paymentProvider']) || data.paymentProvider in ['PAY_AT_COUNTER', 'RAZORPAY'])
+      && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['NOT_STARTED', 'AWAITING_PAYMENT', 'PAYMENT_PROCESSING', 'FAILED', 'PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'PAYMENT_REVIEW_REQUIRED'])
+      && (!data.keys().hasAny(['paymentAvailableUntil']) || data.paymentAvailableUntil is timestamp)
       && data.customerStatusMessage is string
       && data.customerStatusMessage.size() > 0
       && data.customerStatusMessage.size() <= 160
@@ -699,8 +705,10 @@ service cloud.firestore {
       allow get, list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
       allow update: if isCheckoutStaff()
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
-        && request.resource.data.storeId == resource.data.storeId;
-      allow delete: if isAdmin();
+        && request.resource.data.storeId == resource.data.storeId
+        // Paid gateway orders are accepted or refunded only by secured callables.
+        && resource.data.paymentProvider != 'RAZORPAY';
+      allow delete: if isAdmin() && resource.data.paymentProvider != 'RAZORPAY';
     }
 
     match /publicOrderTracking/{trackingToken} {
@@ -717,6 +725,9 @@ service cloud.firestore {
           'readyAt',
           'servedAt',
           'publicOrderNumber',
+          'paymentProvider',
+          'paymentStatus',
+          'paymentAvailableUntil',
           'customerStatusMessage'
         ]);
       allow delete: if isAdmin();
@@ -734,6 +745,33 @@ service cloud.firestore {
     match /productImageAudit/{auditId} {
       allow read, create: if isAdmin();
       allow update, delete: if false;
+    }
+
+    // Razorpay credentials, intents, verification state, and webhook audits are server-only.
+    match /razorpayPaymentIntents/{intentId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /razorpayWebhookEvents/{eventId} {
+      allow read, create, update, delete: if false;
+    }
+
+    // Verified customer identity, canonical checkout data, reservations, and
+    // refunds are available only through backend-authorised callables.
+    match /customerProfiles/{customerUid} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /customerCheckoutSessions/{sessionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /inventoryReservations/{reservationId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /razorpayRefunds/{refundId} {
+      allow read, create, update, delete: if false;
     }
 
     match /addOnGroups/{groupId} {

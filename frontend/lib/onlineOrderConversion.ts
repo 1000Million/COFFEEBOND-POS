@@ -120,8 +120,6 @@ function buildOnlineOrderTableNumber(onlineOrder: OnlineOrder): string | null {
 
 export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: StaffProfile): Promise<AcceptResult> {
   const onlineOrderRef = doc(db, 'onlineOrders', onlineOrderId);
-  const newOrderRef = doc(collection(db, 'orders'));
-  const newCustomerRef = doc(collection(db, 'customers'));
 
   try {
     const preflightOnlineOrderSnap = await getDoc(onlineOrderRef);
@@ -133,6 +131,11 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     if (preflightOnlineOrder.status !== 'PENDING' && preflightOnlineOrder.status !== 'NEEDS_ATTENTION') {
       throw new Error(`Online order is ${preflightOnlineOrder.status} and cannot be accepted again.`);
     }
+    if (preflightOnlineOrder.paymentProvider === 'RAZORPAY') {
+      throw new Error('Paid Razorpay orders must use the secured staff acceptance service.');
+    }
+    const newOrderRef = doc(collection(db, 'orders'));
+    const newCustomerRef = doc(collection(db, 'customers'));
     const lineRefs = preflightOnlineOrder.items.map(() => doc(collection(newOrderRef, 'items')));
     const posAddOnAuthorization = await authorizePosAddOns({
       storeId: preflightOnlineOrder.storeId,

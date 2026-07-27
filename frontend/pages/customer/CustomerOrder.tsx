@@ -22,8 +22,10 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import AddOnSelector from '../../components/add-ons/AddOnSelector';
+import CustomerHeader from '../../components/customer/CustomerHeader';
+import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import {
   activeAddOnGroupsForProduct,
   addOnSelectionKey,
@@ -33,14 +35,32 @@ import {
   unitPriceWithAddOns,
 } from '../../lib/addOns';
 import { db, functions } from '../../lib/firebase';
+import { CustomerProfile, customerFunctions, restoreCustomerProfile } from '../../lib/customerAuth';
+import {
+  CheckoutHydrationState,
+  CustomerCheckoutDraft,
+  CustomerCheckoutDraftInput,
+  PersistedCheckoutAddOn,
+  checkoutCatalogMarker,
+  clearCustomerCheckoutDraft,
+  readCustomerCheckoutDraft,
+  restoreCustomerCheckoutDraft,
+  writeCustomerCheckoutDraft,
+} from '../../lib/customerCheckoutPersistence';
+import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
+import {
+  loadRazorpayCheckout,
+  RazorpayCheckoutSuccess,
+  RazorpayOrderResponse,
+  validateRazorpayOrderResponse,
+} from '../../lib/razorpayCheckout';
 import {
   deriveCustomerOrderingState,
   prepWindowLabel,
   storeOnlineMessage,
 } from '../../lib/customerOrderingState';
-import { AddOnSelection, OnlineOrderType, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
+import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
-import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 
 type CustomerMenuItem = FinishedGood & { id: string };
 
@@ -65,6 +85,8 @@ type ConfirmationState = {
   gstTotal: number;
   total: number;
   status: PublicOrderStatus;
+  paymentProvider: PaymentProvider;
+  paymentStatus: 'NOT_STARTED';
 };
 
 type GstConfig = {
@@ -123,6 +145,7 @@ type SubmitCustomerOrderRequest = {
     }>;
   }>;
   clientIdempotencyKey: string;
+  paymentProvider: PaymentProvider;
 };
 
 type SubmitCustomerOrderResponse = {
@@ -136,6 +159,8 @@ type SubmitCustomerOrderResponse = {
   gstTotal: number;
   total: number;
   status: PublicOrderStatus;
+  paymentProvider: PaymentProvider;
+  paymentStatus: 'NOT_STARTED';
   customerStatusMessage: string;
   estimatedPrepMinutes?: number;
   storeMessage: string;
@@ -145,6 +170,19 @@ const submitCustomerOrderCallable = httpsCallable<SubmitCustomerOrderRequest, Su
   functions,
   'submitCustomerOrder',
 );
+const createCustomerCheckoutSession = httpsCallable<
+  Omit<SubmitCustomerOrderRequest, 'customerPhone' | 'paymentProvider'> & { storeId: string },
+  RazorpayOrderResponse
+>(customerFunctions, 'createCustomerCheckoutSession');
+const verifyCustomerRazorpayPayment = httpsCallable<
+  RazorpayCheckoutSuccess & { sessionId: string },
+  {
+    onlineOrderId: string;
+    trackingToken: string;
+    trackingPath: string;
+    customerStatusMessage: string;
+  }
+>(customerFunctions, 'verifyCustomerRazorpayPayment');
 
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
@@ -248,6 +286,36 @@ function defaultStoreIdFromStorage(stores: Store[]): string {
 function itemTaxRate(item: CustomerMenuItem, fallbackRate: number): number {
   const itemRate = pickTaxRate(item as unknown as Record<string, unknown>, ITEM_TAX_RATE_KEYS);
   return itemRate > 0 ? itemRate : fallbackRate;
+}
+
+function cartLineCatalogMarker(
+  item: CustomerMenuItem,
+  addOns: AddOnSelection[],
+  fallbackTaxRate: number,
+): string {
+  return checkoutCatalogMarker([
+    item.code,
+    toNumber(item.salePrice),
+    itemTaxRate(item, fallbackTaxRate),
+    addOns
+      .map(addOn => [addOn.groupId, addOn.optionId, addOn.quantity, addOn.unitPrice, addOn.taxRate])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1]))),
+  ]);
+}
+
+function persistedCheckoutLines(cart: CartLine[], fallbackTaxRate: number) {
+  return cart.map(line => ({
+    lineId: line.id,
+    productId: line.item.id,
+    productCode: line.item.code,
+    quantity: line.quantity,
+    addOns: line.addOns.map(addOn => ({
+      groupId: addOn.groupId,
+      optionId: addOn.optionId,
+      quantity: addOn.quantity,
+    })),
+    catalogMarker: cartLineCatalogMarker(line.item, line.addOns, fallbackTaxRate),
+  }));
 }
 
 function isStoreAvailable(item: CustomerMenuItem, storeId: string): boolean {
@@ -377,7 +445,14 @@ function isValidIndianPhone(value: string): boolean {
   return /^[6-9]\d{9}$/.test(normalizeIndianPhone(value));
 }
 
-function cartSignature(storeId: string, customerPhone: string, orderType: OnlineOrderType, tableNumber: string, cart: CartLine[]): string {
+function cartSignature(
+  storeId: string,
+  customerPhone: string,
+  orderType: OnlineOrderType,
+  tableNumber: string,
+  paymentProvider: PaymentProvider,
+  cart: CartLine[],
+): string {
   const cartParts = cart
     .map(line => `${line.item.code}:${line.quantity}:${addOnSelectionKey(line.addOns)}`)
     .sort()
@@ -387,6 +462,7 @@ function cartSignature(storeId: string, customerPhone: string, orderType: Online
     normalizeIndianPhone(customerPhone),
     orderType,
     orderType === 'DINE_IN' ? tableNumber.trim().toUpperCase() : 'PICKUP',
+    paymentProvider,
     cartParts,
   ].join('::');
 }
@@ -418,6 +494,7 @@ function customerSubmitErrorMessage(err: unknown): string {
 }
 
 export default function CustomerOrder() {
+  const navigate = useNavigate();
   const [stores, setStores] = useState<Store[]>([]);
   const [items, setItems] = useState<CustomerMenuItem[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
@@ -427,6 +504,8 @@ export default function CustomerOrder() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
+  const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('PAY_AT_COUNTER');
+  const [verifiedCustomer, setVerifiedCustomer] = useState<CustomerProfile | null>(null);
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -443,15 +522,39 @@ export default function CustomerOrder() {
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
   const [storePreferenceMessage, setStorePreferenceMessage] = useState('');
   const [locatingStore, setLocatingStore] = useState(false);
+  const [checkoutHydration, setCheckoutHydration] = useState<CheckoutHydrationState>('NOT_STARTED');
+  const [loadedMenuStoreId, setLoadedMenuStoreId] = useState('');
+  const [checkoutDraftNotice, setCheckoutDraftNotice] = useState('');
+  const [paymentNotice, setPaymentNotice] = useState('');
+  const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
+  const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
+  const hydrationAppliedRef = useRef(false);
 
   useEffect(() => {
     if (!storePreferenceMessage) return undefined;
     const timeout = window.setTimeout(() => setStorePreferenceMessage(''), 2800);
     return () => window.clearTimeout(timeout);
   }, [storePreferenceMessage]);
+
+  useEffect(() => {
+    let active = true;
+    restoreCustomerProfile().then(profile => {
+      if (!active || !profile) return;
+      setVerifiedCustomer(profile);
+      setCustomerPhone(profile.normalisedPhone.replace('+91', ''));
+      setCustomerName(current => current.trim() ? current : profile.displayName);
+    }).catch(() => {
+      // The OTP panel remains available when a previous customer session cannot be restored.
+    }).finally(() => {
+      if (active) setCustomerAuthRestored(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -472,9 +575,27 @@ export default function CustomerOrder() {
         const gstData = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : {};
 
         const savedStoreId = defaultStoreIdFromStorage(loadedStores);
+        const draftResult = readCustomerCheckoutDraft(window.localStorage);
+        const draftStore = draftResult.draft
+          ? loadedStores.find(store => store.id === draftResult.draft?.selectedStoreId)
+          : null;
+        if (draftResult.draft && draftStore) {
+          pendingCheckoutDraftRef.current = draftResult.draft;
+          setCheckoutHydration('RESTORING');
+        } else {
+          if (draftResult.draft && !draftStore) {
+            clearCustomerCheckoutDraft(window.localStorage);
+            setCheckoutDraftNotice('Your saved basket used a store that is no longer available, so it was removed.');
+          }
+          pendingCheckoutDraftRef.current = null;
+          setCheckoutHydration('RESTORED');
+        }
+        const initialStoreId = draftStore?.id || savedStoreId || loadedStores[0]?.id || '';
         setStores(loadedStores);
-        setSelectedStoreId(prev => prev || savedStoreId || loadedStores[0]?.id || '');
-        if (savedStoreId) {
+        setSelectedStoreId(prev => prev || initialStoreId);
+        if (draftStore) {
+          setStorePreferenceMessage(`Restoring your basket from ${draftStore.name}.`);
+        } else if (savedStoreId) {
           const savedStore = loadedStores.find(store => store.id === savedStoreId);
           setStorePreferenceMessage(savedStore ? `Using your default store: ${savedStore.name}.` : '');
         }
@@ -502,9 +623,11 @@ export default function CustomerOrder() {
     const loadAvailability = async () => {
       if (!selectedStoreId) {
         setPublicAvailability(null);
+        setLoadedMenuStoreId('');
         return;
       }
 
+      setLoadedMenuStoreId('');
       setAvailabilityLoading(true);
       try {
         const selectedStore = stores.find(store => store.id === selectedStoreId);
@@ -522,6 +645,7 @@ export default function CustomerOrder() {
           .map(item => ({ ...item, bom: [], bomVersion: 0, recipeCost: 0, grossMargin: 0, cogsPercent: 0 } as CustomerMenuItem))
           .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
         setItems(publicItems);
+        setLoadedMenuStoreId(selectedStoreId);
       } catch (err) {
         console.warn('Customer menu availability snapshot is unavailable; the store will confirm availability.', err);
         if (active) setPublicAvailability(null);
@@ -568,6 +692,10 @@ export default function CustomerOrder() {
           setStorePreferenceMessage(`${closest.store.name} is nearest, but your basket is already started.`);
           return;
         }
+        if (closest.store.id !== selectedStoreId) {
+          clearCustomerCheckoutDraft(window.localStorage);
+          setCheckoutDraftNotice('');
+        }
         setSelectedStoreId(closest.store.id);
         setCategory('ALL');
         setSearch('');
@@ -588,12 +716,13 @@ export default function CustomerOrder() {
   };
 
   useEffect(() => {
+    if (checkoutHydration !== 'RESTORED') return;
     if (stores.length === 0 || triedAutoLocationRef.current) return;
     if (defaultStoreIdFromStorage(stores)) return;
     if (!stores.some(store => storeCoordinate(store))) return;
     triedAutoLocationRef.current = true;
     selectClosestStore({ automatic: true });
-  }, [stores]);
+  }, [checkoutHydration, stores]);
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
@@ -628,6 +757,98 @@ export default function CustomerOrder() {
       return acc;
     }, {});
   }, [storeItems, selectedStoreId, publicAvailability]);
+
+  useEffect(() => {
+    const draft = pendingCheckoutDraftRef.current;
+    if (
+      checkoutHydration !== 'RESTORING'
+      || hydrationAppliedRef.current
+      || !draft
+      || loadedMenuStoreId !== selectedStoreId
+      || draft.selectedStoreId !== selectedStoreId
+    ) {
+      return;
+    }
+
+    hydrationAppliedRef.current = true;
+    const restored = restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>(draft, {
+      items: storeItems,
+      itemId: item => item.id,
+      itemCode: item => item.code,
+      isItemAvailable: item => (
+        itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)
+      ).available,
+      restoreAddOns: (item, savedAddOns: PersistedCheckoutAddOn[]) => {
+        const activeGroups = activeAddOnGroupsForProduct(
+          item.addOnGroupIds,
+          item.addOnOptionIdsByGroup,
+          addOnGroups,
+        );
+        const activeOptions = new Map(activeGroups.map(group => [
+          group.id || '',
+          new Set(group.options.map(option => option.id)),
+        ]));
+        const validAddOns = savedAddOns.filter(addOn => activeOptions.get(addOn.groupId)?.has(addOn.optionId));
+        try {
+          const canonical = canonicalAddOnSelections(
+            item.addOnGroupIds,
+            item.addOnOptionIdsByGroup,
+            addOnGroups,
+            validAddOns as AddOnSelection[],
+            itemTaxRate(item, selectedStoreTaxRate),
+          );
+          return {
+            addOns: canonical,
+            removedCount: savedAddOns.length - validAddOns.length,
+            lineValid: true,
+          };
+        } catch {
+          return {
+            addOns: [],
+            removedCount: savedAddOns.length,
+            lineValid: false,
+          };
+        }
+      },
+      catalogMarker: (item, currentAddOns) => cartLineCatalogMarker(item, currentAddOns, selectedStoreTaxRate),
+    });
+
+    setCart(restored.lines);
+    setPaymentProvider(draft.paymentProvider);
+    setOrderType(draft.orderType);
+    setCustomerName(draft.customerName);
+    setNotes(draft.notes);
+    if (draft.orderType !== 'DINE_IN') setTableNumber('');
+
+    const removedItems = restored.notices.filter(notice => notice.code === 'ITEM_REMOVED').length;
+    const removedAddOns = restored.notices.filter(notice => notice.code === 'ADD_ON_REMOVED').length;
+    const changedPrices = restored.notices.filter(notice => notice.code === 'PRICE_CHANGED').length;
+    const messages = [];
+    if (restored.lines.length > 0) messages.push('Your basket was restored using current menu prices and availability.');
+    if (removedItems > 0) messages.push(`${removedItems} unavailable item${removedItems === 1 ? ' was' : 's were'} removed.`);
+    if (removedAddOns > 0) messages.push(`${removedAddOns} unavailable add-on selection${removedAddOns === 1 ? ' was' : 's were'} removed.`);
+    if (changedPrices > 0) messages.push(`Current pricing changed for ${changedPrices} saved item${changedPrices === 1 ? '' : 's'}.`);
+    setCheckoutDraftNotice(messages.join(' '));
+
+    writeCustomerCheckoutDraft(window.localStorage, {
+      selectedStoreId: draft.selectedStoreId,
+      paymentProvider: draft.paymentProvider,
+      orderType: draft.orderType,
+      customerName: draft.customerName,
+      notes: draft.notes,
+      lines: persistedCheckoutLines(restored.lines, selectedStoreTaxRate),
+    });
+    pendingCheckoutDraftRef.current = null;
+    setCheckoutHydration('RESTORED');
+  }, [
+    addOnGroups,
+    checkoutHydration,
+    itemAvailability,
+    loadedMenuStoreId,
+    selectedStoreId,
+    selectedStoreTaxRate,
+    storeItems,
+  ]);
 
   const categories = useMemo(() => {
     const names = Array.from(new Set(storeItems.map(item => categoryGroupName(item))));
@@ -680,6 +901,38 @@ export default function CustomerOrder() {
     };
   }, [cart, selectedStoreTaxRate]);
 
+  const checkoutDraftInput = useMemo<CustomerCheckoutDraftInput>(() => ({
+    selectedStoreId,
+    paymentProvider,
+    orderType,
+    customerName,
+    notes,
+    lines: persistedCheckoutLines(cart, selectedStoreTaxRate),
+  }), [
+    cart,
+    customerName,
+    notes,
+    orderType,
+    paymentProvider,
+    selectedStoreId,
+    selectedStoreTaxRate,
+  ]);
+
+  useEffect(() => {
+    if (
+      checkoutHydration !== 'RESTORED'
+      || !selectedStoreId
+      || cart.length === 0
+      || confirmation
+    ) {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => {
+      writeCustomerCheckoutDraft(window.localStorage, checkoutDraftInput);
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [cart.length, checkoutDraftInput, checkoutHydration, confirmation, selectedStoreId]);
+
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   const handleStoreChange = (nextStoreId: string) => {
@@ -689,6 +942,8 @@ export default function CustomerOrder() {
       if (!shouldSwitch) return;
     }
     userStoreChoiceRef.current = true;
+    clearCustomerCheckoutDraft(window.localStorage);
+    setCheckoutDraftNotice('');
     setSelectedStoreId(nextStoreId);
     setCart([]);
     setPendingAddOnItem(null);
@@ -718,9 +973,16 @@ export default function CustomerOrder() {
   };
 
   const setLineQuantity = (lineId: string, quantity: number) => {
-    setCart(current => quantity <= 0
-      ? current.filter(line => line.id !== lineId)
-      : current.map(line => line.id === lineId ? { ...line, quantity } : line));
+    setCart(current => {
+      const next = quantity <= 0
+        ? current.filter(line => line.id !== lineId)
+        : current.map(line => line.id === lineId ? { ...line, quantity } : line);
+      if (current.length > 0 && next.length === 0) {
+        clearCustomerCheckoutDraft(window.localStorage);
+        setCheckoutDraftNotice('');
+      }
+      return next;
+    });
   };
 
   const commitCartItem = (
@@ -802,6 +1064,9 @@ export default function CustomerOrder() {
     const cleanPhone = normalizeIndianPhone(customerPhone);
     const cleanTableNumber = tableNumber.trim().replace(/\s+/g, ' ');
     const cleanNotes = notes.trim().slice(0, MAX_NOTE_LENGTH);
+    if (paymentProvider === 'RAZORPAY' && !verifiedCustomer) {
+      return setError('Verify your mobile number before paying online.');
+    }
     if (!cleanCustomerName) return setError('Please enter your name.');
     if (!isValidIndianPhone(customerPhone)) return setError('Please enter a valid 10-digit Indian mobile number.');
     if (orderType === 'DINE_IN' && !cleanTableNumber) return setError('Please enter your table number for dine in.');
@@ -821,7 +1086,7 @@ export default function CustomerOrder() {
         : `${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
     }
 
-    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, cart);
+    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, paymentProvider, cart);
     const lockKey = submissionLockKey(signature);
     let clientIdempotencyKey = createClientIdempotencyKey();
     try {
@@ -846,7 +1111,111 @@ export default function CustomerOrder() {
     submittingRef.current = true;
     setSaving(true);
     setError(null);
+    setPaymentNotice('');
     try {
+      if (paymentProvider === 'RAZORPAY') {
+        const checkoutResult = (await createCustomerCheckoutSession({
+          storeId: selectedStore.id,
+          storeCode: selectedStore.code,
+          customerName: cleanCustomerName,
+          orderType,
+          ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : { tableNumber: null }),
+          notes: cleanNotes,
+          items: cart.map(line => ({
+            itemCode: line.item.code,
+            parentProductId: line.item.id,
+            quantity: line.quantity,
+            addOns: line.addOns.map(addOn => ({
+              groupId: addOn.groupId,
+              optionId: addOn.optionId,
+              quantity: addOn.quantity,
+            })),
+          })),
+          clientIdempotencyKey,
+        })).data;
+        if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
+          const trackingPath = checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`;
+          rememberCustomerOrder(checkoutResult.trackingToken);
+          clearCustomerCheckoutDraft(window.localStorage);
+          setCart([]);
+          navigate(trackingPath);
+          return;
+        }
+        validateRazorpayOrderResponse(checkoutResult);
+        if (!checkoutResult.sessionId) throw new Error('Secure checkout session was not returned.');
+        await loadRazorpayCheckout();
+        const RazorpayCheckout = window.Razorpay;
+        if (!RazorpayCheckout) throw new Error('Online payment could not load. Please retry.');
+        const verifiedOrder = await new Promise<Awaited<ReturnType<typeof verifyCustomerRazorpayPayment>>['data']>((resolve, reject) => {
+          let settled = false;
+          const finish = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            callback();
+          };
+          const checkout = new RazorpayCheckout({
+            key: checkoutResult.keyId,
+            order_id: checkoutResult.razorpayOrderId,
+            amount: checkoutResult.amount,
+            currency: checkoutResult.currency,
+            name: 'Coffee Bond',
+            description: `Coffee Bond · ${selectedStore.name}`,
+            customer_id: checkoutResult.customerId,
+            remember_customer: checkoutResult.rememberCustomer,
+            prefill: checkoutResult.prefill,
+            readonly: checkoutResult.readonly,
+            ...(checkoutResult.magicCheckoutEnabled ? {
+              one_click_checkout: checkoutResult.oneClickCheckout,
+              line_items: checkoutResult.lineItems,
+            } : {}),
+            config: {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay securely',
+                    instruments: [
+                      { method: 'upi' },
+                      { method: 'card' },
+                      { method: 'netbanking' },
+                    ],
+                  },
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: true },
+              },
+            },
+            theme: { color: '#3b261d' },
+            handler: (providerResult) => {
+              verifyCustomerRazorpayPayment({
+                sessionId: checkoutResult.sessionId!,
+                ...providerResult,
+              }).then(result => finish(() => resolve(result.data)))
+                .catch(() => finish(() => reject(new Error(
+                  'Payment confirmation is delayed. Your paid order will be recovered automatically.',
+                ))));
+            },
+            modal: {
+              ondismiss: () => finish(() => reject(new Error(
+                'Payment cancelled. No order was placed. Your cart has been saved.',
+              ))),
+            },
+          });
+          checkout.on('payment.failed', () => finish(() => reject(new Error(
+            'Payment was not completed. No order was placed. You can try again.',
+          ))));
+          checkout.open();
+        });
+        const trackingPath = verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`;
+        rememberCustomerOrder(verifiedOrder.trackingToken);
+        clearCustomerCheckoutDraft(window.localStorage);
+        setCart([]);
+        setNotes('');
+        setTableNumber('');
+        setBasketOpen(false);
+        navigate(trackingPath);
+        return;
+      }
+
       const result = await submitCustomerOrderCallable({
         storeCode: selectedStore.code,
         customerName: cleanCustomerName,
@@ -864,6 +1233,7 @@ export default function CustomerOrder() {
           })),
         })),
         clientIdempotencyKey,
+        paymentProvider,
       });
       const submittedOrder = result.data;
 
@@ -881,6 +1251,8 @@ export default function CustomerOrder() {
         gstTotal: submittedOrder.gstTotal,
         total: submittedOrder.total,
         status: submittedOrder.status,
+        paymentProvider: submittedOrder.paymentProvider,
+        paymentStatus: submittedOrder.paymentStatus,
       });
       try {
         window.localStorage.setItem(lockKey, JSON.stringify({
@@ -892,13 +1264,24 @@ export default function CustomerOrder() {
       } catch {
         // Ignore lock persistence failures after a successful server submission.
       }
+      rememberCustomerOrder(submittedOrder.trackingToken);
+      clearCustomerCheckoutDraft(window.localStorage);
       setCart([]);
       setNotes('');
       setTableNumber('');
       setBasketOpen(false);
     } catch (err) {
       if (import.meta.env.DEV) console.error('Failed to submit online order', err);
-      setError(customerSubmitErrorMessage(err));
+      const message = err instanceof Error ? err.message : '';
+      if (
+        message === 'Payment cancelled. No order was placed. Your cart has been saved.'
+        || message === 'Payment was not completed. No order was placed. You can try again.'
+      ) {
+        setPaymentNotice(message);
+        setError(null);
+      } else {
+        setError(customerSubmitErrorMessage(err));
+      }
     } finally {
       submittingRef.current = false;
       setSaving(false);
@@ -1097,46 +1480,126 @@ export default function CustomerOrder() {
           </div>
 
           <div className="mt-4 space-y-3">
-            <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-            <input
-              value={customerPhone}
-              onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="10-digit mobile number"
-              inputMode="numeric"
-              autoComplete="tel"
-              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-            />
-            <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
-              <option value="PICKUP">Takeaway / pickup</option>
-              <option value="DINE_IN">Dine in</option>
-            </select>
-            {orderType === 'DINE_IN' && (
+            <fieldset className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
+              <legend className="px-1 text-xs font-black uppercase tracking-wider text-neutral-500">Payment</legend>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentProvider('PAY_AT_COUNTER');
+                  }}
+                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
+                    paymentProvider === 'PAY_AT_COUNTER'
+                      ? 'bg-[#3b261d] text-white'
+                      : 'bg-[#fbf5ee] text-[#5c4033]'
+                  }`}
+                >
+                  Pay at counter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentProvider('RAZORPAY')}
+                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
+                    paymentProvider === 'RAZORPAY'
+                      ? 'bg-[#3b261d] text-white'
+                      : 'bg-[#fbf5ee] text-[#5c4033]'
+                  }`}
+                >
+                  Pay online
+                </button>
+              </div>
+              <p className="mt-2 text-xs font-medium text-neutral-500">
+                {paymentProvider === 'RAZORPAY'
+                  ? 'Verify your mobile, then pay securely. The paid order goes straight to the store for confirmation.'
+                  : 'Payment is collected at the store after acceptance.'}
+              </p>
+            </fieldset>
+            {paymentProvider === 'RAZORPAY' && !customerAuthRestored ? (
+              <div className="rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold text-neutral-500">
+                Restoring your verified mobile session...
+              </div>
+            ) : paymentProvider === 'RAZORPAY' ? (
+              <CustomerOtpPanel
+                mobile={customerPhone}
+                verifiedPhone={verifiedCustomer?.normalisedPhone || null}
+                onMobileChange={(mobile) => {
+                  setCustomerPhone(mobile);
+                  setVerifiedCustomer(null);
+                }}
+                onVerified={(profile) => {
+                  setVerifiedCustomer(profile);
+                  setCustomerPhone(profile.normalisedPhone.replace('+91', ''));
+                  if (!customerName.trim() && profile.displayName) setCustomerName(profile.displayName);
+                  if (profile.defaultOrderType) handleOrderTypeChange(profile.defaultOrderType);
+                  setError(null);
+                }}
+              />
+            ) : (
               <input
-                value={tableNumber}
-                onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
-                placeholder="Table number"
+                value={customerPhone}
+                onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                placeholder="10-digit mobile number"
+                inputMode="numeric"
+                autoComplete="tel"
                 className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
               />
             )}
-            <textarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
-              placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
-              rows={3}
-              maxLength={MAX_NOTE_LENGTH}
-              className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-            />
-            <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
+            {(paymentProvider === 'PAY_AT_COUNTER' || verifiedCustomer) && (
+              <>
+                <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
+                <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
+                  <option value="PICKUP">Takeaway / pickup</option>
+                  <option value="DINE_IN">Dine in</option>
+                </select>
+                {orderType === 'DINE_IN' && (
+                  <input
+                    value={tableNumber}
+                    onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
+                    placeholder="Table number"
+                    className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+                  />
+                )}
+                <textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
+                  placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
+                  rows={3}
+                  maxLength={MAX_NOTE_LENGTH}
+                  className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+                />
+                <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
+              </>
+            )}
           </div>
+
+          {paymentNotice && (
+            <p role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
+              {paymentNotice}
+            </p>
+          )}
 
           <button
             onClick={submitOrder}
-            disabled={saving || loading || cart.length === 0 || !selectedStoreOnline}
+            disabled={
+              saving
+              || loading
+              || cart.length === 0
+              || !selectedStoreOnline
+              || (paymentProvider === 'RAZORPAY' && !verifiedCustomer)
+            }
             className="mt-4 w-full rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
-            {saving ? 'Sending request...' : 'Send order request'}
+            {saving
+              ? paymentProvider === 'RAZORPAY' ? 'Opening secure payment...' : 'Sending request...'
+              : paymentProvider === 'RAZORPAY'
+                ? `Pay ${formatMoney(totals.grandTotal)} Online`
+                : 'Send order request'}
           </button>
-          <p className="mt-3 text-center text-xs font-medium text-neutral-500">The store will confirm your order shortly.</p>
+          <p className="mt-3 text-center text-xs font-medium text-neutral-500">
+            {paymentProvider === 'RAZORPAY'
+              ? 'Your cart clears only after payment is verified and the order is created.'
+              : 'The store will confirm your order shortly.'}
+          </p>
         </>
       )}
     </div>
@@ -1146,13 +1609,22 @@ export default function CustomerOrder() {
     return (
       <div className="min-h-[100dvh] bg-[#f8efe6] px-4 py-5 font-sans text-neutral-900">
         <div className="mx-auto max-w-md">
-          <header className="mb-4 flex items-center gap-3">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-10 w-10 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div>
-              <p className="text-xs font-black tracking-[0.18em] text-[#9a6a45]">COFFEE BOND</p>
-              <h1 className="text-lg font-black text-[#2d2019]">Order ahead</h1>
-            </div>
-          </header>
+          <div className="-mx-4 -mt-5 mb-4">
+            <CustomerHeader
+              title="Order ahead"
+              profile={verifiedCustomer}
+              authRestored={customerAuthRestored}
+              onProfileUpdated={(profile) => {
+                setVerifiedCustomer(profile);
+                setCustomerName(profile.displayName);
+                handleOrderTypeChange(profile.defaultOrderType);
+              }}
+              onSignedOut={() => {
+                setVerifiedCustomer(null);
+                setCustomerPhone('');
+              }}
+            />
+          </div>
 
           <div className="rounded-3xl bg-white p-5 text-center shadow-sm ring-1 ring-[#eadfd2]">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
@@ -1214,7 +1686,9 @@ export default function CustomerOrder() {
                 </div>
               </div>
               <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-900">
-                Payment: Pay at counter after the store accepts your request.
+                {confirmation.paymentProvider === 'RAZORPAY'
+                  ? 'Payment: The store will review your order first. Pay Online appears on tracking after acceptance.'
+                  : 'Payment: Pay at counter after the store accepts your request.'}
               </div>
             </div>
 
@@ -1246,15 +1720,21 @@ export default function CustomerOrder() {
 
   return (
     <div className={`min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] ${itemCount > 0 ? 'pb-24' : 'pb-6'} lg:pb-8`}>
-      <header className="sticky top-0 z-30 border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur">
-        <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-3 lg:max-w-6xl">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-8 w-8 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div className="min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#8b5e42]">Coffee Bond</p>
-              <h1 className="truncate text-base font-black leading-tight text-[#271a16]">Order ahead</h1>
-            </div>
-          </div>
+      <CustomerHeader
+        sticky
+        title="Order ahead"
+        profile={verifiedCustomer}
+        authRestored={customerAuthRestored}
+        onProfileUpdated={(profile) => {
+          setVerifiedCustomer(profile);
+          setCustomerName(profile.displayName);
+          handleOrderTypeChange(profile.defaultOrderType);
+        }}
+        onSignedOut={() => {
+          setVerifiedCustomer(null);
+          setCustomerPhone('');
+        }}
+        rightSlot={(
           <button
             onClick={() => setBasketOpen(true)}
             className="relative inline-flex h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
@@ -1267,8 +1747,8 @@ export default function CustomerOrder() {
               </span>
             )}
           </button>
-        </div>
-      </header>
+        )}
+      />
 
       <main className="mx-auto grid w-full min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
         <section className="min-w-0 space-y-4">
@@ -1315,6 +1795,11 @@ export default function CustomerOrder() {
               {availabilityNotice}
             </div>
           ) : null}
+          {checkoutDraftNotice && (
+            <div role="status" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
+              {checkoutDraftNotice}
+            </div>
+          )}
 
           <label className="flex h-12 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
             <Search size={18} className="shrink-0 text-[#8b5e42]" />

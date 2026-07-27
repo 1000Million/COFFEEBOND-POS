@@ -17,6 +17,7 @@ import InactiveProfile from './pages/InactiveProfile';
 
 const CustomerOrder = lazy(() => import('./pages/customer/CustomerOrder'));
 const CustomerOrderStatus = lazy(() => import('./pages/customer/CustomerOrderStatus'));
+const CustomerMyOrders = lazy(() => import('./pages/customer/CustomerMyOrders'));
 const KOTScreen = lazy(() => import('./pages/kot/KOTScreen'));
 const ReadyToServe = lazy(() => import('./pages/kot/ReadyToServe'));
 const ReportsHome = lazy(() => import('./pages/reports/ReportsHome'));
@@ -117,6 +118,7 @@ export default function App() {
           <Routes>
             <Route path="/order" element={<CustomerOrder />} />
             <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
+            <Route path="/order/my-orders" element={<CustomerMyOrders />} />
             <Route path="/login" element={<LoginRoute />} />
             <Route path="/franchise/login" element={<FranchiseLoginRoute />} />
             <Route element={<ProtectedRoute allowedRoles={['FRANCHISE_VIEWER']} signInPath="/franchise/login" />}>

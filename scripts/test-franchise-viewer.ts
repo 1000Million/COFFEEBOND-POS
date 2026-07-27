@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import policy from '../functions/franchiseSalesPolicy.js';
+import { buildFranchiseDailyDataset } from '../functions/reportingCore.mjs';
 import { buildFranchiseSalesCsv, FranchiseDailySalesResponse } from '../frontend/lib/franchiseSales';
 
 const {
@@ -161,6 +162,48 @@ test('legacy missing status defaults to completed without being counted paid', s
 test('category summary uses only completed commercial order items', summary.categorySales.length === 2 && summary.categorySales.some((row: any) => row.categoryName === 'Coffee'));
 test('hourly summary uses the India business timezone', summary.hourlySales.length === 1 && summary.hourlySales[0].hour === 12);
 
+const canonicalFranchiseBaseline = buildFranchiseDailyDataset(records);
+const paymentFirstSummary = buildFranchiseDailyDataset(records, 'Asia/Kolkata', [
+  {
+    paymentProvider: 'RAZORPAY',
+    paymentStatus: 'PAID',
+    status: 'PAID_PENDING_ACCEPTANCE',
+    grandTotal: 350,
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    createdAt,
+  },
+  {
+    paymentProvider: 'RAZORPAY',
+    paymentStatus: 'REFUNDED',
+    status: 'CANCELLED_REFUNDED',
+    grandTotal: 200,
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    createdAt,
+  },
+  {
+    paymentProvider: 'RAZORPAY',
+    paymentStatus: 'PAID',
+    status: 'CONVERTED',
+    linkedOrderId: 'WEB_RZP_ACCEPTED',
+    grandTotal: 210,
+    storeId: 'GOLDEN_I',
+    storeName: 'Golden I',
+    createdAt,
+  },
+]);
+test('unlinked gateway captures are included in franchise collections, not net sales',
+  paymentFirstSummary.metrics.gatewayPaymentsCaptured === 550
+  && paymentFirstSummary.metrics.netSales === canonicalFranchiseBaseline.metrics.netSales);
+test('processed pre-acceptance refunds reduce franchise net collections exactly once',
+  paymentFirstSummary.metrics.gatewayRefundsProcessed === 200
+  && paymentFirstSummary.metrics.gatewayRefundsPending === 0);
+test('accepted Razorpay order is not counted twice in franchise gateway collections',
+  paymentFirstSummary.metrics.gatewayPaymentsCaptured === 550);
+test('paid pending acceptance is visible as a separate franchise metric',
+  paymentFirstSummary.metrics.paidPendingAcceptance === 1);
+
 const serializedOrders = JSON.stringify(summary.orders);
 for (const forbidden of ['Private Customer', 'staff-secret', 'staff@example.com', 'createdByUserId', 'customerName']) {
   test(`sanitized drilldown excludes ${forbidden}`, !serializedOrders.includes(forbidden));
@@ -195,6 +238,10 @@ test('inactive Admin cannot manage Franchise Viewers', functionSource.includes('
 test('Admin SDK manages Auth users without exposing passwords to Firestore', functionSource.includes('auth.createUser') && !functionSource.includes('temporaryPassword: request.data?.temporaryPassword'));
 test('duplicate usernames are rejected by normalized username and Auth email', functionSource.includes("where('usernameNormalized', '==', username)") && functionSource.includes('getUserByEmail(email)'));
 test('franchise report access is logged without order payloads', functionSource.includes("'franchise-daily-sales-access'") && !functionSource.includes('console.info(order'));
+test('franchise callable loads gateway orders without returning private customer fields',
+  functionSource.includes("db.collection('onlineOrders')")
+  && functionSource.includes('buildFranchiseDailyDataset(')
+  && !dashboardSource.includes('razorpayCustomerId'));
 test('viewer has dedicated routes', appSource.includes('/franchise/login') && appSource.includes('/franchise/daily-sales'));
 test('viewer route is isolated from operational layout', appSource.indexOf('path="/franchise/daily-sales"') < appSource.indexOf('Main App Layout'));
 test('dashboard has no direct Firestore import', !dashboardSource.includes('firebase/firestore') && !dashboardSource.includes("collection(db"));

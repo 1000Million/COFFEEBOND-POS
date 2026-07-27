@@ -8,6 +8,7 @@ const { createComplimentaryAuthorizationFunction } = require('./complimentaryAut
 const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization');
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
 const { createReportingFunctions } = require('./reporting');
+const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 
 admin.initializeApp();
@@ -45,8 +46,20 @@ exports.updateStoreConfiguration = storeProvisioningFunctions.updateStoreConfigu
 exports.activateStore = storeProvisioningFunctions.activateStore;
 exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOrdering;
 
+const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
+exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
+exports.updateCustomerProfile = razorpayCheckoutFunctions.updateCustomerProfile;
+exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;
+exports.verifyCustomerRazorpayPayment = razorpayCheckoutFunctions.verifyCustomerRazorpayPayment;
+exports.listMyCustomerOrders = razorpayCheckoutFunctions.listMyCustomerOrders;
+exports.acceptPaidRazorpayOrder = razorpayCheckoutFunctions.acceptPaidRazorpayOrder;
+exports.cancelAndRefundRazorpayOrder = razorpayCheckoutFunctions.cancelAndRefundRazorpayOrder;
+exports.razorpayWebhook = razorpayCheckoutFunctions.razorpayWebhook;
+
 function publicStatusMessage(status) {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';
+  if (status === 'ACCEPTED_AWAITING_PAYMENT') return 'Your order is accepted. Complete payment to begin preparation.';
+  if (status === 'PAYMENT_REVIEW_REQUIRED') return 'Payment was received, but the store must review fulfilment before preparation.';
   if (status === 'ACCEPTED' || status === 'CONVERTED') return 'Your order has been accepted and is being prepared.';
   if (status === 'PREPARING') return 'Your order is being prepared.';
   if (status === 'READY') return 'Your order is ready for pickup.';
@@ -311,6 +324,7 @@ function buildOnlineOrderPayload(args) {
     totals,
     trackingToken,
     publicOrderReference,
+    paymentProvider,
   } = args;
 
   return {
@@ -328,6 +342,9 @@ function buildOnlineOrderPayload(args) {
     grandTotal: totals.grandTotal,
     status: 'PENDING',
     source: 'CUSTOMER_WEB',
+    paymentProvider,
+    paymentMethod: paymentProvider === 'RAZORPAY' ? 'ONLINE' : 'PAY_AT_COUNTER',
+    paymentStatus: 'NOT_STARTED',
     trackingToken,
     publicOrderReference,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -359,6 +376,8 @@ function buildPublicTrackingPayload(args) {
     gstTotal: onlineOrder.gstTotal,
     total: onlineOrder.grandTotal,
     publicStatus: 'PENDING',
+    paymentProvider: onlineOrder.paymentProvider,
+    paymentStatus: onlineOrder.paymentStatus,
     submittedAt: admin.firestore.FieldValue.serverTimestamp(),
     customerStatusMessage: publicStatusMessage('PENDING'),
   };
@@ -376,6 +395,8 @@ function responseFromPublicPayload(payload) {
     gstTotal: payload.gstTotal,
     total: payload.total,
     status: payload.publicStatus,
+    paymentProvider: payload.paymentProvider,
+    paymentStatus: payload.paymentStatus,
     customerStatusMessage: payload.customerStatusMessage,
   };
 }
@@ -389,6 +410,10 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
   const tableNumber = orderType === 'DINE_IN' ? cleanText(data.tableNumber, MAX_TABLE_LENGTH) : '';
   const notes = cleanText(data.notes, MAX_NOTE_LENGTH);
   const clientIdempotencyKey = cleanText(data.clientIdempotencyKey, 200);
+  if (data.paymentProvider === 'RAZORPAY') {
+    fail('failed-precondition', 'Pay Online must use verified mobile checkout.');
+  }
+  const paymentProvider = 'PAY_AT_COUNTER';
   const requestedItems = sanitizeItemRequest(data.items);
 
   if (!storeCode) fail('invalid-argument', 'Please select a store.');
@@ -405,6 +430,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     tableNumber: orderType === 'DINE_IN' ? tableNumber : null,
     notes,
     items: requestedItems,
+    paymentProvider,
   };
   const canonicalRequestHash = requestHash(canonicalRequest);
   const submissionId = hashId(`${storeCode}:${customerPhone}:${clientIdempotencyKey}`);
@@ -520,6 +546,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       totals,
       trackingToken,
       publicOrderReference,
+      paymentProvider,
     });
     const publicTracking = buildPublicTrackingPayload({
       onlineOrder,
