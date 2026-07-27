@@ -105,6 +105,32 @@ function safeDocId(value) {
   return String(value).replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
+function insufficientStockBlockers(groupedMovements, store) {
+  const blockers = [];
+  for (const entries of groupedMovements.values()) {
+    const row = entries[0].stock;
+    const requiredQuantity = round(entries.reduce((sum, entry) => sum + entry.quantity, 0));
+    if (row.currentStock >= requiredQuantity) continue;
+    const affectedItems = [...new Set(entries.map(entry => entry.finishedGoodName).filter(Boolean))];
+    blockers.push({
+      itemName: affectedItems.join(', ') || row.name,
+      itemCode: entries[0].finishedGoodCode,
+      finishedGoodCode: entries[0].finishedGoodCode,
+      blockerType: 'INSUFFICIENT_STOCK',
+      storeId: store.id,
+      storeName: store.name,
+      componentType: row.type,
+      componentCode: row.code,
+      componentName: row.name,
+      requiredQuantity,
+      availableQuantity: row.currentStock,
+      unit: row.unit,
+      suggestedAdminAction: `Receive or correct ${row.name} stock before accepting this paid order.`,
+    });
+  }
+  return blockers;
+}
+
 async function planOnlineOrderInventory({
   transaction,
   db,
@@ -116,6 +142,7 @@ async function planOnlineOrderInventory({
   businessDate,
   staff,
   lines,
+  requireAvailableStock = false,
 }) {
   const blockers = [];
   const warnings = [];
@@ -478,6 +505,15 @@ async function planOnlineOrderInventory({
     if (!grouped.has(movement.stock.id)) grouped.set(movement.stock.id, []);
     grouped.get(movement.stock.id).push(movement);
   }
+  if (requireAvailableStock) {
+    blockers.push(...insufficientStockBlockers(grouped, store));
+    if (blockers.length > 0) {
+      return {
+        blockers, warnings, stockUpdates: [], movementPayloads: [], pendingConsumptionPayloads: [],
+        totalCogs: 0, perLineCogs: {}, perLineConsumptionStatus: {},
+      };
+    }
+  }
   const stockUpdates = [];
   const movementPayloads = [];
   for (const [id, entries] of grouped.entries()) {
@@ -572,6 +608,7 @@ async function planOnlineOrderInventory({
 
 module.exports = {
   convert,
+  insufficientStockBlockers,
   inventoryPolicy,
   packagingApplies,
   planOnlineOrderInventory,

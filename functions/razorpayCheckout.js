@@ -320,7 +320,7 @@ async function finalizePaidOnlineOrder({
     if (intent.providerOrderId !== providerOrder.id || providerPayment.order_id !== intent.providerOrderId) {
       fail('failed-precondition', 'Provider order does not match this payment intent.');
     }
-    const isPaymentFirstAcceptance = onlineOrder.status === 'PAID_PENDING_ACCEPTANCE'
+    const isPaymentFirstAcceptance = ['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS].includes(onlineOrder.status)
       && onlineOrder.paymentStatus === PAID_STATUS;
     if (
       !isPaymentFirstAcceptance
@@ -493,24 +493,25 @@ async function finalizePaidOnlineOrder({
         finishedGood: line.finishedGood,
         addOns: line.addOns,
       })),
+      requireAvailableStock: true,
     });
     if (inventoryPlan.blockers.length > 0) {
       const blockerCode = inventoryPlan.blockers.map(blocker => blocker.blockerType).join('|').slice(0, 240);
       transaction.update(intentRef, {
-        status: REVIEW_STATUS,
+        status: PAID_STATUS,
         failureCode: `INVENTORY_${blockerCode}`,
         safeProviderPaymentId: providerPayment.id,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.update(onlineOrderRef, {
         status: REVIEW_STATUS,
-        paymentStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
         paymentReviewCode: `INVENTORY_${blockerCode}`,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
         publicStatus: REVIEW_STATUS,
-        paymentStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
         customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
       }, { merge: true });
       return { reviewRequired: true, code: 'INVENTORY_REVALIDATION_FAILED_AFTER_PAYMENT' };

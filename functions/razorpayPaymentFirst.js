@@ -814,7 +814,10 @@ async function acceptPaidOrder({ request, db, admin }) {
       orderNumber: order.linkedOrderNumber,
     };
   }
-  if (order.status !== 'PAID_PENDING_ACCEPTANCE' || order.paymentStatus !== 'PAID') {
+  if (
+    !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS].includes(order.status)
+    || order.paymentStatus !== 'PAID'
+  ) {
     fail('failed-precondition', 'This paid order is not awaiting acceptance.');
   }
   const intentSnapshot = await db.collection(PAYMENT_INTENT_COLLECTION).doc(order.checkoutSessionId).get();

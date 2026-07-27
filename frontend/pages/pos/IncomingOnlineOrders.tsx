@@ -10,7 +10,14 @@ import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/public
 
 const acceptPaidRazorpayOrder = httpsCallable<
   { onlineOrderId: string },
-  { orderId: string; orderNumber: string; kotCount: number; stockMovementCount: number }
+  {
+    orderId?: string;
+    orderNumber?: string;
+    kotCount?: number;
+    stockMovementCount?: number;
+    reviewRequired?: boolean;
+    code?: string;
+  }
 >(functions, 'acceptPaidRazorpayOrder');
 const cancelAndRefundRazorpayOrder = httpsCallable<
   { onlineOrderId: string; reason: string; confirmation: string },
@@ -157,6 +164,11 @@ export default function IncomingOnlineOrders() {
     try {
       if (order.paymentProvider === 'RAZORPAY') {
         const paidResult = await acceptPaidRazorpayOrder({ onlineOrderId: order.id });
+        if (paidResult.data.reviewRequired) {
+          await loadOrders(order.storeId);
+          setError('Payment is captured, but acceptance is blocked by current inventory. No POS order, KOT, or stock deduction was created. Fix stock and retry, or ask a Manager/Admin to issue a full refund.');
+          return;
+        }
         setMessage(`Accepted paid order and created POS order ${paidResult.data.orderNumber}. KOT rows: ${paidResult.data.kotCount}; stock movements: ${paidResult.data.stockMovementCount}.`);
         await loadOrders(order.storeId);
         return;
@@ -405,7 +417,8 @@ export default function IncomingOnlineOrders() {
                         Reject
                       </button>
                     )}
-                    {(order.paymentProvider !== 'RAZORPAY' || order.status === 'PAID_PENDING_ACCEPTANCE') && (
+                    {(order.paymentProvider !== 'RAZORPAY'
+                      || ['PAID_PENDING_ACCEPTANCE', 'PAYMENT_REVIEW_REQUIRED'].includes(order.status)) && (
                       <button
                         onClick={() => handleAccept(order)}
                         disabled={isBusy}
@@ -413,7 +426,9 @@ export default function IncomingOnlineOrders() {
                       >
                         {isBusy ? (
                           <span className="inline-flex items-center gap-2"><Clock size={15} /> Working...</span>
-                        ) : order.paymentProvider === 'RAZORPAY' ? 'Accept paid order' : 'Accept into POS'}
+                        ) : order.paymentProvider === 'RAZORPAY'
+                          ? order.status === 'PAYMENT_REVIEW_REQUIRED' ? 'Retry acceptance' : 'Accept paid order'
+                          : 'Accept into POS'}
                       </button>
                     )}
                     {order.paymentProvider === 'RAZORPAY'

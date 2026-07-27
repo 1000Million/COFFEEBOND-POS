@@ -9,11 +9,13 @@ const root = resolve(import.meta.dirname, '..');
 const policy = require(resolve(root, 'functions/razorpayCheckoutPolicy.js'));
 const paymentFirst = require(resolve(root, 'functions/razorpayPaymentFirst.js'));
 const checkoutBackend = require(resolve(root, 'functions/razorpayCheckout.js'));
+const onlineOrderInventory = require(resolve(root, 'functions/onlineOrderInventory.js'));
 const reporting = await import(resolve(root, 'functions/reportingCore.mjs'));
 
 const source = path => readFileSync(resolve(root, path), 'utf8');
 const backend = source('functions/razorpayPaymentFirst.js');
 const legacyBackend = source('functions/razorpayCheckout.js');
+const inventorySource = source('functions/onlineOrderInventory.js');
 const functionsIndex = source('functions/index.js');
 const customerAuth = source('frontend/lib/customerAuth.ts');
 const customerOrder = source('frontend/pages/customer/CustomerOrder.tsx');
@@ -169,7 +171,8 @@ test('33. Reservation releases on cancellation and refund', () => {
   assert.match(backend, /releaseReason: 'REFUND_REQUESTED'/);
 });
 test('34. Refunded order cannot be accepted', () => {
-  assert.match(backend, /order\.status !== 'PAID_PENDING_ACCEPTANCE'/);
+  assert.match(backend, /!\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(order\.status\)/);
+  assert.match(backend, /order\.paymentStatus !== 'PAID'/);
 });
 test('35. Accepted or preparing order is not silently refunded', () => {
   assert.match(backend, /Only an unaccepted captured Razorpay order can be refunded here/);
@@ -485,6 +488,118 @@ test('80. Failed payment paths do not clear the persisted checkout draft', () =>
   assert.doesNotMatch(failedFlow, /clearCustomerCheckoutDraft/);
 });
 
+function inventoryMovement({
+  stockId = 'GOLDEN_I_RAW_INGREDIENT_SOURDOUGH_BREAD',
+  currentStock,
+  requiredQuantity,
+  finishedGoodCode = 'BREAD_2_SLICES',
+  stockCode = 'SOURDOUGH_BREAD',
+  stockType = 'RAW_INGREDIENT',
+}) {
+  return {
+    stock: {
+      id: stockId,
+      exists: true,
+      type: stockType,
+      code: stockCode,
+      name: 'Sourdough Bread',
+      currentStock,
+      unit: 'PCS',
+    },
+    quantity: requiredQuantity,
+    finishedGoodCode,
+    finishedGoodName: 'Bread (2 Slices)',
+  };
+}
+
+function availabilityBlockers(movements) {
+  const grouped = new Map();
+  for (const movement of movements) {
+    if (!grouped.has(movement.stock.id)) grouped.set(movement.stock.id, []);
+    grouped.get(movement.stock.id).push(movement);
+  }
+  return onlineOrderInventory.insufficientStockBlockers(grouped, {
+    id: 'GOLDEN_I',
+    name: 'Golden I',
+  });
+}
+
+test('81. Zero stock blocks paid Razorpay acceptance', () => {
+  const blockers = availabilityBlockers([inventoryMovement({ currentStock: 0, requiredQuantity: 2 })]);
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].blockerType, 'INSUFFICIENT_STOCK');
+  assert.equal(blockers[0].availableQuantity, 0);
+});
+test('82. Negative stock blocks paid Razorpay acceptance', () => {
+  const blockers = availabilityBlockers([inventoryMovement({ currentStock: -1, requiredQuantity: 2 })]);
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].availableQuantity, -1);
+});
+test('83. Stock below the aggregate required quantity blocks acceptance', () => {
+  const movements = [
+    inventoryMovement({ currentStock: 3, requiredQuantity: 2 }),
+    inventoryMovement({ currentStock: 3, requiredQuantity: 2 }),
+  ];
+  const blockers = availabilityBlockers(movements);
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].requiredQuantity, 4);
+  assert.equal(blockers[0].availableQuantity, 3);
+});
+test('84. Exact required stock passes acceptance validation', () => {
+  assert.deepEqual(
+    availabilityBlockers([inventoryMovement({ currentStock: 2, requiredQuantity: 2 })]),
+    [],
+  );
+});
+test('85. Sufficient stock passes acceptance validation', () => {
+  assert.deepEqual(
+    availabilityBlockers([inventoryMovement({ currentStock: 5, requiredQuantity: 2 })]),
+    [],
+  );
+});
+test('86. An unrelated inventory row cannot satisfy the mapped item', () => {
+  const blockers = availabilityBlockers([
+    inventoryMovement({ currentStock: -1, requiredQuantity: 2 }),
+    inventoryMovement({
+      stockId: 'GOLDEN_I_RAW_INGREDIENT_OTHER_BREAD',
+      currentStock: 100,
+      requiredQuantity: 1,
+      stockCode: 'OTHER_BREAD',
+    }),
+  ]);
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].componentCode, 'SOURDOUGH_BREAD');
+});
+test('87. DIRECT_STOCK items are scheduled against their exact finished-good row', () => {
+  const directStockBranch = inventorySource.slice(
+    inventorySource.indexOf('if (directStock(item))'),
+    inventorySource.indexOf('perLineConsumptionStatus[line.lineKey] = await addOnInventory', inventorySource.indexOf('if (directStock(item))')),
+  );
+  assert.match(directStockBranch, /schedule\(line, 'FINISHED_GOOD', item\.code/);
+  assert.match(legacyBackend, /requireAvailableStock: true/);
+});
+test('88. Failed paid acceptance writes review state before any operational records', () => {
+  const blockerBranch = legacyBackend.slice(
+    legacyBackend.indexOf('if (inventoryPlan.blockers.length > 0)'),
+    legacyBackend.indexOf('inventoryPlan.stockUpdates.forEach'),
+  );
+  assert.doesNotMatch(blockerBranch, /transaction\.create\(/);
+  assert.match(blockerBranch, /paymentStatus: PAID_STATUS/);
+  assert.match(blockerBranch, /return \{ reviewRequired: true/);
+});
+test('89. Review-state paid orders remain retryable and refundable', () => {
+  assert.match(backend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(order\.status\)/);
+  assert.match(legacyBackend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(onlineOrder\.status\)/);
+  assert.match(backend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'\]\.includes\(order\.status\)/);
+});
+test('90. Acceptance retry remains idempotent for POS KOT and stock records', () => {
+  assert.match(legacyBackend, /intent\.status === PAID_STATUS && existingPosOrderSnapshot\.exists/);
+  assert.match(legacyBackend, /existingPosOrderSnapshot\.exists[\s\S]{0,120}already-exists/);
+  assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_SALE_\$\{String\(index \+ 1\)\.padStart\(3, '0'\)\}`\)/);
+  assert.match(incoming, /paidResult\.data\.reviewRequired/);
+  assert.match(incoming, /'Retry acceptance'/);
+});
+
 let passed = 0;
 for (const { name, run } of tests) {
   try {
@@ -497,5 +612,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 80);
+assert.equal(tests.length, 90);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);
