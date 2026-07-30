@@ -100,6 +100,7 @@ const LEGAL_RECEIPT_FIELDS = Object.freeze([
   'stateName',
   'stateCode',
   'gstRegistered',
+  'gstRate',
   'receiptName',
   'receiptFooter',
   'invoiceNumbering',
@@ -120,6 +121,23 @@ const READINESS_KEYS = Object.freeze([
 ]);
 
 const CUSTOMER_ORDERING_READINESS_KEY = 'customerOrderingTestCompleted';
+
+const READINESS_STEP_LABELS = Object.freeze({
+  basicDetailsComplete: 'Store details',
+  legalGstReviewed: 'Legal and GST',
+  menuCopied: 'Menu copy',
+  productAvailabilityReviewed: 'Products',
+  addOnsReviewed: 'Add-ons',
+  kotRoutingReviewed: 'KOT routing',
+  inventoryStructureCreated: 'Inventory rows',
+  openingStockReviewed: 'Opening stock',
+  receiptConfigurationReviewed: 'Receipt',
+  staffAssigned: 'Staff',
+  posTestCompleted: 'Internal POS test',
+  customerOrderingTestCompleted: 'Customer-ordering test',
+});
+
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z0-9]{10}[0-9A-Z][Z][0-9A-Z]$/;
 
 const NEVER_COPY_COLLECTIONS = Object.freeze([
   'orders',
@@ -190,6 +208,7 @@ function validateLocationDetails(input = {}) {
     email: text(input.email, 160).toLowerCase(),
     gstRegistered: input.gstRegistered === true,
     gstin: text(input.gstin, 20).toUpperCase(),
+    gstRate: Number.isFinite(Number(input.gstRate)) ? Number(input.gstRate) : 0,
     receiptName: text(input.receiptName, 100),
     receiptFooter: text(input.receiptFooter, 240),
     timezone: text(input.timezone || 'Asia/Kolkata', 60),
@@ -222,8 +241,11 @@ function validateLocationDetails(input = {}) {
   if (!details.gstDecisionReviewed) {
     addIssue('gstDecisionReviewed', 'GST_DECISION_REQUIRED', 'Confirm whether this location is GST registered.');
   }
-  if (details.gstRegistered && !/^[0-9]{2}[A-Z0-9]{10}[0-9A-Z][Z][0-9A-Z]$/.test(details.gstin)) {
+  if (details.gstRegistered && !GSTIN_PATTERN.test(details.gstin)) {
     addIssue('gstin', 'INVALID_GSTIN', 'A valid GSTIN is required for a GST-registered location.');
+  }
+  if (details.gstRegistered && details.gstRate <= 0) {
+    addIssue('gstRate', 'GST_RATE_REQUIRED', 'A positive GST rate is required for a GST-registered location.');
   }
   if (!details.receiptReviewComplete) {
     addIssue('receiptReviewComplete', 'RECEIPT_REVIEW_REQUIRED', 'Confirm that receipt name and footer have been reviewed.');
@@ -301,6 +323,7 @@ function buildDraftStorePayload({
     ? source.gstRegistered === true
     : details.gstRegistered;
   const gstin = copyLegal && sourceHas('gstin') ? text(source.gstin, 20).toUpperCase() : details.gstin;
+  const gstRate = copyLegal && sourceHas('gstRate') ? Number(source.gstRate) || 0 : details.gstRate;
   const receiptName = copyLegal && sourceHas('receiptName') ? text(source.receiptName, 100) : details.receiptName;
   const receiptFooter = copyLegal && sourceHas('receiptFooter') ? text(source.receiptFooter, 240) : details.receiptFooter;
   const legalEntityName = copyLegal && sourceHas('legalEntityName')
@@ -322,6 +345,7 @@ function buildDraftStorePayload({
     email: details.email,
     gstRegistered,
     ...(gstRegistered ? { gstin } : { gstin: '' }),
+    gstRate: gstRegistered ? gstRate : 0,
     receiptName,
     receiptFooter,
     timezone: details.timezone,
@@ -361,25 +385,36 @@ function readinessResult(store = {}, counts = {}) {
     && text(store.state)
     && /^[1-9][0-9]{5}$/.test(text(store.pinCode)),
   );
+  const gstRegistered = store.gstRegistered === true;
+  const legalGstReviewed = gstRegistered
+    ? GSTIN_PATTERN.test(text(store.gstin, 20).toUpperCase()) && Number(store.gstRate || counts.gstRate || 0) > 0
+    : (store.gstin ? false : true);
+  const receiptConfigurationReviewed = Boolean(text(store.receiptName || store.tradeName || store.name || store.displayName));
+  const menuProductCount = Number(counts.menuProductCount || 0);
+  const inventoryRowCount = Number(counts.inventoryRowCount || 0);
+  const invalidProductAvailabilityCount = Number(counts.invalidProductAvailabilityCount || 0);
+  const invalidAddOnReferenceCount = Number(counts.invalidAddOnReferenceCount || 0);
+  const invalidKotRoutingCount = Number(counts.invalidKotRoutingCount || 0);
   const resolved = {
     basicDetailsComplete,
-    legalGstReviewed: configured.legalGstReviewed === true,
-    menuCopied: configured.menuCopied === true && Number(counts.menuProductCount || 0) > 0,
-    productAvailabilityReviewed: configured.productAvailabilityReviewed === true,
-    addOnsReviewed: configured.addOnsReviewed === true,
-    kotRoutingReviewed: configured.kotRoutingReviewed === true,
+    legalGstReviewed,
+    menuCopied: menuProductCount > 0,
+    productAvailabilityReviewed: menuProductCount > 0 && invalidProductAvailabilityCount === 0,
+    addOnsReviewed: invalidAddOnReferenceCount === 0,
+    kotRoutingReviewed: invalidKotRoutingCount === 0,
     inventoryStructureCreated: configured.inventoryStructureCreated === true
-      && Number(counts.inventoryRowCount || 0) > 0,
-    openingStockReviewed: configured.openingStockReviewed === true,
-    receiptConfigurationReviewed: configured.receiptConfigurationReviewed === true,
+      && inventoryRowCount > 0,
+    openingStockReviewed: configured.openingStockReviewed === true || store.openingStockConfirmed === true,
+    receiptConfigurationReviewed,
     staffAssigned: Number(counts.staffCount || 0) > 0,
-    posTestCompleted: configured.posTestCompleted === true,
+    posTestCompleted: configured.posTestCompleted === true || store.posTestCompleted === true,
     customerOrderingTestCompleted: configured.customerOrderingTestCompleted === true,
   };
   const blockingKeys = READINESS_KEYS.filter((key) => resolved[key] !== true);
   return {
     checks: resolved,
     blockingKeys,
+    friendlyBlockingSteps: blockingKeys.map((key) => READINESS_STEP_LABELS[key] || key),
     posReady: blockingKeys.length === 0,
     customerOrderingReady: blockingKeys.length === 0
       && resolved.customerOrderingTestCompleted
@@ -434,6 +469,7 @@ function provisioningRequestChecksum(input = {}) {
     templateMode: input.templateMode || 'BLANK',
     sourceStoreId: input.sourceStoreId || '',
     selectedModules: [...(input.selectedModules || [])].sort(),
+    staffAssignmentUids: [...(input.staffAssignmentUids || [])].sort(),
     inventoryOption: input.inventoryOption || 'STRUCTURE_ONLY',
     inventoryReason: input.inventoryReason || '',
     confirmDuplicateName: input.confirmDuplicateName === true,
@@ -461,6 +497,7 @@ module.exports = {
   NEVER_COPY_COLLECTIONS,
   OPERATING_FIELDS,
   READINESS_KEYS,
+  READINESS_STEP_LABELS,
   RECOMMENDED_MODULE_IDS,
   STORE_CODE_PATTERN,
   buildDraftStorePayload,

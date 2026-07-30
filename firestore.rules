@@ -651,7 +651,10 @@ service cloud.firestore {
         || (!isSignedIn() && resource.data.isActive == true)
         || (
           isActiveStaff()
-          && resource.data.isActive == true
+          && (
+            resource.data.isActive == true
+            || (isStoreManager() && resource.data.internalPosTestEnabled == true)
+          )
           && hasStoreAccess(storeId)
         );
       // All store mutations use Admin SDK callables so provisioning, immutable
@@ -660,6 +663,11 @@ service cloud.firestore {
     }
 
     match /storeProvisioningJobs/{jobId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /storeProvisioningAudit/{auditId} {
       allow read: if isAdmin();
       allow create, update, delete: if false;
     }

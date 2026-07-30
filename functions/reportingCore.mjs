@@ -177,6 +177,12 @@ export function isComplimentaryOrder(order) {
     && order.paymentBreakdown.some((payment) => payment?.method === 'COMPLIMENTARY');
 }
 
+export function isSetupTestOrder(order) {
+  return order?.isSetupTest === true
+    || order?.setupTestMode === true
+    || String(order?.setupTestLabel || '').toUpperCase() === 'SETUP TEST';
+}
+
 export function effectiveOrderStatus(order) {
   if (order?.status === 'VOIDED') return 'VOIDED';
   if (order?.status === 'CANCELLED') return 'CANCELLED';
@@ -424,7 +430,9 @@ export function normalizeOrderRecord(record) {
 }
 
 export function normalizeRecords(records) {
-  return (Array.isArray(records) ? records : []).map(normalizeOrderRecord);
+  return (Array.isArray(records) ? records : [])
+    .filter((record) => !isSetupTestOrder(record?.order || record))
+    .map(normalizeOrderRecord);
 }
 
 function includesFilter(value, expected) {

@@ -90,8 +90,7 @@ export default function FinishedGoodsTab() {
 
   useEffect(() => {
     const fetchStores = async () => {
-      const q = query(collection(db, "stores"), where("isActive", "==", true));
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, "stores"));
       setStores(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Store));
     };
     fetchStores();

@@ -45,6 +45,10 @@ export interface Store {
   status?: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
   isActive: boolean;
   posEnabled?: boolean;
+  internalPosTestEnabled?: boolean;
+  setupTestMode?: boolean;
+  posTestCompleted?: boolean;
+  openingStockConfirmed?: boolean;
   inventoryMode?: "FINISHED_GOODS";
   latitude?: number;
   longitude?: number;
@@ -66,6 +70,7 @@ export interface Store {
   stateName?: string;
   stateCode?: string;
   gstRegistered?: boolean;
+  gstRate?: number;
   receiptName?: string;
   receiptFooter?: string;
   timezone?: string;
@@ -185,6 +190,10 @@ export interface Order {
   paymentProvider?: PaymentProvider;
   providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
   commercialStatus?: CommercialStatus;
+  isSetupTest?: boolean;
+  setupTestMode?: boolean;
+  setupTestLabel?: string | null;
+  setupTestStoreStatus?: string | null;
   menuValue?: number;
   complimentaryDiscount?: number;
   complimentaryReason?: string;

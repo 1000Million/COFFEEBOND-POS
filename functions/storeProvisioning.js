@@ -1,9 +1,11 @@
 'use strict';
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { FieldValue } = require('firebase-admin/firestore');
 const {
   ALL_MODULE_IDS,
   NEVER_COPY_COLLECTIONS,
+  READINESS_STEP_LABELS,
   RECOMMENDED_MODULE_IDS,
   buildDraftStorePayload,
   buildSafeJobRecord,
@@ -80,7 +82,13 @@ const SAFE_EDIT_FIELDS = new Set([
   'storeVisibilitySettings',
   'onlineOrderingMessage',
   'readiness',
+  'gstRate',
+  'openingStockConfirmed',
 ]);
+const SETUP_LEAD_ROLES = new Set(['ADMIN', 'STORE_MANAGER']);
+const POS_CAPABLE_ROLES = new Set(['ADMIN', 'STORE_MANAGER', 'CASHIER']);
+const DECIMAL_UNITS = new Set(['G', 'KG', 'ML', 'L']);
+const INTEGER_UNITS = new Set(['PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
 
 function fail(code, message) {
   throw new HttpsError(code, message);
@@ -102,6 +110,32 @@ function number(value) {
 
 function unique(values) {
   return [...new Set((Array.isArray(values) ? values : []).filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))];
+}
+
+function normalizeUnit(value) {
+  return cleanText(value, 20).toUpperCase();
+}
+
+function unitAllowsDecimal(unit) {
+  const normalized = normalizeUnit(unit);
+  if (DECIMAL_UNITS.has(normalized)) return true;
+  if (INTEGER_UNITS.has(normalized)) return false;
+  return true;
+}
+
+function setupNumber(value) {
+  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function roundedQuantity(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 1000000) / 1000000;
+}
+
+function openingMovementId(storeId, stockId, provisioningJobId) {
+  return `${cleanText(provisioningJobId || storeId, 140)}_${stockId}_OPENING_STOCK`
+    .replace(/[^A-Za-z0-9_-]/g, '_')
+    .slice(0, 400);
 }
 
 async function requireActiveAdmin(db, request) {
@@ -184,6 +218,7 @@ function validateProvisioningInput(data = {}, { mode = 'CREATE' } = {}) {
   return {
     location: locationValidation.details,
     selectedModules,
+    staffAssignmentUids: unique(data.staffAssignmentUids || data.plannedStaffUids || []),
     inventoryOption: inventoryValidation.option,
     inventoryReason: cleanText(data.inventoryReason, 300),
     templateMode: data.templateMode === 'COPY' ? 'COPY' : 'BLANK',
@@ -276,6 +311,73 @@ async function loadSourceConfiguration(db, sourceStore, selectedModules) {
   };
 }
 
+async function buildStaffAssignmentPlan(db, storeId, selectedUids = []) {
+  const selected = unique(selectedUids);
+  const usersSnap = await db.collection('users').get();
+  const users = usersSnap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+  const activeAssignableUsers = users.filter((profile) => (
+    profile.isActive === true
+    && profile.role !== 'FRANCHISE_VIEWER'
+    && cleanText(profile.uid || profile.id, 128)
+  ));
+  const activeByUid = new Map(activeAssignableUsers.map((profile) => [profile.uid || profile.id, profile]));
+  const missing = selected.filter((uid) => !activeByUid.has(uid));
+  const selectedProfiles = selected.map((uid) => activeByUid.get(uid)).filter(Boolean);
+  const hasSetupLead = selectedProfiles.some((profile) => SETUP_LEAD_ROLES.has(profile.role));
+  const hasPosCapable = selectedProfiles.some((profile) => POS_CAPABLE_ROLES.has(profile.role));
+  const validationErrors = [];
+  if (missing.length > 0) {
+    validationErrors.push({
+      field: 'staffAssignmentUids',
+      code: 'UNKNOWN_OR_INACTIVE_STAFF',
+      message: `Selected staff profile is missing or inactive: ${missing.join(', ')}`,
+    });
+  }
+  if (!hasSetupLead) {
+    validationErrors.push({
+      field: 'staffAssignmentUids',
+      code: 'SETUP_LEAD_REQUIRED',
+      message: 'Assign at least one active Admin or Store Manager before creating this location.',
+    });
+  }
+  if (!hasPosCapable) {
+    validationErrors.push({
+      field: 'staffAssignmentUids',
+      code: 'POS_USER_REQUIRED',
+      message: 'Assign at least one active POS-capable user before creating this location.',
+    });
+  }
+  const changes = activeAssignableUsers
+    .map((profile) => {
+      const uid = profile.uid || profile.id;
+      const before = unique(profile.assignedStoreIds || profile.storeIds || []);
+      const shouldHaveStore = selected.includes(uid);
+      const after = shouldHaveStore
+        ? unique([...before, storeId])
+        : before.filter((assignedStoreId) => assignedStoreId !== storeId);
+      const beforeSorted = [...before].sort();
+      const afterSorted = [...after].sort();
+      if (JSON.stringify(beforeSorted) === JSON.stringify(afterSorted)) return null;
+      return {
+        uid,
+        email: cleanText(profile.email, 160),
+        name: cleanText(profile.displayName || profile.name || profile.email || uid, 120),
+        role: cleanText(profile.role, 40),
+        before,
+        after,
+      };
+    })
+    .filter(Boolean);
+  return {
+    selectedUids: selected,
+    selectedCount: selected.length,
+    hasSetupLead,
+    hasPosCapable,
+    validationErrors,
+    changes,
+  };
+}
+
 function inventoryQuantityForOption(source, option) {
   if (option === 'CONFIGURED_OPENING') return number(source.openingStock);
   if (option === 'CURRENT_STOCK_ADVANCED') return number(source.currentStock);
@@ -345,6 +447,7 @@ function buildPreviewResponse({
   sourceStore,
   sourceConfiguration,
   duplicateNameWarning,
+  staffAssignmentPlan = null,
 }) {
   const moduleCompatibility = validateModuleCompatibility(input);
   const inventoryTargetIds = sourceConfiguration.inventoryDocs.map((entry) => (
@@ -367,6 +470,8 @@ function buildPreviewResponse({
   const writesByCollection = {
     stores: 1,
     storeProvisioningJobs: 1,
+    users: staffAssignmentPlan?.changes?.length || 0,
+    storeProvisioningAudit: staffAssignmentPlan?.changes?.length ? 1 : 0,
     ...menuCounts,
     ...inventoryCounts,
     stockMovements: openingMovementCount,
@@ -375,10 +480,10 @@ function buildPreviewResponse({
     Object.entries(writesByCollection).map(([collectionName, count]) => [
       collectionName,
       {
-        creates: ['stores', 'storeProvisioningJobs', 'storeStock', 'stockMovements'].includes(collectionName)
+        creates: ['stores', 'storeProvisioningJobs', 'storeProvisioningAudit', 'storeStock', 'stockMovements'].includes(collectionName)
           ? count
           : 0,
-        updates: MENU_COLLECTIONS.includes(collectionName) ? count : 0,
+        updates: MENU_COLLECTIONS.includes(collectionName) || collectionName === 'users' ? count : 0,
       },
     ]),
   );
@@ -418,6 +523,7 @@ function buildPreviewResponse({
   });
 
   const validationErrors = [...(input.validationErrors || [])];
+  (staffAssignmentPlan?.validationErrors || []).forEach((issue) => validationErrors.push(issue));
   if (duplicateNameWarning && !input.confirmDuplicateName) {
     validationErrors.push({
       field: 'confirmDuplicateName',
@@ -482,7 +588,18 @@ function buildPreviewResponse({
     ],
     legalGstSelected: input.selectedModules.includes('LEGAL_RECEIPT'),
     customerOrderingInitialStatus: 'DISABLED',
-    staffAssignmentCount: 0,
+    staffAssignmentCount: staffAssignmentPlan?.selectedCount || 0,
+    staffAssignmentValidation: staffAssignmentPlan ? {
+      selectedCount: staffAssignmentPlan.selectedCount,
+      hasSetupLead: staffAssignmentPlan.hasSetupLead,
+      hasPosCapable: staffAssignmentPlan.hasPosCapable,
+      changeCount: staffAssignmentPlan.changes.length,
+    } : {
+      selectedCount: 0,
+      hasSetupLead: false,
+      hasPosCapable: false,
+      changeCount: 0,
+    },
     warnings,
     validationErrors,
     validationWarnings: [...(input.validationWarnings || []), ...warnings],
@@ -520,16 +637,21 @@ async function buildProvisioningContext(db, rawData, {
     fail('already-exists', `${duplicateNameWarning} Confirm the duplicate normalized name to continue.`);
   }
   const sourceStore = await resolveSourceStore(db, input.templateMode, input.sourceStoreId);
-  const sourceConfiguration = await loadSourceConfiguration(db, sourceStore, input.selectedModules);
+  const [sourceConfiguration, staffAssignmentPlan] = await Promise.all([
+    loadSourceConfiguration(db, sourceStore, input.selectedModules),
+    buildStaffAssignmentPlan(db, input.location.storeCode, input.staffAssignmentUids),
+  ]);
   return {
     input,
     sourceStore,
     sourceConfiguration,
+    staffAssignmentPlan,
     preview: buildPreviewResponse({
       input,
       sourceStore,
       sourceConfiguration,
       duplicateNameWarning,
+      staffAssignmentPlan,
     }),
   };
 }
@@ -547,16 +669,43 @@ async function countAssignedStaff(db, storeId) {
 }
 
 async function loadReadinessCounts(db, store) {
-  const [finishedGoodsSnap, storeStockSnap, staffCount] = await Promise.all([
+  const [finishedGoodsSnap, storeStockSnap, staffCount, addOnGroupsSnap] = await Promise.all([
     db.collection('finishedGoods').where('availableStoreIds', 'array-contains', store.id).get(),
     db.collection('storeStock').where('storeId', '==', store.id).get(),
     countAssignedStaff(db, store.id),
+    db.collection('addOnGroups').get(),
   ]);
+  const enabledMenuItems = finishedGoodsSnap.docs
+    .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }))
+    .filter((item) => item.isActive !== false && item.isSellable !== false && item.isAvailable !== false);
+  const addOnGroupIds = new Set(addOnGroupsSnap.docs.map((docSnap) => docSnap.id));
+  const invalidProductAvailabilityCount = enabledMenuItems.filter((item) => (
+    !Array.isArray(item.availableStoreIds) || !item.availableStoreIds.includes(store.id)
+  )).length;
+  const invalidAddOnReferenceCount = enabledMenuItems.filter((item) => (
+    unique(item.addOnGroupIds || item.addonGroupIds).some((groupId) => !addOnGroupIds.has(groupId))
+  )).length;
+  const invalidKotRoutingCount = enabledMenuItems.filter((item) => {
+    const station = cleanText(item.prepStation || 'NONE', 40).toUpperCase();
+    const operational = item.itemType === 'MADE_TO_ORDER' || station !== 'NONE';
+    return operational && !['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(station);
+  }).length;
   return {
     menuProductCount: finishedGoodsSnap.size,
     inventoryRowCount: storeStockSnap.size,
     staffCount,
+    invalidProductAvailabilityCount,
+    invalidAddOnReferenceCount,
+    invalidKotRoutingCount,
+    gstRate: number(store.gstRate),
   };
+}
+
+async function writeProvisioningAudit(db, admin, payload) {
+  await db.collection('storeProvisioningAudit').doc().set({
+    ...payload,
+    createdAt: FieldValue.serverTimestamp(),
+  });
 }
 
 async function applyProvisioningOperations({
@@ -568,7 +717,7 @@ async function applyProvisioningOperations({
   context,
   jobRef,
 }) {
-  const timestamp = admin.firestore.FieldValue.serverTimestamp();
+  const timestamp = FieldValue.serverTimestamp();
   const operations = [];
   const selectedModules = context.input.selectedModules;
 
@@ -640,6 +789,19 @@ async function applyProvisioningOperations({
     });
   }
 
+  (context.staffAssignmentPlan?.changes || []).forEach((change) => {
+    operations.push({
+      key: `ASSIGN_STAFF:users/${change.uid}`,
+      type: 'UPDATE_STAFF_ASSIGNMENT',
+      ref: db.collection('users').doc(change.uid),
+      payload: {
+        assignedStoreIds: change.after,
+        storeIds: change.after,
+        updatedAt: timestamp,
+      },
+    });
+  });
+
   let completed = 0;
   for (let offset = 0; offset < operations.length; offset += BATCH_SIZE) {
     const chunk = operations.slice(offset, offset + BATCH_SIZE);
@@ -652,7 +814,7 @@ async function applyProvisioningOperations({
     let chunkWrites = 0;
 
     for (const operation of chunk) {
-      if (operation.type === 'UPDATE_ASSIGNMENT') {
+      if (operation.type === 'UPDATE_ASSIGNMENT' || operation.type === 'UPDATE_STAFF_ASSIGNMENT') {
         batch.update(operation.ref, operation.payload);
         chunkWrites += 1;
         continue;
@@ -679,7 +841,247 @@ async function applyProvisioningOperations({
     }, { merge: true });
   }
 
+  if ((context.staffAssignmentPlan?.changes || []).length > 0) {
+    await writeProvisioningAudit(db, admin, {
+      storeId: destinationStore.id,
+      action: 'SAVE_STAFF_ASSIGNMENTS',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+      provisioningJobId: jobId,
+      changedUsers: context.staffAssignmentPlan.changes.map((change) => ({
+        uid: change.uid,
+        email: change.email,
+        name: change.name,
+        role: change.role,
+        previousStoreIds: change.before,
+        resultingStoreIds: change.after,
+      })),
+    });
+  }
+
   return { totalOperationCount: operations.length, completedOperationCount: completed };
+}
+
+function validateOpeningStockRows(store, stockDocs, submittedRows = [], { confirmAllZero = false, typedConfirmation = '' } = {}) {
+  const storeCode = cleanText(store.code || store.storeCode || store.id, 80);
+  const stockById = new Map(stockDocs.map((docSnap) => [docSnap.id, { id: docSnap.id, ...(docSnap.data() || {}) }]));
+  if (stockById.size === 0) {
+    return { valid: false, errors: ['Inventory rows must be created before opening stock can be confirmed.'], rows: [] };
+  }
+  if (confirmAllZero && normalizeStoreCode(typedConfirmation) !== normalizeStoreCode(storeCode)) {
+    return { valid: false, errors: [`Type ${storeCode} to confirm all opening quantities are zero.`], rows: [] };
+  }
+  const errors = [];
+  const submittedById = new Map();
+  if (!confirmAllZero) {
+    for (const row of Array.isArray(submittedRows) ? submittedRows : []) {
+      const stockId = cleanText(row.stockId || row.id, 240);
+      if (!stockId || !stockById.has(stockId)) {
+        errors.push(`Unknown inventory row: ${stockId || '(blank)'}.`);
+        continue;
+      }
+      if (submittedById.has(stockId)) errors.push(`Duplicate inventory row submitted: ${stockId}.`);
+      submittedById.set(stockId, row);
+    }
+    for (const stockId of stockById.keys()) {
+      if (!submittedById.has(stockId)) errors.push(`Missing inventory row: ${stockId}.`);
+    }
+  }
+  const rows = [...stockById.values()].map((stock) => {
+    const submitted = confirmAllZero ? {} : submittedById.get(stock.id) || {};
+    const unit = normalizeUnit(stock.uom || stock.unit);
+    const openingStock = confirmAllZero ? 0 : setupNumber(submitted.openingStock);
+    const costPerUnit = confirmAllZero ? number(stock.costPerUnit) : setupNumber(submitted.costPerUnit ?? stock.costPerUnit ?? 0);
+    const confirmed = confirmAllZero ? true : submitted.confirmed === true;
+    if (!Number.isFinite(openingStock) || openingStock < 0) errors.push(`${stock.stockItemCode || stock.id}: opening quantity must be zero or positive.`);
+    if (!unitAllowsDecimal(unit) && Number.isFinite(openingStock) && !Number.isInteger(openingStock)) {
+      errors.push(`${stock.stockItemCode || stock.id}: ${unit || 'this unit'} requires a whole-number quantity.`);
+    }
+    if (!Number.isFinite(costPerUnit) || costPerUnit < 0) errors.push(`${stock.stockItemCode || stock.id}: unit cost cannot be negative.`);
+    if (!confirmed) errors.push(`${stock.stockItemCode || stock.id}: row must be confirmed.`);
+    return {
+      stock,
+      openingStock: roundedQuantity(openingStock),
+      currentStock: roundedQuantity(openingStock),
+      costPerUnit: roundedQuantity(costPerUnit),
+      confirmed,
+      unit,
+    };
+  });
+  return { valid: errors.length === 0, errors, rows };
+}
+
+async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, confirmAllZero = false, typedConfirmation = '' }) {
+  const storeRef = db.collection('stores').doc(storeId);
+  const storeSnap = await storeRef.get();
+  if (!storeSnap.exists) fail('not-found', 'Location not found.');
+  const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
+  if (store.isActive === true || store.status === 'ACTIVE') {
+    fail('failed-precondition', 'Opening stock setup is only available before POS activation.');
+  }
+  const stockSnap = await db.collection('storeStock').where('storeId', '==', storeId).get();
+  const validation = validateOpeningStockRows(store, stockSnap.docs, rows, { confirmAllZero, typedConfirmation });
+  if (!validation.valid) fail('failed-precondition', validation.errors.join(' '));
+
+  const timestamp = FieldValue.serverTimestamp();
+  const provisioningJobId = cleanText(store.provisioningJobId || storeId, 120);
+  const nonZeroRows = validation.rows.filter((row) => row.openingStock > 0);
+  const movementRefs = nonZeroRows.map((row) => (
+    db.collection('stockMovements').doc(openingMovementId(storeId, row.stock.id, provisioningJobId))
+  ));
+  const movementSnaps = movementRefs.length ? await db.getAll(...movementRefs) : [];
+  const existingMovementByPath = new Map(movementSnaps.map((snap) => [snap.ref.path, snap]));
+
+  const operations = [];
+  validation.rows.forEach((row) => {
+    operations.push({
+      type: 'UPDATE_STOCK',
+      ref: db.collection('storeStock').doc(row.stock.id),
+      payload: {
+        openingStock: row.openingStock,
+        currentStock: row.currentStock,
+        costPerUnit: row.costPerUnit,
+        openingStockConfirmed: true,
+        openingStockConfirmedBy: adminUser.uid,
+        openingStockConfirmedByName: adminUser.name,
+        openingStockConfirmedAt: timestamp,
+        openingStockSource: confirmAllZero ? 'ZERO_CONFIRMATION' : 'LOCATION_WIZARD',
+        provisioningJobId,
+        updatedAt: timestamp,
+      },
+    });
+  });
+
+  nonZeroRows.forEach((row, index) => {
+    const ref = movementRefs[index];
+    const existing = existingMovementByPath.get(ref.path);
+    if (existing?.exists) {
+      const data = existing.data() || {};
+      if (data.movementType !== 'OPENING_STOCK'
+        || number(data.quantityDelta) !== row.openingStock
+        || number(data.stockAfter ?? data.newQty) !== row.openingStock) {
+        fail('failed-precondition', `Opening movement already exists with different values for ${row.stock.stockItemCode || row.stock.id}.`);
+      }
+      return;
+    }
+    operations.push({
+      type: 'CREATE_MOVEMENT',
+      ref,
+      payload: {
+        storeId,
+        storeCode: store.code || store.storeCode || storeId,
+        storeName: store.name || store.displayName || storeId,
+        stockItemType: row.stock.stockItemType || 'ITEM',
+        stockItemCode: row.stock.stockItemCode || row.stock.inventoryItemId || row.stock.id,
+        stockItemName: row.stock.stockItemName || row.stock.inventoryItemName || row.stock.stockItemCode || row.stock.id,
+        movementType: 'OPENING_STOCK',
+        quantity: row.openingStock,
+        quantityDelta: row.openingStock,
+        previousQty: 0,
+        newQty: row.openingStock,
+        stockBefore: 0,
+        stockAfter: row.openingStock,
+        unit: row.stock.uom || row.stock.unit || '',
+        source: 'LOCATION_ONBOARDING',
+        referenceType: 'STORE_PROVISIONING_JOB',
+        referenceId: provisioningJobId,
+        reason: confirmAllZero ? 'Confirmed all opening stock as zero' : 'Location wizard opening stock',
+        provisioningJobId,
+        createdBy: adminUser.uid,
+        createdByName: adminUser.name,
+        createdAt: timestamp,
+      },
+    });
+  });
+
+  operations.push({
+    type: 'UPDATE_STORE',
+    ref: storeRef,
+    payload: {
+      openingStockConfirmed: true,
+      'readiness.openingStockReviewed': true,
+      openingStockConfirmedBy: adminUser.uid,
+      openingStockConfirmedByName: adminUser.name,
+      openingStockConfirmedAt: timestamp,
+      updatedAt: timestamp,
+    },
+  });
+
+  for (let offset = 0; offset < operations.length; offset += BATCH_SIZE) {
+    const batch = db.batch();
+    operations.slice(offset, offset + BATCH_SIZE).forEach((operation) => {
+      if (operation.type === 'CREATE_MOVEMENT') batch.create(operation.ref, operation.payload);
+      else batch.update(operation.ref, operation.payload);
+    });
+    await batch.commit();
+  }
+  await writeProvisioningAudit(db, admin, {
+    storeId,
+    action: confirmAllZero ? 'CONFIRM_ZERO_OPENING_STOCK' : 'SAVE_OPENING_STOCK',
+    actorUid: adminUser.uid,
+    actorName: adminUser.name,
+    provisioningJobId,
+    inventoryRowCount: validation.rows.length,
+    nonZeroOpeningRows: nonZeroRows.length,
+    totalOpeningQuantity: roundedQuantity(nonZeroRows.reduce((sum, row) => sum + row.openingStock, 0)),
+  });
+  return {
+    storeId,
+    inventoryRowCount: validation.rows.length,
+    nonZeroOpeningRows: nonZeroRows.length,
+    openingStockReviewed: true,
+  };
+}
+
+async function saveStaffAssignments({ admin, db, adminUser, storeId, selectedUserIds }) {
+  const storeRef = db.collection('stores').doc(storeId);
+  const storeSnap = await storeRef.get();
+  if (!storeSnap.exists) fail('not-found', 'Location not found.');
+  const store = storeSnap.data() || {};
+  if (store.status === 'ARCHIVED') fail('failed-precondition', 'Archived locations cannot be assigned staff.');
+  const plan = await buildStaffAssignmentPlan(db, storeId, selectedUserIds);
+  if (plan.validationErrors.length > 0) {
+    fail('failed-precondition', plan.validationErrors.map((issue) => issue.message).join(' '));
+  }
+  const timestamp = FieldValue.serverTimestamp();
+  for (let offset = 0; offset < plan.changes.length; offset += BATCH_SIZE) {
+    const batch = db.batch();
+    plan.changes.slice(offset, offset + BATCH_SIZE).forEach((change) => {
+      batch.update(db.collection('users').doc(change.uid), {
+        assignedStoreIds: change.after,
+        storeIds: change.after,
+        updatedAt: timestamp,
+      });
+    });
+    await batch.commit();
+  }
+  await storeRef.update({
+    assignedStaffCount: plan.selectedCount,
+    'readiness.staffAssigned': true,
+    staffAssignmentReviewedAt: timestamp,
+    staffAssignmentReviewedBy: adminUser.uid,
+    updatedAt: timestamp,
+  });
+  await writeProvisioningAudit(db, admin, {
+    storeId,
+    action: 'SAVE_STAFF_ASSIGNMENTS',
+    actorUid: adminUser.uid,
+    actorName: adminUser.name,
+    changedUsers: plan.changes.map((change) => ({
+      uid: change.uid,
+      email: change.email,
+      name: change.name,
+      role: change.role,
+      previousStoreIds: change.before,
+      resultingStoreIds: change.after,
+    })),
+  });
+  return {
+    storeId,
+    assignedStaffCount: plan.selectedCount,
+    changedUserCount: plan.changes.length,
+    staffAssigned: true,
+  };
 }
 
 function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
@@ -725,11 +1127,12 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
       fail('failed-precondition', 'The source configuration changed after preview. Run Preview again before creating the Draft.');
     }
     if (!context.preview.safeToCreateDraft) {
-      fail('failed-precondition', context.preview.warnings.join(' '));
+      const validationMessage = (context.preview.validationErrors || []).map((issue) => issue.message).join(' ');
+      fail('failed-precondition', validationMessage || context.preview.warnings.join(' '));
     }
     const destinationId = context.input.location.storeCode;
     const destinationRef = db.collection('stores').doc(destinationId);
-    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const timestamp = FieldValue.serverTimestamp();
 
     await db.runTransaction(async (transaction) => {
       const [destinationSnap, jobSnap] = await Promise.all([
@@ -832,7 +1235,7 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const storeSnap = await storeRef.get();
     if (!storeSnap.exists) fail('not-found', 'Location not found.');
     const action = cleanText(data.action || 'UPDATE', 40);
-    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const timestamp = FieldValue.serverTimestamp();
 
     if (action === 'DEACTIVATE') {
       await storeRef.update({
@@ -868,6 +1271,140 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     return { storeId, status: storeSnap.data()?.status || 'DRAFT' };
   });
 
+  const enableInternalPosTest = onCall({ region }, async (request) => {
+    const adminUser = await requireActiveAdmin(db, request);
+    const storeId = cleanText(request.data?.storeId, 80);
+    if (!storeId) fail('invalid-argument', 'Store ID is required.');
+    const storeRef = db.collection('stores').doc(storeId);
+    const storeSnap = await storeRef.get();
+    if (!storeSnap.exists) fail('not-found', 'Location not found.');
+    const store = storeSnap.data() || {};
+    if (store.status === 'ACTIVE' || store.isActive === true) {
+      fail('failed-precondition', 'Internal POS testing is only for Draft or Setup locations.');
+    }
+    const timestamp = FieldValue.serverTimestamp();
+    await storeRef.update({
+      status: store.status || 'DRAFT',
+      isActive: false,
+      posEnabled: true,
+      internalPosTestEnabled: true,
+      setupTestMode: true,
+      onlineOrderingEnabled: false,
+      customerOrderingEnabled: false,
+      publicOrderingEnabled: false,
+      acceptingOrders: false,
+      isAcceptingOrders: false,
+      onlineOrderingPaused: true,
+      internalPosTestEnabledBy: adminUser.uid,
+      internalPosTestEnabledAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await writeProvisioningAudit(db, admin, {
+      storeId,
+      action: 'ENABLE_INTERNAL_POS_TEST',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+    });
+    return { storeId, status: store.status || 'DRAFT', internalPosTestEnabled: true };
+  });
+
+  const markInternalPosTestPassed = onCall({ region }, async (request) => {
+    const adminUser = await requireActiveAdmin(db, request);
+    const storeId = cleanText(request.data?.storeId, 80);
+    if (!storeId) fail('invalid-argument', 'Store ID is required.');
+    const storeRef = db.collection('stores').doc(storeId);
+    const storeSnap = await storeRef.get();
+    if (!storeSnap.exists) fail('not-found', 'Location not found.');
+    const store = storeSnap.data() || {};
+    if (store.internalPosTestEnabled !== true) {
+      fail('failed-precondition', 'Enable internal POS testing before marking the test complete.');
+    }
+    const setupOrdersSnap = await db.collection('orders')
+      .where('storeId', '==', storeId)
+      .where('isSetupTest', '==', true)
+      .get();
+    const setupOrders = setupOrdersSnap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+    const voidedSetupOrder = setupOrders.find((order) => (
+      order.status === 'VOIDED'
+      && order.paymentMethod === 'CASH'
+      && (order.paymentProvider === undefined || order.paymentProvider === null || order.paymentProvider === 'PAY_AT_COUNTER')
+    ));
+    if (!voidedSetupOrder) {
+      fail('failed-precondition', 'Create and void one SETUP TEST cash order before marking the POS test complete.');
+    }
+    const [kotSnap, saleMovementSnap, reversalMovementSnap] = await Promise.all([
+      db.collection('kotItems').where('storeId', '==', storeId).where('orderId', '==', voidedSetupOrder.id).get(),
+      db.collection('stockMovements').where('storeId', '==', storeId).where('orderId', '==', voidedSetupOrder.id).get(),
+      db.collection('stockMovements').where('storeId', '==', storeId).where('movementType', '==', 'ORDER_VOID_REVERSAL').get(),
+    ]);
+    const saleMovements = saleMovementSnap.docs.map((docSnap) => docSnap.data() || {});
+    const reversalMovements = reversalMovementSnap.docs
+      .map((docSnap) => docSnap.data() || {})
+      .filter((movement) => (
+        movement.orderId === voidedSetupOrder.id
+        || movement.sourceOrderId === voidedSetupOrder.id
+        || movement.voidedOrderId === voidedSetupOrder.id
+        || movement.orderNumber === voidedSetupOrder.orderNumber
+        || movement.referenceId === voidedSetupOrder.id
+      ));
+    if (kotSnap.empty) fail('failed-precondition', 'The setup-test order must generate KOT records.');
+    if (saleMovements.filter((movement) => movement.movementType !== 'ORDER_VOID_REVERSAL').length === 0) {
+      fail('failed-precondition', 'The setup-test order must create stock deduction movements.');
+    }
+    if (reversalMovements.length === 0) {
+      fail('failed-precondition', 'Void the setup-test order and verify stock reversal before completing POS test.');
+    }
+    const timestamp = FieldValue.serverTimestamp();
+    await storeRef.update({
+      posTestCompleted: true,
+      'readiness.posTestCompleted': true,
+      posTestCompletedBy: adminUser.uid,
+      posTestCompletedByName: adminUser.name,
+      posTestCompletedAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await writeProvisioningAudit(db, admin, {
+      storeId,
+      action: 'MARK_INTERNAL_POS_TEST_PASSED',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+      setupTestOrderId: voidedSetupOrder.id,
+      setupTestOrderNumber: voidedSetupOrder.orderNumber || null,
+      kotCount: kotSnap.size,
+      saleMovementCount: saleMovements.filter((movement) => movement.movementType !== 'ORDER_VOID_REVERSAL').length,
+      reversalMovementCount: reversalMovements.length,
+    });
+    return { storeId, posTestCompleted: true };
+  });
+
+  const saveLocationOpeningStock = onCall({ region, timeoutSeconds: 120, memory: '512MiB' }, async (request) => {
+    const adminUser = await requireActiveAdmin(db, request);
+    const storeId = cleanText(request.data?.storeId, 80);
+    if (!storeId) fail('invalid-argument', 'Store ID is required.');
+    return saveOpeningStockSetup({
+      admin,
+      db,
+      adminUser,
+      storeId,
+      rows: request.data?.rows || [],
+      confirmAllZero: request.data?.confirmAllZero === true,
+      typedConfirmation: request.data?.typedConfirmation || '',
+    });
+  });
+
+  const saveLocationStaffAssignments = onCall({ region, timeoutSeconds: 120, memory: '512MiB' }, async (request) => {
+    const adminUser = await requireActiveAdmin(db, request);
+    const storeId = cleanText(request.data?.storeId, 80);
+    if (!storeId) fail('invalid-argument', 'Store ID is required.');
+    return saveStaffAssignments({
+      admin,
+      db,
+      adminUser,
+      storeId,
+      selectedUserIds: request.data?.selectedUserIds || request.data?.selectedUids || [],
+    });
+  });
+
   const activateStore = onCall({ region }, async (request) => {
     const adminUser = await requireActiveAdmin(db, request);
     const storeId = cleanText(request.data?.storeId, 80);
@@ -876,15 +1413,21 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const storeSnap = await storeRef.get();
     if (!storeSnap.exists) fail('not-found', 'Location not found.');
     const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
-    if (store.isActive === true || store.posEnabled === true) {
-      fail('failed-precondition', 'This location is already active.');
+    if (store.isActive === true && store.status === 'ACTIVE') {
+      return {
+        storeId,
+        status: 'ACTIVE',
+        posEnabled: true,
+        customerOrderingEnabled: store.customerOrderingEnabled === true || store.onlineOrderingEnabled === true,
+        idempotent: true,
+      };
     }
     const counts = await loadReadinessCounts(db, store);
     const readiness = readinessResult(store, counts);
     if (!readiness.posReady) {
-      fail('failed-precondition', `Location is not ready: ${readiness.blockingKeys.join(', ')}`);
+      fail('failed-precondition', `Location is not ready: ${readiness.friendlyBlockingSteps.join(', ')}`);
     }
-    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const timestamp = FieldValue.serverTimestamp();
     await storeRef.update({
       status: 'ACTIVE',
       isActive: true,
@@ -896,9 +1439,18 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
       isAcceptingOrders: false,
       onlineOrderingPaused: true,
       operationalStatus: 'ACTIVE',
+      internalPosTestEnabled: false,
+      setupTestMode: false,
       activatedBy: adminUser.uid,
       activatedAt: timestamp,
       updatedAt: timestamp,
+    });
+    await writeProvisioningAudit(db, admin, {
+      storeId,
+      action: 'ACTIVATE_POS',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+      readiness,
     });
     return {
       storeId,
@@ -926,7 +1478,7 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
         fail('failed-precondition', 'Customer ordering requires active POS, completed customer-ordering testing, and a public menu snapshot.');
       }
     }
-    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const timestamp = FieldValue.serverTimestamp();
     await storeRef.update({
       onlineOrderingEnabled: enabled,
       customerOrderingEnabled: enabled,
@@ -945,6 +1497,10 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     previewStoreProvisioning,
     createStoreFromTemplate,
     updateStoreConfiguration,
+    enableInternalPosTest,
+    markInternalPosTestPassed,
+    saveLocationOpeningStock,
+    saveLocationStaffAssignments,
     activateStore,
     setStoreCustomerOrdering,
   };
@@ -955,10 +1511,15 @@ module.exports = {
   BATCH_SIZE,
   INVENTORY_COLLECTIONS,
   MENU_COLLECTIONS,
+  READINESS_STEP_LABELS,
   RECOMMENDED_MODULE_IDS,
   buildPreviewResponse,
   createStoreProvisioningFunctions,
   destinationInventoryId,
   inventoryQuantityForOption,
+  openingMovementId,
+  setupNumber,
+  unitAllowsDecimal,
+  validateOpeningStockRows,
   validateProvisioningInput,
 };

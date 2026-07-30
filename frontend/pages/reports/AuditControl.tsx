@@ -99,6 +99,12 @@ function effectiveOrderStatus(order: Order): 'COMPLETED' | 'VOIDED' | 'CANCELLED
   return 'COMPLETED';
 }
 
+function isSetupTestOrder(order: Order & Record<string, unknown>): boolean {
+  return order.isSetupTest === true
+    || order.setupTestMode === true
+    || String(order.setupTestLabel || '').toUpperCase() === 'SETUP TEST';
+}
+
 function orderTaxTotal(order: Order): number {
   const gstTotal = money(order.gstTotal);
   return gstTotal > 0 ? gstTotal : money(order.taxTotal);
@@ -340,7 +346,9 @@ export default function AuditControl() {
           getDoc(doc(db, 'appSettings', 'gstConfig')),
         ]);
 
-        const loadedOrders = ordersSnap.docs.map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as Order));
+        const loadedOrders = ordersSnap.docs
+          .map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as Order & Record<string, unknown>))
+          .filter(order => !isSetupTestOrder(order));
         const voidedOrders = loadedOrders.filter(order => effectiveOrderStatus(order) === 'VOIDED' && order.id);
         const movementSnaps = await Promise.all(voidedOrders.map(order => getDocs(query(
           collection(db, 'stockMovements'),

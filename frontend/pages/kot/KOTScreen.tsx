@@ -71,26 +71,44 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
   useEffect(() => {
     if (!staffProfile) return;
 
-    // Load accessible stores
-    let unsubs: (() => void)[] = [];
-    
-    // We fetch ALL active stores, then filter based on role/access
-    const qStore = query(collection(db, 'stores'), where('isActive', '==', true));
-    const unsubStores = onSnapshot(qStore, (snap) => {
-      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
-      const accessible = staffProfile.role === 'ADMIN' 
-        ? fetched 
-        : fetched.filter(s => staffProfile.storeIds.includes(s.id));
-      setStores(accessible);
-      
-      if (accessible.length > 0 && selectedStoreId === 'ALL') {
-         // Auto-select if only 1 store, else let it be ALL
-         if (accessible.length === 1) setSelectedStoreId(accessible[0].id);
-      }
-    });
-    unsubs.push(unsubStores);
+    let cancelled = false;
+    const assignedStoreIds = new Set([
+      ...(staffProfile.storeIds || []),
+      ...(staffProfile.assignedStoreIds || []),
+    ]);
+    const isSetupTestStore = (store: Store) => store.internalPosTestEnabled === true && store.isActive !== true;
 
-    return () => unsubs.forEach(u => u());
+    const loadStores = async () => {
+      const activeStoreSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+      const activeStores = activeStoreSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
+      const setupStores = staffProfile.role === 'ADMIN'
+        ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store)).filter(isSetupTestStore)
+        : staffProfile.role === 'STORE_MANAGER'
+          ? (await Promise.all([...assignedStoreIds].map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null))))
+            .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
+            .map((snap) => ({ id: snap.id, ...snap.data() } as Store))
+            .filter(isSetupTestStore)
+          : [];
+      const fetched = [...activeStores, ...setupStores];
+      const accessible = fetched.filter((store, index, all) => {
+        if (all.findIndex((candidate) => candidate.id === store.id) !== index) return false;
+        if (staffProfile.role === 'ADMIN') return true;
+        if (staffProfile.role === 'STORE_MANAGER') return assignedStoreIds.has(store.id) && (store.isActive === true || isSetupTestStore(store));
+        return assignedStoreIds.has(store.id) && store.isActive === true;
+      });
+
+      if (!cancelled) {
+        setStores(accessible);
+        if (accessible.length === 1 && selectedStoreId === 'ALL') setSelectedStoreId(accessible[0].id);
+      }
+    };
+
+    loadStores().catch((error) => {
+      console.error('Error loading KOT stores', error);
+      if (!cancelled) setStores([]);
+    });
+
+    return () => { cancelled = true; };
   }, [staffProfile]);
   
   useEffect(() => {

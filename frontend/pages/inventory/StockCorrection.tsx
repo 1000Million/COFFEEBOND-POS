@@ -163,7 +163,9 @@ export default function StockCorrection() {
       if (!staffProfile) return;
       setStoresLoading(true);
       try {
-        const snap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+        const snap = await getDocs(staffProfile.role === 'ADMIN'
+          ? collection(db, 'stores')
+          : query(collection(db, 'stores'), where('isActive', '==', true)));
         let loaded = snap.docs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
         loaded.sort((a, b) => a.name.localeCompare(b.name));
         if (staffProfile.role !== 'ADMIN') {

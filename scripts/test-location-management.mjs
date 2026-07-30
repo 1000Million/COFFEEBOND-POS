@@ -11,6 +11,8 @@ const provisioning = require('../functions/storeProvisioning.js');
 const provisioningSource = fs.readFileSync(new URL('../functions/storeProvisioning.js', import.meta.url), 'utf8');
 const locationSource = fs.readFileSync(new URL('../frontend/pages/admin/LocationManagement.tsx', import.meta.url), 'utf8');
 const appSource = fs.readFileSync(new URL('../frontend/App.tsx', import.meta.url), 'utf8');
+const posSource = fs.readFileSync(new URL('../frontend/pages/pos/POSHome.tsx', import.meta.url), 'utf8');
+const reportingSource = fs.readFileSync(new URL('../functions/reportingCore.mjs', import.meta.url), 'utf8');
 const rules = fs.readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
 
 const checks = [];
@@ -57,7 +59,7 @@ function sourceConfiguration(overrides = {}) {
   };
 }
 
-function preview(selectedModules, sourceConfig = sourceConfiguration(), overrides = {}) {
+function preview(selectedModules, sourceConfig = sourceConfiguration(), overrides = {}, staffAssignmentPlan = null) {
   return provisioning.buildPreviewResponse({
     input: {
       location: validLocation(),
@@ -72,12 +74,13 @@ function preview(selectedModules, sourceConfig = sourceConfiguration(), override
     sourceStore: { id: 'SOURCE_REAL_ID', code: 'NOIDA_51', name: 'Noida Sector 51' },
     sourceConfiguration: sourceConfig,
     duplicateNameWarning: '',
+    staffAssignmentPlan,
   });
 }
 
 test('1. Admin-only backend authorization guards every provisioning callable', () => {
   assert.match(provisioningSource, /async function requireActiveAdmin/);
-  assert.equal((provisioningSource.match(/await requireActiveAdmin\(db, request\)/g) || []).length, 5);
+  assert.equal((provisioningSource.match(/await requireActiveAdmin\(db, request\)/g) || []).length, 9);
   assert.match(provisioningSource, /profile\.isActive !== true \|\| profile\.role !== 'ADMIN'/);
 });
 
@@ -137,6 +140,8 @@ test('8. Blank store creation produces one draft store and one job', () => {
   assert.deepEqual(result.writesByCollection, {
     stores: 1,
     storeProvisioningJobs: 1,
+    users: 0,
+    storeProvisioningAudit: 0,
     finishedGoods: 0,
     menuItems: 0,
     categories: 0,
@@ -176,7 +181,7 @@ test('13. Historical stock movements are never copied', () => {
   assert.match(provisioningSource, /movementType: 'STORE_PROVISIONING_OPENING'/);
 });
 
-test('14. Staff assignments start empty', () => {
+test('14. Staff assignments are explicit and never copied from the source store', () => {
   const draft = policy.buildDraftStorePayload({
     details: validLocation(),
     selectedModules: policy.RECOMMENDED_MODULE_IDS,
@@ -186,6 +191,19 @@ test('14. Staff assignments start empty', () => {
   });
   assert.equal(draft.assignedStaffCount, 0);
   assert.equal(preview([]).staffAssignmentCount, 0);
+  const planned = preview([], sourceConfiguration(), {}, {
+    selectedCount: 2,
+    hasSetupLead: true,
+    hasPosCapable: true,
+    changes: [{ uid: 'manager-uid' }, { uid: 'cashier-uid' }],
+    validationErrors: [],
+  });
+  assert.equal(planned.staffAssignmentCount, 2);
+  assert.equal(planned.writesByCollection.users, 2);
+  assert.equal(planned.writesByCollection.storeProvisioningAudit, 1);
+  assert.match(provisioningSource, /buildStaffAssignmentPlan/);
+  assert.match(provisioningSource, /previousStoreIds/);
+  assert.match(provisioningSource, /resultingStoreIds/);
 });
 
 test('15. Draft store is excluded from public ordering', () => {
@@ -211,6 +229,46 @@ test('17. Finished Goods V2 inventory structure copies with zero quantities', ()
   assert.deepEqual(provisioning.INVENTORY_COLLECTIONS || ['storeStock'], ['storeStock']);
   assert.equal(provisioning.inventoryQuantityForOption({ openingStock: 12, currentStock: 7 }, 'STRUCTURE_ONLY'), 0);
   assert.ok(!provisioningSource.includes("const INVENTORY_COLLECTIONS = ['storeStock', 'storeInventory']"));
+});
+
+test('17A. GST registration validates real GSTIN and positive GST rate', () => {
+  assert.equal(policy.validateLocationDetails(validLocation({
+    gstRegistered: true,
+    gstin: '09AGGPB8235N1Z2',
+    gstRate: 5,
+    gstDecisionReviewed: true,
+  })).valid, true);
+  assert.equal(policy.validateLocationDetails(validLocation({
+    gstRegistered: true,
+    gstin: 'a',
+    gstRate: 5,
+    gstDecisionReviewed: true,
+  })).valid, false);
+  assert.equal(policy.validateLocationDetails(validLocation({
+    gstRegistered: true,
+    gstin: '09AGGPB8235N1Z2',
+    gstRate: 0,
+    gstDecisionReviewed: true,
+  })).valid, false);
+});
+
+test('17B. GST-unregistered stores clear GSTIN and do not require GST receipt fields', () => {
+  const details = policy.validateLocationDetails(validLocation({
+    gstRegistered: false,
+    gstin: '',
+    gstRate: 0,
+    gstDecisionReviewed: true,
+  }));
+  assert.equal(details.valid, true);
+  const draft = policy.buildDraftStorePayload({
+    details: details.details,
+    selectedModules: [],
+    createdBy: 'admin-uid',
+    provisioningJobId: 'store_123456789abc',
+    timestamp: 'SERVER_TIMESTAMP',
+  });
+  assert.equal(draft.gstin, '');
+  assert.equal(draft.gstRate, 0);
 });
 
 test('18. Current-stock copy requires exact code confirmation and reason', () => {
@@ -308,6 +366,7 @@ test('25. Activation is blocked until mandatory readiness succeeds', () => {
   }, { menuProductCount: 0, inventoryRowCount: 0, staffCount: 0 });
   assert.equal(readiness.posReady, false);
   assert.ok(readiness.blockingKeys.includes('staffAssigned'));
+  assert.ok(readiness.friendlyBlockingSteps.includes('Staff'));
 });
 
 test('26. Customer ordering requires a separate callable and public snapshot', () => {
@@ -338,6 +397,8 @@ test('28. Firestore rules reserve provisioning writes for the backend', () => {
   assert.match(rules, /match \/storeProvisioningJobs\/\{jobId\}/);
   assert.match(rules, /allow create, update, delete: if false;/);
   assert.match(rules, /match \/stores\/\{storeId\}[\s\S]*allow create, update, delete: if false;/);
+  assert.match(rules, /resource\.data\.internalPosTestEnabled == true/);
+  assert.match(rules, /match \/storeProvisioningAudit\/\{auditId\}/);
 });
 
 test('29. UI uses callables and contains no direct store write API', () => {
@@ -414,6 +475,8 @@ test('31. Incomplete preview returns a full blocked zero-write plan', () => {
   assert.deepEqual(result.countsByCollection, {
     stores: 1,
     storeProvisioningJobs: 1,
+    users: 0,
+    storeProvisioningAudit: 0,
     finishedGoods: 1,
     menuItems: 1,
     categories: 0,
@@ -500,6 +563,129 @@ test('37. Wizard renders structured validation inline and disables Create while 
   assert.match(locationSource, /preview\.validationErrors\.map/);
   assert.match(locationSource, /disabled=\{actioning === 'create' \|\| !preview\?\.canCreate\}/);
   assert.match(locationSource, /role="alert"[\s\S]*wizardError/);
+});
+
+test('38. Location list uses friendly setup steps instead of raw readiness field names', () => {
+  assert.match(locationSource, /needs \{progress\.incomplete\.length\} setup steps before POS can be activated/);
+  assert.match(locationSource, /Review legal and GST/);
+  assert.match(locationSource, /Validate add-ons/);
+  assert.match(locationSource, /Complete POS test/);
+  assert.doesNotMatch(locationSource, /Object\.entries\(READINESS_LABELS\)\.map/);
+});
+
+test('39. Internal POS test stays Draft and customer ordering disabled', () => {
+  assert.match(provisioningSource, /const enableInternalPosTest = onCall/);
+  assert.match(provisioningSource, /internalPosTestEnabled: true/);
+  assert.match(provisioningSource, /setupTestMode: true/);
+  assert.match(provisioningSource, /customerOrderingEnabled: false/);
+  assert.match(provisioningSource, /MARK_INTERNAL_POS_TEST_PASSED/);
+});
+
+test('40. POS setup-test stores are Admin or assigned-manager only and orders are labelled', () => {
+  assert.match(posSource, /staffProfile\?\.role === 'STORE_MANAGER' && store\.internalPosTestEnabled === true/);
+  assert.match(posSource, /Setup test sale/);
+  assert.match(posSource, /isSetupTest: isSetupTestSale/);
+  assert.match(posSource, /setupTestLabel: isSetupTestSale \? 'SETUP TEST' : null/);
+  assert.match(posSource, /const setupPaymentMethods: PaymentMethod\[\] = isSetupTestSale \? \['CASH'\] : PAYMENT_METHODS/);
+  assert.match(posSource, /Setup-test orders must use Cash only/);
+});
+
+test('41. Setup-test orders are excluded from normal Reporting Centre rows', () => {
+  assert.match(reportingSource, /function isSetupTestOrder/);
+  assert.match(reportingSource, /\.filter\(\(record\) => !isSetupTestOrder\(record\?\.order \|\| record\)\)/);
+});
+
+test('42. Wizard exposes seven guided steps', () => {
+  assert.match(locationSource, /Store Details', 'Copy Config', 'Opening Stock', 'Staff', 'Validation', 'POS Test', 'Activate/);
+  assert.match(locationSource, /Confirm opening stock/);
+  assert.match(locationSource, /Assign staff here/);
+  assert.match(locationSource, /Run validation preview/);
+});
+
+test('43. Opening stock validation rejects negative and invalid integer quantities', () => {
+  const stockDocs = [
+    { id: 'milk-row', data: () => ({ stockItemCode: 'MILK', uom: 'ML', costPerUnit: 1 }) },
+    { id: 'cup-row', data: () => ({ stockItemCode: 'CUP', uom: 'PCS', costPerUnit: 2 }) },
+  ];
+  const valid = provisioning.validateOpeningStockRows(
+    { id: 'BAKED_BY_BOND_51', code: 'BAKED_BY_BOND_51' },
+    stockDocs,
+    [
+      { stockId: 'milk-row', openingStock: '12.5', costPerUnit: '1.25', confirmed: true },
+      { stockId: 'cup-row', openingStock: '10', costPerUnit: '2', confirmed: true },
+    ],
+  );
+  assert.equal(valid.valid, true);
+  assert.equal(valid.rows[0].openingStock, 12.5);
+  const invalid = provisioning.validateOpeningStockRows(
+    { id: 'BAKED_BY_BOND_51', code: 'BAKED_BY_BOND_51' },
+    stockDocs,
+    [
+      { stockId: 'milk-row', openingStock: '-1', costPerUnit: '1.25', confirmed: true },
+      { stockId: 'cup-row', openingStock: '10.5', costPerUnit: '2', confirmed: true },
+    ],
+  );
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.errors.some((message) => message.includes('opening quantity must be zero or positive')));
+  assert.ok(invalid.errors.some((message) => message.includes('requires a whole-number quantity')));
+});
+
+test('44. Zero opening stock requires typed destination code confirmation', () => {
+  const stockDocs = [
+    { id: 'milk-row', data: () => ({ stockItemCode: 'MILK', uom: 'ML', costPerUnit: 1 }) },
+  ];
+  const blocked = provisioning.validateOpeningStockRows(
+    { id: 'BAKED_BY_BOND_51', code: 'BAKED_BY_BOND_51' },
+    stockDocs,
+    [],
+    { confirmAllZero: true, typedConfirmation: 'wrong' },
+  );
+  assert.equal(blocked.valid, false);
+  assert.ok(blocked.errors[0].includes('Type BAKED_BY_BOND_51'));
+  const confirmed = provisioning.validateOpeningStockRows(
+    { id: 'BAKED_BY_BOND_51', code: 'BAKED_BY_BOND_51' },
+    stockDocs,
+    [],
+    { confirmAllZero: true, typedConfirmation: 'BAKED_BY_BOND_51' },
+  );
+  assert.equal(confirmed.valid, true);
+  assert.equal(confirmed.rows[0].openingStock, 0);
+  assert.equal(confirmed.rows[0].confirmed, true);
+});
+
+test('45. Opening stock writes use deterministic movements and do not overwrite history', () => {
+  assert.equal(
+    provisioning.openingMovementId('BAKED_BY_BOND_51', 'stock-row-1', 'job-1'),
+    provisioning.openingMovementId('BAKED_BY_BOND_51', 'stock-row-1', 'job-1'),
+  );
+  assert.match(provisioningSource, /movementType: 'OPENING_STOCK'/);
+  assert.match(provisioningSource, /batch\.create\(operation\.ref, operation\.payload\)/);
+  assert.match(provisioningSource, /Opening movement already exists with different values/);
+  assert.doesNotMatch(provisioningSource, /batch\.set\(operation\.ref, operation\.payload/);
+});
+
+test('46. Opening stock CSV import previews before applying to the editor', () => {
+  assert.match(locationSource, /<Download size=\{15\} \/> Template/);
+  assert.match(locationSource, /Upload CSV/);
+  assert.match(locationSource, /function parseCsv/);
+  assert.match(locationSource, /previewOpeningStockCsv/);
+  assert.match(locationSource, /Apply CSV to editor/);
+  assert.match(locationSource, /No Firestore write happens until Save Opening Stock/);
+});
+
+test('47. Direct staff assignment stays callable-backed and audited', () => {
+  assert.match(provisioningSource, /async function saveStaffAssignments/);
+  assert.match(provisioningSource, /SETUP_LEAD_REQUIRED/);
+  assert.match(provisioningSource, /POS_USER_REQUIRED/);
+  assert.match(provisioningSource, /previousStoreIds/);
+  assert.match(provisioningSource, /resultingStoreIds/);
+  assert.match(locationSource, /saveLocationStaffAssignmentsCallable/);
+});
+
+test('48. New provisioning callables are exported for emulator and backend QA', () => {
+  const indexSource = fs.readFileSync(new URL('../functions/index.js', import.meta.url), 'utf8');
+  assert.match(indexSource, /exports\.saveLocationOpeningStock/);
+  assert.match(indexSource, /exports\.saveLocationStaffAssignments/);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

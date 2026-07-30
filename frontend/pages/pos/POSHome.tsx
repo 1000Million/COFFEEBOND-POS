@@ -916,13 +916,28 @@ export default function POSHome() {
 
   const fetchData = async () => {
     try {
-      const storesSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-
-      const fetchedStores = storesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
+      const assignedStoreIds = new Set([
+        ...(staffProfile?.storeIds || []),
+        ...(staffProfile?.assignedStoreIds || []),
+      ]);
+      const activeStoresSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+      const activeStores = activeStoresSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
+      const setupStoreSnaps = !isAdmin && staffProfile?.role === 'STORE_MANAGER'
+        ? await Promise.all([...assignedStoreIds].map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)))
+        : [];
+      const setupStores = setupStoreSnaps
+        .filter((snap): snap is NonNullable<typeof snap> => !!snap && snap.exists())
+        .map((snap) => ({ id: snap.id, ...snap.data() } as Store));
+      const fetchedStores = isAdmin
+        ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store))
+        : [...activeStores, ...setupStores].filter((store, index, list) => list.findIndex((entry) => entry.id === store.id) === index);
 
       const allowedStores = isAdmin
-        ? fetchedStores
-        : fetchedStores.filter(s => staffProfile?.storeIds.includes(s.id));
+        ? fetchedStores.filter(store => store.isActive || store.internalPosTestEnabled === true)
+        : fetchedStores.filter(store => (
+          store.isActive === true
+          || (staffProfile?.role === 'STORE_MANAGER' && store.internalPosTestEnabled === true)
+        ) && assignedStoreIds.has(store.id));
 
       setStores(allowedStores);
       if (allowedStores.length > 0) {
@@ -1471,11 +1486,21 @@ export default function POSHome() {
   const splitPaymentBalanced = paymentRowsAreBalanced(displayedCartTotals.grandTotal, splitAllocatedAmount);
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
+  const isSetupTestSale = selectedStore?.internalPosTestEnabled === true && selectedStore?.isActive !== true;
+  const setupPaymentMethods: PaymentMethod[] = isSetupTestSale ? ['CASH'] : PAYMENT_METHODS;
   const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
   const featuredHeading = isUsingTopSellerData ? 'Top sellers last 7 days' : 'Top picks';
   const featuredSubheading = isUsingTopSellerData
     ? 'Based on completed sales for this store'
     : 'Fast favourites for quick billing';
+
+  useEffect(() => {
+    if (!isSetupTestSale) return;
+    setIsSplitPayment(false);
+    setSplitPayments([]);
+    setPaymentMethod('CASH');
+    resetComplimentaryOtp();
+  }, [isSetupTestSale]);
 
   const persistHeldBills = (nextHeldBills: HeldBill[]) => {
     setHeldBills(nextHeldBills);
@@ -1616,6 +1641,13 @@ export default function POSHome() {
     if (!selectedStoreId) return alert("Please select a store");
     if (!isSplitPayment && !selectedPaymentMethod) return alert("Please select a payment method");
     if (isSplitPayment && splitPayments.length === 0) return alert("Please add at least one payment row");
+    if (isSetupTestSale && (isSplitPayment || selectedPaymentMethod !== 'CASH')) {
+      setCheckoutError({
+        message: 'Setup-test orders must use Cash only.',
+        details: 'Draft-store POS testing is isolated from Razorpay, UPI, Card, Split, Credit and Complimentary payments.',
+      });
+      return;
+    }
     if (orderType === 'DINE_IN' && !tableNumber.trim()) {
       setTableNumberError('Table number is required for dine in orders.');
       return;
@@ -1985,6 +2017,10 @@ export default function POSHome() {
           status: 'COMPLETED',
           paymentStatus,
           commercialStatus: isComplimentaryCheckout ? 'COMPLIMENTARY' : 'SALE',
+          isSetupTest: isSetupTestSale,
+          setupTestMode: isSetupTestSale,
+          setupTestLabel: isSetupTestSale ? 'SETUP TEST' : null,
+          setupTestStoreStatus: isSetupTestSale ? String(selectedStore.status || 'DRAFT') : null,
           addOnAuthorizationId: posAddOnAuthorization.authorizationId,
           addOnTotal: posAddOnAuthorization.canonicalAddOnTotal,
           ...(isComplimentaryCheckout && {
@@ -2286,7 +2322,11 @@ export default function POSHome() {
                 className="min-w-[180px] bg-transparent text-sm font-black text-[#2d1c19] outline-none lg:min-w-[190px]"
                 aria-label="Select POS store"
               >
-                {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {stores.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{s.internalPosTestEnabled === true && s.isActive !== true ? ' (Setup test)' : ''}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -2309,6 +2349,11 @@ export default function POSHome() {
                 </button>
               ))}
             </div>
+            {isSetupTestSale && (
+              <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-black uppercase text-amber-800">
+                Setup test sale
+              </span>
+            )}
 
             <Link
               to="/pos/running-orders"
@@ -2914,11 +2959,12 @@ export default function POSHome() {
               <label className="block text-[10px] font-black uppercase tracking-[0.14em] text-neutral-500">Payment</label>
               <button
                 onClick={() => setSplitPaymentMode(!isSplitPayment)}
+                disabled={isSetupTestSale}
                 className={`rounded-full border px-2.5 py-1 text-[10px] font-black transition-colors ${
                   isSplitPayment
                     ? 'border-[#5c4033] bg-[#5c4033] text-white'
                     : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50'
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-40`}
               >
                 {isSplitPayment ? 'Single' : 'Split'}
               </button>
@@ -2928,7 +2974,7 @@ export default function POSHome() {
               <>
                 <div className="overflow-x-auto custom-scrollbar">
                   <div className="flex min-w-max gap-1.5 pb-0.5">
-                  {PAYMENT_METHODS.map(method => (
+                  {setupPaymentMethods.map(method => (
                     <button
                       key={method}
                       onClick={() => {
@@ -2949,6 +2995,11 @@ export default function POSHome() {
                   ))}
                   </div>
                 </div>
+                {isSetupTestSale && (
+                  <p className="text-[10px] font-bold text-amber-700">
+                    Internal setup tests are Cash-only and excluded from commercial reports.
+                  </p>
+                )}
                 {isComplimentarySelected && (
                   <section className="mt-3 rounded-2xl border border-[#eadfd4] bg-[#fffdf9] p-3 shadow-sm md:p-4" aria-labelledby="complimentary-order-title">
                     <div className="flex items-center justify-between gap-3">

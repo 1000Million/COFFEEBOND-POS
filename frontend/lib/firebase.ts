@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getFunctions } from "firebase/functions";
-import { getStorage } from "firebase/storage";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import { connectFunctionsEmulator, getFunctions } from "firebase/functions";
+import { connectStorageEmulator, getStorage } from "firebase/storage";
 
 const requiredFirebaseEnv = [
   "VITE_FIREBASE_API_KEY",
@@ -55,3 +55,31 @@ export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const functions = getFunctions(app, firebaseEnv.VITE_FIREBASE_FUNCTIONS_REGION || "us-central1");
 export const storage = getStorage(app);
+
+const useFirebaseEmulators = firebaseEnv.VITE_USE_FIREBASE_EMULATORS === "true";
+
+declare global {
+  var __coffeeBondFirebaseEmulatorsConnected: boolean | undefined;
+}
+
+if (useFirebaseEmulators && typeof window !== "undefined" && !globalThis.__coffeeBondFirebaseEmulatorsConnected) {
+  connectAuthEmulator(auth, firebaseEnv.VITE_FIREBASE_AUTH_EMULATOR_URL || "http://127.0.0.1:9099", {
+    disableWarnings: true,
+  });
+  connectFirestoreEmulator(
+    db,
+    firebaseEnv.VITE_FIREBASE_FIRESTORE_EMULATOR_HOST || "127.0.0.1",
+    Number(firebaseEnv.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8080),
+  );
+  connectFunctionsEmulator(
+    functions,
+    firebaseEnv.VITE_FIREBASE_FUNCTIONS_EMULATOR_HOST || "127.0.0.1",
+    Number(firebaseEnv.VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT || 5001),
+  );
+  connectStorageEmulator(
+    storage,
+    firebaseEnv.VITE_FIREBASE_STORAGE_EMULATOR_HOST || "127.0.0.1",
+    Number(firebaseEnv.VITE_FIREBASE_STORAGE_EMULATOR_PORT || 9199),
+  );
+  globalThis.__coffeeBondFirebaseEmulatorsConnected = true;
+}

@@ -83,6 +83,7 @@ const usersBlock = extractMatchBlock(rules, 'match /users/{userId}');
 const franchiseAccessAuditBlock = extractMatchBlock(rules, 'match /franchiseAccessAudit/{auditId}');
 const storesBlock = extractMatchBlock(rules, 'match /stores/{storeId}');
 const storeProvisioningJobsBlock = extractMatchBlock(rules, 'match /storeProvisioningJobs/{jobId}');
+const storeProvisioningAuditBlock = extractMatchBlock(rules, 'match /storeProvisioningAudit/{auditId}');
 const onlineOrdersBlock = extractMatchBlock(rules, 'match /onlineOrders/{onlineOrderId}');
 const publicTrackingBlock = extractMatchBlock(rules, 'match /publicOrderTracking/{trackingToken}');
 const ordersBlock = extractMatchBlock(rules, 'match /orders/{orderId}');
@@ -148,6 +149,10 @@ assert(/isActiveStaff\(\)[\s\S]*hasStoreAccess\(storeId\)/.test(storesBlock), 'S
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(storesBlock), 'All client-side store mutations must be denied in favor of audited Admin SDK callables.');
 assert(/allow\s+read:\s*if\s+isAdmin\(\);/.test(storeProvisioningJobsBlock), 'Only active Admin users may read provisioning jobs.');
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(storeProvisioningJobsBlock), 'Provisioning jobs must be server-written only.');
+assert(/resource\.data\.internalPosTestEnabled\s*==\s*true/.test(storesBlock), 'Assigned Store Managers may read only explicitly enabled internal POS test Draft stores.');
+assert(!/isCashier\(\)[\s\S]*internalPosTestEnabled/.test(storesBlock), 'Cashiers must not inherit Draft internal-test store reads.');
+assert(/allow\s+read:\s*if\s+isAdmin\(\);/.test(storeProvisioningAuditBlock), 'Only active Admin users may read provisioning audit records.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(storeProvisioningAuditBlock), 'Provisioning audit records must be server-written only.');
 
 assert(!missingProfile.includes(legacyRootAdminUid), 'MissingProfile must not contain the legacy hardcoded admin UID.');
 assert(clientBootstrapTerms.every((term) => !missingProfile.includes(term)) && !/setDoc\(doc\(db,\s*['"]users['"]/.test(missingProfile), 'MissingProfile must not expose a client-side admin bootstrap action.');

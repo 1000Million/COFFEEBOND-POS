@@ -43,6 +43,10 @@ const storeProvisioningFunctions = createStoreProvisioningFunctions({ admin, db,
 exports.previewStoreProvisioning = storeProvisioningFunctions.previewStoreProvisioning;
 exports.createStoreFromTemplate = storeProvisioningFunctions.createStoreFromTemplate;
 exports.updateStoreConfiguration = storeProvisioningFunctions.updateStoreConfiguration;
+exports.enableInternalPosTest = storeProvisioningFunctions.enableInternalPosTest;
+exports.markInternalPosTestPassed = storeProvisioningFunctions.markInternalPosTestPassed;
+exports.saveLocationOpeningStock = storeProvisioningFunctions.saveLocationOpeningStock;
+exports.saveLocationStaffAssignments = storeProvisioningFunctions.saveLocationStaffAssignments;
 exports.activateStore = storeProvisioningFunctions.activateStore;
 exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOrdering;
 

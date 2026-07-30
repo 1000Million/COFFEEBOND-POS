@@ -600,7 +600,9 @@ export default function PurchaseEntry() {
       setError('');
       try {
         const [storeSnap, rawSnap, prepSnap] = await Promise.all([
-          getDocs(query(collection(db, 'stores'), where('isActive', '==', true))),
+          getDocs(staffProfile.role === 'ADMIN'
+            ? collection(db, 'stores')
+            : query(collection(db, 'stores'), where('isActive', '==', true))),
           getDocs(collection(db, 'rawIngredients')),
           getDocs(collection(db, 'prepItems')),
         ]);
