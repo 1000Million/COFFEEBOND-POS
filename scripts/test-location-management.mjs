@@ -579,6 +579,8 @@ test('39. Internal POS test stays Draft and customer ordering disabled', () => {
   assert.match(provisioningSource, /setupTestMode: true/);
   assert.match(provisioningSource, /customerOrderingEnabled: false/);
   assert.match(provisioningSource, /MARK_INTERNAL_POS_TEST_PASSED/);
+  assert.match(provisioningSource, /repeatInternalTestResult|idempotent: true|store\.internalPosTestEnabled === true && store\.posEnabled === true/);
+  assert.match(provisioningSource, /store\.posTestCompleted === true && store\.readiness\?\.posTestCompleted === true/);
 });
 
 test('40. POS setup-test stores are Admin or assigned-manager only and orders are labelled', () => {
@@ -661,6 +663,9 @@ test('45. Opening stock writes use deterministic movements and do not overwrite 
   assert.match(provisioningSource, /movementType: 'OPENING_STOCK'/);
   assert.match(provisioningSource, /batch\.create\(operation\.ref, operation\.payload\)/);
   assert.match(provisioningSource, /Opening movement already exists with different values/);
+  assert.match(provisioningSource, /stockAlreadyMatches/);
+  assert.match(provisioningSource, /createdMovementCount/);
+  assert.match(provisioningSource, /idempotent: operations\.length === 0/);
   assert.doesNotMatch(provisioningSource, /batch\.set\(operation\.ref, operation\.payload/);
 });
 
@@ -677,6 +682,8 @@ test('47. Direct staff assignment stays callable-backed and audited', () => {
   assert.match(provisioningSource, /async function saveStaffAssignments/);
   assert.match(provisioningSource, /SETUP_LEAD_REQUIRED/);
   assert.match(provisioningSource, /POS_USER_REQUIRED/);
+  assert.match(provisioningSource, /plan\.changes\.length === 0 && !storeStaffNeedsUpdate/);
+  assert.match(provisioningSource, /idempotent: true/);
   assert.match(provisioningSource, /previousStoreIds/);
   assert.match(provisioningSource, /resultingStoreIds/);
   assert.match(locationSource, /saveLocationStaffAssignmentsCallable/);

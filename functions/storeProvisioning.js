@@ -132,6 +132,10 @@ function roundedQuantity(value) {
   return Math.round((Number(value) + Number.EPSILON) * 1000000) / 1000000;
 }
 
+function sameQuantity(left, right) {
+  return roundedQuantity(number(left)) === roundedQuantity(number(right));
+}
+
 function openingMovementId(storeId, stockId, provisioningJobId) {
   return `${cleanText(provisioningJobId || storeId, 140)}_${stockId}_OPENING_STOCK`
     .replace(/[^A-Za-z0-9_-]/g, '_')
@@ -933,7 +937,15 @@ async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, conf
   const existingMovementByPath = new Map(movementSnaps.map((snap) => [snap.ref.path, snap]));
 
   const operations = [];
+  const openingStockSource = confirmAllZero ? 'ZERO_CONFIRMATION' : 'LOCATION_WIZARD';
   validation.rows.forEach((row) => {
+    const stockAlreadyMatches = sameQuantity(row.stock.openingStock, row.openingStock)
+      && sameQuantity(row.stock.currentStock, row.currentStock)
+      && sameQuantity(row.stock.costPerUnit, row.costPerUnit)
+      && row.stock.openingStockConfirmed === true
+      && cleanText(row.stock.openingStockSource, 40) === openingStockSource
+      && cleanText(row.stock.provisioningJobId || provisioningJobId, 120) === provisioningJobId;
+    if (stockAlreadyMatches) return;
     operations.push({
       type: 'UPDATE_STOCK',
       ref: db.collection('storeStock').doc(row.stock.id),
@@ -945,13 +957,14 @@ async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, conf
         openingStockConfirmedBy: adminUser.uid,
         openingStockConfirmedByName: adminUser.name,
         openingStockConfirmedAt: timestamp,
-        openingStockSource: confirmAllZero ? 'ZERO_CONFIRMATION' : 'LOCATION_WIZARD',
+        openingStockSource,
         provisioningJobId,
         updatedAt: timestamp,
       },
     });
   });
 
+  let createdMovementCount = 0;
   nonZeroRows.forEach((row, index) => {
     const ref = movementRefs[index];
     const existing = existingMovementByPath.get(ref.path);
@@ -964,6 +977,7 @@ async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, conf
       }
       return;
     }
+    createdMovementCount += 1;
     operations.push({
       type: 'CREATE_MOVEMENT',
       ref,
@@ -994,18 +1008,23 @@ async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, conf
     });
   });
 
-  operations.push({
-    type: 'UPDATE_STORE',
-    ref: storeRef,
-    payload: {
-      openingStockConfirmed: true,
-      'readiness.openingStockReviewed': true,
-      openingStockConfirmedBy: adminUser.uid,
-      openingStockConfirmedByName: adminUser.name,
-      openingStockConfirmedAt: timestamp,
-      updatedAt: timestamp,
-    },
-  });
+  const storeReadiness = store.readiness || {};
+  const storeNeedsOpeningStockReview = store.openingStockConfirmed !== true
+    || storeReadiness.openingStockReviewed !== true;
+  if (storeNeedsOpeningStockReview) {
+    operations.push({
+      type: 'UPDATE_STORE',
+      ref: storeRef,
+      payload: {
+        openingStockConfirmed: true,
+        'readiness.openingStockReviewed': true,
+        openingStockConfirmedBy: adminUser.uid,
+        openingStockConfirmedByName: adminUser.name,
+        openingStockConfirmedAt: timestamp,
+        updatedAt: timestamp,
+      },
+    });
+  }
 
   for (let offset = 0; offset < operations.length; offset += BATCH_SIZE) {
     const batch = db.batch();
@@ -1015,21 +1034,25 @@ async function saveOpeningStockSetup({ admin, db, adminUser, storeId, rows, conf
     });
     await batch.commit();
   }
-  await writeProvisioningAudit(db, admin, {
-    storeId,
-    action: confirmAllZero ? 'CONFIRM_ZERO_OPENING_STOCK' : 'SAVE_OPENING_STOCK',
-    actorUid: adminUser.uid,
-    actorName: adminUser.name,
-    provisioningJobId,
-    inventoryRowCount: validation.rows.length,
-    nonZeroOpeningRows: nonZeroRows.length,
-    totalOpeningQuantity: roundedQuantity(nonZeroRows.reduce((sum, row) => sum + row.openingStock, 0)),
-  });
+  if (operations.length > 0) {
+    await writeProvisioningAudit(db, admin, {
+      storeId,
+      action: confirmAllZero ? 'CONFIRM_ZERO_OPENING_STOCK' : 'SAVE_OPENING_STOCK',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+      provisioningJobId,
+      inventoryRowCount: validation.rows.length,
+      nonZeroOpeningRows: nonZeroRows.length,
+      createdMovementCount,
+      totalOpeningQuantity: roundedQuantity(nonZeroRows.reduce((sum, row) => sum + row.openingStock, 0)),
+    });
+  }
   return {
     storeId,
     inventoryRowCount: validation.rows.length,
     nonZeroOpeningRows: nonZeroRows.length,
     openingStockReviewed: true,
+    idempotent: operations.length === 0,
   };
 }
 
@@ -1044,6 +1067,18 @@ async function saveStaffAssignments({ admin, db, adminUser, storeId, selectedUse
     fail('failed-precondition', plan.validationErrors.map((issue) => issue.message).join(' '));
   }
   const timestamp = FieldValue.serverTimestamp();
+  const storeReadiness = store.readiness || {};
+  const storeStaffNeedsUpdate = number(store.assignedStaffCount) !== plan.selectedCount
+    || storeReadiness.staffAssigned !== true;
+  if (plan.changes.length === 0 && !storeStaffNeedsUpdate) {
+    return {
+      storeId,
+      assignedStaffCount: plan.selectedCount,
+      changedUserCount: 0,
+      staffAssigned: true,
+      idempotent: true,
+    };
+  }
   for (let offset = 0; offset < plan.changes.length; offset += BATCH_SIZE) {
     const batch = db.batch();
     plan.changes.slice(offset, offset + BATCH_SIZE).forEach((change) => {
@@ -1081,6 +1116,7 @@ async function saveStaffAssignments({ admin, db, adminUser, storeId, selectedUse
     assignedStaffCount: plan.selectedCount,
     changedUserCount: plan.changes.length,
     staffAssigned: true,
+    idempotent: false,
   };
 }
 
@@ -1282,6 +1318,14 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     if (store.status === 'ACTIVE' || store.isActive === true) {
       fail('failed-precondition', 'Internal POS testing is only for Draft or Setup locations.');
     }
+    if (store.internalPosTestEnabled === true && store.posEnabled === true && store.setupTestMode === true) {
+      return {
+        storeId,
+        status: store.status || 'DRAFT',
+        internalPosTestEnabled: true,
+        idempotent: true,
+      };
+    }
     const timestamp = FieldValue.serverTimestamp();
     await storeRef.update({
       status: store.status || 'DRAFT',
@@ -1316,6 +1360,13 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const storeSnap = await storeRef.get();
     if (!storeSnap.exists) fail('not-found', 'Location not found.');
     const store = storeSnap.data() || {};
+    if (store.posTestCompleted === true && store.readiness?.posTestCompleted === true) {
+      return {
+        storeId,
+        posTestCompleted: true,
+        idempotent: true,
+      };
+    }
     if (store.internalPosTestEnabled !== true) {
       fail('failed-precondition', 'Enable internal POS testing before marking the test complete.');
     }

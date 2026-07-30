@@ -371,6 +371,14 @@ async function movementCount(type) {
   return snapshot.size;
 }
 
+async function auditActionCount(action) {
+  const snapshot = await db.collection('storeProvisioningAudit')
+    .where('storeId', '==', DESTINATION_STORE_ID)
+    .where('action', '==', action)
+    .get();
+  return snapshot.size;
+}
+
 async function run() {
   console.log('Location Management emulator environment is isolated.');
   console.log(`Project: ${process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || PROJECT_ID}`);
@@ -454,11 +462,14 @@ async function run() {
   assert.equal(openingResult.openingStockReviewed, true);
   assert.equal(openingResult.nonZeroOpeningRows, 2);
   assert.equal(await movementCount('OPENING_STOCK'), 2);
-  await callFunction('saveLocationOpeningStock', {
+  assert.equal(await auditActionCount('SAVE_OPENING_STOCK'), 1);
+  const repeatOpeningResult = await callFunction('saveLocationOpeningStock', {
     storeId: DESTINATION_STORE_ID,
     rows: openingRows,
   }, adminToken);
+  assert.equal(repeatOpeningResult.idempotent, true);
   assert.equal(await movementCount('OPENING_STOCK'), 2);
+  assert.equal(await auditActionCount('SAVE_OPENING_STOCK'), 1);
 
   await db.collection('stores').doc('ZERO_STOCK_E2E').set({
     code: 'ZERO_STOCK_E2E',
@@ -485,15 +496,29 @@ async function run() {
   const zeroRow = await db.collection('storeStock').doc('ZERO_STOCK_E2E_ROW').get();
   assert.equal(zeroRow.data().currentStock, 0);
 
-  await callFunction('saveLocationStaffAssignments', {
+  const staffAuditCountBefore = await auditActionCount('SAVE_STAFF_ASSIGNMENTS');
+  const staffAssignmentResult = await callFunction('saveLocationStaffAssignments', {
     storeId: DESTINATION_STORE_ID,
     selectedUserIds: [ADMIN_UID, MANAGER_UID, CASHIER_UID],
   }, adminToken);
+  assert.equal(staffAssignmentResult.staffAssigned, true);
+  assert.equal(staffAssignmentResult.idempotent, false);
+  assert.equal(await auditActionCount('SAVE_STAFF_ASSIGNMENTS'), staffAuditCountBefore + 1);
+  const repeatStaffAssignmentResult = await callFunction('saveLocationStaffAssignments', {
+    storeId: DESTINATION_STORE_ID,
+    selectedUserIds: [ADMIN_UID, MANAGER_UID, CASHIER_UID],
+  }, adminToken);
+  assert.equal(repeatStaffAssignmentResult.idempotent, true);
+  assert.equal(await auditActionCount('SAVE_STAFF_ASSIGNMENTS'), staffAuditCountBefore + 1);
   const adminProfile = await db.collection('users').doc(ADMIN_UID).get();
   assert.ok(adminProfile.data().assignedStoreIds.includes(DESTINATION_STORE_ID));
 
   const internalTestResult = await callFunction('enableInternalPosTest', { storeId: DESTINATION_STORE_ID }, adminToken);
   assert.equal(internalTestResult.internalPosTestEnabled, true);
+  assert.equal(await auditActionCount('ENABLE_INTERNAL_POS_TEST'), 1);
+  const repeatInternalTestResult = await callFunction('enableInternalPosTest', { storeId: DESTINATION_STORE_ID }, adminToken);
+  assert.equal(repeatInternalTestResult.idempotent, true);
+  assert.equal(await auditActionCount('ENABLE_INTERNAL_POS_TEST'), 1);
   const testingStore = await db.collection('stores').doc(DESTINATION_STORE_ID).get();
   assert.equal(testingStore.data().posEnabled, true);
   assert.equal(testingStore.data().customerOrderingEnabled, false);
@@ -533,6 +558,10 @@ async function run() {
   });
   const posTest = await callFunction('markInternalPosTestPassed', { storeId: DESTINATION_STORE_ID }, adminToken);
   assert.equal(posTest.posTestCompleted, true);
+  assert.equal(await auditActionCount('MARK_INTERNAL_POS_TEST_PASSED'), 1);
+  const repeatPosTest = await callFunction('markInternalPosTestPassed', { storeId: DESTINATION_STORE_ID }, adminToken);
+  assert.equal(repeatPosTest.idempotent, true);
+  assert.equal(await auditActionCount('MARK_INTERNAL_POS_TEST_PASSED'), 1);
 
   const activation = await callFunction('activateStore', { storeId: DESTINATION_STORE_ID }, adminToken);
   assert.equal(activation.status, 'ACTIVE');
