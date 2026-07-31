@@ -1902,6 +1902,9 @@ export default function POSHome() {
         storeId: selectedStore.id,
         orderId: newOrderRef.id,
         orderNumber: null,
+        checkoutMode: isSetupTestSale ? 'SETUP_TEST' : 'STANDARD_POS',
+        checkoutSource: 'POS',
+        paymentMethod: isSplitPayment ? 'SPLIT' : selectedPaymentMethod,
         items: browserValidatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => ({
           orderItemId: orderLineRefs[index].id,
           parentProductId: liveItem.id,

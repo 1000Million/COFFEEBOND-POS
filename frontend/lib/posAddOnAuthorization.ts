@@ -32,6 +32,9 @@ type AuthorizePosAddOnsRequest = {
   storeId: string;
   orderId: string;
   orderNumber: string | null;
+  checkoutMode?: 'STANDARD_POS' | 'SETUP_TEST';
+  checkoutSource?: 'POS';
+  paymentMethod?: string | null;
   items: PosAddOnAuthorizationItemRequest[];
 };
 

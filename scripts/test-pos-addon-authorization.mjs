@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -20,8 +21,10 @@ Module._load = function loadWithFirebaseFunctionsStub(request, parent, isMain) {
 };
 const {
   AUTHORIZATION_TTL_MS,
+  DRAFT_SETUP_TEST_STORE_ID,
   PROVIDER,
   canonicalizeRequestedCart,
+  createPosAddOnAuthorizationFunction,
   isExcludedBeverageCategory,
   isRetailCoffee,
   sanitizeCartItems,
@@ -354,6 +357,227 @@ assert.equal(isRetailCoffee({ code: 'HOUSE_BLEND_BEANS_250G' }), true);
 assert.equal(PROVIDER, 'SERVER_CANONICAL_ADD_ONS');
 assert.equal(AUTHORIZATION_TTL_MS, 5 * 60 * 1000);
 
+const posSource = fs.readFileSync('frontend/pages/pos/POSHome.tsx', 'utf8');
+assert.match(posSource, /checkoutMode: isSetupTestSale \? 'SETUP_TEST' : 'STANDARD_POS'/);
+assert.match(posSource, /checkoutSource: 'POS'/);
+assert.match(posSource, /paymentMethod: isSplitPayment \? 'SPLIT' : selectedPaymentMethod/);
+
+const CALLABLE_USER_ID = 'test-admin';
+const CALLABLE_NOW_MS = Date.parse('2026-08-01T00:00:00.000Z');
+
+function fakeTimestamp(milliseconds) {
+  return {
+    toMillis: () => milliseconds,
+    toDate: () => new Date(milliseconds),
+  };
+}
+
+function createCallableFixture({
+  storeId = STORE_ID,
+  store = baseStore,
+  staff = { isActive: true, role: 'ADMIN', displayName: 'Test Admin' },
+  product = baseProduct,
+  group = baseGroup,
+} = {}) {
+  const writes = [];
+  const documents = new Map([
+    [`users/${CALLABLE_USER_ID}`, staff],
+    [`stores/${storeId}`, store],
+    ['appSettings/gstConfig', { defaultGstRate: 5 }],
+    [`finishedGoods/${product.id}`, { ...product, availableStoreIds: [storeId] }],
+    [`addOnGroups/${group.id}`, group],
+  ]);
+  let generatedDocumentCount = 0;
+  const db = {
+    collection(collectionName) {
+      return {
+        doc(requestedId) {
+          const documentId = requestedId || `generated-${++generatedDocumentCount}`;
+          const path = `${collectionName}/${documentId}`;
+          return {
+            id: documentId,
+            async get() {
+              const data = documents.get(path);
+              return {
+                id: documentId,
+                exists: data !== undefined,
+                data: () => data,
+              };
+            },
+            async create(data) {
+              writes.push({ path, data });
+            },
+          };
+        },
+      };
+    },
+  };
+  const admin = {
+    firestore: {
+      Timestamp: {
+        now: () => fakeTimestamp(CALLABLE_NOW_MS),
+        fromMillis: milliseconds => fakeTimestamp(milliseconds),
+      },
+    },
+  };
+  return {
+    handler: createPosAddOnAuthorizationFunction({ admin, db, region: 'us-central1' }),
+    writes,
+  };
+}
+
+function callableRequest({
+  storeId = STORE_ID,
+  checkoutMode,
+  checkoutSource,
+  paymentMethod,
+  selectedAddOns = requestedItem().selectedAddOns,
+} = {}) {
+  return {
+    auth: { uid: CALLABLE_USER_ID, token: { name: 'Test Admin' } },
+    data: {
+      storeId,
+      orderId: 'order-1',
+      orderNumber: null,
+      ...(checkoutMode ? { checkoutMode } : {}),
+      ...(checkoutSource ? { checkoutSource } : {}),
+      ...(paymentMethod ? { paymentMethod } : {}),
+      items: [{ ...requestedItem(), selectedAddOns }],
+    },
+  };
+}
+
+async function expectCallableFailure({ fixtureOptions, requestOptions, code = 'failed-precondition' }) {
+  const fixture = createCallableFixture(fixtureOptions);
+  await assert.rejects(
+    () => fixture.handler(callableRequest(requestOptions)),
+    error => error?.code === code,
+  );
+  assert.equal(fixture.writes.length, 0, 'Rejected authorization must perform zero Firestore writes.');
+}
+
+const activeStoreFixture = createCallableFixture();
+await activeStoreFixture.handler(callableRequest());
+assert.equal(activeStoreFixture.writes.length, 1, 'Active-store authorization behavior must remain unchanged.');
+
+await expectCallableFailure({
+  fixtureOptions: { store: { ...baseStore, isActive: false } },
+});
+
+const bakedDraftStore = {
+  id: DRAFT_SETUP_TEST_STORE_ID,
+  code: DRAFT_SETUP_TEST_STORE_ID,
+  status: 'DRAFT',
+  isActive: false,
+  internalPosTestEnabled: true,
+  setupTestMode: true,
+  posEnabled: true,
+  customerOrderingEnabled: false,
+  onlineOrderingEnabled: false,
+  publicOrderingEnabled: false,
+  gstRate: 5,
+};
+const bakedRequest = {
+  storeId: DRAFT_SETUP_TEST_STORE_ID,
+  checkoutMode: 'SETUP_TEST',
+  checkoutSource: 'POS',
+  paymentMethod: 'CASH',
+};
+
+await expectCallableFailure({
+  fixtureOptions: {
+    storeId: DRAFT_SETUP_TEST_STORE_ID,
+    store: { ...bakedDraftStore, setupTestMode: false },
+  },
+  requestOptions: bakedRequest,
+});
+for (const role of ['CASHIER', 'STORE_MANAGER']) {
+  await expectCallableFailure({
+    fixtureOptions: {
+      storeId: DRAFT_SETUP_TEST_STORE_ID,
+      store: bakedDraftStore,
+      staff: {
+        isActive: true,
+        role,
+        assignedStoreIds: [DRAFT_SETUP_TEST_STORE_ID],
+        storeIds: [DRAFT_SETUP_TEST_STORE_ID],
+      },
+    },
+    requestOptions: bakedRequest,
+  });
+}
+
+const bakedAdminFixture = createCallableFixture({
+  storeId: DRAFT_SETUP_TEST_STORE_ID,
+  store: bakedDraftStore,
+});
+await bakedAdminFixture.handler(callableRequest({ ...bakedRequest, selectedAddOns: [] }));
+assert.equal(bakedAdminFixture.writes.length, 1, 'Approved Admin setup-test authorization must be created once.');
+assert.deepEqual(
+  bakedAdminFixture.writes[0].data.canonicalItems['line-1'].addOns,
+  [],
+  'Zero-add-on setup checkout must remain supported.',
+);
+
+await expectCallableFailure({
+  fixtureOptions: { storeId: DRAFT_SETUP_TEST_STORE_ID, store: bakedDraftStore },
+  requestOptions: { ...bakedRequest, paymentMethod: 'UPI' },
+});
+await expectCallableFailure({
+  fixtureOptions: { storeId: DRAFT_SETUP_TEST_STORE_ID, store: bakedDraftStore },
+  requestOptions: { ...bakedRequest, checkoutSource: 'CUSTOMER_ORDER' },
+});
+await expectCallableFailure({
+  fixtureOptions: { storeId: DRAFT_SETUP_TEST_STORE_ID, store: bakedDraftStore },
+  requestOptions: { ...bakedRequest, checkoutMode: undefined },
+});
+await expectCallableFailure({
+  fixtureOptions: { storeId: DRAFT_SETUP_TEST_STORE_ID, store: bakedDraftStore },
+  requestOptions: { ...bakedRequest, paymentMethod: undefined },
+});
+for (const orderingFlag of [
+  'customerOrderingEnabled',
+  'onlineOrderingEnabled',
+  'publicOrderingEnabled',
+]) {
+  await expectCallableFailure({
+    fixtureOptions: {
+      storeId: DRAFT_SETUP_TEST_STORE_ID,
+      store: { ...bakedDraftStore, [orderingFlag]: true },
+    },
+    requestOptions: bakedRequest,
+  });
+}
+await expectCallableFailure({
+  fixtureOptions: {
+    storeId: DRAFT_SETUP_TEST_STORE_ID,
+    store: { ...bakedDraftStore, internalPosTestEnabled: false },
+  },
+  requestOptions: bakedRequest,
+});
+await expectCallableFailure({
+  fixtureOptions: {
+    storeId: DRAFT_SETUP_TEST_STORE_ID,
+    store: { ...bakedDraftStore, posEnabled: false },
+  },
+  requestOptions: bakedRequest,
+});
+await expectCallableFailure({
+  fixtureOptions: {
+    storeId: 'ARBITRARY_DRAFT',
+    store: { ...bakedDraftStore, id: 'ARBITRARY_DRAFT', code: 'ARBITRARY_DRAFT' },
+  },
+  requestOptions: { ...bakedRequest, storeId: 'ARBITRARY_DRAFT' },
+});
+await expectCallableFailure({
+  fixtureOptions: {
+    storeId: DRAFT_SETUP_TEST_STORE_ID,
+    store: bakedDraftStore,
+    group: { ...baseGroup, isActive: false },
+  },
+  requestOptions: bakedRequest,
+});
+
 console.log('POS add-on authorization tests passed:');
 console.log('- browser-supplied names, prices, tax, and inventory mappings are ignored');
 console.log('- inactive options/groups and invalid selection counts are rejected');
@@ -361,3 +585,6 @@ console.log('- product/group, store, excluded category, and Retail Coffee mismat
 console.log('- canonical add-on totals and inventory snapshots come from server-side group data');
 console.log('- product-specific option allowlists are required and enforced');
 console.log('- pricing-only options retain NOT_CONFIGURED and require no assumed inventory mapping');
+console.log('- the Baked Draft setup-test exception requires active Admin, authoritative setup flags, POS source, and Cash');
+console.log('- inactive, cross-store, customer-path, non-Admin, and misconfigured Draft attempts write nothing');
+console.log('- active-store and zero-add-on authorization behavior remains unchanged');

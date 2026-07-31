@@ -9,6 +9,7 @@ const MAX_ITEMS = 30;
 const MAX_PARENT_QUANTITY = 20;
 const MAX_ADD_ON_QUANTITY = 20;
 const MAX_ADD_ON_SELECTIONS = 40;
+const DRAFT_SETUP_TEST_STORE_ID = 'BAKED_BY_BOND_51';
 const RETAIL_COFFEE_CODE = 'HOUSE_BLEND_BEANS_250G';
 const LEGACY_EXCLUDED_PRODUCT_CODES = new Set(['ALMONDS']);
 const DEFERRED_PRODUCT_CODES = new Set([
@@ -117,6 +118,30 @@ function optionIdsByGroup(value) {
 function isAvailableAtStore(product, storeId) {
   return Array.isArray(product.availableStoreIds)
     && product.availableStoreIds.includes(storeId);
+}
+
+function isDraftSetupTestAuthorizationAllowed({
+  storeId,
+  store,
+  staff,
+  checkoutMode,
+  checkoutSource,
+  paymentMethod,
+}) {
+  return storeId === DRAFT_SETUP_TEST_STORE_ID
+    && store?.status === 'DRAFT'
+    && store?.isActive !== true
+    && store?.internalPosTestEnabled === true
+    && store?.setupTestMode === true
+    && store?.posEnabled === true
+    && store?.customerOrderingEnabled === false
+    && store?.onlineOrderingEnabled === false
+    && store?.publicOrderingEnabled === false
+    && staff?.isActive === true
+    && staff?.role === 'ADMIN'
+    && checkoutMode === 'SETUP_TEST'
+    && checkoutSource === 'POS'
+    && paymentMethod === 'CASH';
 }
 
 function isRetailCoffee(product) {
@@ -375,6 +400,9 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     const storeId = cleanText(request.data?.storeId, 80);
     const orderId = cleanText(request.data?.orderId, 120);
     const requestedOrderNumber = cleanText(request.data?.orderNumber, 120) || null;
+    const checkoutMode = cleanText(request.data?.checkoutMode, 40).toUpperCase();
+    const checkoutSource = cleanText(request.data?.checkoutSource, 40).toUpperCase();
+    const paymentMethod = cleanText(request.data?.paymentMethod, 40).toUpperCase();
     const requestedItems = sanitizeCartItems(request.data?.items);
     if (!storeId || !orderId) fail('invalid-argument', 'Store and order references are required.');
 
@@ -388,7 +416,16 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     if (!isAuthorizedStaffProfile(staff, storeId)) {
       fail('permission-denied', 'This staff account cannot authorize add-ons at the selected store.');
     }
-    if (!storeSnapshot.exists || storeSnapshot.data()?.isActive !== true) {
+    const store = storeSnapshot.exists ? (storeSnapshot.data() || {}) : null;
+    const draftSetupTestAllowed = isDraftSetupTestAuthorizationAllowed({
+      storeId,
+      store,
+      staff,
+      checkoutMode,
+      checkoutSource,
+      paymentMethod,
+    });
+    if (!store || (store.isActive !== true && !draftSetupTestAllowed)) {
       fail('failed-precondition', 'The selected store is not active.');
     }
 
@@ -417,7 +454,7 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
 
     const { canonicalItems, canonicalAddOnTotal } = canonicalizeRequestedCart({
       storeId,
-      store: { id: storeSnapshot.id, ...storeSnapshot.data() },
+      store: { id: storeSnapshot.id, ...store },
       gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
       requestedItems,
       productsById,
@@ -455,9 +492,11 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
 
 module.exports = {
   AUTHORIZATION_TTL_MS,
+  DRAFT_SETUP_TEST_STORE_ID,
   PROVIDER,
   canonicalizeRequestedCart,
   createPosAddOnAuthorizationFunction,
+  isDraftSetupTestAuthorizationAllowed,
   isExcludedBeverageCategory,
   isExcludedProduct,
   isHardExcludedProduct,
