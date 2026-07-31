@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {
   calculatePurchaseLine,
   calculatePurchaseTotals,
+  isSupportedPurchaseUnit,
+  normalizePurchaseUnit,
   resolvePurchaseConversionFactor,
 } from '../frontend/lib/purchaseCalculations';
 
@@ -180,6 +182,44 @@ assert.equal(ratePerStockUnit.lineTotal, 630);
 assert.equal(ratePerStockUnit.calculatedCostPerStockUnit, 0.12);
 assert.equal(ratePerStockUnit.pricingPreview, '5000 G × ₹0.12/G = ₹600');
 
+const slicePurchase = calculatePurchaseLine({
+  purchaseQuantity: 12,
+  purchaseUOM: 'SLICE',
+  stockUOM: 'SLICE',
+  packSize: 0,
+  packSizeUOM: '',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
+  rate: 8,
+  taxPercent: 0,
+  discountPercent: 0,
+});
+assert.equal(slicePurchase.convertedStockQuantity, 12);
+assert.equal(slicePurchase.lineSubtotal, 96);
+assert.equal(slicePurchase.calculatedCostPerStockUnit, 8);
+assert.equal(slicePurchase.conversionPreview, '12 SLICE = 12 SLICE');
+
+const boxToSlices = calculatePurchaseLine({
+  purchaseQuantity: 2,
+  purchaseUOM: 'BOX',
+  stockUOM: 'SLICE',
+  packSize: 12,
+  packSizeUOM: 'SLICE',
+  priceBasis: 'RATE_PER_PURCHASE_UNIT',
+  rate: 120,
+  taxPercent: 0,
+  discountPercent: 0,
+});
+assert.equal(boxToSlices.convertedStockQuantity, 24);
+assert.equal(boxToSlices.calculatedCostPerStockUnit, 10);
+assert.equal(normalizePurchaseUnit('slices'), 'SLICE');
+assert.equal(isSupportedPurchaseUnit('SLICE'), true);
+assert.throws(() => resolvePurchaseConversionFactor({
+  purchaseUOM: 'SLICE',
+  stockUOM: 'G',
+  packSize: 0,
+  packSizeUOM: '',
+}), /Cannot convert SLICE to G/);
+
 const totals = calculatePurchaseTotals([kgToG, lToMl, ratePerStockUnit]);
 assert.equal(totals.subtotal, 1250);
 assert.equal(totals.discountAmount, 15);
@@ -199,4 +239,5 @@ console.log('- explicit landed cost can increase inventory cost');
 console.log('- rate per purchase unit');
 console.log('- rate per contents unit');
 console.log('- rate per stock unit');
+console.log('- SLICE same-unit and BOX to SLICE');
 console.log('- subtotal/tax/discount/grand total/cost per stock unit');

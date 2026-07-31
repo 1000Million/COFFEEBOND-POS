@@ -293,12 +293,27 @@ function numericValue(value: string | number | undefined): number {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+const DECIMAL_OPENING_STOCK_UNITS = new Set(['G', 'KG', 'ML', 'L']);
+const INTEGER_OPENING_STOCK_UNITS = new Set(['PCS', 'SLICE', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
+const OPENING_STOCK_UNIT_ALIASES: Record<string, string> = {
+  PC: 'PCS',
+  PIECE: 'PCS',
+  PIECES: 'PCS',
+  SLICES: 'SLICE',
+};
+
 function normaliseUnit(value: string): string {
-  return String(value || '').trim().toUpperCase();
+  const rawUnit = String(value || '').trim().toUpperCase();
+  return OPENING_STOCK_UNIT_ALIASES[rawUnit] || rawUnit;
+}
+
+function isSupportedOpeningStockUnit(unit: string): boolean {
+  const normalised = normaliseUnit(unit);
+  return DECIMAL_OPENING_STOCK_UNITS.has(normalised) || INTEGER_OPENING_STOCK_UNITS.has(normalised);
 }
 
 function unitAllowsDecimal(unit: string): boolean {
-  return !['PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY'].includes(normaliseUnit(unit));
+  return DECIMAL_OPENING_STOCK_UNITS.has(normaliseUnit(unit));
 }
 
 function validateOpeningStockEditorRow(row: OpeningStockEditorRow): OpeningStockEditorRow {
@@ -306,8 +321,12 @@ function validateOpeningStockEditorRow(row: OpeningStockEditorRow): OpeningStock
   const unitCost = numericValue(row.unitCost);
   const messages: string[] = [];
   if (!Number.isFinite(opening) || opening < 0) messages.push('Opening quantity must be zero or positive.');
-  if (Number.isFinite(opening) && !unitAllowsDecimal(row.unit) && !Number.isInteger(opening)) {
-    messages.push(`${row.unit || 'This unit'} requires a whole-number quantity.`);
+  const unit = normaliseUnit(row.unit);
+  if (!isSupportedOpeningStockUnit(unit)) {
+    messages.push(`${unit || 'This unit'} is not a supported opening-stock unit.`);
+  }
+  if (isSupportedOpeningStockUnit(unit) && Number.isFinite(opening) && !unitAllowsDecimal(unit) && !Number.isInteger(opening)) {
+    messages.push(`${unit || 'This unit'} requires a whole-number quantity.`);
   }
   if (!Number.isFinite(unitCost) || unitCost < 0) messages.push('Unit cost cannot be negative.');
   if (!row.confirmed) messages.push('Confirm this row.');
@@ -681,9 +700,14 @@ export default function LocationManagement() {
         status = 'INVALID';
         messages.push('Opening quantity must be zero or positive.');
       }
-      if (matched && Number.isFinite(opening) && !unitAllowsDecimal(matched.unit) && !Number.isInteger(opening)) {
+      const matchedUnit = matched ? normaliseUnit(matched.unit) : '';
+      if (matched && !isSupportedOpeningStockUnit(matchedUnit)) {
         status = 'INVALID';
-        messages.push(`${matched.unit} requires a whole-number quantity.`);
+        messages.push(`${matchedUnit || 'This unit'} is not a supported opening-stock unit.`);
+      }
+      if (matched && isSupportedOpeningStockUnit(matchedUnit) && Number.isFinite(opening) && !unitAllowsDecimal(matchedUnit) && !Number.isInteger(opening)) {
+        status = 'INVALID';
+        messages.push(`${matchedUnit} requires a whole-number quantity.`);
       }
       if (!Number.isFinite(cost) || cost < 0) {
         status = 'INVALID';

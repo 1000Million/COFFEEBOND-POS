@@ -214,7 +214,7 @@ const ITEM_TYPES: { value: PurchaseLineType; label: string }[] = [
 ];
 
 const PACK_UNITS = new Set(['PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
-const PACK_CONTENT_UNITS = ['G', 'KG', 'ML', 'L', 'PCS'];
+const PACK_CONTENT_UNITS = ['G', 'KG', 'ML', 'L', 'PCS', 'SLICE'];
 const MAX_INVOICE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_INVOICE_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']);
 const parseSupplierInvoiceDraft = httpsCallable<{

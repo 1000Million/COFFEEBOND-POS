@@ -1,4 +1,4 @@
-export const PURCHASE_UNITS = ['G', 'KG', 'ML', 'L', 'PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY'] as const;
+export const PURCHASE_UNITS = ['G', 'KG', 'ML', 'L', 'PCS', 'SLICE', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY'] as const;
 
 export type PurchaseUnit = typeof PURCHASE_UNITS[number];
 export type PriceBasis = 'RATE_PER_PURCHASE_UNIT' | 'RATE_PER_CONTENTS_UNIT' | 'RATE_PER_STOCK_UNIT';
@@ -41,6 +41,7 @@ const STANDARD_UNIT_TO_BASE: Record<string, { family: 'WEIGHT' | 'VOLUME' | 'COU
   ML: { family: 'VOLUME', factor: 1 },
   L: { family: 'VOLUME', factor: 1000 },
   PCS: { family: 'COUNT', factor: 1 },
+  SLICE: { family: 'COUNT', factor: 1 },
 };
 
 const PACK_UNITS = new Set(['PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
@@ -52,6 +53,7 @@ export function normalizePurchaseUnit(value: unknown): string {
   if (unit === 'MILLILITER' || unit === 'MILLILITRE' || unit === 'MILLILITERS' || unit === 'MILLILITRES') return 'ML';
   if (unit === 'LITER' || unit === 'LITRE' || unit === 'LITERS' || unit === 'LITRES' || unit === 'LTR' || unit === 'LTRS') return 'L';
   if (unit === 'PC' || unit === 'PIECE' || unit === 'PIECES') return 'PCS';
+  if (unit === 'SLICES') return 'SLICE';
   return unit;
 }
 

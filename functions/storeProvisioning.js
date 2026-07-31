@@ -86,7 +86,13 @@ const SAFE_EDIT_FIELDS = new Set([
 const SETUP_LEAD_ROLES = new Set(['ADMIN', 'STORE_MANAGER']);
 const POS_CAPABLE_ROLES = new Set(['ADMIN', 'STORE_MANAGER', 'CASHIER']);
 const DECIMAL_UNITS = new Set(['G', 'KG', 'ML', 'L']);
-const INTEGER_UNITS = new Set(['PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
+const INTEGER_UNITS = new Set(['PCS', 'SLICE', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
+const UNIT_ALIASES = {
+  PC: 'PCS',
+  PIECE: 'PCS',
+  PIECES: 'PCS',
+  SLICES: 'SLICE',
+};
 const SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE = 'Opening-stock readiness is system-managed and can only be changed through saveLocationOpeningStock.';
 
 function fail(code, message) {
@@ -112,14 +118,20 @@ function unique(values) {
 }
 
 function normalizeUnit(value) {
-  return cleanText(value, 20).toUpperCase();
+  const rawUnit = cleanText(value, 20).toUpperCase();
+  return UNIT_ALIASES[rawUnit] || rawUnit;
+}
+
+function isSupportedInventoryUnit(unit) {
+  const normalized = normalizeUnit(unit);
+  return DECIMAL_UNITS.has(normalized) || INTEGER_UNITS.has(normalized);
 }
 
 function unitAllowsDecimal(unit) {
   const normalized = normalizeUnit(unit);
   if (DECIMAL_UNITS.has(normalized)) return true;
   if (INTEGER_UNITS.has(normalized)) return false;
-  return true;
+  return false;
 }
 
 function setupNumber(value) {
@@ -908,8 +920,11 @@ function validateOpeningStockRows(store, stockDocs, submittedRows = [], { confir
     const openingStock = confirmAllZero ? 0 : setupNumber(submitted.openingStock);
     const costPerUnit = confirmAllZero ? number(stock.costPerUnit) : setupNumber(submitted.costPerUnit ?? stock.costPerUnit ?? 0);
     const confirmed = confirmAllZero ? true : submitted.confirmed === true;
+    if (!isSupportedInventoryUnit(unit)) {
+      errors.push(`${stock.stockItemCode || stock.id}: ${unit || 'this unit'} is not a supported opening-stock unit.`);
+    }
     if (!Number.isFinite(openingStock) || openingStock < 0) errors.push(`${stock.stockItemCode || stock.id}: opening quantity must be zero or positive.`);
-    if (!unitAllowsDecimal(unit) && Number.isFinite(openingStock) && !Number.isInteger(openingStock)) {
+    if (isSupportedInventoryUnit(unit) && !unitAllowsDecimal(unit) && Number.isFinite(openingStock) && !Number.isInteger(openingStock)) {
       errors.push(`${stock.stockItemCode || stock.id}: ${unit || 'this unit'} requires a whole-number quantity.`);
     }
     if (!Number.isFinite(costPerUnit) || costPerUnit < 0) errors.push(`${stock.stockItemCode || stock.id}: unit cost cannot be negative.`);
@@ -1580,6 +1595,7 @@ module.exports = {
   inventoryQuantityForOption,
   openingMovementId,
   setupNumber,
+  isSupportedInventoryUnit,
   unitAllowsDecimal,
   SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE,
   validateOpeningStockRows,

@@ -604,7 +604,49 @@ test('42. Wizard exposes seven guided steps', () => {
   assert.match(locationSource, /Run validation preview/);
 });
 
-test('43. Opening stock validation rejects negative and invalid integer quantities', () => {
+test('43. Opening stock validation supports canonical integer and decimal units only', () => {
+  function validateStockUnit(unit, openingStock) {
+    const stockDocs = [
+      { id: 'unit-row', data: () => ({ stockItemCode: `${unit || 'BLANK'}_ITEM`, uom: unit, costPerUnit: 1 }) },
+    ];
+    return provisioning.validateOpeningStockRows(
+      { id: 'BAKED_BY_BOND_51', code: 'BAKED_BY_BOND_51' },
+      stockDocs,
+      [{ stockId: 'unit-row', openingStock, costPerUnit: '1', confirmed: true }],
+    );
+  }
+
+  for (const value of ['0', '1', '12']) {
+    assert.equal(validateStockUnit('PCS', value).valid, true, `PCS should accept ${value}`);
+    assert.equal(validateStockUnit('PC', value).valid, true, `PC should normalize to PCS and accept ${value}`);
+    assert.equal(validateStockUnit('SLICE', value).valid, true, `SLICE should accept ${value}`);
+  }
+
+  for (const value of ['1.5', '-1', 'not-a-number']) {
+    assert.equal(validateStockUnit('PCS', value).valid, false, `PCS should reject ${value}`);
+    assert.equal(validateStockUnit('SLICE', value).valid, false, `SLICE should reject ${value}`);
+  }
+
+  assert.equal(validateStockUnit('G', '1.5').valid, true);
+  assert.equal(validateStockUnit('KG', '0.25').valid, true);
+  assert.equal(validateStockUnit('ML', '12.5').valid, true);
+  assert.equal(validateStockUnit('L', '0.75').valid, true);
+
+  const unsupported = validateStockUnit('EACH', '1');
+  assert.equal(unsupported.valid, false);
+  assert.ok(unsupported.errors.some((message) => message.includes('not a supported opening-stock unit')));
+
+  assert.match(provisioningSource, /const INTEGER_UNITS = new Set\(\['PCS', 'SLICE'/);
+  assert.match(provisioningSource, /PC: 'PCS'/);
+  assert.match(provisioningSource, /SLICES: 'SLICE'/);
+  assert.match(provisioningSource, /function isSupportedInventoryUnit/);
+  assert.match(locationSource, /const INTEGER_OPENING_STOCK_UNITS = new Set\(\['PCS', 'SLICE'/);
+  assert.match(locationSource, /PC: 'PCS'/);
+  assert.match(locationSource, /SLICES: 'SLICE'/);
+  assert.match(locationSource, /isSupportedOpeningStockUnit/);
+});
+
+test('44. Opening stock validation rejects negative and invalid integer quantities without creating movements', () => {
   const stockDocs = [
     { id: 'milk-row', data: () => ({ stockItemCode: 'MILK', uom: 'ML', costPerUnit: 1 }) },
     { id: 'cup-row', data: () => ({ stockItemCode: 'CUP', uom: 'PCS', costPerUnit: 2 }) },
@@ -630,9 +672,10 @@ test('43. Opening stock validation rejects negative and invalid integer quantiti
   assert.equal(invalid.valid, false);
   assert.ok(invalid.errors.some((message) => message.includes('opening quantity must be zero or positive')));
   assert.ok(invalid.errors.some((message) => message.includes('requires a whole-number quantity')));
+  assert.doesNotMatch(provisioning.validateOpeningStockRows.toString(), /CREATE_MOVEMENT|stockMovements|batch\.create/);
 });
 
-test('44. Zero opening stock requires typed destination code confirmation', () => {
+test('45. Zero opening stock requires typed destination code confirmation', () => {
   const stockDocs = [
     { id: 'milk-row', data: () => ({ stockItemCode: 'MILK', uom: 'ML', costPerUnit: 1 }) },
   ];
@@ -655,7 +698,7 @@ test('44. Zero opening stock requires typed destination code confirmation', () =
   assert.equal(confirmed.rows[0].confirmed, true);
 });
 
-test('45. Opening stock writes use deterministic movements and do not overwrite history', () => {
+test('46. Opening stock writes use deterministic movements and do not overwrite history', () => {
   assert.equal(
     provisioning.openingMovementId('BAKED_BY_BOND_51', 'stock-row-1', 'job-1'),
     provisioning.openingMovementId('BAKED_BY_BOND_51', 'stock-row-1', 'job-1'),
@@ -669,7 +712,7 @@ test('45. Opening stock writes use deterministic movements and do not overwrite 
   assert.doesNotMatch(provisioningSource, /batch\.set\(operation\.ref, operation\.payload/);
 });
 
-test('46. Opening stock CSV import previews before applying to the editor', () => {
+test('47. Opening stock CSV import previews before applying to the editor', () => {
   assert.match(locationSource, /<Download size=\{15\} \/> Template/);
   assert.match(locationSource, /Upload CSV/);
   assert.match(locationSource, /function parseCsv/);
@@ -678,7 +721,7 @@ test('46. Opening stock CSV import previews before applying to the editor', () =
   assert.match(locationSource, /No Firestore write happens until Save Opening Stock/);
 });
 
-test('47. Direct staff assignment stays callable-backed and audited', () => {
+test('48. Direct staff assignment stays callable-backed and audited', () => {
   assert.match(provisioningSource, /async function saveStaffAssignments/);
   assert.match(provisioningSource, /SETUP_LEAD_REQUIRED/);
   assert.match(provisioningSource, /POS_USER_REQUIRED/);
@@ -689,13 +732,13 @@ test('47. Direct staff assignment stays callable-backed and audited', () => {
   assert.match(locationSource, /saveLocationStaffAssignmentsCallable/);
 });
 
-test('48. New provisioning callables are exported for emulator and backend QA', () => {
+test('49. New provisioning callables are exported for emulator and backend QA', () => {
   const indexSource = fs.readFileSync(new URL('../functions/index.js', import.meta.url), 'utf8');
   assert.match(indexSource, /exports\.saveLocationOpeningStock/);
   assert.match(indexSource, /exports\.saveLocationStaffAssignments/);
 });
 
-test('49. Generic store configuration updates cannot patch opening-stock readiness', () => {
+test('50. Generic store configuration updates cannot patch opening-stock readiness', () => {
   const safeEditFields = provisioningSource.match(/const SAFE_EDIT_FIELDS = new Set\(\[([\s\S]*?)\]\);/)?.[1] || '';
   assert.doesNotMatch(safeEditFields, /'readiness'/);
   assert.doesNotMatch(safeEditFields, /'openingStockConfirmed'/);
