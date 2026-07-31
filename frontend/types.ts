@@ -49,6 +49,23 @@ export interface Store {
   setupTestMode?: boolean;
   posTestCompleted?: boolean;
   openingStockConfirmed?: boolean;
+  posLaunchException?: {
+    enabled?: boolean;
+    scope?: "STAFF_POS_ONLY" | string;
+    reason?: string;
+    approvedBy?: string;
+    approvedByName?: string;
+    approvedAt?: any;
+    expiresAt?: any;
+    maxHours?: number;
+    openingStockRequired?: boolean;
+    customerOrderingDisabled?: boolean;
+    auditId?: string;
+    message?: string;
+    disabledAt?: any;
+    disabledBy?: string;
+    disabledReason?: string;
+  };
   inventoryMode?: "FINISHED_GOODS";
   latitude?: number;
   longitude?: number;
@@ -223,6 +240,9 @@ export interface Order {
   inventoryWarnings?: string[];
   inventoryConsumptionStatus?: "APPLIED" | "PENDING_BOM" | "PARTIAL_PENDING_BOM" | "NOT_REQUIRED";
   stockMovementCount?: number;
+  clientCheckoutIdempotencyKey?: string;
+  checkoutPayloadHash?: string;
+  checkoutIdempotencyVersion?: number;
   paymentMethod: PaymentMethod;
   paymentMethodLabel?: string;
   isSplitPayment?: boolean;

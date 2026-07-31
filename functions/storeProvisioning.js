@@ -1,9 +1,10 @@
 'use strict';
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
-const { FieldValue } = require('firebase-admin/firestore');
+const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const {
   ALL_MODULE_IDS,
+  BAKED_BY_BOND_51_STORE_ID,
   NEVER_COPY_COLLECTIONS,
   READINESS_STEP_LABELS,
   RECOMMENDED_MODULE_IDS,
@@ -23,6 +24,8 @@ const {
 
 const REGION = 'us-central1';
 const BATCH_SIZE = 350;
+const POS_LAUNCH_EXCEPTION_MAX_MS = 48 * 60 * 60 * 1000;
+const POS_LAUNCH_EXCEPTION_MESSAGE = 'Baked by Bond 51 POS launch exception keeps customer ordering disabled and opening stock pending.';
 const MENU_COLLECTIONS = ['finishedGoods', 'menuItems', 'categories'];
 const INVENTORY_COLLECTIONS = ['storeStock'];
 const COUNTED_EXCLUDED_COLLECTIONS = [
@@ -147,14 +150,43 @@ function sameQuantity(left, right) {
   return roundedQuantity(number(left)) === roundedQuantity(number(right));
 }
 
+function timestampMillis(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value === 'object' && typeof value.seconds === 'number') {
+    return value.seconds * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1000000);
+  }
+  return 0;
+}
+
+function customerOrderingIsDisabled(store = {}) {
+  return store.onlineOrderingEnabled !== true
+    && store.customerOrderingEnabled !== true
+    && store.publicOrderingEnabled !== true
+    && store.acceptingOrders !== true
+    && store.isAcceptingOrders !== true;
+}
+
+function openingStockIsPending(store = {}) {
+  const readiness = store.readiness && typeof store.readiness === 'object' ? store.readiness : {};
+  return readiness.openingStockReviewed !== true && store.openingStockConfirmed !== true;
+}
+
 function assertNoSystemManagedStoreConfigPatch(rawPatch = {}) {
   const patch = rawPatch && typeof rawPatch === 'object' && !Array.isArray(rawPatch) ? rawPatch : {};
   const blocked = Object.keys(patch).some((key) => (
     key === 'readiness'
     || key === 'openingStockConfirmed'
+    || key === 'posLaunchException'
     || key === 'readiness.openingStockReviewed'
     || key === 'readiness.openingStockConfirmed'
     || key.startsWith('readiness.')
+    || key.startsWith('posLaunchException.')
   ));
   if (blocked) fail('failed-precondition', SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE);
 }
@@ -1481,6 +1513,121 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     });
   });
 
+  const setPosLaunchException = onCall({ region }, async (request) => {
+    const adminUser = await requireActiveAdmin(db, request);
+    const storeId = cleanText(request.data?.storeId, 80);
+    const enabled = request.data?.enabled !== false;
+    const reason = cleanText(request.data?.reason, 300);
+    if (storeId !== BAKED_BY_BOND_51_STORE_ID) {
+      fail('failed-precondition', 'POS launch exception is approved only for BAKED_BY_BOND_51.');
+    }
+    if (!reason || reason.length < 10) {
+      fail('invalid-argument', 'A launch-exception reason is required.');
+    }
+
+    const storeRef = db.collection('stores').doc(storeId);
+    const storeSnap = await storeRef.get();
+    if (!storeSnap.exists) fail('not-found', 'Location not found.');
+    const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
+    const nowMs = Date.now();
+    const nowTimestamp = Timestamp.fromMillis(nowMs);
+    const timestamp = FieldValue.serverTimestamp();
+
+    if (!enabled) {
+      if (store.posLaunchException?.enabled !== true) {
+        return { storeId, enabled: false, idempotent: true };
+      }
+      const auditRef = db.collection('storeProvisioningAudit').doc();
+      const batch = db.batch();
+      batch.update(storeRef, {
+        'posLaunchException.enabled': false,
+        'posLaunchException.disabledAt': nowTimestamp,
+        'posLaunchException.disabledBy': adminUser.uid,
+        'posLaunchException.disabledReason': reason,
+        updatedAt: timestamp,
+      });
+      batch.set(auditRef, {
+        storeId,
+        action: 'DISABLE_POS_LAUNCH_EXCEPTION',
+        actorUid: adminUser.uid,
+        actorName: adminUser.name,
+        reason,
+        previousException: store.posLaunchException || null,
+        createdAt: timestamp,
+      });
+      await batch.commit();
+      return { storeId, enabled: false, auditId: auditRef.id };
+    }
+
+    if (!openingStockIsPending(store)) {
+      fail('failed-precondition', 'Opening stock is already confirmed; POS launch exception is not required.');
+    }
+    if (!customerOrderingIsDisabled(store)) {
+      fail('failed-precondition', 'Customer ordering must be disabled before a staff-POS launch exception can be approved.');
+    }
+    const expiresAtMs = timestampMillis(request.data?.expiresAt);
+    if (!expiresAtMs || expiresAtMs <= nowMs) {
+      fail('invalid-argument', 'A future expiry timestamp is required.');
+    }
+    if (expiresAtMs > nowMs + POS_LAUNCH_EXCEPTION_MAX_MS) {
+      fail('failed-precondition', 'POS launch exception expiry cannot exceed 48 hours.');
+    }
+
+    const counts = await loadReadinessCounts(db, store);
+    const readiness = readinessResult(store, counts);
+    const otherBlockingKeys = readiness.blockingKeys.filter((key) => key !== 'openingStockReviewed');
+    if (otherBlockingKeys.length > 0) {
+      fail('failed-precondition', `All other POS readiness checks must pass first: ${otherBlockingKeys.map((key) => READINESS_STEP_LABELS[key] || key).join(', ')}`);
+    }
+
+    const expiresAt = Timestamp.fromMillis(expiresAtMs);
+    const existing = store.posLaunchException || {};
+    if (
+      existing.enabled === true
+      && cleanText(existing.reason, 300) === reason
+      && timestampMillis(existing.expiresAt) === expiresAtMs
+    ) {
+      return { storeId, enabled: true, expiresAt: expiresAt.toDate().toISOString(), idempotent: true };
+    }
+
+    const auditRef = db.collection('storeProvisioningAudit').doc();
+    const exception = {
+      enabled: true,
+      scope: 'STAFF_POS_ONLY',
+      reason,
+      approvedBy: adminUser.uid,
+      approvedByName: adminUser.name,
+      approvedAt: nowTimestamp,
+      expiresAt,
+      maxHours: 48,
+      openingStockRequired: true,
+      customerOrderingDisabled: true,
+      auditId: auditRef.id,
+      message: POS_LAUNCH_EXCEPTION_MESSAGE,
+    };
+    const batch = db.batch();
+    batch.update(storeRef, {
+      posLaunchException: exception,
+      updatedAt: timestamp,
+      updatedBy: adminUser.uid,
+    });
+    batch.set(auditRef, {
+      storeId,
+      action: 'SET_POS_LAUNCH_EXCEPTION',
+      actorUid: adminUser.uid,
+      actorName: adminUser.name,
+      reason,
+      expiresAt,
+      openingStockPending: true,
+      customerOrderingDisabled: true,
+      readiness,
+      previousException: existing || null,
+      createdAt: timestamp,
+    });
+    await batch.commit();
+    return { storeId, enabled: true, expiresAt: expiresAt.toDate().toISOString(), auditId: auditRef.id, readiness };
+  });
+
   const activateStore = onCall({ region }, async (request) => {
     const adminUser = await requireActiveAdmin(db, request);
     const storeId = cleanText(request.data?.storeId, 80);
@@ -1501,7 +1648,7 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const counts = await loadReadinessCounts(db, store);
     const readiness = readinessResult(store, counts);
     if (!readiness.posReady) {
-      fail('failed-precondition', `Location is not ready: ${readiness.friendlyBlockingSteps.join(', ')}`);
+      fail('failed-precondition', `Location is not ready: ${(readiness.friendlyPosBlockingSteps || readiness.friendlyBlockingSteps).join(', ')}`);
     }
     const timestamp = FieldValue.serverTimestamp();
     await storeRef.update({
@@ -1577,6 +1724,7 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     markInternalPosTestPassed,
     saveLocationOpeningStock,
     saveLocationStaffAssignments,
+    setPosLaunchException,
     activateStore,
     setStoreCustomerOrdering,
   };

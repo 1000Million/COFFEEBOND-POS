@@ -47,6 +47,7 @@ exports.enableInternalPosTest = storeProvisioningFunctions.enableInternalPosTest
 exports.markInternalPosTestPassed = storeProvisioningFunctions.markInternalPosTestPassed;
 exports.saveLocationOpeningStock = storeProvisioningFunctions.saveLocationOpeningStock;
 exports.saveLocationStaffAssignments = storeProvisioningFunctions.saveLocationStaffAssignments;
+exports.setPosLaunchException = storeProvisioningFunctions.setPosLaunchException;
 exports.activateStore = storeProvisioningFunctions.activateStore;
 exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOrdering;
 

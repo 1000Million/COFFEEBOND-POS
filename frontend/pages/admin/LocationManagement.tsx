@@ -203,6 +203,8 @@ const SETUP_STEPS: Array<{
 ];
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]Z[0-9A-Z]$/;
+const BAKED_BY_BOND_51_STORE_ID = 'BAKED_BY_BOND_51';
+const POS_LAUNCH_EXCEPTION_HOURS = 24;
 
 const defaultForm: LocationForm = {
   displayName: '',
@@ -263,6 +265,15 @@ const saveLocationStaffAssignmentsCallable = httpsCallable<{
   functions,
   'saveLocationStaffAssignments',
 );
+const setPosLaunchExceptionCallable = httpsCallable<{
+  storeId: string;
+  enabled: boolean;
+  reason: string;
+  expiresAt: string;
+}, Record<string, unknown>>(
+  functions,
+  'setPosLaunchException',
+);
 const updateStoreConfigurationCallable = httpsCallable<Record<string, unknown>, Record<string, unknown>>(
   functions,
   'updateStoreConfiguration',
@@ -275,6 +286,33 @@ const setStoreCustomerOrderingCallable = httpsCallable<{ storeId: string; enable
 function dateLabel(value: any): string {
   const date = value?.toDate ? value.toDate() : value instanceof Date ? value : null;
   return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString() : 'Not recorded';
+}
+
+function timestampMillis(value: any): number {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value?.toDate) return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value.seconds === 'number') return value.seconds * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1000000);
+  return 0;
+}
+
+function isBakedByBond51(store: Store): boolean {
+  return [store.id, store.code, store.storeCode].some((value) => String(value || '') === BAKED_BY_BOND_51_STORE_ID);
+}
+
+function activePosLaunchException(store: Store): boolean {
+  const exception = store.posLaunchException;
+  return exception?.enabled === true && timestampMillis(exception.expiresAt) > Date.now();
+}
+
+function openingStockPending(store: Store): boolean {
+  const readiness = store.readiness || {};
+  return readiness.openingStockReviewed !== true && store.openingStockConfirmed !== true;
 }
 
 function normalizedCode(value: string): string {
@@ -937,6 +975,31 @@ export default function LocationManagement() {
     }
   };
 
+  const handleEnablePosLaunchException = async (summary: LocationSummary) => {
+    const store = summary.store;
+    if (!isBakedByBond51(store)) return;
+    const reason = window.prompt('Enter the owner-approved reason for this temporary staff-POS launch exception. Customer ordering will stay disabled.');
+    if (!reason?.trim()) return;
+    if (!window.confirm('Approve temporary staff POS while opening stock remains pending? This does not enable customer ordering.')) return;
+    setActioning(`pos-exception:${store.id}`);
+    setError('');
+    try {
+      const expiresAt = new Date(Date.now() + POS_LAUNCH_EXCEPTION_HOURS * 60 * 60 * 1000).toISOString();
+      await setPosLaunchExceptionCallable({
+        storeId: store.id,
+        enabled: true,
+        reason: reason.trim(),
+        expiresAt,
+      });
+      setMessage('Temporary staff-POS launch exception recorded. Activate POS when the remaining checks pass.');
+      await loadLocations();
+    } catch (err: any) {
+      setError(err?.message || 'Could not approve the POS launch exception.');
+    } finally {
+      setActioning('');
+    }
+  };
+
   const handleEnableInternalPosTest = async (storeId: string) => {
     setActioning(`internal-test:${storeId}`);
     setError('');
@@ -1206,6 +1269,32 @@ export default function LocationManagement() {
                 </div>
               ))}
             </div>
+            {isBakedByBond51(selectedSummary.store) && openingStockPending(selectedSummary.store) && (
+              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-black">Opening stock is still required</p>
+                    <p className="mt-1 text-xs font-bold">
+                      Staff POS can be temporarily activated only with an active Admin approval. Customer ordering stays disabled and opening-stock readiness remains incomplete.
+                    </p>
+                    {activePosLaunchException(selectedSummary.store) && (
+                      <p className="mt-2 text-xs font-black">
+                        Temporary staff-POS exception active until {new Date(timestampMillis(selectedSummary.store.posLaunchException?.expiresAt)).toLocaleString()}.
+                      </p>
+                    )}
+                  </div>
+                  {!activePosLaunchException(selectedSummary.store) && statusFor(selectedSummary.store) !== 'ACTIVE' && (
+                    <button
+                      onClick={() => handleEnablePosLaunchException(selectedSummary)}
+                      disabled={actioning === `pos-exception:${selectedSummary.store.id}`}
+                      className="h-9 rounded-lg border border-amber-300 bg-white px-3 text-xs font-black text-amber-900 disabled:opacity-50"
+                    >
+                      Approve staff-POS exception
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             {(() => {
               const progress = setupProgress(selectedSummary);
               return (

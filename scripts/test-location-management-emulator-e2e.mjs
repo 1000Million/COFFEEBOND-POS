@@ -96,7 +96,7 @@ if (!process.argv.includes('--inside-emulator')) {
     [
       'emulators:exec',
       '--only',
-      'auth,firestore,functions,storage',
+      'auth,firestore,functions',
       '--project',
       PROJECT_ID,
       command,
@@ -109,7 +109,6 @@ if (!process.argv.includes('--inside-emulator')) {
 const requiredEnv = [
   'FIRESTORE_EMULATOR_HOST',
   'FIREBASE_AUTH_EMULATOR_HOST',
-  'FIREBASE_STORAGE_EMULATOR_HOST',
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 if (missingEnv.length > 0) {
@@ -625,6 +624,107 @@ async function run() {
   assert.ok(auditActions.includes('ENABLE_INTERNAL_POS_TEST'));
   assert.ok(auditActions.includes('MARK_INTERNAL_POS_TEST_PASSED'));
   assert.ok(auditActions.includes('ACTIVATE_POS'));
+
+  await flushFirestore();
+  await seedData();
+  const exceptionAdminToken = await signIn('admin.location-e2e@example.invalid');
+  const timestamp = admin.firestore.FieldValue.serverTimestamp();
+  const readyExceptOpeningBatch = db.batch();
+  readyExceptOpeningBatch.set(db.collection('stores').doc(DESTINATION_STORE_ID), {
+    id: DESTINATION_STORE_ID,
+    code: DESTINATION_STORE_ID,
+    storeCode: DESTINATION_STORE_ID,
+    name: 'Baked by Bond 51',
+    displayName: 'Baked by Bond 51',
+    address: 'QA address, Sector 51',
+    city: 'Noida',
+    state: 'Uttar Pradesh',
+    pinCode: '201301',
+    phone: '9999999999',
+    email: 'baked51@example.invalid',
+    gstRegistered: false,
+    gstin: '',
+    gstRate: 0,
+    receiptName: 'Baked by Bond 51',
+    receiptFooter: 'Setup test',
+    timezone: 'Asia/Kolkata',
+    status: 'DRAFT',
+    isActive: false,
+    posEnabled: false,
+    customerOrderingEnabled: false,
+    onlineOrderingEnabled: false,
+    publicOrderingEnabled: false,
+    acceptingOrders: false,
+    isAcceptingOrders: false,
+    onlineOrderingPaused: true,
+    inventoryMode: 'FINISHED_GOODS',
+    readiness: {
+      inventoryStructureCreated: true,
+      openingStockReviewed: false,
+      posTestCompleted: true,
+      customerOrderingTestCompleted: false,
+    },
+    posTestCompleted: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  for (const uid of [ADMIN_UID, MANAGER_UID, CASHIER_UID]) {
+    readyExceptOpeningBatch.update(db.collection('users').doc(uid), {
+      assignedStoreIds: admin.firestore.FieldValue.arrayUnion(DESTINATION_STORE_ID),
+      storeIds: admin.firestore.FieldValue.arrayUnion(DESTINATION_STORE_ID),
+      updatedAt: timestamp,
+    });
+  }
+  readyExceptOpeningBatch.update(db.collection('finishedGoods').doc('HOT_LATTE'), {
+    availableStoreIds: admin.firestore.FieldValue.arrayUnion(DESTINATION_STORE_ID),
+  });
+  readyExceptOpeningBatch.set(db.collection('storeStock').doc(`${DESTINATION_STORE_ID}_RAW_INGREDIENT_MILK`), {
+    storeId: DESTINATION_STORE_ID,
+    storeCode: DESTINATION_STORE_ID,
+    stockItemType: 'RAW_INGREDIENT',
+    stockItemCode: 'MILK',
+    stockItemName: 'Fresh Milk',
+    uom: 'ML',
+    openingStock: 0,
+    currentStock: 0,
+    costPerUnit: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  await readyExceptOpeningBatch.commit();
+
+  const blockedActivation = await callFunction('activateStore', { storeId: DESTINATION_STORE_ID }, exceptionAdminToken, { expectError: true });
+  assert.match(JSON.stringify(blockedActivation), /Opening stock/);
+  const tooLongException = await callFunction('setPosLaunchException', {
+    storeId: DESTINATION_STORE_ID,
+    enabled: true,
+    reason: 'Owner approved temporary staff POS for launch QA.',
+    expiresAt: new Date(Date.now() + 49 * 60 * 60 * 1000).toISOString(),
+  }, exceptionAdminToken, { expectError: true });
+  assert.match(JSON.stringify(tooLongException), /48 hours/);
+  const validException = await callFunction('setPosLaunchException', {
+    storeId: DESTINATION_STORE_ID,
+    enabled: true,
+    reason: 'Owner approved temporary staff POS for launch QA.',
+    expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+  }, exceptionAdminToken);
+  assert.equal(validException.enabled, true);
+  assert.equal(await auditActionCount('SET_POS_LAUNCH_EXCEPTION'), 1);
+  const exceptionStore = await db.collection('stores').doc(DESTINATION_STORE_ID).get();
+  assert.equal(exceptionStore.data().readiness.openingStockReviewed, false);
+  assert.equal(exceptionStore.data().posLaunchException.enabled, true);
+  const exceptionActivation = await callFunction('activateStore', { storeId: DESTINATION_STORE_ID }, exceptionAdminToken);
+  assert.equal(exceptionActivation.status, 'ACTIVE');
+  assert.equal(exceptionActivation.customerOrderingEnabled, false);
+  const activatedExceptionStore = await db.collection('stores').doc(DESTINATION_STORE_ID).get();
+  assert.equal(activatedExceptionStore.data().isActive, true);
+  assert.equal(activatedExceptionStore.data().onlineOrderingEnabled, false);
+  assert.equal(activatedExceptionStore.data().readiness.openingStockReviewed, false);
+  const blockedOrdering = await callFunction('setStoreCustomerOrdering', {
+    storeId: DESTINATION_STORE_ID,
+    enabled: true,
+  }, exceptionAdminToken, { expectError: true });
+  assert.match(JSON.stringify(blockedOrdering), /Customer ordering requires active POS/);
 
   console.log('PASS Location Management emulator E2E');
   console.log(JSON.stringify({

@@ -147,6 +147,13 @@ type HeldBill = {
   total: number;
 };
 
+type CheckoutAttempt = {
+  idempotencyKey: string;
+  orderId: string;
+  createdAt: number;
+  payloadHash?: string;
+};
+
 class CheckoutBlockerError extends Error {
   blockers: CheckoutBlocker[];
 
@@ -165,6 +172,8 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 const LAST_RECEIPT_STORAGE_KEY = 'coffeeBondPos:lastReceipt:v1';
 const HELD_BILLS_STORAGE_KEY = 'coffeeBondPos:heldBills:v1';
 const RECENT_ITEMS_STORAGE_KEY = 'coffeeBondPos:recentItems:v1';
+const CHECKOUT_ATTEMPT_STORAGE_KEY = 'coffeeBondPos:pendingCheckoutAttempt:v1';
+const CHECKOUT_ATTEMPT_TTL_MS = 2 * 60 * 60 * 1000;
 const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
@@ -250,6 +259,146 @@ function createSafeClientId(prefix: string): string {
     : Math.random().toString(36).slice(2);
 
   return `${prefix}-${Date.now()}-${randomPart}`;
+}
+
+function sanitizeFirestoreId(value: unknown, maxLength = 480): string {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return (normalized || 'ID').slice(0, maxLength);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function shortHash(value: unknown): string {
+  const input = stableJson(value);
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, '0');
+}
+
+function createCheckoutAttempt(): CheckoutAttempt {
+  const idempotencyKey = sanitizeFirestoreId(createSafeClientId('pos-checkout'), 120);
+  return {
+    idempotencyKey,
+    orderId: sanitizeFirestoreId(`POS_${idempotencyKey}`, 180),
+    createdAt: Date.now(),
+  };
+}
+
+function validStoredCheckoutAttempt(value: unknown): CheckoutAttempt | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const attempt = value as Partial<CheckoutAttempt>;
+  if (!attempt.idempotencyKey || !attempt.orderId || !Number.isFinite(Number(attempt.createdAt))) return null;
+  if (Date.now() - Number(attempt.createdAt) > CHECKOUT_ATTEMPT_TTL_MS) return null;
+  return {
+    idempotencyKey: sanitizeFirestoreId(attempt.idempotencyKey, 120),
+    orderId: sanitizeFirestoreId(attempt.orderId, 180),
+    createdAt: Number(attempt.createdAt),
+    payloadHash: attempt.payloadHash ? String(attempt.payloadHash) : undefined,
+  };
+}
+
+function loadCheckoutAttempt(): CheckoutAttempt | null {
+  return validStoredCheckoutAttempt(readLocalStorageJson<CheckoutAttempt | null>(CHECKOUT_ATTEMPT_STORAGE_KEY, null));
+}
+
+function writeCheckoutAttempt(attempt: CheckoutAttempt) {
+  writeLocalStorageJson(CHECKOUT_ATTEMPT_STORAGE_KEY, attempt);
+}
+
+function clearCheckoutAttempt() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+  } catch (error) {
+    console.warn(`Unable to clear ${CHECKOUT_ATTEMPT_STORAGE_KEY} from localStorage`, error);
+  }
+}
+
+function cartLineIdentity(
+  cartItem: CartItem,
+  liveItem: MenuItem,
+  addOns: AddOnSelection[],
+): Record<string, unknown> {
+  return {
+    productId: liveItem.id,
+    productCode: liveItem.code,
+    quantity: cartItem.quantity,
+    addOns: addOns.map((addOn) => ({
+      groupId: addOn.groupId,
+      optionId: addOn.optionId,
+      quantity: addOn.quantity,
+    })).sort((left, right) => (
+      `${left.groupId}:${left.optionId}`.localeCompare(`${right.groupId}:${right.optionId}`)
+    )),
+  };
+}
+
+function deterministicOrderItemId(
+  orderId: string,
+  identity: Record<string, unknown>,
+  occurrence: number,
+): string {
+  const productCode = sanitizeFirestoreId(identity.productCode || identity.productId || 'ITEM', 80);
+  return sanitizeFirestoreId(`${orderId}_ITEM_${productCode}_${occurrence}_${shortHash(identity)}`, 180);
+}
+
+function deterministicKotId(orderId: string, orderItemId: string, station: 'BARISTA' | 'KITCHEN'): string {
+  return sanitizeFirestoreId(`${orderId}_KOT_${station}_${shortHash(orderItemId)}`, 220);
+}
+
+function deterministicPaymentId(orderId: string, payment: ReceiptPaymentSnapshot, index: number): string {
+  return sanitizeFirestoreId(`${orderId}_PAY_${String(index + 1).padStart(2, '0')}_${payment.method}`, 220);
+}
+
+function deterministicStockMovementId(orderId: string, movement: {
+  stockDocId?: string;
+  stockItemType?: string;
+  stockItemCode?: string;
+  orderLineKey?: string;
+  unit?: string;
+  movementType?: string;
+}): string {
+  const stockKey = movement.stockDocId
+    || [movement.stockItemType, movement.stockItemCode].filter(Boolean).join('_')
+    || 'STOCK';
+  return sanitizeFirestoreId(`${orderId}_${stockKey}_${movement.orderLineKey || 'ORDER'}_${movement.movementType || 'SALE_DEDUCTION'}_${movement.unit || 'UOM'}`, 360);
+}
+
+function checkoutPayloadHash(value: unknown): string {
+  return shortHash(value);
+}
+
+function timestampMillis(value: any): number {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value?.toDate) return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value.seconds === 'number') return value.seconds * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1000000);
+  return 0;
+}
+
+function activePosLaunchException(store?: Store | null): boolean {
+  return store?.posLaunchException?.enabled === true
+    && timestampMillis(store.posLaunchException.expiresAt) > Date.now();
 }
 
 function paymentRowsAllocated(rows: SplitPaymentRow[]): number {
@@ -566,6 +715,32 @@ function buildReceiptSnapshot(
   };
 }
 
+async function loadExistingCheckoutResult(
+  orderRef: ReturnType<typeof doc>,
+  attempt: CheckoutAttempt,
+  expectedPayloadHash: string,
+): Promise<{ savedOrder: Order; savedItems: OrderItem[]; savedPayments: OrderPayment[] } | null> {
+  const orderSnap = await getDoc(orderRef);
+  if (!orderSnap.exists()) return null;
+  const order = { id: orderSnap.id, ...orderSnap.data() } as Order;
+  const storedKey = String((order as Order & Record<string, unknown>).clientCheckoutIdempotencyKey || '');
+  if (storedKey !== attempt.idempotencyKey) {
+    throw new Error('Checkout retry conflict: an order already exists for this generated sale ID with a different idempotency key.');
+  }
+  if (String(order.checkoutPayloadHash || '') !== expectedPayloadHash) {
+    throw new Error('Checkout retry conflict: an existing order has a different checkout payload.');
+  }
+  const [itemSnap, paymentSnap] = await Promise.all([
+    getDocs(collection(orderRef, 'items')),
+    getDocs(collection(orderRef, 'payments')),
+  ]);
+  return {
+    savedOrder: order,
+    savedItems: itemSnap.docs.map((itemDoc) => ({ id: itemDoc.id, ...itemDoc.data() } as OrderItem)),
+    savedPayments: paymentSnap.docs.map((paymentDoc) => ({ id: paymentDoc.id, ...paymentDoc.data() } as OrderPayment)),
+  };
+}
+
 function printReceiptElement() {
   const content = document.getElementById('receipt-area')?.innerHTML;
   if (!content) return;
@@ -723,6 +898,7 @@ export default function POSHome() {
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const recallMenuRef = useRef<HTMLDivElement | null>(null);
+  const checkoutAttemptRef = useRef<CheckoutAttempt | null>(loadCheckoutAttempt());
 
   const [orderType, setOrderType] = useState<OrderType>('DINE_IN');
   const [tableNumber, setTableNumber] = useState('');
@@ -766,6 +942,10 @@ export default function POSHome() {
     fetchData();
     fetchMenuData();
     fetchTaxConfig();
+  }, []);
+
+  useEffect(() => {
+    checkoutAttemptRef.current = loadCheckoutAttempt();
   }, []);
 
   useEffect(() => {
@@ -1424,6 +1604,8 @@ export default function POSHome() {
       setTableNumber('');
       setTableNumberError(null);
       setOrderType('DINE_IN');
+      checkoutAttemptRef.current = null;
+      clearCheckoutAttempt();
     }
   };
 
@@ -1487,6 +1669,7 @@ export default function POSHome() {
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
   const isSetupTestSale = selectedStore?.internalPosTestEnabled === true && selectedStore?.isActive !== true;
+  const hasActivePosLaunchException = activePosLaunchException(selectedStore);
   const setupPaymentMethods: PaymentMethod[] = isSetupTestSale ? ['CASH'] : PAYMENT_METHODS;
   const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
   const featuredHeading = isUsingTopSellerData ? 'Top sellers last 7 days' : 'Top picks';
@@ -1699,8 +1882,22 @@ export default function POSHome() {
         );
         return { cartItem: item, liveItem, canonicalAddOns };
       });
-      const newOrderRef = doc(collection(db, 'orders'));
-      const orderLineRefs = browserValidatedCart.map(() => doc(collection(newOrderRef, 'items')));
+      let checkoutAttempt = checkoutAttemptRef.current || loadCheckoutAttempt() || createCheckoutAttempt();
+      checkoutAttemptRef.current = checkoutAttempt;
+      writeCheckoutAttempt(checkoutAttempt);
+
+      const newOrderRef = doc(db, 'orders', checkoutAttempt.orderId);
+      const lineOccurrenceCounts = new Map<string, number>();
+      const lineIdentities = browserValidatedCart.map(({ cartItem, liveItem, canonicalAddOns }) => {
+        const identity = cartLineIdentity(cartItem, liveItem, canonicalAddOns);
+        const identityHash = shortHash(identity);
+        const occurrence = (lineOccurrenceCounts.get(identityHash) || 0) + 1;
+        lineOccurrenceCounts.set(identityHash, occurrence);
+        return { identity, occurrence };
+      });
+      const orderLineRefs = lineIdentities.map(({ identity, occurrence }) => (
+        doc(collection(newOrderRef, 'items'), deterministicOrderItemId(newOrderRef.id, identity, occurrence))
+      ));
       const posAddOnAuthorization = await authorizePosAddOns({
         storeId: selectedStore.id,
         orderId: newOrderRef.id,
@@ -1786,6 +1983,55 @@ export default function POSHome() {
         }
       }
 
+      const requestPayloadHash = checkoutPayloadHash({
+        storeId: selectedStore.id,
+        orderType,
+        tableNumber: orderType === 'DINE_IN' ? tableNumber.trim() : null,
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        discountPercent: trueDiscountPercent,
+        subtotal: trueSubtotal,
+        taxTotal: trueTaxTotal,
+        grandTotal: trueGrandTotal,
+        commercialStatus: isComplimentaryCheckout ? 'COMPLIMENTARY' : 'SALE',
+        payments: paymentRows,
+        items: validatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => ({
+          orderItemId: orderLineRefs[index].id,
+          productId: liveItem.id,
+          productCode: liveItem.code,
+          quantity: cartItem.quantity,
+          unitPrice: liveItem.price,
+          taxRate: liveItem.taxRate,
+          addOns: canonicalAddOns,
+        })),
+      });
+      if (checkoutAttempt.payloadHash && checkoutAttempt.payloadHash !== requestPayloadHash) {
+        throw new Error('Checkout retry conflict: the pending checkout key belongs to a different sale payload.');
+      }
+      checkoutAttempt = { ...checkoutAttempt, payloadHash: requestPayloadHash };
+      checkoutAttemptRef.current = checkoutAttempt;
+      writeCheckoutAttempt(checkoutAttempt);
+
+      const existingBeforeTransaction = await loadExistingCheckoutResult(
+        newOrderRef,
+        checkoutAttempt,
+        requestPayloadHash,
+      );
+      if (existingBeforeTransaction) {
+        const receipt = buildReceiptSnapshot(
+          existingBeforeTransaction.savedOrder,
+          existingBeforeTransaction.savedItems,
+          existingBeforeTransaction.savedPayments,
+          selectedStore,
+        );
+        setLastReceipt(receipt);
+        writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
+        setReceiptViewTitle('Order Recovered');
+        setReceiptView(receipt);
+        clearCart(true);
+        return;
+      }
+
       // Detailed Checkout Logging
       if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}`);
 
@@ -1824,8 +2070,21 @@ export default function POSHome() {
 
       if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);
 
-      const { savedOrder, savedItems, savedPayments } = await runTransaction(db, async (transaction) => {
+      const transactionResult = await runTransaction<any>(db, async (transaction) => {
         // --- READ PHASE ONLY ---
+        if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get order ${newOrderRef.id}`);
+        const existingOrderSnap = await transaction.get(newOrderRef);
+        if (existingOrderSnap.exists()) {
+          const existingOrder = existingOrderSnap.data() as Record<string, unknown>;
+          if (
+            existingOrder.clientCheckoutIdempotencyKey !== checkoutAttempt.idempotencyKey
+            || existingOrder.checkoutPayloadHash !== requestPayloadHash
+          ) {
+            throw new Error('Checkout retry conflict: an existing order has a different checkout payload.');
+          }
+          return { existingOrderId: newOrderRef.id };
+        }
+
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get counter`);
         const counterDoc = await transaction.get(counterRef);
 
@@ -1947,7 +2206,7 @@ export default function POSHome() {
           });
         });
         deductionPlan.movementPayloads.forEach((movement) => {
-          const movementRef = doc(collection(db, 'stockMovements'));
+          const movementRef = doc(db, 'stockMovements', deterministicStockMovementId(newOrderRef.id, movement));
           traceCheckoutWrite('stock movement create', 'create', movementRef.path);
           transaction.set(movementRef, movement);
         });
@@ -2003,7 +2262,7 @@ export default function POSHome() {
           ? splitPaymentStatus(paymentRows, trueGrandTotal)
           : (selectedPaymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';
 
-        const orderData: Order = {
+        const orderData: Order & Record<string, unknown> = {
           orderNumber,
           storeId: selectedStore.id,
           storeCode: selectedStore.code,
@@ -2050,6 +2309,9 @@ export default function POSHome() {
           inventoryWarnings: deductionPlan.warnings.map((warning) => warning.message),
           inventoryConsumptionStatus: deductionPlan.pendingConsumptionPayloads.length > 0 ? 'PENDING_BOM' : 'APPLIED',
           stockMovementCount: deductionPlan.movementPayloads.length,
+          clientCheckoutIdempotencyKey: checkoutAttempt.idempotencyKey,
+          checkoutPayloadHash: requestPayloadHash,
+          checkoutIdempotencyVersion: 1,
           paymentMethod: (paymentRows[0]?.method || selectedPaymentMethod) as PaymentMethod,
           receiptLegalDetails: receiptLegalDetailsFromStore(selectedStore),
           ...(isSplitPayment && {
@@ -2133,7 +2395,7 @@ export default function POSHome() {
 
           // Create KOT items
           const createKotItem = (station: "BARISTA" | "KITCHEN") => {
-            const kotRef = doc(collection(db, 'kotItems'));
+            const kotRef = doc(db, 'kotItems', deterministicKotId(newOrderRef.id, lineRef.id, station));
             if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set kotItem ${kotRef.id} for station: ${station}`);
             traceCheckoutWrite(`KOT save ${station}`, 'create', kotRef.path);
             transaction.set(kotRef, {
@@ -2179,7 +2441,7 @@ export default function POSHome() {
           }];
         const newPayments: OrderPayment[] = [];
         paymentsToWrite.forEach((payment, index) => {
-          const paymentRef = doc(collection(newOrderRef, 'payments'));
+          const paymentRef = doc(collection(newOrderRef, 'payments'), deterministicPaymentId(newOrderRef.id, payment, index));
           const paymentData: OrderPayment = {
             method: payment.method,
             amount: payment.amount,
@@ -2196,6 +2458,14 @@ export default function POSHome() {
 
         return { savedOrder: { id: newOrderRef.id, ...orderData }, savedItems: newItems, savedPayments: newPayments };
       });
+
+      const recoveredResult = transactionResult.existingOrderId
+        ? await loadExistingCheckoutResult(newOrderRef, checkoutAttempt, requestPayloadHash)
+        : null;
+      if (transactionResult.existingOrderId && !recoveredResult) {
+        throw new Error('Checkout recovery failed: the completed order could not be loaded.');
+      }
+      const { savedOrder, savedItems, savedPayments } = recoveredResult || transactionResult;
 
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Success`);
       if (savedOrder.inventoryWarnings?.length) {
@@ -2354,6 +2624,11 @@ export default function POSHome() {
                 Setup test sale
               </span>
             )}
+            {hasActivePosLaunchException && (
+              <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-black uppercase text-amber-800">
+                Provisional stock launch
+              </span>
+            )}
 
             <Link
               to="/pos/running-orders"
@@ -2373,6 +2648,12 @@ export default function POSHome() {
           </div>
         </div>
       </div>
+
+      {hasActivePosLaunchException && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-900">
+          Baked by Bond 51 staff POS is temporarily active while opening stock remains pending. Customer ordering stays disabled; complete physical opening stock as soon as possible.
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
       {/* Menu Area */}

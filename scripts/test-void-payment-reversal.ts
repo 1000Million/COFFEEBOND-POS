@@ -333,6 +333,8 @@ for (const [label, source] of [['RunningOrders', runningOrders]] as const) {
   assert(source.includes('stockBefore') && source.includes('stockAfter'), `${label} reversal writes must save stock before/after snapshots.`);
   assert(source.includes('previousQty') && source.includes('newQty'), `${label} reversal writes must save previousQty/newQty snapshots.`);
   assert(source.includes('quantityDelta: reversalQuantity'), `${label} reversal writes must save positive quantityDelta.`);
+  assert(source.includes('deterministicVoidReversalMovementId'), `${label} reversal writes must use deterministic movement IDs.`);
+  assert(source.includes('duplicateReversalIndex'), `${label} reversal transaction must detect repeated deterministic reversals.`);
 }
 assert(reportingCore.includes("record.status === 'VOIDED'"), 'Reporting must separate voided orders from commercial sales.');
 assert(reportingCore.includes('paymentReversalStatus'), 'Reporting must expose the recorded payment reversal outcome.');

@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 
 const STORE_CODE_PATTERN = /^[A-Z0-9_]+$/;
 const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{12,120}$/;
+const BAKED_BY_BOND_51_STORE_ID = 'BAKED_BY_BOND_51';
 
 const MODULES = Object.freeze({
   OPERATING: {
@@ -168,6 +169,34 @@ const NEVER_COPY_COLLECTIONS = Object.freeze([
 
 function text(value, maxLength = 200) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function timestampMillis(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value === 'object' && typeof value.seconds === 'number') {
+    return value.seconds * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1000000);
+  }
+  return 0;
+}
+
+function isBakedByBond51(store = {}) {
+  return [store.id, store.code, store.storeCode].some((value) => text(value, 80) === BAKED_BY_BOND_51_STORE_ID);
+}
+
+function isActivePosLaunchException(store = {}, nowMs = Date.now()) {
+  const exception = store.posLaunchException && typeof store.posLaunchException === 'object'
+    ? store.posLaunchException
+    : null;
+  if (!exception || exception.enabled !== true) return false;
+  if (!isBakedByBond51(store)) return false;
+  const expiresAtMs = timestampMillis(exception.expiresAt);
+  return expiresAtMs > nowMs;
 }
 
 function normalizeStoreCode(value) {
@@ -411,11 +440,20 @@ function readinessResult(store = {}, counts = {}) {
     customerOrderingTestCompleted: configured.customerOrderingTestCompleted === true,
   };
   const blockingKeys = READINESS_KEYS.filter((key) => resolved[key] !== true);
+  const openingStockPending = resolved.openingStockReviewed !== true;
+  const launchExceptionActive = openingStockPending && isActivePosLaunchException(store);
+  const posBlockingKeys = launchExceptionActive
+    ? blockingKeys.filter((key) => key !== 'openingStockReviewed')
+    : blockingKeys;
   return {
     checks: resolved,
     blockingKeys,
     friendlyBlockingSteps: blockingKeys.map((key) => READINESS_STEP_LABELS[key] || key),
-    posReady: blockingKeys.length === 0,
+    posBlockingKeys,
+    friendlyPosBlockingSteps: posBlockingKeys.map((key) => READINESS_STEP_LABELS[key] || key),
+    openingStockPending,
+    launchExceptionActive,
+    posReady: posBlockingKeys.length === 0,
     customerOrderingReady: blockingKeys.length === 0
       && resolved.customerOrderingTestCompleted
       && store.status === 'ACTIVE'
@@ -489,6 +527,7 @@ module.exports = {
   ALL_MODULE_IDS,
   CUSTOMER_ORDERING_FIELDS,
   CUSTOMER_ORDERING_READINESS_KEY,
+  BAKED_BY_BOND_51_STORE_ID,
   INVENTORY_OPTIONS,
   JOB_ID_PATTERN,
   KOT_FIELDS,
@@ -502,6 +541,7 @@ module.exports = {
   STORE_CODE_PATTERN,
   buildDraftStorePayload,
   buildSafeJobRecord,
+  isActivePosLaunchException,
   copyAllowedFields,
   isValidJobId,
   normalizeStoreCode,

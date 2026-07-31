@@ -99,6 +99,7 @@ type StockRowSnapshot = {
 };
 
 export type InventoryMovementPayload = {
+  stockDocId: string;
   storeId: string;
   storeCode: string;
   storeName: string;
@@ -1161,8 +1162,44 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     });
     if (!stockRow) continue;
 
+    const aggregatedEntries = Array.from(entries.reduce((groups, entry) => {
+      const key = [
+        entry.stockDocId,
+        entry.lineKey,
+        entry.stockItemType,
+        entry.stockItemCode,
+        entry.unit,
+        entry.finishedGoodCode,
+      ].join('|');
+      const current = groups.get(key);
+      if (current) {
+        current.quantity = roundValue(current.quantity + entry.quantity);
+        current.costPerUnit = entry.costPerUnit;
+        current.finishedGoodName = entry.finishedGoodName;
+        current.itemName = entry.itemName;
+        current.warnings.push(...entry.warnings);
+        return groups;
+      }
+      groups.set(key, { ...entry, warnings: [...entry.warnings] });
+      return groups;
+    }, new Map<string, PlannedMovementEntry>()).values()).sort((left, right) => (
+      [
+        left.lineKey,
+        left.stockItemType,
+        left.stockItemCode,
+        left.unit,
+        left.finishedGoodCode,
+      ].join('|').localeCompare([
+        right.lineKey,
+        right.stockItemType,
+        right.stockItemCode,
+        right.unit,
+        right.finishedGoodCode,
+      ].join('|'))
+    ));
+
     let runningQty = stockRow.currentStock;
-    entries.forEach(entry => {
+    aggregatedEntries.forEach(entry => {
       const previousQty = runningQty;
       const newQty = roundValue(previousQty - entry.quantity);
       runningQty = newQty;
@@ -1205,6 +1242,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       }
 
       movementPayloads.push({
+        stockDocId,
         storeId: store.id,
         storeCode: store.code,
         storeName: store.name,

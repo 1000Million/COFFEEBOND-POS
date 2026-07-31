@@ -65,6 +65,12 @@ type StockMovementDoc = {
   stockSystem?: string;
   stockItemType?: string;
   stockItemCode?: string;
+  previousQty?: number;
+  newQty?: number;
+  stockBefore?: number;
+  stockAfter?: number;
+  balanceBefore?: number;
+  balanceAfter?: number;
 };
 
 type SettlementRow = {
@@ -92,6 +98,19 @@ function money(value: unknown): number {
 
 function roundStock(value: number): number {
   return Math.round(value * 10000) / 10000;
+}
+
+function sanitizeFirestoreId(value: unknown, maxLength = 480): string {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return (normalized || 'ID').slice(0, maxLength);
+}
+
+function deterministicVoidReversalMovementId(originalMovementId: string): string {
+  return sanitizeFirestoreId(`${originalMovementId}_VOID_REVERSAL`, 480);
 }
 
 function formatMoney(value: unknown): string {
@@ -686,14 +705,25 @@ export default function RunningOrders() {
             stockItemType,
             stockItemCode,
             stockRef: doc(db, 'storeStock', `${movement.storeId}_${stockItemType}_${stockItemCode}`),
+            reversalRef: doc(db, 'stockMovements', deterministicVoidReversalMovementId(
+              movement.id || `${freshOrder.id}_${stockItemType}_${stockItemCode}`,
+            )),
           };
         });
 
-        const stockSnaps = await Promise.all(stockTargets.map(target => transaction.get(target.stockRef)));
+        const [stockSnaps, reversalSnaps] = await Promise.all([
+          Promise.all(stockTargets.map(target => transaction.get(target.stockRef))),
+          Promise.all(stockTargets.map(target => transaction.get(target.reversalRef))),
+        ]);
         const missingStockIndex = stockSnaps.findIndex(stockSnap => !stockSnap.exists());
         if (missingStockIndex >= 0) {
           const target = stockTargets[missingStockIndex];
           throw new Error(`Cannot reverse stock; storeStock row is missing for ${target.stockItemType} / ${target.stockItemCode}.`);
+        }
+        const duplicateReversalIndex = reversalSnaps.findIndex(reversalSnap => reversalSnap.exists());
+        if (duplicateReversalIndex >= 0) {
+          const target = stockTargets[duplicateReversalIndex];
+          throw new Error(`Stock movement ${target.movement.id || target.stockItemCode} already has a void reversal.`);
         }
 
         stockTargets.forEach((target, index) => {
@@ -707,7 +737,7 @@ export default function RunningOrders() {
             currentStock: stockAfter,
             updatedAt: serverTimestamp(),
           });
-          transaction.set(doc(collection(db, 'stockMovements')), {
+          transaction.set(target.reversalRef, {
             storeId: target.movement.storeId,
             storeCode: freshOrder.storeCode,
             storeName: target.movement.storeName || freshOrder.storeName,

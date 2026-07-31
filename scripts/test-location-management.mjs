@@ -80,7 +80,7 @@ function preview(selectedModules, sourceConfig = sourceConfiguration(), override
 
 test('1. Admin-only backend authorization guards every provisioning callable', () => {
   assert.match(provisioningSource, /async function requireActiveAdmin/);
-  assert.equal((provisioningSource.match(/await requireActiveAdmin\(db, request\)/g) || []).length, 9);
+  assert.equal((provisioningSource.match(/await requireActiveAdmin\(db, request\)/g) || []).length, 10);
   assert.match(provisioningSource, /profile\.isActive !== true \|\| profile\.role !== 'ADMIN'/);
 });
 
@@ -736,6 +736,7 @@ test('49. New provisioning callables are exported for emulator and backend QA', 
   const indexSource = fs.readFileSync(new URL('../functions/index.js', import.meta.url), 'utf8');
   assert.match(indexSource, /exports\.saveLocationOpeningStock/);
   assert.match(indexSource, /exports\.saveLocationStaffAssignments/);
+  assert.match(indexSource, /exports\.setPosLaunchException/);
 });
 
 test('50. Generic store configuration updates cannot patch opening-stock readiness', () => {
@@ -745,13 +746,122 @@ test('50. Generic store configuration updates cannot patch opening-stock readine
   assert.match(provisioningSource, /function assertNoSystemManagedStoreConfigPatch/);
   assert.match(provisioningSource, /key === 'readiness'/);
   assert.match(provisioningSource, /key === 'openingStockConfirmed'/);
+  assert.match(provisioningSource, /key === 'posLaunchException'/);
   assert.match(provisioningSource, /key === 'readiness\.openingStockReviewed'/);
   assert.match(provisioningSource, /key === 'readiness\.openingStockConfirmed'/);
   assert.match(provisioningSource, /key\.startsWith\('readiness\.'\)/);
+  assert.match(provisioningSource, /key\.startsWith\('posLaunchException\.'\)/);
   assert.match(provisioningSource, /Opening-stock readiness is system-managed and can only be changed through saveLocationOpeningStock/);
   assert.match(provisioningSource, /const rawPatch = data\.patch/);
   assert.match(provisioningSource, /assertNoSystemManagedStoreConfigPatch\(rawPatch\)/);
   assert.doesNotMatch(provisioningSource, /patch\.readiness = \{ \.\.\.currentReadiness/);
+});
+
+test('51. Baked by Bond staff-POS exception bypasses only opening-stock readiness for POS activation', () => {
+  const baseStore = {
+    id: 'BAKED_BY_BOND_51',
+    code: 'BAKED_BY_BOND_51',
+    storeCode: 'BAKED_BY_BOND_51',
+    name: 'Baked by Bond 51',
+    address: 'Address',
+    city: 'Noida',
+    state: 'Uttar Pradesh',
+    pinCode: '201301',
+    receiptName: 'Baked by Bond 51',
+    gstRegistered: false,
+    status: 'DRAFT',
+    posEnabled: false,
+    readiness: {
+      inventoryStructureCreated: true,
+      posTestCompleted: true,
+      customerOrderingTestCompleted: false,
+    },
+  };
+  const counts = {
+    menuProductCount: 54,
+    inventoryRowCount: 228,
+    staffCount: 3,
+    invalidProductAvailabilityCount: 0,
+    invalidAddOnReferenceCount: 0,
+    invalidKotRoutingCount: 0,
+  };
+  const blocked = policy.readinessResult(baseStore, counts);
+  assert.equal(blocked.posReady, false);
+  assert.ok(blocked.blockingKeys.includes('openingStockReviewed'));
+  const withException = policy.readinessResult({
+    ...baseStore,
+    posLaunchException: {
+      enabled: true,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    },
+  }, counts);
+  assert.equal(withException.launchExceptionActive, true);
+  assert.equal(withException.openingStockPending, true);
+  assert.equal(withException.posReady, true);
+  assert.equal(withException.customerOrderingReady, false);
+  assert.ok(withException.blockingKeys.includes('openingStockReviewed'));
+  assert.ok(!withException.posBlockingKeys.includes('openingStockReviewed'));
+  const otherStore = policy.readinessResult({
+    ...baseStore,
+    id: 'UDAY_PARK',
+    code: 'UDAY_PARK',
+    storeCode: 'UDAY_PARK',
+    posLaunchException: {
+      enabled: true,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    },
+  }, counts);
+  assert.equal(otherStore.posReady, false);
+});
+
+test('52. POS launch exception callable is Baked-only, expiring, audited and customer-ordering safe', () => {
+  assert.match(provisioningSource, /const setPosLaunchException = onCall/);
+  assert.match(provisioningSource, /storeId !== BAKED_BY_BOND_51_STORE_ID/);
+  assert.match(provisioningSource, /POS_LAUNCH_EXCEPTION_MAX_MS = 48 \* 60 \* 60 \* 1000/);
+  assert.match(provisioningSource, /Customer ordering must be disabled/);
+  assert.match(provisioningSource, /openingStockIsPending\(store\)/);
+  assert.match(provisioningSource, /otherBlockingKeys/);
+  assert.match(provisioningSource, /SET_POS_LAUNCH_EXCEPTION/);
+  assert.match(provisioningSource, /scope: 'STAFF_POS_ONLY'/);
+  assert.match(provisioningSource, /updatedBy: adminUser\.uid/);
+  assert.match(locationSource, /setPosLaunchExceptionCallable/);
+  assert.match(locationSource, /Approve staff-POS exception/);
+  assert.match(locationSource, /POS_LAUNCH_EXCEPTION_HOURS = 24/);
+  assert.match(posSource, /Provisional stock launch/);
+});
+
+test('53. POS checkout uses deterministic document IDs and recovers committed retries', () => {
+  assert.match(posSource, /CHECKOUT_ATTEMPT_STORAGE_KEY/);
+  assert.match(posSource, /loadExistingCheckoutResult/);
+  assert.match(posSource, /String\(order\.checkoutPayloadHash \|\| ''\) !== expectedPayloadHash/);
+  assert.match(posSource, /loadExistingCheckoutResult\(\s*newOrderRef,\s*checkoutAttempt,\s*requestPayloadHash/);
+  assert.match(posSource, /clientCheckoutIdempotencyKey/);
+  assert.match(posSource, /checkoutPayloadHash/);
+  assert.match(posSource, /transaction\.get\(newOrderRef\)/);
+  assert.match(posSource, /existingOrderId: newOrderRef\.id/);
+  assert.match(posSource, /deterministicOrderItemId/);
+  assert.match(posSource, /deterministicStockMovementId/);
+  assert.match(posSource, /deterministicKotId/);
+  assert.match(posSource, /deterministicPaymentId/);
+  assert.doesNotMatch(posSource, /const newOrderRef = doc\(collection\(db, 'orders'\)\)/);
+  assert.doesNotMatch(posSource, /const paymentRef = doc\(collection\(newOrderRef, 'payments'\)\)/);
+  assert.doesNotMatch(posSource, /const kotRef = doc\(collection\(db, 'kotItems'\)\)/);
+});
+
+test('54. Sale stock movement payloads include stable stock document identity', () => {
+  const inventorySource = fs.readFileSync(new URL('../frontend/lib/inventoryDeduction.ts', import.meta.url), 'utf8');
+  assert.match(inventorySource, /stockDocId: string/);
+  assert.match(inventorySource, /aggregatedEntries/);
+  assert.match(inventorySource, /movementPayloads\.push\(\{\s*stockDocId/);
+  assert.match(posSource, /doc\(db, 'stockMovements', deterministicStockMovementId/);
+});
+
+test('55. Void reversal movements use deterministic IDs and remain compatible with historical movements', () => {
+  const runningOrdersSource = fs.readFileSync(new URL('../frontend/pages/pos/RunningOrders.tsx', import.meta.url), 'utf8');
+  assert.match(runningOrdersSource, /deterministicVoidReversalMovementId/);
+  assert.match(runningOrdersSource, /movement\.id \|\| `\$\{freshOrder\.id\}_\$\{stockItemType\}_\$\{stockItemCode\}`/);
+  assert.match(runningOrdersSource, /duplicateReversalIndex/);
+  assert.doesNotMatch(runningOrdersSource, /transaction\.set\(doc\(collection\(db, 'stockMovements'\)\)/);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

@@ -599,6 +599,12 @@ test('90. Acceptance retry remains idempotent for POS KOT and stock records', ()
   assert.match(incoming, /paidResult\.data\.reviewRequired/);
   assert.match(incoming, /'Retry acceptance'/);
 });
+test('91. Staff-POS launch exception does not weaken paid customer stock checks', () => {
+  assert.match(legacyBackend, /requireAvailableStock: true/);
+  assert.match(inventorySource, /if \(requireAvailableStock\)/);
+  assert.doesNotMatch(inventorySource, /posLaunchException|STAFF_POS_ONLY/);
+  assert.doesNotMatch(backend, /posLaunchException|STAFF_POS_ONLY/);
+});
 
 let passed = 0;
 for (const { name, run } of tests) {
@@ -612,5 +618,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 90);
+assert.equal(tests.length, 91);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);
