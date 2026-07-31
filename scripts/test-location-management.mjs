@@ -695,4 +695,20 @@ test('48. New provisioning callables are exported for emulator and backend QA', 
   assert.match(indexSource, /exports\.saveLocationStaffAssignments/);
 });
 
+test('49. Generic store configuration updates cannot patch opening-stock readiness', () => {
+  const safeEditFields = provisioningSource.match(/const SAFE_EDIT_FIELDS = new Set\(\[([\s\S]*?)\]\);/)?.[1] || '';
+  assert.doesNotMatch(safeEditFields, /'readiness'/);
+  assert.doesNotMatch(safeEditFields, /'openingStockConfirmed'/);
+  assert.match(provisioningSource, /function assertNoSystemManagedStoreConfigPatch/);
+  assert.match(provisioningSource, /key === 'readiness'/);
+  assert.match(provisioningSource, /key === 'openingStockConfirmed'/);
+  assert.match(provisioningSource, /key === 'readiness\.openingStockReviewed'/);
+  assert.match(provisioningSource, /key === 'readiness\.openingStockConfirmed'/);
+  assert.match(provisioningSource, /key\.startsWith\('readiness\.'\)/);
+  assert.match(provisioningSource, /Opening-stock readiness is system-managed and can only be changed through saveLocationOpeningStock/);
+  assert.match(provisioningSource, /const rawPatch = data\.patch/);
+  assert.match(provisioningSource, /assertNoSystemManagedStoreConfigPatch\(rawPatch\)/);
+  assert.doesNotMatch(provisioningSource, /patch\.readiness = \{ \.\.\.currentReadiness/);
+});
+
 console.log(`\n${checks.length} Location Management checks passed.`);

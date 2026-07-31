@@ -379,6 +379,14 @@ async function auditActionCount(action) {
   return snapshot.size;
 }
 
+function assertSameTimestamp(actual, expected, label) {
+  if (expected?.isEqual) {
+    assert.equal(actual?.isEqual(expected), true, `${label} changed`);
+    return;
+  }
+  assert.deepEqual(actual, expected, `${label} changed`);
+}
+
 async function run() {
   console.log('Location Management emulator environment is isolated.');
   console.log(`Project: ${process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || PROJECT_ID}`);
@@ -448,6 +456,41 @@ async function run() {
   const stockRows = await destinationStockRows();
   assert.equal(stockRows.length, 3);
   assert.ok(stockRows.every((row) => row.openingStock === 0 && row.currentStock === 0));
+
+  const blockedStoreBefore = (await db.collection('stores').doc(DESTINATION_STORE_ID).get()).data();
+  const blockedReadinessBefore = blockedStoreBefore.readiness;
+  const blockedUpdatedAtBefore = blockedStoreBefore.updatedAt;
+  const blockedPatches = [
+    { label: 'nested opening stock true', patch: { readiness: { openingStockReviewed: true } } },
+    { label: 'nested opening stock false', patch: { readiness: { openingStockReviewed: false } } },
+    { label: 'root opening stock confirmed', patch: { openingStockConfirmed: true } },
+    { label: 'dotted opening stock reviewed', patch: { 'readiness.openingStockReviewed': true } },
+    { label: 'dotted opening stock confirmed', patch: { 'readiness.openingStockConfirmed': true } },
+    { label: 'nested opening stock confirmed', patch: { readiness: { openingStockConfirmed: true } } },
+  ];
+  for (const blockedPatch of blockedPatches) {
+    const errorBody = await callFunction('updateStoreConfiguration', {
+      storeId: DESTINATION_STORE_ID,
+      action: 'UPDATE',
+      patch: blockedPatch.patch,
+    }, adminToken, { expectError: true });
+    assert.match(JSON.stringify(errorBody), /Opening-stock readiness is system-managed/, blockedPatch.label);
+    const afterBlockedPatch = (await db.collection('stores').doc(DESTINATION_STORE_ID).get()).data();
+    assert.deepEqual(afterBlockedPatch.readiness, blockedReadinessBefore, `${blockedPatch.label} changed readiness`);
+    assert.equal(afterBlockedPatch.openingStockConfirmed, undefined, `${blockedPatch.label} set openingStockConfirmed`);
+    assertSameTimestamp(afterBlockedPatch.updatedAt, blockedUpdatedAtBefore, `${blockedPatch.label} updatedAt`);
+  }
+
+  const normalUpdate = await callFunction('updateStoreConfiguration', {
+    storeId: DESTINATION_STORE_ID,
+    action: 'UPDATE',
+    patch: { receiptFooter: 'QA setup receipt footer' },
+  }, adminToken);
+  assert.equal(normalUpdate.status, 'DRAFT');
+  const afterNormalUpdate = (await db.collection('stores').doc(DESTINATION_STORE_ID).get()).data();
+  assert.equal(afterNormalUpdate.receiptFooter, 'QA setup receipt footer');
+  assert.deepEqual(afterNormalUpdate.readiness, blockedReadinessBefore);
+  assert.equal(afterNormalUpdate.openingStockConfirmed, undefined);
 
   const openingRows = stockRows.map((row) => ({
     stockId: row.id,

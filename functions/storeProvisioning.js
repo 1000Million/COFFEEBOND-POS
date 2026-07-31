@@ -81,14 +81,13 @@ const SAFE_EDIT_FIELDS = new Set([
   'menuPauseSettings',
   'storeVisibilitySettings',
   'onlineOrderingMessage',
-  'readiness',
   'gstRate',
-  'openingStockConfirmed',
 ]);
 const SETUP_LEAD_ROLES = new Set(['ADMIN', 'STORE_MANAGER']);
 const POS_CAPABLE_ROLES = new Set(['ADMIN', 'STORE_MANAGER', 'CASHIER']);
 const DECIMAL_UNITS = new Set(['G', 'KG', 'ML', 'L']);
 const INTEGER_UNITS = new Set(['PCS', 'PACK', 'BOX', 'BOTTLE', 'BAG', 'TRAY']);
+const SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE = 'Opening-stock readiness is system-managed and can only be changed through saveLocationOpeningStock.';
 
 function fail(code, message) {
   throw new HttpsError(code, message);
@@ -134,6 +133,18 @@ function roundedQuantity(value) {
 
 function sameQuantity(left, right) {
   return roundedQuantity(number(left)) === roundedQuantity(number(right));
+}
+
+function assertNoSystemManagedStoreConfigPatch(rawPatch = {}) {
+  const patch = rawPatch && typeof rawPatch === 'object' && !Array.isArray(rawPatch) ? rawPatch : {};
+  const blocked = Object.keys(patch).some((key) => (
+    key === 'readiness'
+    || key === 'openingStockConfirmed'
+    || key === 'readiness.openingStockReviewed'
+    || key === 'readiness.openingStockConfirmed'
+    || key.startsWith('readiness.')
+  ));
+  if (blocked) fail('failed-precondition', SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE);
 }
 
 function openingMovementId(storeId, stockId, provisioningJobId) {
@@ -1291,16 +1302,15 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
       return { storeId, status: 'INACTIVE' };
     }
 
+    const rawPatch = data.patch && typeof data.patch === 'object' && !Array.isArray(data.patch)
+      ? data.patch
+      : {};
+    assertNoSystemManagedStoreConfigPatch(rawPatch);
     const patch = {};
-    Object.entries(data.patch || {}).forEach(([key, value]) => {
+    Object.entries(rawPatch).forEach(([key, value]) => {
       if (SAFE_EDIT_FIELDS.has(key)) patch[key] = value;
     });
     if (Object.keys(patch).length === 0) fail('invalid-argument', 'No safe configuration fields were supplied.');
-    if ('readiness' in patch) {
-      const currentReadiness = storeSnap.data()?.readiness || {};
-      const nextReadiness = patch.readiness && typeof patch.readiness === 'object' ? patch.readiness : {};
-      patch.readiness = { ...currentReadiness, ...nextReadiness };
-    }
     patch.updatedBy = adminUser.uid;
     patch.updatedAt = timestamp;
     await storeRef.update(patch);
@@ -1571,6 +1581,7 @@ module.exports = {
   openingMovementId,
   setupNumber,
   unitAllowsDecimal,
+  SYSTEM_MANAGED_OPENING_STOCK_READINESS_MESSAGE,
   validateOpeningStockRows,
   validateProvisioningInput,
 };
