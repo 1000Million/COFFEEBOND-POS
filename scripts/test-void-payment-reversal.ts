@@ -6,6 +6,11 @@ import {
   filterInventoryMovementAuditRows,
 } from '../frontend/lib/inventoryControlAudit';
 import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel, summarizeCollections, VOIDED_ITEM_STATUS_LABEL } from '../frontend/lib/paymentReversal';
+import {
+  DRAFT_SETUP_TEST_STORE_ID,
+  isEligibleDraftSetupStoreForRunningOrders,
+  isOrderVisibleInRunningOrders,
+} from '../frontend/lib/runningOrdersVisibility';
 import type { Order, OrderItem, StockMovement } from '../frontend/types';
 
 function assert(condition: unknown, message: string) {
@@ -44,6 +49,43 @@ function order(overrides: Partial<Order> = {}): Order {
 function orderItem(status: OrderItem['status']): Pick<OrderItem, 'status'> {
   return { status };
 }
+
+const activeAdmin = { role: 'ADMIN' as const, isActive: true };
+const inactiveAdmin = { role: 'ADMIN' as const, isActive: false };
+const activeCashier = { role: 'CASHIER' as const, isActive: true };
+const activeStore = {
+  id: 'UDAY_PARK',
+  status: 'ACTIVE' as const,
+  isActive: true,
+};
+const bakedDraftSetupStore = {
+  id: DRAFT_SETUP_TEST_STORE_ID,
+  status: 'DRAFT' as const,
+  isActive: false,
+  internalPosTestEnabled: true,
+  setupTestMode: true,
+  posEnabled: true,
+  customerOrderingEnabled: false,
+  onlineOrderingEnabled: false,
+  publicOrderingEnabled: false,
+};
+const activeOrderVisibility = { storeId: 'UDAY_PARK', setupTestMode: false };
+const bakedSetupOrderVisibility = { storeId: DRAFT_SETUP_TEST_STORE_ID, setupTestMode: true };
+
+assert(isOrderVisibleInRunningOrders(activeOrderVisibility, activeStore, activeCashier), 'Active-store orders must remain visible through the existing accessible-store path.');
+assert(!isOrderVisibleInRunningOrders({ ...bakedSetupOrderVisibility, setupTestMode: false }, bakedDraftSetupStore, activeAdmin), 'Ordinary Draft orders must remain hidden from Admin.');
+assert(isOrderVisibleInRunningOrders(bakedSetupOrderVisibility, bakedDraftSetupStore, activeAdmin), 'Baked Draft setup-test order must be visible to an active Admin.');
+assert(!isOrderVisibleInRunningOrders(bakedSetupOrderVisibility, bakedDraftSetupStore, activeCashier), 'Baked Draft setup-test order must remain hidden from Cashier.');
+assert(!isOrderVisibleInRunningOrders(bakedSetupOrderVisibility, bakedDraftSetupStore, inactiveAdmin), 'Inactive Admin must not see Draft setup-test orders.');
+assert(!isOrderVisibleInRunningOrders(
+  { storeId: 'ANOTHER_DRAFT', setupTestMode: true },
+  { ...bakedDraftSetupStore, id: 'ANOTHER_DRAFT' },
+  activeAdmin,
+), 'No other Draft store may use the Baked setup-test visibility exception.');
+assert(!isEligibleDraftSetupStoreForRunningOrders(
+  { ...bakedDraftSetupStore, customerOrderingEnabled: true },
+  activeAdmin,
+), 'Draft setup visibility must fail when customer ordering is enabled.');
 
 const unpaidVoid = buildPaymentReversalAudit(order({
   status: 'VOIDED',
@@ -322,6 +364,12 @@ for (const [label, source] of [['RunningOrders', runningOrders]] as const) {
   assert(source.includes('paymentReversalStatus'), `${label} must write void payment audit fields.`);
   assert(source.includes('isComplimentaryOrder'), `${label} must suppress payment reversal fields for complimentary voids.`);
   assert(source.includes('orderItemDisplayStatus'), `${label} must use void-aware item-status presentation.`);
+  assert(source.includes('Void reason is required.'), `${label} must continue requiring a void reason.`);
+  assert(source.includes("status: 'VOIDED'"), `${label} must mark the order VOIDED inside the existing transaction.`);
+  assert(source.includes('paymentSnap'), `${label} must read and preserve original payment records for reversal audit.`);
+  assert(!source.includes('transaction.delete(paymentDoc.ref)'), `${label} must never delete original payment records during void.`);
+  assert(source.includes('SETUP TEST'), `${label} must display a visible setup-test badge.`);
+  assert(!source.includes("collection(db, 'onlineOrders')"), `${label} must not change customer-ordering records.`);
 }
 assert(inventoryControl.includes('Stock Movement Audit Filters'), 'Inventory Control should clearly scope movement filters to the stock movement audit.');
 assert(inventoryControl.includes('Gross consumed'), 'Inventory Control should show gross consumption.');
@@ -353,3 +401,5 @@ console.log('- void reversal movements show item, positive quantity, and order r
 console.log('- movement type, item type, and order/item search filters');
 console.log('- gross, reversed, and net raw consumption after full void');
 console.log('- stock before/after snapshots for new reversals and Not recorded for legacy rows');
+console.log('- Admin-only Baked Draft setup-order visibility');
+console.log('- ordinary, Cashier, inactive-Admin, and arbitrary Draft orders remain hidden');

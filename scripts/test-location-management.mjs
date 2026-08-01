@@ -12,6 +12,8 @@ const provisioningSource = fs.readFileSync(new URL('../functions/storeProvisioni
 const locationSource = fs.readFileSync(new URL('../frontend/pages/admin/LocationManagement.tsx', import.meta.url), 'utf8');
 const appSource = fs.readFileSync(new URL('../frontend/App.tsx', import.meta.url), 'utf8');
 const posSource = fs.readFileSync(new URL('../frontend/pages/pos/POSHome.tsx', import.meta.url), 'utf8');
+const runningOrdersSource = fs.readFileSync(new URL('../frontend/pages/pos/RunningOrders.tsx', import.meta.url), 'utf8');
+const runningOrdersVisibilitySource = fs.readFileSync(new URL('../frontend/lib/runningOrdersVisibility.ts', import.meta.url), 'utf8');
 const reportingSource = fs.readFileSync(new URL('../functions/reportingCore.mjs', import.meta.url), 'utf8');
 const rules = fs.readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
 
@@ -857,11 +859,24 @@ test('54. Sale stock movement payloads include stable stock document identity', 
 });
 
 test('55. Void reversal movements use deterministic IDs and remain compatible with historical movements', () => {
-  const runningOrdersSource = fs.readFileSync(new URL('../frontend/pages/pos/RunningOrders.tsx', import.meta.url), 'utf8');
   assert.match(runningOrdersSource, /deterministicVoidReversalMovementId/);
   assert.match(runningOrdersSource, /movement\.id \|\| `\$\{freshOrder\.id\}_\$\{stockItemType\}_\$\{stockItemCode\}`/);
   assert.match(runningOrdersSource, /duplicateReversalIndex/);
   assert.doesNotMatch(runningOrdersSource, /transaction\.set\(doc\(collection\(db, 'stockMovements'\)\)/);
+});
+
+test('56. Running Orders exposes only the approved Draft setup-test order to active Admin', () => {
+  assert.match(runningOrdersVisibilitySource, /DRAFT_SETUP_TEST_STORE_ID = 'BAKED_BY_BOND_51'/);
+  assert.match(runningOrdersVisibilitySource, /staffProfile\?\.isActive === true && staffProfile\.role === 'ADMIN'/);
+  assert.match(runningOrdersVisibilitySource, /store\.status === 'DRAFT'/);
+  assert.match(runningOrdersVisibilitySource, /order\.setupTestMode === true/);
+  assert.match(runningOrdersVisibilitySource, /store\.customerOrderingEnabled === false/);
+  assert.match(runningOrdersVisibilitySource, /store\.onlineOrderingEnabled === false/);
+  assert.match(runningOrdersVisibilitySource, /store\.publicOrderingEnabled === false/);
+  assert.match(runningOrdersSource, /getDoc\(doc\(db, 'stores', DRAFT_SETUP_TEST_STORE_ID\)\)/);
+  assert.match(runningOrdersSource, /filter\(order => isOrderVisibleInRunningOrders\(order, store, staffProfile\)\)/);
+  assert.match(runningOrdersSource, />\s*SETUP TEST\s*</);
+  assert.match(runningOrdersSource, /This order is not available for voiding in Running Orders\./);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

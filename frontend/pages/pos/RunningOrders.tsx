@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   runTransaction,
@@ -32,6 +33,13 @@ import { auth } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
+import {
+  DRAFT_SETUP_TEST_STORE_ID,
+  isActiveRunningOrdersAdmin,
+  isDraftSetupTestOrder,
+  isEligibleDraftSetupStoreForRunningOrders,
+  isOrderVisibleInRunningOrders,
+} from '../../lib/runningOrdersVisibility';
 import {
   KotItem,
   KotStatus,
@@ -348,18 +356,29 @@ export default function RunningOrders() {
 
   useEffect(() => {
     if (!staffProfile) return;
-    getDocs(query(collection(db, 'stores'), where('isActive', '==', true)))
-      .then(snap => {
-        const loaded = snap.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
-          .sort((a, b) => a.name.localeCompare(b.name));
+    const loadStores = async () => {
+      try {
+        const snap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+        const loaded = snap.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+        if (isActiveRunningOrdersAdmin(staffProfile)) {
+          const setupStoreSnap = await getDoc(doc(db, 'stores', DRAFT_SETUP_TEST_STORE_ID));
+          if (setupStoreSnap.exists()) {
+            const setupStore = { id: setupStoreSnap.id, ...setupStoreSnap.data() } as Store;
+            if (isEligibleDraftSetupStoreForRunningOrders(setupStore, staffProfile)) {
+              loaded.push(setupStore);
+            }
+          }
+        }
+        loaded.sort((a, b) => a.name.localeCompare(b.name));
         setStores(loaded);
         const accessible = staffProfile.role === 'ADMIN' ? loaded : loaded.filter(store => allowedStoreIds(staffProfile).includes(store.id));
         setSelectedStoreId(prev => prev || (staffProfile.role === 'ADMIN' ? 'ALL' : accessible[0]?.id || ''));
-      })
-      .catch(err => {
+      } catch (err) {
         console.error('Failed to load stores', err);
         setError('Could not load stores for running orders.');
-      });
+      }
+    };
+    void loadStores();
   }, [staffProfile]);
 
   const loadOrders = async () => {
@@ -378,17 +397,22 @@ export default function RunningOrders() {
         ? accessibleStores
         : accessibleStores.filter(store => store.id === selectedStoreId);
 
-      const orderSnaps = await Promise.all(storesToLoad.map(store => getDocs(query(
-        collection(db, 'orders'),
-        where('storeId', '==', store.id),
-        where('createdAt', '>=', start),
-        where('createdAt', '<=', end),
-      ))));
+      const orderSnaps = await Promise.all(storesToLoad.map(async store => ({
+        store,
+        snap: await getDocs(query(
+          collection(db, 'orders'),
+          where('storeId', '==', store.id),
+          where('createdAt', '>=', start),
+          where('createdAt', '<=', end),
+        )),
+      })));
 
-      const orders = orderSnaps.flatMap(snap => snap.docs.map(orderDoc => ({
-        id: orderDoc.id,
-        ...orderDoc.data(),
-      } as Order)));
+      const orders = orderSnaps.flatMap(({ store, snap }) => snap.docs
+        .map(orderDoc => ({
+          id: orderDoc.id,
+          ...orderDoc.data(),
+        } as Order))
+        .filter(order => isOrderVisibleInRunningOrders(order, store, staffProfile)));
 
       orders.sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0));
 
@@ -642,6 +666,11 @@ export default function RunningOrders() {
     if (!voidBundle?.order.id || !staffProfile || !auth.currentUser) return;
     if (!canVoidOrders) {
       setError('Only Admin or Store Manager can void orders.');
+      return;
+    }
+    const orderStore = stores.find(store => store.id === voidBundle.order.storeId);
+    if (!orderStore || !isOrderVisibleInRunningOrders(voidBundle.order, orderStore, staffProfile)) {
+      setError('This order is not available for voiding in Running Orders.');
       return;
     }
     if (effectiveOrderStatus(voidBundle.order) === 'VOIDED') {
@@ -947,6 +976,7 @@ export default function RunningOrders() {
             const payAtCounter = isPayAtCounter(order, bundle.payments);
             const voided = effectiveOrderStatus(order) === 'VOIDED';
             const source = sourceLabel(order);
+            const setupTest = isDraftSetupTestOrder(order);
             return (
               <article key={order.id} className={`rounded-3xl border bg-white p-5 shadow-sm ${voided ? 'border-red-200 bg-red-50/40' : 'border-neutral-200'}`}>
                 <div className="mb-4 flex items-start justify-between gap-3">
@@ -954,7 +984,14 @@ export default function RunningOrders() {
                     <p className="font-mono text-lg font-black text-neutral-900">{order.orderNumber}</p>
                     <p className="mt-1 text-xs font-bold uppercase tracking-widest text-neutral-400">{order.storeName}</p>
                   </div>
-                  <span className={`rounded-full border px-3 py-1 text-xs font-black ${badge.className}`}>{badge.label}</span>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {setupTest && (
+                      <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-black text-amber-800">
+                        SETUP TEST
+                      </span>
+                    )}
+                    <span className={`rounded-full border px-3 py-1 text-xs font-black ${badge.className}`}>{badge.label}</span>
+                  </div>
                 </div>
 
                 <div className="mb-4 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
