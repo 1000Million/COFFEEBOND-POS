@@ -948,8 +948,10 @@ test('58. Migration action is Admin-only, evidence-gated, audited, idempotent, a
   assert.match(locationSource, /Classify migrated legacy store/);
   assert.match(locationSource, /Normalize staff POS/);
   assert.match(locationSource, /Migrated legacy-store warnings/);
-  assert.match(publicMenuRefreshSource, /isLegacyMigratedGoldenI/);
-  assert.match(publicMenuRefreshSource, /availability\.publicStatus === 'SETUP_INCOMPLETE'/);
+  assert.match(publicMenuRefreshSource, /isGoldenISalesFirstOrderingStore/);
+  assert.match(publicMenuRefreshSource, /salesFirstOrdering/);
+  assert.match(publicMenuRefreshSource, /currentPublicCatalog\.has/);
+  assert.doesNotMatch(publicMenuRefreshSource, /excludeSetupIncomplete/);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

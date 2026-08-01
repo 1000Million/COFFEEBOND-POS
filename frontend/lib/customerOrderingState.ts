@@ -1,4 +1,5 @@
 import { Store } from '../types';
+import { isGoldenISalesFirstOrderingStore } from './publicMenuAvailability';
 
 type AvailabilitySnapshotLike = {
   menuItems?: Record<string, unknown>;
@@ -32,7 +33,17 @@ export function prepWindowLabel(minutes?: number | null): string {
 }
 
 export function isStoreOnlineEnabled(store: Store | null): boolean {
-  return !!store && store.onlineOrderingEnabled !== false;
+  if (!store) return false;
+  if (isGoldenISalesFirstOrderingStore(store)) {
+    return store.isActive === true
+      && store.posEnabled === true
+      && store.customerOrderingEnabled === true
+      && store.onlineOrderingEnabled === true
+      && store.publicOrderingEnabled === true
+      && store.acceptingOrders === true
+      && store.isAcceptingOrders === true;
+  }
+  return store.onlineOrderingEnabled !== false;
 }
 
 function looksLikeDisabledMessage(message: string): boolean {

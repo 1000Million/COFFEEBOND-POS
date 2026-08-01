@@ -136,14 +136,33 @@ function isStoreAvailable(item, storeId) {
   return Array.isArray(item.availableStoreIds) && item.availableStoreIds.includes(storeId);
 }
 
-function isItemPubliclyOrderable(item, storeId, availability) {
+function isGoldenISalesFirstOrderingStore(store) {
+  return store?.id === 'GOLDEN_I'
+    && String(store.code || store.storeCode || '').trim() === 'GOLDEN_I';
+}
+
+function isCustomerOrderingEnabledForStore(store) {
+  if (!isGoldenISalesFirstOrderingStore(store)) return store?.onlineOrderingEnabled !== false;
+  return store.isActive === true
+    && store.posEnabled === true
+    && store.customerOrderingEnabled === true
+    && store.onlineOrderingEnabled === true
+    && store.publicOrderingEnabled === true
+    && store.acceptingOrders === true
+    && store.isAcceptingOrders === true;
+}
+
+function isItemPubliclyOrderable(item, store, availability) {
   if (!item || typeof item !== 'object') return false;
-  if (!isStoreAvailable(item, storeId)) return false;
+  if (!isStoreAvailable(item, store.id)) return false;
   if (!item.isActive || !item.isSellable || item.isAvailable === false) return false;
   if (item.onlineOrderingEnabled === false || item.customerOrderingEnabled === false) return false;
   if (toNumber(item.salePrice) <= 0) return false;
   if (!['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation)) return false;
-  if (availability && availability.available === false) return false;
+  if (
+    availability?.available === false
+    && !(isGoldenISalesFirstOrderingStore(store) && availability.publicStatus === 'SETUP_INCOMPLETE')
+  ) return false;
   return true;
 }
 
@@ -455,7 +474,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     if (storeQuery.empty) fail('failed-precondition', 'Selected store is not available.');
     const storeDoc = storeQuery.docs[0];
     const store = { id: storeDoc.id, ...storeDoc.data() };
-    if (store.onlineOrderingEnabled === false) fail('failed-precondition', 'Online ordering is currently unavailable for this store.');
+    if (!isCustomerOrderingEnabledForStore(store)) fail('failed-precondition', 'Online ordering is currently unavailable for this store.');
 
     const availabilityRef = db.collection('publicMenuAvailability').doc(store.code);
     const gstRef = db.collection('appSettings').doc('gstConfig');
@@ -488,7 +507,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     const onlineItems = requestedItems.map((requested) => {
       const item = menuItems[requested.itemCode];
       const itemAvailability = availabilityItems[requested.itemCode];
-      if (!isItemPubliclyOrderable(item, store.id, itemAvailability)) {
+      if (!isItemPubliclyOrderable(item, store, itemAvailability)) {
         fail('failed-precondition', 'Some items are currently unavailable. Please update your basket.');
       }
 

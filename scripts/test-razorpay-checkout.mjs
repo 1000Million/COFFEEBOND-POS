@@ -9,6 +9,7 @@ const root = resolve(import.meta.dirname, '..');
 const policy = require(resolve(root, 'functions/razorpayCheckoutPolicy.js'));
 const paymentFirst = require(resolve(root, 'functions/razorpayPaymentFirst.js'));
 const checkoutBackend = require(resolve(root, 'functions/razorpayCheckout.js'));
+const checkoutCanonicalization = require(resolve(root, 'functions/customerCheckoutCanonicalization.js'));
 const onlineOrderInventory = require(resolve(root, 'functions/onlineOrderInventory.js'));
 const reporting = await import(resolve(root, 'functions/reportingCore.mjs'));
 
@@ -16,12 +17,14 @@ const source = path => readFileSync(resolve(root, path), 'utf8');
 const backend = source('functions/razorpayPaymentFirst.js');
 const legacyBackend = source('functions/razorpayCheckout.js');
 const inventorySource = source('functions/onlineOrderInventory.js');
+const clientInventorySource = source('frontend/lib/inventoryDeduction.ts');
 const functionsIndex = source('functions/index.js');
 const customerAuth = source('frontend/lib/customerAuth.ts');
 const customerOrder = source('frontend/pages/customer/CustomerOrder.tsx');
 const tracking = source('frontend/pages/customer/CustomerOrderStatus.tsx');
 const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
 const incoming = source('frontend/pages/pos/IncomingOnlineOrders.tsx');
+const inventoryControl = source('frontend/pages/inventory/InventoryControl.tsx');
 const conversion = source('frontend/lib/onlineOrderConversion.ts');
 const persistence = source('frontend/lib/customerOrderPersistence.ts');
 const checkoutPersistence = source('frontend/lib/customerCheckoutPersistence.ts');
@@ -512,26 +515,107 @@ function inventoryMovement({
   };
 }
 
-function availabilityBlockers(movements) {
+function availabilityBlockers(movements, store = { id: 'UDAY_PARK', code: 'UDAY_PARK', name: 'Uday Park' }) {
   const grouped = new Map();
   for (const movement of movements) {
     if (!grouped.has(movement.stock.id)) grouped.set(movement.stock.id, []);
     grouped.get(movement.stock.id).push(movement);
   }
-  return onlineOrderInventory.insufficientStockBlockers(grouped, {
+  return onlineOrderInventory.insufficientStockBlockers(grouped, store);
+}
+
+function inventoryPlannerHarness(records = {}) {
+  const db = {
+    collection(collectionName) {
+      return {
+        doc(id) {
+          return { id, path: `${collectionName}/${id}` };
+        },
+      };
+    },
+  };
+  const transaction = {
+    async get(ref) {
+      const value = records[ref.path];
+      return {
+        id: ref.id,
+        exists: value !== undefined,
+        data: () => value,
+      };
+    },
+  };
+  const admin = {
+    firestore: {
+      FieldValue: {
+        serverTimestamp: () => 'SERVER_TIMESTAMP',
+      },
+    },
+  };
+  return { db, transaction, admin };
+}
+
+function goldenStore(overrides = {}) {
+  return {
     id: 'GOLDEN_I',
+    code: 'GOLDEN_I',
     name: 'Golden I',
+    isActive: true,
+    posEnabled: true,
+    customerOrderingEnabled: true,
+    onlineOrderingEnabled: true,
+    publicOrderingEnabled: true,
+    acceptingOrders: true,
+    isAcceptingOrders: true,
+    inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM',
+    ...overrides,
+  };
+}
+
+function madeToOrderFinishedGood(overrides = {}) {
+  return {
+    id: 'HOT_LATTE',
+    code: 'HOT_LATTE',
+    name: 'Hot Latte',
+    displayName: 'Hot Latte',
+    itemType: 'MADE_TO_ORDER',
+    productionMode: 'MADE_TO_ORDER',
+    availableStoreIds: ['GOLDEN_I'],
+    isActive: true,
+    isSellable: true,
+    isAvailable: true,
+    bom: [],
+    ...overrides,
+  };
+}
+
+async function planInventory({ store = goldenStore(), finishedGood, records = {}, requireAvailableStock = true }) {
+  const harness = inventoryPlannerHarness(records);
+  return onlineOrderInventory.planOnlineOrderInventory({
+    ...harness,
+    store,
+    orderId: 'POS_ORDER_1',
+    orderNumber: 'CB-TEST-0001',
+    orderType: 'TAKEAWAY',
+    businessDate: '20260801',
+    staff: { uid: 'admin-1', name: 'Admin' },
+    lines: [{
+      lineKey: 'LINE_1',
+      quantity: 1,
+      finishedGood,
+      addOns: [],
+    }],
+    requireAvailableStock,
   });
 }
 
-test('81. Zero stock blocks paid Razorpay acceptance', () => {
-  const blockers = availabilityBlockers([inventoryMovement({ currentStock: 0, requiredQuantity: 2 })]);
-  assert.equal(blockers.length, 1);
-  assert.equal(blockers[0].blockerType, 'INSUFFICIENT_STOCK');
-  assert.equal(blockers[0].availableQuantity, 0);
+test('81. Golden I zero or negative stock does not enable the paid available-stock gate', () => {
+  assert.equal(onlineOrderInventory.shouldRequireAvailableStock(goldenStore(), true), false);
+  assert.equal(onlineOrderInventory.shouldRequireAvailableStock(goldenStore(), false), false);
 });
-test('82. Negative stock blocks paid Razorpay acceptance', () => {
-  const blockers = availabilityBlockers([inventoryMovement({ currentStock: -1, requiredQuantity: 2 })]);
+test('82. Other stores retain the paid available-stock gate', () => {
+  const strictStore = { id: 'UDAY_PARK', code: 'UDAY_PARK', name: 'Uday Park' };
+  assert.equal(onlineOrderInventory.shouldRequireAvailableStock(strictStore, true), true);
+  const blockers = availabilityBlockers([inventoryMovement({ currentStock: -1, requiredQuantity: 2 })], strictStore);
   assert.equal(blockers.length, 1);
   assert.equal(blockers[0].availableQuantity, -1);
 });
@@ -599,11 +683,118 @@ test('90. Acceptance retry remains idempotent for POS KOT and stock records', ()
   assert.match(incoming, /paidResult\.data\.reviewRequired/);
   assert.match(incoming, /'Retry acceptance'/);
 });
-test('91. Staff-POS launch exception does not weaken paid customer stock checks', () => {
+test('91. Staff-POS launch exception does not control the exact Golden I customer policy', () => {
   assert.match(legacyBackend, /requireAvailableStock: true/);
-  assert.match(inventorySource, /if \(requireAvailableStock\)/);
+  assert.match(inventorySource, /shouldRequireAvailableStock\(store, requireAvailableStock\)/);
+  assert.match(inventorySource, /store\?\.id === 'GOLDEN_I'/);
   assert.doesNotMatch(inventorySource, /posLaunchException|STAFF_POS_ONLY/);
   assert.doesNotMatch(backend, /posLaunchException|STAFF_POS_ONLY/);
+});
+
+test('92. Golden I valid BOM deducts into negative stock with an auditable movement', async () => {
+  const plan = await planInventory({
+    finishedGood: madeToOrderFinishedGood({
+      bom: [{
+        componentType: 'RAW_INGREDIENT',
+        componentCode: 'MILK',
+        componentName: 'Fresh Milk',
+        quantity: 150,
+        uom: 'ML',
+      }],
+    }),
+    records: {
+      'rawIngredients/MILK': { code: 'MILK', name: 'Fresh Milk', usageUOM: 'ML', costPerUsageUnit: 0.1 },
+      'storeStock/GOLDEN_I_RAW_INGREDIENT_MILK': {
+        stockItemName: 'Fresh Milk',
+        currentStock: 0,
+        uom: 'ML',
+        costPerUnit: 0.1,
+      },
+    },
+  });
+  assert.equal(plan.blockers.length, 0);
+  assert.equal(plan.pendingConsumptionPayloads.length, 0);
+  assert.equal(plan.movementPayloads.length, 1);
+  assert.equal(plan.movementPayloads[0].quantity, -150);
+  assert.equal(plan.movementPayloads[0].previousQty, 0);
+  assert.equal(plan.movementPayloads[0].newQty, -150);
+  assert.equal(plan.movementPayloads[0].wentNegative, true);
+  assert.equal(plan.stockUpdates[0].newQty, -150);
+});
+
+test('93. Golden I missing BOM creates one deterministic unresolved-inventory audit and no fake movement', async () => {
+  const first = await planInventory({ finishedGood: madeToOrderFinishedGood() });
+  const retry = await planInventory({ finishedGood: madeToOrderFinishedGood() });
+  assert.equal(first.blockers.length, 0);
+  assert.equal(first.movementPayloads.length, 0);
+  assert.equal(first.stockUpdates.length, 0);
+  assert.equal(first.pendingConsumptionPayloads.length, 1);
+  assert.equal(first.pendingConsumptionPayloads[0].status, 'PENDING_BOM');
+  assert.equal(first.pendingConsumptionPayloads[0].idempotencyKey, 'GOLDEN_I_POS_ORDER_1_LINE_1');
+  assert.equal(retry.pendingConsumptionPayloads[0].idempotencyKey, first.pendingConsumptionPayloads[0].idempotencyKey);
+  assert.equal(first.perLineConsumptionStatus.LINE_1, 'PENDING_BOM');
+});
+
+test('94. Golden I missing prep dependency is deferred without inventing a deduction', async () => {
+  const plan = await planInventory({
+    finishedGood: madeToOrderFinishedGood({
+      bom: [{
+        componentType: 'PREP_ITEM',
+        componentCode: 'MISSING_PREP',
+        componentName: 'Missing Prep',
+        quantity: 50,
+        uom: 'G',
+      }],
+    }),
+  });
+  assert.equal(plan.blockers.length, 0);
+  assert.equal(plan.movementPayloads.length, 0);
+  assert.equal(plan.pendingConsumptionPayloads.length, 1);
+  assert.match(plan.pendingConsumptionPayloads[0].reason, /Missing prep\/raw ingredient reference/);
+});
+
+test('95. An ordinary store with missing BOM remains blocked and gets no pending audit', async () => {
+  const strictStore = { id: 'UDAY_PARK', code: 'UDAY_PARK', name: 'Uday Park' };
+  const plan = await planInventory({
+    store: strictStore,
+    finishedGood: madeToOrderFinishedGood({ availableStoreIds: ['UDAY_PARK'] }),
+  });
+  assert.equal(plan.blockers.length, 1);
+  assert.equal(plan.blockers[0].blockerType, 'Missing BOM');
+  assert.equal(plan.pendingConsumptionPayloads.length, 0);
+  assert.equal(plan.movementPayloads.length, 0);
+});
+
+test('96. Golden I setup-incomplete status is warning-only only for the exact store identity', () => {
+  assert.equal(checkoutCanonicalization.isGoldenISalesFirstOrderingStore(goldenStore()), true);
+  assert.equal(checkoutCanonicalization.isCustomerOrderingEnabledForStore(goldenStore()), true);
+  assert.equal(checkoutCanonicalization.isCustomerOrderingEnabledForStore(goldenStore({ acceptingOrders: false })), false);
+  assert.equal(checkoutCanonicalization.isGoldenISalesFirstOrderingStore({ id: 'GOLDEN_I', code: 'NOIDA_29' }), false);
+  assert.equal(checkoutCanonicalization.isGoldenISalesFirstOrderingStore({ id: 'UDAY_PARK', code: 'GOLDEN_I' }), false);
+  assert.match(functionsIndex, /availability\.publicStatus === 'SETUP_INCOMPLETE'/);
+  assert.match(functionsIndex, /if \(!isGoldenISalesFirstOrderingStore\(store\)\) return store\?\.onlineOrderingEnabled !== false/);
+  assert.match(customerOrder, /isGoldenISetupWarningOnly\(selectedStore, publicItem\?\.publicStatus\)/);
+});
+
+test('97. Existing deterministic POS, payment, KOT and movement IDs remain unchanged', () => {
+  assert.match(legacyBackend, /deterministicPosOrderId/);
+  assert.match(legacyBackend, /collection\('payments'\)\.doc\('razorpay'\)/);
+  assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_\$\{line\.lineId\}_\$\{kotStation\}`\)/);
+  assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_SALE_\$\{String\(index \+ 1\)\.padStart\(3, '0'\)\}`\)/);
+});
+
+test('98. Pay-at-Counter acceptance uses the same exact Golden I deferred-inventory identity', () => {
+  assert.match(clientInventorySource, /isGoldenISalesFirstOrderingStore\(store\)/);
+  assert.doesNotMatch(clientInventorySource, /store\.id === 'GOLDEN_I' \|\| store\.code === 'GOLDEN_I'/);
+  assert.match(conversion, /planInventoryDeductionForSale/);
+  assert.match(conversion, /pendingInventoryConsumption/);
+});
+
+test('99. Admin inventory readiness keeps setup, negative-stock, and pending-BOM warnings visible', () => {
+  assert.match(inventoryControl, /buildSetupBlockers/);
+  assert.match(inventoryControl, /Negative stock items/);
+  assert.match(inventoryControl, /Pending BOM lines/);
+  assert.match(inventoryControl, /status === 'PENDING_BOM'/);
 });
 
 let passed = 0;
@@ -618,5 +809,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 91);
+assert.equal(tests.length, 99);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

@@ -118,10 +118,16 @@ function isStoreAssigned(item: FinishedGood, storeId: string): boolean {
   return storeIds.length === 0 || storeIds.includes(storeId);
 }
 
-function isLegacyMigratedGoldenI(store: Store): boolean {
+export function isGoldenISalesFirstOrderingStore(store: Pick<Store, 'id' | 'code' | 'storeCode'>): boolean {
   return store.id === 'GOLDEN_I'
-    && (store.code || store.storeCode) === 'GOLDEN_I'
-    && store.onboardingMode === 'LEGACY_MIGRATED';
+    && (store.code || store.storeCode) === 'GOLDEN_I';
+}
+
+export function isGoldenISetupWarningOnly(
+  store: Pick<Store, 'id' | 'code' | 'storeCode'>,
+  publicStatus: PublicMenuAvailabilityStatus | undefined,
+): boolean {
+  return isGoldenISalesFirstOrderingStore(store) && publicStatus === 'SETUP_INCOMPLETE';
 }
 
 function isActiveSellable(item: FinishedGood, storeId: string): boolean {
@@ -337,6 +343,10 @@ function evaluateItemAvailability(
     return publicItem(item, 'SETUP_INCOMPLETE', 'Currently unavailable');
   }
 
+  if (isGoldenISalesFirstOrderingStore(store)) {
+    return publicItem(item, 'AVAILABLE', 'Available');
+  }
+
   if (noStockRequired(item)) {
     return publicItem(item, 'AVAILABLE', 'Available');
   }
@@ -395,9 +405,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
     acc[item.code] = evaluateItemAvailability(store, item, rawByCode, prepByCode, finishedByCode);
     return acc;
   }, {});
-  const publishedItems = isLegacyMigratedGoldenI(store)
-    ? visibleItems.filter(item => evaluatedItems[item.code]?.publicStatus !== 'SETUP_INCOMPLETE')
-    : visibleItems;
+  const publishedItems = visibleItems;
   const items = publishedItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
     acc[item.code] = evaluatedItems[item.code];
     return acc;

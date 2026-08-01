@@ -22,6 +22,22 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function isGoldenISalesFirstOrderingStore(store) {
+  return store?.id === 'GOLDEN_I'
+    && cleanText(store.code || store.storeCode, 80) === 'GOLDEN_I';
+}
+
+function isCustomerOrderingEnabledForStore(store) {
+  if (!isGoldenISalesFirstOrderingStore(store)) return store?.isActive === true && store.onlineOrderingEnabled !== false;
+  return store.isActive === true
+    && store.posEnabled === true
+    && store.customerOrderingEnabled === true
+    && store.onlineOrderingEnabled === true
+    && store.publicOrderingEnabled === true
+    && store.acceptingOrders === true
+    && store.isAcceptingOrders === true;
+}
+
 function sanitizeCheckoutRequest(data, sessionId) {
   const storeId = cleanText(data?.storeId, 120);
   const storeCode = cleanText(data?.storeCode, 80);
@@ -91,7 +107,7 @@ async function resolveFinishedGood(db, productId, productCode) {
 async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
   const sanitized = sanitizeCheckoutRequest(data, sessionId);
   const store = await resolveStore(db, sanitized.storeId, sanitized.storeCode);
-  if (store.isActive !== true || store.onlineOrderingEnabled === false) {
+  if (!isCustomerOrderingEnabledForStore(store)) {
     fail('failed-precondition', 'Online ordering is currently unavailable for this store.');
   }
 
@@ -115,7 +131,9 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
   }));
   for (const item of requestedItems) {
     const publicAvailability = availabilityItems[item.parentProductCode];
-    if (publicAvailability?.available === false) {
+    const setupWarningOnly = isGoldenISalesFirstOrderingStore(store)
+      && publicAvailability?.publicStatus === 'SETUP_INCOMPLETE';
+    if (publicAvailability?.available === false && !setupWarningOnly) {
       fail('failed-precondition', 'Some items are currently unavailable. Please update your basket.');
     }
   }
@@ -202,6 +220,8 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
 module.exports = {
   canonicalizeCustomerCheckout,
   cleanText,
+  isCustomerOrderingEnabledForStore,
+  isGoldenISalesFirstOrderingStore,
   roundMoney,
   sanitizeCheckoutRequest,
 };

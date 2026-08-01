@@ -69,10 +69,9 @@ function isAssignedToStore(item, storeId) {
   return storeIdsFor(item).includes(storeId);
 }
 
-function isLegacyMigratedGoldenI(store) {
+function isGoldenISalesFirstOrderingStore(store) {
   return store.id === 'GOLDEN_I'
-    && String(store.data.code || store.data.storeCode || '') === 'GOLDEN_I'
-    && store.data.onboardingMode === 'LEGACY_MIGRATED';
+    && String(store.data.code || store.data.storeCode || '') === 'GOLDEN_I';
 }
 
 function isActiveSellableAvailable(item, storeId) {
@@ -88,14 +87,6 @@ function isPubliclyDisplayable(item, storeId) {
     && item.customerOrderingEnabled !== false
     && toNumber(item.salePrice) > 0
     && ['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation);
-}
-
-function hasMissingRequiredBom(item) {
-  const usesBom = item.itemType === 'MADE_TO_ORDER'
-    || item.productionMode === 'MADE_TO_ORDER'
-    || item.productionMode === 'ASSEMBLED_TO_ORDER'
-    || (item.itemType === 'DIRECT_STOCK' && Array.isArray(item.bom) && item.bom.length > 0);
-  return usesBom && (!Array.isArray(item.bom) || item.bom.length === 0);
 }
 
 function sanitizedDisplayItem(store, item) {
@@ -202,7 +193,7 @@ function unavailableItem(itemCode, status = 'CURRENTLY_UNAVAILABLE', message = '
   };
 }
 
-function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups }) {
+function buildSnapshot({ targetStore, sourceSnapshot, currentSnapshot, finishedGoods, addOnGroups }) {
   const visibleItems = finishedGoods
     .filter((item) => isActiveSellableAvailable(item.data, targetStore.id))
     .sort((a, b) => {
@@ -214,19 +205,30 @@ function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups
 
   const items = {};
   const menuItems = {};
-  const excludeSetupIncomplete = isLegacyMigratedGoldenI(targetStore);
+  const salesFirstOrdering = isGoldenISalesFirstOrderingStore(targetStore);
+  const currentPublicCatalog = new Set(Object.keys(currentSnapshot?.menuItems || {}));
+  const publishableItems = salesFirstOrdering && currentPublicCatalog.size > 0
+    ? visibleItems.filter((item) => currentPublicCatalog.has(item.data.code || item.id))
+    : visibleItems;
 
-  for (const item of visibleItems) {
+  for (const item of publishableItems) {
     const itemCode = item.data.code || item.id;
     let availability;
     if (targetStore.data.onlineOrderingEnabled === false) {
       availability = unavailableItem(itemCode, 'STORE_DISABLED', 'Online ordering unavailable for this store');
     } else if (!isPubliclyDisplayable(item.data, targetStore.id)) {
       availability = unavailableItem(itemCode);
+    } else if (salesFirstOrdering) {
+      availability = {
+        itemCode,
+        fgCode: itemCode,
+        available: true,
+        publicStatus: 'AVAILABLE',
+        publicMessage: 'Available',
+      };
     } else {
       availability = sourceAvailabilityFor(sourceSnapshot, itemCode);
     }
-    if (excludeSetupIncomplete && (availability.publicStatus === 'SETUP_INCOMPLETE' || hasMissingRequiredBom(item.data))) continue;
     items[itemCode] = availability;
     menuItems[itemCode] = sanitizedDisplayItem(targetStore, item.data);
   }
@@ -308,7 +310,13 @@ async function main() {
   const addOnGroups = addOnGroupSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
   const sourceSnapshot = sourceAvailabilitySnap.exists ? sourceAvailabilitySnap.data() || {} : null;
   const currentSnapshot = targetAvailabilitySnap.exists ? targetAvailabilitySnap.data() || {} : null;
-  const nextSnapshot = buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups });
+  const nextSnapshot = buildSnapshot({
+    targetStore,
+    sourceSnapshot,
+    currentSnapshot,
+    finishedGoods,
+    addOnGroups,
+  });
   const diff = diffSnapshot(currentSnapshot, nextSnapshot);
   const targetPath = `publicMenuAvailability/${targetStore.data.code || targetStore.id}`;
 

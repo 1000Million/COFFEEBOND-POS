@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { deriveCustomerOrderingState } from '../frontend/lib/customerOrderingState';
-import { buildPublicMenuAvailabilitySnapshot } from '../frontend/lib/publicMenuAvailability';
+import {
+  buildPublicMenuAvailabilitySnapshot,
+  isGoldenISetupWarningOnly,
+} from '../frontend/lib/publicMenuAvailability';
 import { Store } from '../frontend/types';
 
 function store(overrides: Partial<Store> = {}): Store {
@@ -10,7 +13,12 @@ function store(overrides: Partial<Store> = {}): Store {
     name: 'Golden I',
     address: '',
     isActive: true,
+    posEnabled: true,
+    customerOrderingEnabled: true,
     onlineOrderingEnabled: true,
+    publicOrderingEnabled: true,
+    acceptingOrders: true,
+    isAcceptingOrders: true,
     estimatedPrepMinutes: 20,
     createdAt: null,
     updatedAt: null,
@@ -56,6 +64,17 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
   assert.equal(state.canAcceptOrders, false);
   assert.equal(state.statusLabel, 'Unavailable');
   assert.match(state.message, /unavailable/i);
+}
+
+{
+  const state = deriveCustomerOrderingState({
+    store: store({ acceptingOrders: false }),
+    availabilitySnapshot: snapshot(80),
+    availabilityLoading: false,
+    orderableItemCount: 80,
+  });
+  assert.equal(state.canAcceptOrders, false);
+  assert.equal(state.statusLabel, 'Unavailable');
 }
 
 {
@@ -116,57 +135,65 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
 }
 
 {
-  const finishedGoods = [
-    {
-      id: 'SAFE_DRINK',
-      code: 'SAFE_DRINK',
-      name: 'Safe Drink',
-      salePrice: 100,
-      prepStation: 'BARISTA',
-      itemType: 'NO_STOCK',
-      productionMode: 'NO_STOCK',
-      posCategoryCode: 'DRINKS',
-      posCategoryName: 'Drinks',
-      availableStoreIds: ['GOLDEN_I'],
-      isActive: true,
-      isSellable: true,
-      isAvailable: true,
-    },
-    {
-      id: 'MISSING_BOM',
-      code: 'MISSING_BOM',
-      name: 'Missing BOM',
-      salePrice: 200,
-      prepStation: 'KITCHEN',
-      itemType: 'MADE_TO_ORDER',
-      productionMode: 'MADE_TO_ORDER',
+  const setupIncompleteCodes = Array.from({ length: 11 }, (_, index) => `SETUP_INCOMPLETE_${index + 1}`);
+  const finishedGoods = Array.from({ length: 80 }, (_, index) => {
+    const setupIncomplete = index < setupIncompleteCodes.length;
+    const code = setupIncomplete ? setupIncompleteCodes[index] : `READY_${index + 1}`;
+    return {
+      id: code,
+      code,
+      name: code,
+      salePrice: 100 + index,
+      prepStation: setupIncomplete ? 'KITCHEN' : 'BARISTA',
+      itemType: setupIncomplete ? 'MADE_TO_ORDER' : 'NO_STOCK',
+      productionMode: setupIncomplete ? 'MADE_TO_ORDER' : 'NO_STOCK',
       bom: [],
-      posCategoryCode: 'FOOD',
-      posCategoryName: 'Food',
-      availableStoreIds: ['GOLDEN_I'],
+      posCategoryCode: setupIncomplete ? 'FOOD' : 'DRINKS',
+      posCategoryName: setupIncomplete ? 'Food' : 'Drinks',
+      availableStoreIds: ['GOLDEN_I', 'UDAY_PARK'],
       isActive: true,
       isSellable: true,
       isAvailable: true,
-    },
-  ];
-  const migratedSnapshot = buildPublicMenuAvailabilitySnapshot({
-    store: store({ onboardingMode: 'LEGACY_MIGRATED' }),
+    };
+  });
+
+  const goldenSnapshot = buildPublicMenuAvailabilitySnapshot({
+    store: store(),
     finishedGoods: finishedGoods as any,
     storeStock: [],
   });
-  assert.deepEqual(Object.keys(migratedSnapshot.menuItems), ['SAFE_DRINK']);
-  assert.deepEqual(Object.keys(migratedSnapshot.items), ['SAFE_DRINK']);
-  assert.equal(migratedSnapshot.itemCount, 1);
-  assert.equal(migratedSnapshot.unavailableCount, 0);
+  assert.equal(goldenSnapshot.itemCount, 80);
+  assert.equal(goldenSnapshot.availableCount, 80);
+  assert.equal(goldenSnapshot.unavailableCount, 0);
+  assert.equal(Object.keys(goldenSnapshot.menuItems).length, 80);
+  setupIncompleteCodes.forEach((code) => {
+    assert.equal(goldenSnapshot.items[code].available, true);
+    assert.equal(goldenSnapshot.items[code].publicStatus, 'AVAILABLE');
+  });
+  assert.equal(isGoldenISetupWarningOnly(store(), 'SETUP_INCOMPLETE'), true);
 
   const strictSnapshot = buildPublicMenuAvailabilitySnapshot({
-    store: store({ onboardingMode: 'PROVISIONED' }),
+    store: store({ id: 'UDAY_PARK', code: 'UDAY_PARK' }),
     finishedGoods: finishedGoods as any,
     storeStock: [],
   });
-  assert.deepEqual(Object.keys(strictSnapshot.menuItems), ['MISSING_BOM', 'SAFE_DRINK']);
-  assert.equal(strictSnapshot.items.MISSING_BOM.publicStatus, 'SETUP_INCOMPLETE');
-  assert.equal(strictSnapshot.itemCount, 2);
+  assert.equal(strictSnapshot.itemCount, 80);
+  assert.equal(strictSnapshot.availableCount, 69);
+  assert.equal(strictSnapshot.unavailableCount, 11);
+  setupIncompleteCodes.forEach((code) => {
+    assert.equal(strictSnapshot.items[code].available, false);
+    assert.equal(strictSnapshot.items[code].publicStatus, 'SETUP_INCOMPLETE');
+  });
+  assert.equal(isGoldenISetupWarningOnly(store({ id: 'UDAY_PARK', code: 'UDAY_PARK' }), 'SETUP_INCOMPLETE'), false);
+  assert.equal(isGoldenISetupWarningOnly(store({ id: 'GOLDEN_I', code: 'NOIDA_29' }), 'SETUP_INCOMPLETE'), false);
+
+  const invalidPriceSnapshot = buildPublicMenuAvailabilitySnapshot({
+    store: store(),
+    finishedGoods: [{ ...finishedGoods[0], salePrice: 0 }] as any,
+    storeStock: [],
+  });
+  assert.equal(invalidPriceSnapshot.items[setupIncompleteCodes[0]].available, false);
+  assert.equal(invalidPriceSnapshot.items[setupIncompleteCodes[0]].publicStatus, 'SETUP_INCOMPLETE');
 }
 
 console.log('Customer ordering state tests passed.');

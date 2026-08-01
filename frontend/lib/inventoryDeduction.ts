@@ -1,6 +1,7 @@
 import { collection, doc, serverTimestamp, Transaction } from 'firebase/firestore';
 import { db } from './firebase';
 import { isPackagingComponentApplicable } from './packagingApplicability';
+import { isGoldenISalesFirstOrderingStore } from './publicMenuAvailability';
 import { AddOnSelection, OrderType, StaffProfile, Store } from '../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
 
@@ -319,7 +320,7 @@ function effectiveInventoryPolicy(store: Store): InventoryPolicy {
   const policy = String((store as Store & Record<string, unknown>).inventoryPolicy || '').trim().toUpperCase();
   if (policy === 'ALLOW_NEGATIVE_DEFER_BOM') return 'ALLOW_NEGATIVE_DEFER_BOM';
   if (policy === 'ALLOW_NEGATIVE') return 'ALLOW_NEGATIVE';
-  if (store.id === 'GOLDEN_I' || store.code === 'GOLDEN_I') return 'ALLOW_NEGATIVE_DEFER_BOM';
+  if (isGoldenISalesFirstOrderingStore(store)) return 'ALLOW_NEGATIVE_DEFER_BOM';
   return 'STRICT';
 }
 

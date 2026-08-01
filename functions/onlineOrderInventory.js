@@ -54,12 +54,21 @@ function stockId(storeId, type, code) {
   return `${storeId}_${type}_${code}`;
 }
 
+function isGoldenISalesFirstOrderingStore(store) {
+  return store?.id === 'GOLDEN_I'
+    && String(store.code || store.storeCode || '').trim() === 'GOLDEN_I';
+}
+
 function inventoryPolicy(store) {
   const configured = String(store.inventoryPolicy || '').trim().toUpperCase();
   if (['STRICT', 'ALLOW_NEGATIVE', 'ALLOW_NEGATIVE_DEFER_BOM'].includes(configured)) return configured;
-  return store.id === 'GOLDEN_I' || store.code === 'GOLDEN_I'
+  return isGoldenISalesFirstOrderingStore(store)
     ? 'ALLOW_NEGATIVE_DEFER_BOM'
     : 'STRICT';
+}
+
+function shouldRequireAvailableStock(store, requested) {
+  return requested === true && !isGoldenISalesFirstOrderingStore(store);
 }
 
 function usesBom(item) {
@@ -505,7 +514,7 @@ async function planOnlineOrderInventory({
     if (!grouped.has(movement.stock.id)) grouped.set(movement.stock.id, []);
     grouped.get(movement.stock.id).push(movement);
   }
-  if (requireAvailableStock) {
+  if (shouldRequireAvailableStock(store, requireAvailableStock)) {
     blockers.push(...insufficientStockBlockers(grouped, store));
     if (blockers.length > 0) {
       return {
@@ -610,7 +619,9 @@ module.exports = {
   convert,
   insufficientStockBlockers,
   inventoryPolicy,
+  isGoldenISalesFirstOrderingStore,
   packagingApplies,
   planOnlineOrderInventory,
+  shouldRequireAvailableStock,
   uom,
 };

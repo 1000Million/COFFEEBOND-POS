@@ -59,6 +59,7 @@ import {
   prepWindowLabel,
   storeOnlineMessage,
 } from '../../lib/customerOrderingState';
+import { isGoldenISetupWarningOnly } from '../../lib/publicMenuAvailability';
 import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
 
@@ -745,7 +746,9 @@ export default function CustomerOrder() {
     return storeItems.reduce<Record<string, ItemAvailability>>((acc, item) => {
       const baseAvailability = getItemAvailability(item, selectedStoreId);
       const publicItem = publicAvailability?.items?.[item.code];
-      if (baseAvailability.available && publicItem?.available === false) {
+      const setupWarningOnly = selectedStore
+        && isGoldenISetupWarningOnly(selectedStore, publicItem?.publicStatus);
+      if (baseAvailability.available && publicItem?.available === false && !setupWarningOnly) {
         acc[item.code] = {
           available: false,
           reason: publicItem.publicMessage || 'Currently unavailable',
@@ -756,7 +759,7 @@ export default function CustomerOrder() {
       }
       return acc;
     }, {});
-  }, [storeItems, selectedStoreId, publicAvailability]);
+  }, [storeItems, selectedStore, selectedStoreId, publicAvailability]);
 
   useEffect(() => {
     const draft = pendingCheckoutDraftRef.current;
