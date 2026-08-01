@@ -5,11 +5,14 @@ const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const {
   ALL_MODULE_IDS,
   BAKED_BY_BOND_51_STORE_ID,
+  GOLDEN_I_STORE_ID,
+  LEGACY_MIGRATED_ONBOARDING_MODE,
   NEVER_COPY_COLLECTIONS,
   READINESS_STEP_LABELS,
   RECOMMENDED_MODULE_IDS,
   buildDraftStorePayload,
   buildSafeJobRecord,
+  isLegacyMigratedStore,
   isValidJobId,
   normalizeStoreCode,
   normalizeStoreName,
@@ -1331,6 +1334,64 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const action = cleanText(data.action || 'UPDATE', 40);
     const timestamp = FieldValue.serverTimestamp();
 
+    if (action === 'CLASSIFY_LEGACY_MIGRATED') {
+      const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
+      const storeCode = cleanText(store.code || store.storeCode, 80).toUpperCase();
+      if (storeId !== GOLDEN_I_STORE_ID || storeCode !== GOLDEN_I_STORE_ID) {
+        fail('failed-precondition', 'Legacy migration compatibility is restricted to stores/GOLDEN_I.');
+      }
+      if (store.provisioningJobId || store.sourceTemplateStoreId || store.status === 'DRAFT' || store.status === 'INACTIVE') {
+        fail('failed-precondition', 'A newly provisioned, Draft, or inactive store cannot use legacy migration compatibility.');
+      }
+      if (store.isActive !== true || store.onlineOrderingEnabled !== true) {
+        fail('failed-precondition', 'Golden I must retain its existing active POS and online-ordering evidence before classification.');
+      }
+      if (isLegacyMigratedStore(store)) {
+        return {
+          storeId,
+          onboardingMode: LEGACY_MIGRATED_ONBOARDING_MODE,
+          auditId: store.legacyMigrationAuditId || null,
+          idempotent: true,
+        };
+      }
+
+      const [snapshot, menuEvidence, orderEvidence] = await Promise.all([
+        db.collection('publicMenuAvailability').doc(GOLDEN_I_STORE_ID).get(),
+        db.collection('finishedGoods').where('availableStoreIds', 'array-contains', GOLDEN_I_STORE_ID).limit(1).get(),
+        db.collection('orders').where('storeId', '==', GOLDEN_I_STORE_ID).limit(1).get(),
+      ]);
+      if (!snapshot.exists || menuEvidence.empty || orderEvidence.empty) {
+        fail('failed-precondition', 'Golden I legacy classification requires an existing public menu and historical operating evidence.');
+      }
+
+      const auditRef = db.collection('storeProvisioningAudit').doc();
+      const batch = db.batch();
+      batch.update(storeRef, {
+        onboardingMode: LEGACY_MIGRATED_ONBOARDING_MODE,
+        legacyMigratedAt: timestamp,
+        legacyMigratedBy: adminUser.uid,
+        legacyMigrationAuditId: auditRef.id,
+        updatedAt: timestamp,
+      });
+      batch.set(auditRef, {
+        storeId,
+        action: 'CLASSIFY_LEGACY_MIGRATED_STORE',
+        actorUid: adminUser.uid,
+        actorName: adminUser.name,
+        previousOnboardingMode: store.onboardingMode || null,
+        openingStockReadinessChanged: false,
+        preservedExistingOperations: true,
+        createdAt: timestamp,
+      });
+      await batch.commit();
+      return {
+        storeId,
+        onboardingMode: LEGACY_MIGRATED_ONBOARDING_MODE,
+        auditId: auditRef.id,
+        idempotent: false,
+      };
+    }
+
     if (action === 'DEACTIVATE') {
       await storeRef.update({
         status: 'INACTIVE',
@@ -1636,6 +1697,45 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const storeSnap = await storeRef.get();
     if (!storeSnap.exists) fail('not-found', 'Location not found.');
     const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
+    if (isLegacyMigratedStore(store)) {
+      if (store.isActive === true && store.status === 'ACTIVE' && store.posEnabled === true) {
+        return {
+          storeId,
+          status: 'ACTIVE',
+          posEnabled: true,
+          customerOrderingEnabled: store.customerOrderingEnabled === true,
+          idempotent: true,
+        };
+      }
+      const counts = await loadReadinessCounts(db, store);
+      const readiness = readinessResult(store, counts);
+      if (!readiness.posReady) {
+        fail('failed-precondition', `Migrated location is not ready: ${readiness.friendlyPosBlockingSteps.join(', ')}`);
+      }
+      const timestamp = FieldValue.serverTimestamp();
+      await storeRef.update({
+        status: 'ACTIVE',
+        operationalStatus: 'ACTIVE',
+        isActive: true,
+        posEnabled: true,
+        updatedAt: timestamp,
+        updatedBy: adminUser.uid,
+      });
+      await writeProvisioningAudit(db, admin, {
+        storeId,
+        action: 'NORMALIZE_LEGACY_MIGRATED_POS',
+        actorUid: adminUser.uid,
+        actorName: adminUser.name,
+        readiness,
+      });
+      return {
+        storeId,
+        status: 'ACTIVE',
+        posEnabled: true,
+        customerOrderingEnabled: store.customerOrderingEnabled === true,
+        readiness,
+      };
+    }
     if (store.isActive === true && store.status === 'ACTIVE') {
       return {
         storeId,
@@ -1699,6 +1799,17 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
       const snapshot = await db.collection('publicMenuAvailability').doc(store.code || store.id).get();
       if (!readiness.customerOrderingReady || !snapshot.exists) {
         fail('failed-precondition', 'Customer ordering requires active POS, completed customer-ordering testing, and a public menu snapshot.');
+      }
+      if (isLegacyMigratedStore(store)) {
+        const snapshotData = snapshot.data() || {};
+        const menuItems = snapshotData.menuItems && typeof snapshotData.menuItems === 'object' ? snapshotData.menuItems : {};
+        const availabilityItems = snapshotData.items && typeof snapshotData.items === 'object' ? snapshotData.items : {};
+        const setupIncompletePublished = Object.keys(menuItems).filter((itemCode) => (
+          availabilityItems[itemCode]?.publicStatus === 'SETUP_INCOMPLETE'
+        ));
+        if (setupIncompletePublished.length > 0) {
+          fail('failed-precondition', 'Refresh the Golden I public menu before enabling customer ordering; setup-incomplete products must remain unpublished.');
+        }
       }
     }
     const timestamp = FieldValue.serverTimestamp();

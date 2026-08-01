@@ -15,6 +15,7 @@ const posSource = fs.readFileSync(new URL('../frontend/pages/pos/POSHome.tsx', i
 const runningOrdersSource = fs.readFileSync(new URL('../frontend/pages/pos/RunningOrders.tsx', import.meta.url), 'utf8');
 const runningOrdersVisibilitySource = fs.readFileSync(new URL('../frontend/lib/runningOrdersVisibility.ts', import.meta.url), 'utf8');
 const reportingSource = fs.readFileSync(new URL('../functions/reportingCore.mjs', import.meta.url), 'utf8');
+const publicMenuRefreshSource = fs.readFileSync(new URL('./refresh-public-menu-availability.mjs', import.meta.url), 'utf8');
 const rules = fs.readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
 
 const checks = [];
@@ -877,6 +878,78 @@ test('56. Running Orders exposes only the approved Draft setup-test order to act
   assert.match(runningOrdersSource, /filter\(order => isOrderVisibleInRunningOrders\(order, store, staffProfile\)\)/);
   assert.match(runningOrdersSource, />\s*SETUP TEST\s*</);
   assert.match(runningOrdersSource, /This order is not available for voiding in Running Orders\./);
+});
+
+test('57. Legacy migration compatibility is exact to classified Golden I and preserves recorded readiness truth', () => {
+  const counts = {
+    menuProductCount: 80,
+    inventoryRowCount: 33,
+    staffCount: 3,
+    invalidProductAvailabilityCount: 0,
+    invalidAddOnReferenceCount: 0,
+    invalidKotRoutingCount: 0,
+  };
+  const golden = {
+    id: 'GOLDEN_I',
+    code: 'GOLDEN_I',
+    storeCode: 'GOLDEN_I',
+    onboardingMode: 'LEGACY_MIGRATED',
+    name: 'Golden I',
+    address: 'Existing full legacy address',
+    isActive: true,
+    status: 'ACTIVE',
+    posEnabled: true,
+    onlineOrderingEnabled: true,
+    gstRegistered: false,
+    readiness: {},
+  };
+  const migrated = policy.readinessResult(golden, counts);
+  assert.equal(policy.isLegacyMigratedStore(golden), true);
+  assert.equal(migrated.posReady, true);
+  assert.equal(migrated.customerOrderingReady, true);
+  assert.equal(migrated.checks.openingStockReviewed, false);
+  assert.equal(migrated.checks.posTestCompleted, false);
+  assert.equal(migrated.checks.customerOrderingTestCompleted, false);
+  assert.deepEqual(migrated.compatibilityExemptions, ['openingStockReviewed', 'posTestCompleted']);
+  assert.equal(migrated.customerOrderingTestExempt, true);
+  assert.ok(migrated.warnings.some((warning) => warning.includes('Opening stock')));
+  assert.ok(migrated.warnings.some((warning) => warning.includes('hours')));
+
+  const missingClassification = policy.readinessResult({ ...golden, onboardingMode: undefined }, counts);
+  assert.equal(missingClassification.posReady, false);
+  assert.equal(missingClassification.customerOrderingReady, false);
+  const arbitraryStore = policy.readinessResult({ ...golden, id: 'UDAY_PARK', code: 'UDAY_PARK', storeCode: 'UDAY_PARK' }, counts);
+  assert.equal(policy.isLegacyMigratedStore({ ...golden, id: 'UDAY_PARK', code: 'UDAY_PARK' }), false);
+  assert.equal(arbitraryStore.posReady, false);
+  assert.equal(arbitraryStore.customerOrderingReady, false);
+});
+
+test('58. Migration action is Admin-only, evidence-gated, audited, idempotent, and cannot alter Baked or readiness', () => {
+  const draft = policy.buildDraftStorePayload({
+    details: validLocation(),
+    selectedModules: [],
+    createdBy: 'admin-uid',
+    provisioningJobId: 'store_123456789abc',
+    timestamp: 'SERVER_TIMESTAMP',
+  });
+  assert.equal(draft.onboardingMode, 'PROVISIONED');
+  assert.match(provisioningSource, /action === 'CLASSIFY_LEGACY_MIGRATED'/);
+  assert.match(provisioningSource, /storeId !== GOLDEN_I_STORE_ID \|\| storeCode !== GOLDEN_I_STORE_ID/);
+  assert.match(provisioningSource, /store\.provisioningJobId \|\| store\.sourceTemplateStoreId/);
+  assert.match(provisioningSource, /publicMenuAvailability/);
+  assert.match(provisioningSource, /CLASSIFY_LEGACY_MIGRATED_STORE/);
+  assert.match(provisioningSource, /legacyMigrationAuditId/);
+  assert.match(provisioningSource, /isLegacyMigratedStore\(store\)/);
+  assert.match(provisioningSource, /NORMALIZE_LEGACY_MIGRATED_POS/);
+  assert.match(provisioningSource, /setup-incomplete products must remain unpublished/);
+  const classificationBlock = provisioningSource.match(/if \(action === 'CLASSIFY_LEGACY_MIGRATED'\) \{([\s\S]*?)\n    \}/)?.[1] || '';
+  assert.doesNotMatch(classificationBlock, /readiness\s*:/);
+  assert.doesNotMatch(classificationBlock, /openingStockConfirmed/);
+  assert.match(locationSource, /Classify migrated legacy store/);
+  assert.match(locationSource, /Normalize staff POS/);
+  assert.match(locationSource, /Migrated legacy-store warnings/);
+  assert.match(publicMenuRefreshSource, /isLegacyMigratedGoldenI/);
+  assert.match(publicMenuRefreshSource, /availability\.publicStatus === 'SETUP_INCOMPLETE'/);
 });
 
 console.log(`\n${checks.length} Location Management checks passed.`);

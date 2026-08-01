@@ -118,6 +118,12 @@ function isStoreAssigned(item: FinishedGood, storeId: string): boolean {
   return storeIds.length === 0 || storeIds.includes(storeId);
 }
 
+function isLegacyMigratedGoldenI(store: Store): boolean {
+  return store.id === 'GOLDEN_I'
+    && (store.code || store.storeCode) === 'GOLDEN_I'
+    && store.onboardingMode === 'LEGACY_MIGRATED';
+}
+
 function isActiveSellable(item: FinishedGood, storeId: string): boolean {
   return item.isActive !== false
     && item.isSellable !== false
@@ -385,11 +391,18 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
     .filter((item) => item.isActive !== false && item.isSellable !== false && isStoreAssigned(item, store.id))
     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
-  const items = visibleItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
+  const evaluatedItems = visibleItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
     acc[item.code] = evaluateItemAvailability(store, item, rawByCode, prepByCode, finishedByCode);
     return acc;
   }, {});
-  const menuItems = visibleItems.reduce<Record<string, PublicMenuDisplayItem>>((acc, item) => {
+  const publishedItems = isLegacyMigratedGoldenI(store)
+    ? visibleItems.filter(item => evaluatedItems[item.code]?.publicStatus !== 'SETUP_INCOMPLETE')
+    : visibleItems;
+  const items = publishedItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
+    acc[item.code] = evaluatedItems[item.code];
+    return acc;
+  }, {});
+  const menuItems = publishedItems.reduce<Record<string, PublicMenuDisplayItem>>((acc, item) => {
     acc[item.code] = publicDisplayItem(store, item);
     return acc;
   }, {});

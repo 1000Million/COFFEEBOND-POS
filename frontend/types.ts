@@ -43,6 +43,7 @@ export interface Store {
   phone?: string;
   email?: string;
   status?: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
+  onboardingMode?: "PROVISIONED" | "LEGACY_MIGRATED";
   isActive: boolean;
   posEnabled?: boolean;
   internalPosTestEnabled?: boolean;
@@ -76,6 +77,7 @@ export interface Store {
   customerOrderingEnabled?: boolean;
   publicOrderingEnabled?: boolean;
   acceptingOrders?: boolean;
+  isAcceptingOrders?: boolean;
   onlineOrderingPaused?: boolean;
   estimatedPrepMinutes?: number;
   onlineOrderingMessage?: string;

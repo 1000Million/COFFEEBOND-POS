@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { deriveCustomerOrderingState } from '../frontend/lib/customerOrderingState';
+import { buildPublicMenuAvailabilitySnapshot } from '../frontend/lib/publicMenuAvailability';
 import { Store } from '../frontend/types';
 
 function store(overrides: Partial<Store> = {}): Store {
@@ -112,6 +113,60 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
   assert.equal(state.statusLabel, 'Menu updating');
   assert.match(state.message, /menu is being refreshed/i);
   assertNoAcceptingUnavailableContradiction(state);
+}
+
+{
+  const finishedGoods = [
+    {
+      id: 'SAFE_DRINK',
+      code: 'SAFE_DRINK',
+      name: 'Safe Drink',
+      salePrice: 100,
+      prepStation: 'BARISTA',
+      itemType: 'NO_STOCK',
+      productionMode: 'NO_STOCK',
+      posCategoryCode: 'DRINKS',
+      posCategoryName: 'Drinks',
+      availableStoreIds: ['GOLDEN_I'],
+      isActive: true,
+      isSellable: true,
+      isAvailable: true,
+    },
+    {
+      id: 'MISSING_BOM',
+      code: 'MISSING_BOM',
+      name: 'Missing BOM',
+      salePrice: 200,
+      prepStation: 'KITCHEN',
+      itemType: 'MADE_TO_ORDER',
+      productionMode: 'MADE_TO_ORDER',
+      bom: [],
+      posCategoryCode: 'FOOD',
+      posCategoryName: 'Food',
+      availableStoreIds: ['GOLDEN_I'],
+      isActive: true,
+      isSellable: true,
+      isAvailable: true,
+    },
+  ];
+  const migratedSnapshot = buildPublicMenuAvailabilitySnapshot({
+    store: store({ onboardingMode: 'LEGACY_MIGRATED' }),
+    finishedGoods: finishedGoods as any,
+    storeStock: [],
+  });
+  assert.deepEqual(Object.keys(migratedSnapshot.menuItems), ['SAFE_DRINK']);
+  assert.deepEqual(Object.keys(migratedSnapshot.items), ['SAFE_DRINK']);
+  assert.equal(migratedSnapshot.itemCount, 1);
+  assert.equal(migratedSnapshot.unavailableCount, 0);
+
+  const strictSnapshot = buildPublicMenuAvailabilitySnapshot({
+    store: store({ onboardingMode: 'PROVISIONED' }),
+    finishedGoods: finishedGoods as any,
+    storeStock: [],
+  });
+  assert.deepEqual(Object.keys(strictSnapshot.menuItems), ['MISSING_BOM', 'SAFE_DRINK']);
+  assert.equal(strictSnapshot.items.MISSING_BOM.publicStatus, 'SETUP_INCOMPLETE');
+  assert.equal(strictSnapshot.itemCount, 2);
 }
 
 console.log('Customer ordering state tests passed.');

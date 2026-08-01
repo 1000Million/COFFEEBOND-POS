@@ -69,6 +69,12 @@ function isAssignedToStore(item, storeId) {
   return storeIdsFor(item).includes(storeId);
 }
 
+function isLegacyMigratedGoldenI(store) {
+  return store.id === 'GOLDEN_I'
+    && String(store.data.code || store.data.storeCode || '') === 'GOLDEN_I'
+    && store.data.onboardingMode === 'LEGACY_MIGRATED';
+}
+
 function isActiveSellableAvailable(item, storeId) {
   return item.isActive !== false
     && item.isSellable !== false
@@ -82,6 +88,14 @@ function isPubliclyDisplayable(item, storeId) {
     && item.customerOrderingEnabled !== false
     && toNumber(item.salePrice) > 0
     && ['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation);
+}
+
+function hasMissingRequiredBom(item) {
+  const usesBom = item.itemType === 'MADE_TO_ORDER'
+    || item.productionMode === 'MADE_TO_ORDER'
+    || item.productionMode === 'ASSEMBLED_TO_ORDER'
+    || (item.itemType === 'DIRECT_STOCK' && Array.isArray(item.bom) && item.bom.length > 0);
+  return usesBom && (!Array.isArray(item.bom) || item.bom.length === 0);
 }
 
 function sanitizedDisplayItem(store, item) {
@@ -200,16 +214,20 @@ function buildSnapshot({ targetStore, sourceSnapshot, finishedGoods, addOnGroups
 
   const items = {};
   const menuItems = {};
+  const excludeSetupIncomplete = isLegacyMigratedGoldenI(targetStore);
 
   for (const item of visibleItems) {
     const itemCode = item.data.code || item.id;
+    let availability;
     if (targetStore.data.onlineOrderingEnabled === false) {
-      items[itemCode] = unavailableItem(itemCode, 'STORE_DISABLED', 'Online ordering unavailable for this store');
+      availability = unavailableItem(itemCode, 'STORE_DISABLED', 'Online ordering unavailable for this store');
     } else if (!isPubliclyDisplayable(item.data, targetStore.id)) {
-      items[itemCode] = unavailableItem(itemCode);
+      availability = unavailableItem(itemCode);
     } else {
-      items[itemCode] = sourceAvailabilityFor(sourceSnapshot, itemCode);
+      availability = sourceAvailabilityFor(sourceSnapshot, itemCode);
     }
+    if (excludeSetupIncomplete && (availability.publicStatus === 'SETUP_INCOMPLETE' || hasMissingRequiredBom(item.data))) continue;
+    items[itemCode] = availability;
     menuItems[itemCode] = sanitizedDisplayItem(targetStore, item.data);
   }
 

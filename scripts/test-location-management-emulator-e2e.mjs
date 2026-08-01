@@ -370,9 +370,9 @@ async function movementCount(type) {
   return snapshot.size;
 }
 
-async function auditActionCount(action) {
+async function auditActionCount(action, storeId = DESTINATION_STORE_ID) {
   const snapshot = await db.collection('storeProvisioningAudit')
-    .where('storeId', '==', DESTINATION_STORE_ID)
+    .where('storeId', '==', storeId)
     .where('action', '==', action)
     .get();
   return snapshot.size;
@@ -726,6 +726,143 @@ async function run() {
   }, exceptionAdminToken, { expectError: true });
   assert.match(JSON.stringify(blockedOrdering), /Customer ordering requires active POS/);
 
+  const goldenStoreId = 'GOLDEN_I';
+  const bakedBeforeLegacyMigration = await db.collection('stores').doc(DESTINATION_STORE_ID).get();
+  const legacyBatch = db.batch();
+  legacyBatch.set(db.collection('stores').doc(goldenStoreId), {
+    id: goldenStoreId,
+    code: goldenStoreId,
+    storeCode: goldenStoreId,
+    name: 'Golden I',
+    displayName: 'Golden I',
+    address: 'Existing complete legacy address',
+    isActive: true,
+    onlineOrderingEnabled: true,
+    gstRegistered: false,
+    receiptName: 'Golden I',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  legacyBatch.set(db.collection('finishedGoods').doc('GOLDEN_SAFE_ITEM'), {
+    code: 'GOLDEN_SAFE_ITEM',
+    name: 'Golden Safe Item',
+    itemType: 'NO_STOCK',
+    productionMode: 'NO_STOCK',
+    salePrice: 100,
+    prepStation: 'BARISTA',
+    isActive: true,
+    isSellable: true,
+    isAvailable: true,
+    availableStoreIds: [goldenStoreId],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  legacyBatch.set(db.collection('storeStock').doc('GOLDEN_I_RAW_INGREDIENT_TEST'), {
+    storeId: goldenStoreId,
+    stockItemType: 'RAW_INGREDIENT',
+    stockItemCode: 'TEST',
+    stockItemName: 'Test',
+    uom: 'G',
+    openingStock: 0,
+    currentStock: 0,
+    costPerUnit: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  legacyBatch.set(db.collection('publicMenuAvailability').doc(goldenStoreId), {
+    storeId: goldenStoreId,
+    storeCode: goldenStoreId,
+    storeName: 'Golden I',
+    items: {
+      GOLDEN_SAFE_ITEM: {
+        itemCode: 'GOLDEN_SAFE_ITEM',
+        fgCode: 'GOLDEN_SAFE_ITEM',
+        available: true,
+        publicStatus: 'AVAILABLE',
+        publicMessage: 'Available',
+      },
+    },
+    menuItems: {
+      GOLDEN_SAFE_ITEM: {
+        id: 'GOLDEN_SAFE_ITEM',
+        code: 'GOLDEN_SAFE_ITEM',
+        name: 'Golden Safe Item',
+        salePrice: 100,
+        prepStation: 'BARISTA',
+        itemType: 'NO_STOCK',
+        availableStoreIds: [goldenStoreId],
+        isActive: true,
+        isSellable: true,
+        isAvailable: true,
+      },
+    },
+    itemCount: 1,
+    availableCount: 1,
+    unavailableCount: 0,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  legacyBatch.set(db.collection('orders').doc('GOLDEN_LEGACY_EVIDENCE'), {
+    storeId: goldenStoreId,
+    orderNumber: 'GOLDEN-LEGACY-EVIDENCE',
+    status: 'COMPLETED',
+    totalAmount: 100,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  for (const uid of [ADMIN_UID, MANAGER_UID, CASHIER_UID]) {
+    legacyBatch.update(db.collection('users').doc(uid), {
+      assignedStoreIds: admin.firestore.FieldValue.arrayUnion(goldenStoreId),
+      storeIds: admin.firestore.FieldValue.arrayUnion(goldenStoreId),
+      updatedAt: timestamp,
+    });
+  }
+  await legacyBatch.commit();
+
+  const cashierLegacyAttempt = await callFunction('updateStoreConfiguration', {
+    storeId: goldenStoreId,
+    action: 'CLASSIFY_LEGACY_MIGRATED',
+  }, cashierToken, { expectError: true });
+  assert.match(JSON.stringify(cashierLegacyAttempt), /Only an active Admin can manage locations/);
+  const bakedLegacyAttempt = await callFunction('updateStoreConfiguration', {
+    storeId: DESTINATION_STORE_ID,
+    action: 'CLASSIFY_LEGACY_MIGRATED',
+  }, adminToken, { expectError: true });
+  assert.match(JSON.stringify(bakedLegacyAttempt), /restricted to stores\/GOLDEN_I/);
+
+  const migrated = await callFunction('updateStoreConfiguration', {
+    storeId: goldenStoreId,
+    action: 'CLASSIFY_LEGACY_MIGRATED',
+  }, adminToken);
+  assert.equal(migrated.onboardingMode, 'LEGACY_MIGRATED');
+  assert.equal(migrated.idempotent, false);
+  assert.equal(await auditActionCount('CLASSIFY_LEGACY_MIGRATED_STORE', goldenStoreId), 1);
+  const migratedAgain = await callFunction('updateStoreConfiguration', {
+    storeId: goldenStoreId,
+    action: 'CLASSIFY_LEGACY_MIGRATED',
+  }, adminToken);
+  assert.equal(migratedAgain.idempotent, true);
+  assert.equal(migratedAgain.auditId, migrated.auditId);
+  assert.equal(await auditActionCount('CLASSIFY_LEGACY_MIGRATED_STORE', goldenStoreId), 1);
+
+  const goldenActivation = await callFunction('activateStore', { storeId: goldenStoreId }, adminToken);
+  assert.equal(goldenActivation.status, 'ACTIVE');
+  assert.equal(goldenActivation.posEnabled, true);
+  const goldenAfterActivation = await db.collection('stores').doc(goldenStoreId).get();
+  assert.equal(goldenAfterActivation.data().onlineOrderingEnabled, true);
+  assert.equal(goldenAfterActivation.data().readiness, undefined);
+  const goldenOrdering = await callFunction('setStoreCustomerOrdering', { storeId: goldenStoreId, enabled: true }, adminToken);
+  assert.equal(goldenOrdering.customerOrderingEnabled, true);
+  const goldenFinal = await db.collection('stores').doc(goldenStoreId).get();
+  for (const field of ['isActive', 'posEnabled', 'customerOrderingEnabled', 'onlineOrderingEnabled', 'publicOrderingEnabled', 'acceptingOrders', 'isAcceptingOrders']) {
+    assert.equal(goldenFinal.data()[field], true, `${field} should be true for migrated Golden I`);
+  }
+  assert.equal(goldenFinal.data().readiness, undefined);
+  assert.equal(goldenFinal.data().openingStockConfirmed, undefined);
+  const bakedAfterLegacyMigration = await db.collection('stores').doc(DESTINATION_STORE_ID).get();
+  assert.equal(bakedAfterLegacyMigration.data().onboardingMode, bakedBeforeLegacyMigration.data().onboardingMode);
+  assertSameTimestamp(bakedAfterLegacyMigration.data().updatedAt, bakedBeforeLegacyMigration.data().updatedAt, 'Baked updatedAt');
+
   console.log('PASS Location Management emulator E2E');
   console.log(JSON.stringify({
     projectId: PROJECT_ID,
@@ -748,6 +885,9 @@ async function run() {
       'stock deduction and void reversal evidence',
       'activation',
       'customer ordering remains disabled',
+      'Golden I legacy migration classification is exact, audited and idempotent',
+      'Golden I POS and customer flags normalize without rewriting readiness',
+      'Baked cannot use or be changed by Golden I compatibility',
       'source store unchanged',
     ],
   }, null, 2));

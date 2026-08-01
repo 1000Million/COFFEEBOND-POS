@@ -305,6 +305,51 @@ function isBakedByBond51(store: Store): boolean {
   return [store.id, store.code, store.storeCode].some((value) => String(value || '') === BAKED_BY_BOND_51_STORE_ID);
 }
 
+function isGoldenI(store: Store): boolean {
+  return store.id === 'GOLDEN_I' && (store.code === 'GOLDEN_I' || store.storeCode === 'GOLDEN_I');
+}
+
+function isLegacyMigratedGoldenI(store: Store): boolean {
+  return isGoldenI(store) && store.onboardingMode === 'LEGACY_MIGRATED';
+}
+
+function customerOrderingFullyEnabled(store: Store): boolean {
+  return store.customerOrderingEnabled === true
+    && store.onlineOrderingEnabled === true
+    && store.publicOrderingEnabled === true
+    && store.acceptingOrders === true
+    && store.isAcceptingOrders === true;
+}
+
+function customerOrderingOperational(store: Store): boolean {
+  return isLegacyMigratedGoldenI(store)
+    ? customerOrderingFullyEnabled(store)
+    : store.customerOrderingEnabled === true || store.onlineOrderingEnabled === true;
+}
+
+function legacyMigrationWarnings(store: Store): string[] {
+  if (!isLegacyMigratedGoldenI(store)) return [];
+  const warnings: string[] = [];
+  if (!store.city || !store.state || !/^[1-9][0-9]{5}$/.test(String(store.pinCode || ''))) {
+    warnings.push('Structured city, state or PIN details are not recorded; the existing full address remains in use.');
+  }
+  if (store.readiness?.openingStockReviewed !== true && store.openingStockConfirmed !== true) {
+    warnings.push('Opening stock has not been reviewed in the new onboarding workflow.');
+  }
+  if (store.readiness?.posTestCompleted !== true && store.posTestCompleted !== true) {
+    warnings.push('The new internal POS setup test is not recorded for this migrated store.');
+  }
+  if (store.readiness?.customerOrderingTestCompleted !== true) {
+    warnings.push('The new customer-ordering setup test is not recorded for this migrated store.');
+  }
+  const legacyRecord = store as Store & Record<string, unknown>;
+  if (!legacyRecord.openingHours && !legacyRecord.orderingHours) warnings.push('Store and ordering hours are not configured.');
+  if (!(store.legalName || store.legalEntityName) || !store.stateName || !store.stateCode || !legacyRecord.receiptSettings) {
+    warnings.push('Legal or receipt fields are incomplete; existing tax fallback remains in effect.');
+  }
+  return warnings;
+}
+
 function activePosLaunchException(store: Store): boolean {
   const exception = store.posLaunchException;
   return exception?.enabled === true && timestampMillis(exception.expiresAt) > Date.now();
@@ -975,6 +1020,22 @@ export default function LocationManagement() {
     }
   };
 
+  const handleClassifyLegacyGoldenI = async (store: Store) => {
+    if (!isGoldenI(store) || isLegacyMigratedGoldenI(store)) return;
+    if (!window.confirm('Classify the existing Golden I operation as a migrated legacy store? This does not change stock, readiness, menu, GST, hours or ordering flags.')) return;
+    setActioning(`legacy-migration:${store.id}`);
+    setError('');
+    try {
+      await updateStoreConfigurationCallable({ storeId: store.id, action: 'CLASSIFY_LEGACY_MIGRATED' });
+      setMessage('Golden I classified as a migrated legacy store. Review warnings before normalizing POS and customer ordering.');
+      await loadLocations();
+    } catch (err: any) {
+      setError(err?.message || 'Could not classify Golden I as a migrated legacy store.');
+    } finally {
+      setActioning('');
+    }
+  };
+
   const handleEnablePosLaunchException = async (summary: LocationSummary) => {
     const store = summary.store;
     if (!isBakedByBond51(store)) return;
@@ -1212,7 +1273,7 @@ export default function LocationManagement() {
                         <p className="mt-2 text-xs font-bold text-neutral-500">{progress.complete} of {progress.total} completed</p>
                       </td>
                       <td className="px-3 py-4 font-bold">{(store.posEnabled ?? store.isActive) ? 'Enabled' : 'Disabled'}</td>
-                      <td className="px-3 py-4 font-bold">{store.customerOrderingEnabled || store.onlineOrderingEnabled ? 'Accepting' : 'Disabled'}</td>
+                      <td className="px-3 py-4 font-bold">{customerOrderingOperational(store) ? 'Accepting' : 'Disabled'}</td>
                       <td className="px-3 py-4 font-mono text-xs">{store.inventoryMode || 'FINISHED_GOODS (effective)'}</td>
                       <td className="px-3 py-4">{summary.gstLabel}</td>
                       <td className="px-3 py-4 font-black">{summary.staffCount}</td>
@@ -1269,6 +1330,27 @@ export default function LocationManagement() {
                 </div>
               ))}
             </div>
+            {isGoldenI(selectedSummary.store) && !isLegacyMigratedGoldenI(selectedSummary.store) && (
+              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <p className="font-black">Existing legacy location</p>
+                <p className="mt-1 text-xs font-bold">Golden I predates the new-location onboarding workflow. Classify it explicitly before normalizing its operational flags.</p>
+                <button
+                  onClick={() => handleClassifyLegacyGoldenI(selectedSummary.store)}
+                  disabled={actioning === `legacy-migration:${selectedSummary.store.id}`}
+                  className="mt-3 h-9 rounded-lg border border-amber-300 bg-white px-3 text-xs font-black text-amber-900 disabled:opacity-50"
+                >
+                  Classify migrated legacy store
+                </button>
+              </div>
+            )}
+            {isLegacyMigratedGoldenI(selectedSummary.store) && (
+              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <p className="font-black">Migrated legacy-store warnings</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs font-bold">
+                  {legacyMigrationWarnings(selectedSummary.store).map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              </div>
+            )}
             {isBakedByBond51(selectedSummary.store) && openingStockPending(selectedSummary.store) && (
               <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1383,18 +1465,20 @@ export default function LocationManagement() {
               POS activation never enables customer ordering. Customer ordering requires its own completed test and public menu snapshot.
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              {!selectedSummary.store.isActive && (
-                <button onClick={() => handleActivate(selectedSummary.store.id)} className="h-11 flex-1 rounded-lg bg-[#3e2723] font-black text-white">Activate POS</button>
+              {(!selectedSummary.store.isActive || (isLegacyMigratedGoldenI(selectedSummary.store) && selectedSummary.store.posEnabled !== true)) && (
+                <button onClick={() => handleActivate(selectedSummary.store.id)} className="h-11 flex-1 rounded-lg bg-[#3e2723] font-black text-white">
+                  {isLegacyMigratedGoldenI(selectedSummary.store) ? 'Normalize staff POS' : 'Activate POS'}
+                </button>
               )}
-              {statusFor(selectedSummary.store) === 'ACTIVE' && (
+              {statusFor(selectedSummary.store) === 'ACTIVE' && (!isLegacyMigratedGoldenI(selectedSummary.store) || selectedSummary.store.posEnabled === true) && (
                 <button
                   onClick={() => toggleCustomerOrdering(
                     selectedSummary.store,
-                    !(selectedSummary.store.customerOrderingEnabled || selectedSummary.store.onlineOrderingEnabled),
+                    !customerOrderingOperational(selectedSummary.store),
                   )}
                   className="h-11 flex-1 rounded-lg border border-[#5c4033] font-black text-[#5c4033]"
                 >
-                  {selectedSummary.store.customerOrderingEnabled || selectedSummary.store.onlineOrderingEnabled ? 'Pause Customer Ordering' : 'Enable Customer Ordering'}
+                  {customerOrderingOperational(selectedSummary.store) ? 'Pause Customer Ordering' : 'Enable Customer Ordering'}
                 </button>
               )}
             </div>

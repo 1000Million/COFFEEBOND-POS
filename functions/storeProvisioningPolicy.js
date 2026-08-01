@@ -5,6 +5,9 @@ const { createHash } = require('node:crypto');
 const STORE_CODE_PATTERN = /^[A-Z0-9_]+$/;
 const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{12,120}$/;
 const BAKED_BY_BOND_51_STORE_ID = 'BAKED_BY_BOND_51';
+const GOLDEN_I_STORE_ID = 'GOLDEN_I';
+const PROVISIONED_ONBOARDING_MODE = 'PROVISIONED';
+const LEGACY_MIGRATED_ONBOARDING_MODE = 'LEGACY_MIGRATED';
 
 const MODULES = Object.freeze({
   OPERATING: {
@@ -166,6 +169,15 @@ const NEVER_COPY_COLLECTIONS = Object.freeze([
   'productImageAudit',
   'menuImageFiles',
 ]);
+
+function storeIdentity(store = {}) {
+  return text(store.id || store.code || store.storeCode, 80).toUpperCase();
+}
+
+function isLegacyMigratedStore(store = {}) {
+  return storeIdentity(store) === GOLDEN_I_STORE_ID
+    && store.onboardingMode === LEGACY_MIGRATED_ONBOARDING_MODE;
+}
 
 function text(value, maxLength = 200) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
@@ -379,6 +391,7 @@ function buildDraftStorePayload({
     receiptFooter,
     timezone: details.timezone,
     inventoryMode: 'FINISHED_GOODS',
+    onboardingMode: PROVISIONED_ONBOARDING_MODE,
     status: 'DRAFT',
     isActive: false,
     posEnabled: false,
@@ -406,7 +419,8 @@ function buildDraftStorePayload({
 
 function readinessResult(store = {}, counts = {}) {
   const configured = store.readiness && typeof store.readiness === 'object' ? store.readiness : {};
-  const basicDetailsComplete = Boolean(
+  const legacyMigrated = isLegacyMigratedStore(store);
+  const strictBasicDetailsComplete = Boolean(
     text(store.name || store.displayName)
     && text(store.code || store.storeCode)
     && text(store.address)
@@ -414,6 +428,9 @@ function readinessResult(store = {}, counts = {}) {
     && text(store.state)
     && /^[1-9][0-9]{5}$/.test(text(store.pinCode)),
   );
+  const basicDetailsComplete = legacyMigrated
+    ? Boolean(text(store.name || store.displayName) && text(store.code || store.storeCode) && text(store.address))
+    : strictBasicDetailsComplete;
   const gstRegistered = store.gstRegistered === true;
   const legalGstReviewed = gstRegistered
     ? GSTIN_PATTERN.test(text(store.gstin, 20).toUpperCase()) && Number(store.gstRate || counts.gstRate || 0) > 0
@@ -431,22 +448,44 @@ function readinessResult(store = {}, counts = {}) {
     productAvailabilityReviewed: menuProductCount > 0 && invalidProductAvailabilityCount === 0,
     addOnsReviewed: invalidAddOnReferenceCount === 0,
     kotRoutingReviewed: invalidKotRoutingCount === 0,
-    inventoryStructureCreated: configured.inventoryStructureCreated === true
-      && inventoryRowCount > 0,
+    inventoryStructureCreated: legacyMigrated
+      ? inventoryRowCount > 0
+      : configured.inventoryStructureCreated === true && inventoryRowCount > 0,
     openingStockReviewed: configured.openingStockReviewed === true || store.openingStockConfirmed === true,
     receiptConfigurationReviewed,
     staffAssigned: Number(counts.staffCount || 0) > 0,
     posTestCompleted: configured.posTestCompleted === true || store.posTestCompleted === true,
     customerOrderingTestCompleted: configured.customerOrderingTestCompleted === true,
   };
-  const blockingKeys = READINESS_KEYS.filter((key) => resolved[key] !== true);
+  const compatibilityExemptions = legacyMigrated
+    ? ['openingStockReviewed', 'posTestCompleted']
+    : [];
+  const customerOrderingTestExempt = legacyMigrated;
+  const blockingKeys = READINESS_KEYS.filter((key) => (
+    resolved[key] !== true && !compatibilityExemptions.includes(key)
+  ));
   const openingStockPending = resolved.openingStockReviewed !== true;
   const launchExceptionActive = openingStockPending && isActivePosLaunchException(store);
   const posBlockingKeys = launchExceptionActive
     ? blockingKeys.filter((key) => key !== 'openingStockReviewed')
     : blockingKeys;
+  const warnings = [];
+  if (legacyMigrated) {
+    if (!strictBasicDetailsComplete) warnings.push('Legacy store uses a single address field; structured city, state or PIN details remain unrecorded.');
+    if (resolved.openingStockReviewed !== true) warnings.push('Opening stock has not been reviewed in the new onboarding workflow.');
+    if (resolved.posTestCompleted !== true) warnings.push('The new internal POS setup test is not recorded for this migrated store.');
+    if (resolved.customerOrderingTestCompleted !== true) warnings.push('The new customer-ordering setup test is not recorded for this migrated store.');
+    if (!store.openingHours && !store.orderingHours) warnings.push('Store and ordering hours are not configured.');
+    if (!(store.legalName || store.legalEntityName) || !store.stateName || !store.stateCode || !store.receiptSettings) {
+      warnings.push('Legal or receipt fields are incomplete; existing tax fallback remains in effect.');
+    }
+  }
   return {
     checks: resolved,
+    onboardingMode: legacyMigrated ? LEGACY_MIGRATED_ONBOARDING_MODE : PROVISIONED_ONBOARDING_MODE,
+    compatibilityExemptions,
+    customerOrderingTestExempt,
+    warnings,
     blockingKeys,
     friendlyBlockingSteps: blockingKeys.map((key) => READINESS_STEP_LABELS[key] || key),
     posBlockingKeys,
@@ -455,7 +494,7 @@ function readinessResult(store = {}, counts = {}) {
     launchExceptionActive,
     posReady: posBlockingKeys.length === 0,
     customerOrderingReady: blockingKeys.length === 0
-      && resolved.customerOrderingTestCompleted
+      && (resolved.customerOrderingTestCompleted || customerOrderingTestExempt)
       && store.status === 'ACTIVE'
       && store.posEnabled === true,
   };
@@ -528,6 +567,9 @@ module.exports = {
   CUSTOMER_ORDERING_FIELDS,
   CUSTOMER_ORDERING_READINESS_KEY,
   BAKED_BY_BOND_51_STORE_ID,
+  GOLDEN_I_STORE_ID,
+  PROVISIONED_ONBOARDING_MODE,
+  LEGACY_MIGRATED_ONBOARDING_MODE,
   INVENTORY_OPTIONS,
   JOB_ID_PATTERN,
   KOT_FIELDS,
@@ -542,6 +584,7 @@ module.exports = {
   buildDraftStorePayload,
   buildSafeJobRecord,
   isActivePosLaunchException,
+  isLegacyMigratedStore,
   copyAllowedFields,
   isValidJobId,
   normalizeStoreCode,
