@@ -58,6 +58,22 @@
       "targetFinishedGoodCode": "MOZZARELLA_PESTO",
       "mappingSource": "USER_APPROVED_PHASE_11A_1",
       "approvalStatus": "APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-028",
+      "workbookName": "The Melbourne Fold",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "THE_MELBOURNE_FOLD",
+      "mappingSource": "OWNER_APPROVED_TARGETED_BOM_REPAIR_2026_08_01",
+      "approvalStatus": "OWNER_APPROVED"
+    },
+    {
+      "workbookProductId": "MENU-029",
+      "workbookName": "Hung curd & Charred Veg Tartine",
+      "targetType": "FINISHED_GOOD",
+      "targetFinishedGoodCode": "HUNG_CURD__CHARED_VEG_TARTINE",
+      "mappingSource": "OWNER_APPROVED_TARGETED_BOM_REPAIR_2026_08_01",
+      "approvalStatus": "OWNER_APPROVED"
     }
   ]
 }
