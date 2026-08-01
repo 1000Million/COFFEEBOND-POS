@@ -322,7 +322,7 @@ function customerOrderingFullyEnabled(store: Store): boolean {
 }
 
 function customerOrderingOperational(store: Store): boolean {
-  return isLegacyMigratedGoldenI(store)
+  return isGoldenI(store)
     ? customerOrderingFullyEnabled(store)
     : store.customerOrderingEnabled === true || store.onlineOrderingEnabled === true;
 }

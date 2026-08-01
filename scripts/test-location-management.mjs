@@ -390,6 +390,7 @@ test('26a. Exact Golden I sales-first enablement is narrow and preserves new-sto
   assert.match(provisioningSource, /snapshotCount !== GOLDEN_I_PUBLIC_MENU_ITEM_COUNT/);
   assert.match(provisioningSource, /posEnabled: true,[\s\S]*customerOrderingEnabled: true,[\s\S]*publicOrderingEnabled: true,[\s\S]*acceptingOrders: true,[\s\S]*isAcceptingOrders: true/);
   assert.match(provisioningSource, /if \(enabled\) \{[\s\S]*readiness\.customerOrderingReady/);
+  assert.match(locationSource, /return isGoldenI\(store\)[\s\S]*customerOrderingFullyEnabled\(store\)/);
 });
 
 test('27. Provisioning audit metadata excludes passwords, tokens, and customer data', () => {
