@@ -378,6 +378,20 @@ test('26. Customer ordering requires a separate callable and public snapshot', (
   assert.match(provisioningSource, /Customer ordering requires active POS/);
 });
 
+test('26a. Exact Golden I sales-first enablement is narrow and preserves new-store readiness', () => {
+  assert.equal(provisioning.GOLDEN_I_PUBLIC_MENU_ITEM_COUNT, 80);
+  assert.equal(provisioning.isExactGoldenIStore({ id: 'GOLDEN_I', code: 'GOLDEN_I' }), true);
+  assert.equal(provisioning.isExactGoldenIStore({ id: 'GOLDEN_I', code: 'OTHER' }), false);
+  assert.equal(provisioning.isExactGoldenIStore({ id: 'OTHER', code: 'GOLDEN_I' }), false);
+  assert.equal(provisioning.publicMenuItemCount({ menuItems: { A: {}, B: {} } }), 2);
+  assert.equal(provisioning.publicMenuItemCount({ menuItems: [{}, {}, {}] }), 3);
+  assert.match(provisioningSource, /exactGoldenISalesFirstEnable = enabled/);
+  assert.match(provisioningSource, /store\.isActive !== true \|\| store\.onlineOrderingEnabled !== true/);
+  assert.match(provisioningSource, /snapshotCount !== GOLDEN_I_PUBLIC_MENU_ITEM_COUNT/);
+  assert.match(provisioningSource, /posEnabled: true,[\s\S]*customerOrderingEnabled: true,[\s\S]*publicOrderingEnabled: true,[\s\S]*acceptingOrders: true,[\s\S]*isAcceptingOrders: true/);
+  assert.match(provisioningSource, /if \(enabled\) \{[\s\S]*readiness\.customerOrderingReady/);
+});
+
 test('27. Provisioning audit metadata excludes passwords, tokens, and customer data', () => {
   const audit = policy.buildSafeJobRecord({
     jobId: 'store_123456789abc',

@@ -27,6 +27,7 @@ const {
 
 const REGION = 'us-central1';
 const BATCH_SIZE = 350;
+const GOLDEN_I_PUBLIC_MENU_ITEM_COUNT = 80;
 const POS_LAUNCH_EXCEPTION_MAX_MS = 48 * 60 * 60 * 1000;
 const POS_LAUNCH_EXCEPTION_MESSAGE = 'Baked by Bond 51 POS launch exception keeps customer ordering disabled and opening stock pending.';
 const MENU_COLLECTIONS = ['finishedGoods', 'menuItems', 'categories'];
@@ -126,6 +127,19 @@ function unique(values) {
 function normalizeUnit(value) {
   const rawUnit = cleanText(value, 20).toUpperCase();
   return UNIT_ALIASES[rawUnit] || rawUnit;
+}
+
+function isExactGoldenIStore(store = {}) {
+  const storeId = cleanText(store.id, 80).toUpperCase();
+  const storeCode = cleanText(store.code || store.storeCode, 80).toUpperCase();
+  return storeId === GOLDEN_I_STORE_ID && storeCode === GOLDEN_I_STORE_ID;
+}
+
+function publicMenuItemCount(snapshotData = {}) {
+  const menuItems = snapshotData.menuItems;
+  if (Array.isArray(menuItems)) return menuItems.length;
+  if (menuItems && typeof menuItems === 'object') return Object.keys(menuItems).length;
+  return 0;
 }
 
 function isSupportedInventoryUnit(unit) {
@@ -1793,6 +1807,34 @@ function createStoreProvisioningFunctions({ admin, db, region = REGION }) {
     const storeSnap = await storeRef.get();
     if (!storeSnap.exists) fail('not-found', 'Location not found.');
     const store = { id: storeSnap.id, ...(storeSnap.data() || {}) };
+    const exactGoldenISalesFirstEnable = enabled
+      && isExactGoldenIStore(store)
+      && !isLegacyMigratedStore(store);
+    if (exactGoldenISalesFirstEnable) {
+      if (store.isActive !== true || store.onlineOrderingEnabled !== true) {
+        fail('failed-precondition', 'Golden I must be active with its existing online-ordering flag enabled.');
+      }
+      const snapshot = await db.collection('publicMenuAvailability').doc(GOLDEN_I_STORE_ID).get();
+      const snapshotData = snapshot.exists ? (snapshot.data() || {}) : {};
+      const snapshotStoreId = cleanText(snapshotData.storeId || snapshotData.storeCode, 80).toUpperCase();
+      const snapshotCount = publicMenuItemCount(snapshotData);
+      if (!snapshot.exists || snapshotStoreId !== GOLDEN_I_STORE_ID || snapshotCount !== GOLDEN_I_PUBLIC_MENU_ITEM_COUNT) {
+        fail('failed-precondition', 'Golden I customer ordering requires its existing 80-item public menu snapshot.');
+      }
+      await storeRef.update({
+        posEnabled: true,
+        customerOrderingEnabled: true,
+        publicOrderingEnabled: true,
+        acceptingOrders: true,
+        isAcceptingOrders: true,
+      });
+      return {
+        storeId,
+        customerOrderingEnabled: true,
+        publicMenuItemCount: snapshotCount,
+        salesFirstCompatibility: true,
+      };
+    }
     if (enabled) {
       const counts = await loadReadinessCounts(db, store);
       const readiness = readinessResult(store, counts);
@@ -1851,8 +1893,11 @@ module.exports = {
   buildPreviewResponse,
   createStoreProvisioningFunctions,
   destinationInventoryId,
+  GOLDEN_I_PUBLIC_MENU_ITEM_COUNT,
   inventoryQuantityForOption,
+  isExactGoldenIStore,
   openingMovementId,
+  publicMenuItemCount,
   setupNumber,
   isSupportedInventoryUnit,
   unitAllowsDecimal,

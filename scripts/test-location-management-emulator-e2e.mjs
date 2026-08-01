@@ -769,35 +769,38 @@ async function run() {
     createdAt: timestamp,
     updatedAt: timestamp,
   });
+  const goldenMenuItems = {};
+  const goldenAvailabilityItems = {};
+  for (let index = 1; index <= 80; index += 1) {
+    const itemCode = `GOLDEN_SAFE_ITEM_${String(index).padStart(2, '0')}`;
+    goldenMenuItems[itemCode] = {
+      id: itemCode,
+      code: itemCode,
+      name: `Golden Safe Item ${index}`,
+      salePrice: 100,
+      prepStation: 'BARISTA',
+      itemType: 'NO_STOCK',
+      availableStoreIds: [goldenStoreId],
+      isActive: true,
+      isSellable: true,
+      isAvailable: true,
+    };
+    goldenAvailabilityItems[itemCode] = {
+      itemCode,
+      fgCode: itemCode,
+      available: true,
+      publicStatus: 'AVAILABLE',
+      publicMessage: 'Available',
+    };
+  }
   legacyBatch.set(db.collection('publicMenuAvailability').doc(goldenStoreId), {
     storeId: goldenStoreId,
     storeCode: goldenStoreId,
     storeName: 'Golden I',
-    items: {
-      GOLDEN_SAFE_ITEM: {
-        itemCode: 'GOLDEN_SAFE_ITEM',
-        fgCode: 'GOLDEN_SAFE_ITEM',
-        available: true,
-        publicStatus: 'AVAILABLE',
-        publicMessage: 'Available',
-      },
-    },
-    menuItems: {
-      GOLDEN_SAFE_ITEM: {
-        id: 'GOLDEN_SAFE_ITEM',
-        code: 'GOLDEN_SAFE_ITEM',
-        name: 'Golden Safe Item',
-        salePrice: 100,
-        prepStation: 'BARISTA',
-        itemType: 'NO_STOCK',
-        availableStoreIds: [goldenStoreId],
-        isActive: true,
-        isSellable: true,
-        isAvailable: true,
-      },
-    },
-    itemCount: 1,
-    availableCount: 1,
+    items: goldenAvailabilityItems,
+    menuItems: goldenMenuItems,
+    itemCount: 80,
+    availableCount: 80,
     unavailableCount: 0,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -818,6 +821,22 @@ async function run() {
     });
   }
   await legacyBatch.commit();
+
+  const goldenBeforeSalesFirstEnable = await db.collection('stores').doc(goldenStoreId).get();
+  const goldenSalesFirstEnable = await callFunction('setStoreCustomerOrdering', {
+    storeId: goldenStoreId,
+    enabled: true,
+  }, adminToken);
+  assert.equal(goldenSalesFirstEnable.salesFirstCompatibility, true);
+  assert.equal(goldenSalesFirstEnable.publicMenuItemCount, 80);
+  const goldenAfterSalesFirstEnable = await db.collection('stores').doc(goldenStoreId).get();
+  for (const field of ['posEnabled', 'customerOrderingEnabled', 'publicOrderingEnabled', 'acceptingOrders', 'isAcceptingOrders']) {
+    assert.equal(goldenAfterSalesFirstEnable.data()[field], true, `${field} should be enabled for exact Golden I`);
+  }
+  assert.equal(goldenAfterSalesFirstEnable.data().onlineOrderingEnabled, true);
+  assert.equal(goldenAfterSalesFirstEnable.data().onboardingMode, undefined);
+  assert.equal(goldenAfterSalesFirstEnable.data().customerOrderingUpdatedBy, undefined);
+  assertSameTimestamp(goldenAfterSalesFirstEnable.data().updatedAt, goldenBeforeSalesFirstEnable.data().updatedAt, 'Golden I updatedAt');
 
   const cashierLegacyAttempt = await callFunction('updateStoreConfiguration', {
     storeId: goldenStoreId,
