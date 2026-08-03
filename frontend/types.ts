@@ -115,7 +115,7 @@ export type PrepStation = "BARISTA" | "KITCHEN" | "BOTH" | "NONE";
 
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
-export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER" | "ONLINE";
+export type PaymentMethod = "CASH" | "UPI" | "CARD" | "SWIGGY" | "ZOMATO" | "CREDIT" | "COMPLIMENTARY" | "PAY_AT_COUNTER" | "ONLINE" | "RAZORPAY";
 export type PaymentProvider = "PAY_AT_COUNTER" | "RAZORPAY";
 export type PaymentStatus =
   | "PAID"
@@ -273,6 +273,12 @@ export interface Order {
   voidedByName?: string | null;
   voidedByEmail?: string | null;
   voidedAt?: any;
+  razorpaySessionId?: string;
+  providerPaymentId?: string;
+  providerOrderId?: string;
+  refundStatus?: "REFUND_PENDING" | "REFUNDED" | "REFUND_FAILED";
+  refundRequestId?: string;
+  providerRefundId?: string;
   createdAt: any;
   updatedAt: any;
 }
@@ -358,7 +364,20 @@ export interface OrderPayment {
   providerMethod?: "UPI" | "CARD" | "NETBANKING" | "WALLET" | "OTHER";
   providerPaymentId?: string;
   providerOrderId?: string;
-  status?: "PAID";
+  status?: "PAID" | "CAPTURED" | "REFUND_PENDING" | "REFUNDED" | "REFUND_FAILED";
+  razorpayPaymentId?: string;
+  razorpayOrderId?: string;
+  paymentLinkId?: string | null;
+  qrCodeId?: string | null;
+  currency?: "INR";
+  capturedAt?: any;
+  verifiedServerSide?: boolean;
+  storeId?: string;
+  orderId?: string;
+  checkoutIdempotencyKey?: string;
+  refundStatus?: "REFUND_PENDING" | "REFUNDED" | "REFUND_FAILED";
+  refundRequestId?: string;
+  providerRefundId?: string;
   settledAt?: any;
   settledBy?: string;
   settledByName?: string;

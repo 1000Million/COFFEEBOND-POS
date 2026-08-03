@@ -5,7 +5,7 @@ import {
   buildInventoryRawConsumptionRows,
   filterInventoryMovementAuditRows,
 } from '../frontend/lib/inventoryControlAudit';
-import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel, summarizeCollections, VOIDED_ITEM_STATUS_LABEL } from '../frontend/lib/paymentReversal';
+import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplayStatus, paymentOutcomeLabel, summarizeCollections, VOIDED_ITEM_STATUS_LABEL } from '../frontend/lib/paymentReversal';
 import {
   DRAFT_SETUP_TEST_STORE_ID,
   isEligibleDraftSetupStoreForRunningOrders,
@@ -105,6 +105,26 @@ assert(cashVoid.paymentReversalBreakdown[0]?.reversalStatus === 'REFUNDED', 'Cas
 const upiVoid = buildPaymentReversalAudit(order({ status: 'VOIDED', paymentMethod: 'UPI', grandTotal: 105 }));
 assert(upiVoid.paymentReversalStatus === 'MANUAL_REFUND_REQUIRED', 'UPI void should require manual refund verification.');
 assert(upiVoid.manualRefundRequiredAmount === 105, 'UPI void should count manual refund amount.');
+
+const capturedRazorpayOrder = order({
+  status: 'VOIDED',
+  paymentMethod: 'RAZORPAY',
+  paymentProvider: 'RAZORPAY',
+  grandTotal: 105,
+});
+const razorpayRefundPending = buildRazorpayRefundAudit(capturedRazorpayOrder, [{
+  method: 'RAZORPAY',
+  provider: 'RAZORPAY',
+  providerMethod: 'UPI',
+  amount: 105,
+  reference: 'pay_test',
+  status: 'CAPTURED',
+  verifiedServerSide: true,
+  createdAt: new Date(),
+}], 'REFUND_PENDING');
+assert(razorpayRefundPending.paymentReversalStatus === 'REFUND_PENDING', 'Captured Razorpay void should remain pending until provider confirmation.');
+assert(razorpayRefundPending.refundPendingAmount === 105, 'Pending Razorpay refund must reduce net collection once through the void lifecycle.');
+assert(razorpayRefundPending.manualRefundRequiredAmount === 0, 'Verified in-store Razorpay refund must not be mislabeled as manual UPI refund.');
 
 const splitVoidOrder = order({
   status: 'VOIDED',

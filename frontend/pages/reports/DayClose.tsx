@@ -7,7 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
 import { summarizeReportingRecords } from '../../../functions/reportingCore.mjs';
 
-const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'ONLINE', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
+const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'RAZORPAY', 'ONLINE', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 
 type DayCloseSummary = {
   completedBillCount: number;
@@ -59,7 +59,7 @@ function buildSummary(orders: Order[], onlineOrders: OnlineOrder[]): DayCloseSum
     .filter(order => order.paymentStatus === 'REFUND_PENDING')
     .reduce((sum, order) => sum + moneyNumber(order.grandTotal), 0);
   const paymentBreakdown = PAYMENT_METHODS.reduce((summary, method) => {
-    summary[method] = moneyNumber(method === 'ONLINE'
+    summary[method] = moneyNumber(method === 'RAZORPAY'
       ? metrics.paymentBreakdown.RAZORPAY + gatewayGross
       : metrics.paymentBreakdown[method]);
     return summary;

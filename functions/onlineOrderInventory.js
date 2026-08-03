@@ -152,6 +152,7 @@ async function planOnlineOrderInventory({
   staff,
   lines,
   requireAvailableStock = false,
+  source = 'CUSTOMER_WEB_ACCEPT',
 }) {
   const blockers = [];
   const warnings = [];
@@ -464,7 +465,7 @@ async function planOnlineOrderInventory({
           finishedGoodName: item.displayName || item.name,
           quantitySold: number(line.quantity),
           soldAt: admin.firestore.FieldValue.serverTimestamp(),
-          source: 'CUSTOMER_WEB_ACCEPT',
+          source,
           status: 'PENDING_BOM',
           reason: deferred.map(row => row.blockerType).join('; '),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -565,7 +566,9 @@ async function planOnlineOrderInventory({
         orderId,
         orderNumber,
         businessDate,
-        notes: `Online order ${orderNumber}`,
+        notes: source === 'POS_RAZORPAY'
+          ? `Razorpay POS order ${orderNumber}`
+          : `Online order ${orderNumber}`,
         createdByUserId: staff.uid,
         createdByName: staff.name,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -578,7 +581,7 @@ async function planOnlineOrderInventory({
         cogsAmount,
         finishedGoodCode: entry.finishedGoodCode,
         finishedGoodName: entry.finishedGoodName,
-        source: 'CUSTOMER_WEB_ACCEPT',
+        source,
         orderLineKey: entry.lineKey,
       });
     }

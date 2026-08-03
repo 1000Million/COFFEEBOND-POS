@@ -31,8 +31,9 @@ import {
 import { db } from '../../lib/firebase';
 import { auth } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { buildPaymentReversalAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
+import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
+import { requestPosRazorpayRefund } from '../../lib/posRazorpay';
 import {
   DRAFT_SETUP_TEST_STORE_ID,
   isActiveRunningOrdersAdmin,
@@ -187,6 +188,17 @@ function isPayAtCounter(order: Order, payments: OrderPayment[]): boolean {
   return order.paymentMethod === 'PAY_AT_COUNTER'
     || (order.paymentBreakdown || []).some(payment => payment.method === 'PAY_AT_COUNTER')
     || payments.some(payment => payment.method === 'PAY_AT_COUNTER');
+}
+
+function isCapturedPosRazorpayOrder(order: Order, payments: OrderPayment[]): boolean {
+  return order.paymentMethod === 'RAZORPAY'
+    && order.paymentProvider === 'RAZORPAY'
+    && order.paymentStatus === 'PAID'
+    && payments.some(payment => (
+      payment.provider === 'RAZORPAY'
+      && payment.status === 'CAPTURED'
+      && payment.verifiedServerSide === true
+    ));
 }
 
 function settledTenderRows(payments: OrderPayment[]): OrderPayment[] {
@@ -690,6 +702,14 @@ export default function RunningOrders() {
     setError('');
     setSuccess('');
     try {
+      const capturedPosRazorpay = isCapturedPosRazorpayOrder(voidBundle.order, voidBundle.payments);
+      const razorpayRefund = capturedPosRazorpay
+        ? await requestPosRazorpayRefund({
+            orderId: voidBundle.order.id,
+            reason: voidReason.trim(),
+            confirmation: voidBundle.order.orderNumber,
+          })
+        : null;
       const orderRef = doc(db, 'orders', voidBundle.order.id);
       const [movementSnap, kotSnap, paymentSnap] = await Promise.all([
         getDocs(query(collection(db, 'stockMovements'), where('referenceId', '==', voidBundle.order.id))),
@@ -721,7 +741,9 @@ export default function RunningOrders() {
         if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
         const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
         if (effectiveOrderStatus(freshOrder) === 'VOIDED') throw new Error('This order is already voided.');
-        const paymentReversal = buildPaymentReversalAudit(freshOrder, paymentRows);
+        const paymentReversal = razorpayRefund
+          ? buildRazorpayRefundAudit(freshOrder, paymentRows, razorpayRefund.status)
+          : buildPaymentReversalAudit(freshOrder, paymentRows);
 
         const stockTargets = saleMovements.map(movement => {
           const stockItemType = String(movement.stockItemType || 'RAW_INGREDIENT');
@@ -847,7 +869,10 @@ export default function RunningOrders() {
         });
       });
 
-      setSuccess(`Voided ${voidBundle.order.orderNumber}. Reversed ${saleMovements.length} stock movement rows and cancelled ${kotSnap.docs.length} KOT rows.`);
+      setSuccess(
+        `Voided ${voidBundle.order.orderNumber}. Reversed ${saleMovements.length} stock movement rows and cancelled ${kotSnap.docs.length} KOT rows.`
+        + (razorpayRefund ? ` Razorpay refund: ${razorpayRefund.status}.` : ''),
+      );
       setVoidBundle(null);
       setVoidReason('');
       setVoidConfirmation('');
@@ -1010,6 +1035,17 @@ export default function RunningOrders() {
                   <span className={`rounded-full px-3 py-1 text-xs font-black ${voided ? 'bg-red-100 text-red-700' : paymentStatus === 'PAID' ? 'bg-emerald-100 text-emerald-700' : paymentStatus === 'NOT_REQUIRED' ? 'bg-purple-100 text-purple-700' : 'bg-violet-100 text-violet-700'}`}>
                     Payment: {paymentOutcome}{payAtCounter && paymentStatus !== 'PAID' && !voided ? ' / PAY AT COUNTER' : ''}
                   </span>
+                  {order.paymentProvider === 'RAZORPAY' && order.refundStatus && (
+                    <span className={`rounded-full px-3 py-1 text-xs font-black ${
+                      order.refundStatus === 'REFUNDED'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : order.refundStatus === 'REFUND_FAILED'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      Razorpay: {order.refundStatus}
+                    </span>
+                  )}
                   <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">Fulfillment: {fulfillmentStatus(bundle)}</span>
                 </div>
 
@@ -1212,9 +1248,16 @@ export default function RunningOrders() {
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">
                 This marks the order VOIDED, cancels related KOT rows, and reverses original sale stock movements. It does not delete the order.
               </div>
-              {voidBundle.order.paymentProvider === 'RAZORPAY' && voidBundle.order.paymentStatus === 'PAID' && (
+              {isCapturedPosRazorpayOrder(voidBundle.order, voidBundle.payments) && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
-                  Gateway refund required. This action does not refund Razorpay or mark provider funds as refunded.
+                  Coffee Bond will request one full Razorpay refund before voiding. Provider confirmation may remain pending after stock and KOT reversal.
+                </div>
+              )}
+              {voidBundle.order.paymentProvider === 'RAZORPAY'
+                && voidBundle.order.paymentMethod !== 'RAZORPAY'
+                && voidBundle.order.paymentStatus === 'PAID' && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
+                  This customer-web Razorpay order uses its existing refund workflow and is not handled as an in-store POS refund.
                 </div>
               )}
               <label className="block">
@@ -1322,6 +1365,9 @@ function OrderDetailDrawer({
             <Info label="Source" value={sourceLabel(order)} />
             <Info label="KOT" value={kot.label} />
             <Info label="Payment" value={paymentStatus} />
+            {order.paymentProvider === 'RAZORPAY' && order.refundStatus && (
+              <Info label="Razorpay refund" value={order.refundStatus} />
+            )}
           </div>
 
           {onlineRef && (

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import QRCode from 'react-qr-code';
 import { collection, query, getDocs, where, runTransaction, doc, serverTimestamp, getDoc, Timestamp } from 'firebase/firestore';
 import type { ConfirmationResult } from 'firebase/auth';
 import { Link } from 'react-router-dom';
@@ -18,6 +19,14 @@ import {
   authorizePosAddOns,
   selectedAddOnIds,
 } from '../../lib/posAddOnAuthorization';
+import {
+  cancelPosRazorpaySession,
+  createPosRazorpaySession,
+  getPosRazorpayStatus,
+  isPosRazorpaySessionLocked,
+  posRazorpayStatusLabel,
+  PosRazorpaySession,
+} from '../../lib/posRazorpay';
 import AddOnSelector from '../../components/add-ons/AddOnSelector';
 import {
   buildComplimentaryTotals,
@@ -36,7 +45,7 @@ import {
   sendComplimentaryPhoneOtp,
   verifyComplimentaryPhoneOtp,
 } from '../../lib/complimentaryPhoneVerification';
-import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X } from 'lucide-react';
+import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 type CheckoutError = {
@@ -173,11 +182,12 @@ const LAST_RECEIPT_STORAGE_KEY = 'coffeeBondPos:lastReceipt:v1';
 const HELD_BILLS_STORAGE_KEY = 'coffeeBondPos:heldBills:v1';
 const RECENT_ITEMS_STORAGE_KEY = 'coffeeBondPos:recentItems:v1';
 const CHECKOUT_ATTEMPT_STORAGE_KEY = 'coffeeBondPos:pendingCheckoutAttempt:v1';
+const POS_RAZORPAY_SESSION_STORAGE_KEY = 'coffeeBondPos:pendingRazorpaySession:v1';
 const CHECKOUT_ATTEMPT_TTL_MS = 2 * 60 * 60 * 1000;
 const RECENT_ITEMS_LIMIT = 8;
 const PAYMENT_TOLERANCE = 0.01;
-const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
-const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => method !== 'COMPLIMENTARY');
+const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'RAZORPAY', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY'];
+const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => !['COMPLIMENTARY', 'RAZORPAY'].includes(method));
 const COMPLIMENTARY_OTP_RESEND_SECONDS = 30;
 const COMPLIMENTARY_RECAPTCHA_CONTAINER_ID = complimentaryRecaptchaContainerId();
 const POS_PRODUCT_FILTERS = [
@@ -899,6 +909,7 @@ export default function POSHome() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const recallMenuRef = useRef<HTMLDivElement | null>(null);
   const checkoutAttemptRef = useRef<CheckoutAttempt | null>(loadCheckoutAttempt());
+  const razorpayStatusInFlightRef = useRef(false);
 
   const [orderType, setOrderType] = useState<OrderType>('DINE_IN');
   const [tableNumber, setTableNumber] = useState('');
@@ -927,12 +938,22 @@ export default function POSHome() {
   const [lastReceipt, setLastReceipt] = useState<ReceiptSnapshot | null>(null);
   const [receiptView, setReceiptView] = useState<ReceiptSnapshot | null>(null);
   const [receiptViewTitle, setReceiptViewTitle] = useState('Order Saved');
+  const [razorpaySession, setRazorpaySession] = useState<PosRazorpaySession | null>(() => (
+    readLocalStorageJson<PosRazorpaySession | null>(POS_RAZORPAY_SESSION_STORAGE_KEY, null)
+  ));
+  const [razorpayActionLoading, setRazorpayActionLoading] = useState(false);
+  const [razorpayNow, setRazorpayNow] = useState(Date.now());
   const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
   const [recentItemIdsByStore, setRecentItemIdsByStore] = useState<Record<string, string[]>>({});
   const [topSellerItemIds, setTopSellerItemIds] = useState<string[]>([]);
   const [isUsingTopSellerData, setIsUsingTopSellerData] = useState(false);
 
   const posSource = 'FINISHED_GOODS' as const;
+  const razorpayPaymentLocked = isPosRazorpaySessionLocked(razorpaySession);
+  const razorpaySecondsRemaining = razorpaySession?.expiresAt
+    ? Math.max(0, Math.ceil((new Date(razorpaySession.expiresAt).getTime() - razorpayNow) / 1000))
+    : 0;
+  const razorpayExpiryLabel = `${String(Math.floor(razorpaySecondsRemaining / 60)).padStart(2, '0')}:${String(razorpaySecondsRemaining % 60).padStart(2, '0')}`;
 
   const [debugCounts, setDebugCounts] = useState<any>(null);
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
@@ -953,6 +974,17 @@ export default function POSHome() {
     setHeldBills(loadStoredHeldBills());
     setRecentItemIdsByStore(loadStoredRecentItems());
   }, []);
+
+  useEffect(() => {
+    if (razorpaySession) writeLocalStorageJson(POS_RAZORPAY_SESSION_STORAGE_KEY, razorpaySession);
+    else if (typeof window !== 'undefined') window.localStorage.removeItem(POS_RAZORPAY_SESSION_STORAGE_KEY);
+  }, [razorpaySession]);
+
+  useEffect(() => {
+    if (!razorpaySession || !['CREATING', 'WAITING_FOR_PAYMENT', 'RECOVERING'].includes(razorpaySession.status)) return;
+    const timer = window.setInterval(() => setRazorpayNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [razorpaySession]);
 
   useEffect(() => {
     return () => {
@@ -1167,6 +1199,10 @@ export default function POSHome() {
   };
 
   const handleStoreChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (razorpayPaymentLocked) {
+      alert('Cancel the active Razorpay payment request before changing stores.');
+      return;
+    }
     if (cart.length > 0) {
       if (window.confirm("Changing store will clear your current cart. Proceed?")) {
         setCart([]);
@@ -1383,6 +1419,7 @@ export default function POSHome() {
   );
 
   const commitItemToCart = (item: any, selectedAddOns: AddOnSelection[], editingCartItemId?: string) => {
+    if (razorpayPaymentLocked) return;
     setCheckoutError(null);
     const itemId = String(item?.id || item?.code || item?.finishedGoodCode || '').trim();
     const itemCode = String(item?.code || item?.finishedGoodCode || itemId).trim();
@@ -1452,6 +1489,7 @@ export default function POSHome() {
   };
 
   const addToCart = (item: any) => {
+    if (razorpayPaymentLocked) return;
     const groups = activeAddOnGroupsForProduct(
       item?.addOnGroupIds,
       item?.addOnOptionIdsByGroup,
@@ -1466,6 +1504,7 @@ export default function POSHome() {
   };
 
   const editCartItemAddOns = (cartItem: CartItem) => {
+    if (razorpayPaymentLocked) return;
     const menuItem = menuItems.find(item => item.id === cartItem.menuItemId);
     if (!menuItem) return;
     const groups = activeAddOnGroupsForProduct(
@@ -1479,6 +1518,7 @@ export default function POSHome() {
   };
 
   const updateQuantity = (cartItemId: string, delta: number) => {
+    if (razorpayPaymentLocked) return;
     setCheckoutError(null);
     setCart(prev => prev.map(ci => {
       if (ci.id === cartItemId) {
@@ -1490,6 +1530,7 @@ export default function POSHome() {
   };
 
   const removeCartItem = (cartItemId: string) => {
+    if (razorpayPaymentLocked) return;
     setCheckoutError(null);
     setCart(prev => prev.filter(ci => ci.id !== cartItemId));
   };
@@ -1587,6 +1628,10 @@ export default function POSHome() {
   };
 
   const clearCart = (skipConfirm: boolean = false) => {
+    if (razorpayPaymentLocked && skipConfirm !== true) {
+      alert('Cancel the active Razorpay payment request before clearing the cart.');
+      return;
+    }
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
       setPendingAddOnItem(null);
@@ -1697,6 +1742,10 @@ export default function POSHome() {
   };
 
   const holdCurrentBill = () => {
+    if (razorpayPaymentLocked) {
+      alert('Cancel the active Razorpay payment request before holding this bill.');
+      return;
+    }
     if (cart.length === 0) {
       alert('Cart is empty');
       return;
@@ -1732,6 +1781,7 @@ export default function POSHome() {
   };
 
   const recallHeldBill = (bill: HeldBill) => {
+    if (razorpayPaymentLocked) return;
     if (!stores.some(store => store.id === bill.storeId)) {
       alert('This held bill belongs to a store that is not available for your account.');
       return;
@@ -1766,6 +1816,7 @@ export default function POSHome() {
   };
 
   const setSplitPaymentMode = (enabled: boolean) => {
+    if (razorpayPaymentLocked) return;
     setIsSplitPayment(enabled);
     setCheckoutError(null);
 
@@ -1814,6 +1865,90 @@ export default function POSHome() {
       amount: normalizePaymentAmount(payment.amountStr),
     })).filter(payment => payment.amount > 0 || totalDue === 0);
   };
+
+  const recoverCapturedRazorpayOrder = async (session: PosRazorpaySession) => {
+    const idempotencyKey = session.orderId.startsWith('POS_')
+      ? session.orderId.slice(4)
+      : checkoutAttemptRef.current?.idempotencyKey || '';
+    if (!idempotencyKey || !session.checkoutPayloadHash) {
+      throw new Error('The captured payment is safe, but this receipt needs Admin recovery because its checkout key is unavailable.');
+    }
+    const attempt: CheckoutAttempt = {
+      idempotencyKey,
+      orderId: session.orderId,
+      createdAt: checkoutAttemptRef.current?.createdAt || Date.now(),
+      payloadHash: session.checkoutPayloadHash,
+    };
+    checkoutAttemptRef.current = attempt;
+    writeCheckoutAttempt(attempt);
+    const result = await loadExistingCheckoutResult(
+      doc(db, 'orders', session.orderId),
+      attempt,
+      session.checkoutPayloadHash,
+    );
+    if (!result) throw new Error('Razorpay captured the payment, but the POS order is still being recovered. Retry status shortly.');
+    const receiptStore = stores.find(store => store.id === result.savedOrder.storeId);
+    if (!receiptStore) throw new Error('The completed order store is not available in this staff session.');
+    const receipt = buildReceiptSnapshot(result.savedOrder, result.savedItems, result.savedPayments, receiptStore);
+    setLastReceipt(receipt);
+    writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
+    setReceiptViewTitle('Razorpay Payment Captured');
+    setReceiptView(receipt);
+    setRazorpaySession(null);
+    clearCart(true);
+  };
+
+  const refreshRazorpayStatus = async (manual = false) => {
+    if (!razorpaySession || razorpayStatusInFlightRef.current) return;
+    razorpayStatusInFlightRef.current = true;
+    if (manual) setRazorpayActionLoading(true);
+    try {
+      const next = await getPosRazorpayStatus(razorpaySession.sessionId);
+      setRazorpaySession(next);
+      if (next.status === 'PAYMENT_CAPTURED') {
+        await recoverCapturedRazorpayOrder(next);
+      } else if (next.status === 'PAYMENT_REVIEW_REQUIRED') {
+        setCheckoutError({
+          message: 'Razorpay captured the payment, but this order needs Admin review.',
+          details: next.failureMessage || next.failureCode || 'The POS order was not finalised.',
+        });
+      }
+    } catch (error) {
+      if (manual) setCheckoutError(buildCheckoutError(error));
+    } finally {
+      razorpayStatusInFlightRef.current = false;
+      if (manual) setRazorpayActionLoading(false);
+    }
+  };
+
+  const cancelRazorpayPayment = async () => {
+    if (!razorpaySession || razorpayActionLoading) return;
+    setRazorpayActionLoading(true);
+    setCheckoutError(null);
+    try {
+      const next = await cancelPosRazorpaySession(razorpaySession.sessionId);
+      setRazorpaySession(next);
+      if (next.status === 'PAYMENT_CAPTURED') await recoverCapturedRazorpayOrder(next);
+    } catch (error) {
+      setCheckoutError(buildCheckoutError(error));
+    } finally {
+      setRazorpayActionLoading(false);
+    }
+  };
+
+  const closeFinalRazorpaySession = () => {
+    if (razorpayPaymentLocked) return;
+    setRazorpaySession(null);
+    checkoutAttemptRef.current = null;
+    clearCheckoutAttempt();
+  };
+
+  useEffect(() => {
+    if (!razorpaySession || !['CREATING', 'WAITING_FOR_PAYMENT', 'RECOVERING'].includes(razorpaySession.status)) return;
+    void refreshRazorpayStatus(false);
+    const timer = window.setInterval(() => void refreshRazorpayStatus(false), 5000);
+    return () => window.clearInterval(timer);
+  }, [razorpayPaymentLocked, razorpaySession?.sessionId, razorpaySession?.status]);
 
   const handleCheckout = async (paymentMethodOverride?: PaymentMethod) => {
     const selectedPaymentMethod = !isSplitPayment && paymentMethodOverride ? paymentMethodOverride : paymentMethod;
@@ -1898,6 +2033,36 @@ export default function POSHome() {
       const orderLineRefs = lineIdentities.map(({ identity, occurrence }) => (
         doc(collection(newOrderRef, 'items'), deterministicOrderItemId(newOrderRef.id, identity, occurrence))
       ));
+      if (!isSplitPayment && selectedPaymentMethod === 'RAZORPAY') {
+        const session = await createPosRazorpaySession({
+          storeId: selectedStore.id,
+          checkoutIdempotencyKey: checkoutAttempt.idempotencyKey,
+          paymentMethod: 'RAZORPAY',
+          isSplitPayment: false,
+          orderType,
+          tableNumber: orderType === 'DINE_IN' ? tableNumber.trim() : null,
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          discountPercent: clampDiscountPercent(discountPercentStr),
+          items: browserValidatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => ({
+            orderItemId: orderLineRefs[index].id,
+            parentProductId: liveItem.id,
+            parentProductCode: liveItem.code,
+            quantity: cartItem.quantity,
+            selectedAddOns: selectedAddOnIds(canonicalAddOns),
+          })),
+        });
+        checkoutAttempt = {
+          ...checkoutAttempt,
+          payloadHash: session.checkoutPayloadHash,
+        };
+        checkoutAttemptRef.current = checkoutAttempt;
+        writeCheckoutAttempt(checkoutAttempt);
+        setRazorpaySession(session);
+        setIsMobileCartOpen(false);
+        if (session.status === 'PAYMENT_CAPTURED') await recoverCapturedRazorpayOrder(session);
+        return;
+      }
       const posAddOnAuthorization = await authorizePosAddOns({
         storeId: selectedStore.id,
         orderId: newOrderRef.id,
@@ -3201,6 +3366,7 @@ export default function POSHome() {
                   step="0.1"
                   value={discountPercentStr}
                   onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
+                  disabled={razorpayPaymentLocked}
                   className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
                   placeholder="0"
                 />
@@ -3243,7 +3409,7 @@ export default function POSHome() {
               <label className="block text-[10px] font-black uppercase tracking-[0.14em] text-neutral-500">Payment</label>
               <button
                 onClick={() => setSplitPaymentMode(!isSplitPayment)}
-                disabled={isSetupTestSale}
+                disabled={isSetupTestSale || razorpayPaymentLocked}
                 className={`rounded-full border px-2.5 py-1 text-[10px] font-black transition-colors ${
                   isSplitPayment
                     ? 'border-[#5c4033] bg-[#5c4033] text-white'
@@ -3262,10 +3428,12 @@ export default function POSHome() {
                     <button
                       key={method}
                       onClick={() => {
+                        if (razorpayPaymentLocked) return;
                         setPaymentMethod(method);
                         setCheckoutError(null);
                         if (method !== 'COMPLIMENTARY') resetComplimentaryOtp();
                       }}
+                      disabled={razorpayPaymentLocked}
                       className={`min-h-[30px] min-w-[58px] rounded-full border px-2.5 py-1 text-[9px] font-black transition-all ${
                         paymentMethod === method
                           ? 'border-[#5c4033] bg-[#5c4033] text-white shadow-sm'
@@ -3514,9 +3682,9 @@ export default function POSHome() {
             )}
 
             <button
-              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary}
+              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary || razorpayPaymentLocked}
               className={`mt-0.5 w-full rounded-2xl py-2.5 text-sm font-black transition-all shadow-sm ${
-                cart.length > 0 && !isSaving && canSubmitComplimentary
+                cart.length > 0 && !isSaving && canSubmitComplimentary && !razorpayPaymentLocked
                   ? 'border border-[#2d1c19] bg-[#3e2723] text-[#f9f5f0] hover:bg-[#2d1c19] hover:shadow-md active:scale-[0.99]'
                   : 'cursor-not-allowed border border-neutral-300 bg-neutral-200 text-neutral-400'
               }`}
@@ -3530,7 +3698,9 @@ export default function POSHome() {
                     ? 'Complimentary checkout unavailable'
                     : isComplimentarySelected
                       ? 'Save Complimentary Order'
-                      : `Charge ₹${displayedCartTotals.grandTotal.toFixed(2)}`}
+                      : paymentMethod === 'RAZORPAY'
+                        ? `Generate Razorpay Payment ₹${displayedCartTotals.grandTotal.toFixed(2)}`
+                        : `Charge ₹${displayedCartTotals.grandTotal.toFixed(2)}`}
             </button>
           </div>
         </div>
@@ -3558,6 +3728,158 @@ export default function POSHome() {
             setEditingAddOnCartItem(null);
           }}
         />
+      )}
+
+      {razorpaySession && (
+        <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/55 p-0 backdrop-blur-[2px] sm:items-center sm:p-5">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pos-razorpay-title"
+            className="max-h-[94dvh] w-full overflow-y-auto rounded-t-2xl border border-neutral-200 bg-white p-5 shadow-2xl sm:max-w-md sm:rounded-2xl sm:p-6"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#8a6a58]">Verified in-store payment</p>
+                <h2 id="pos-razorpay-title" className="mt-1 text-xl font-black text-[#2d1c19]">Razorpay Payment</h2>
+              </div>
+              {!razorpayPaymentLocked && (
+                <button
+                  type="button"
+                  onClick={closeFinalRazorpaySession}
+                  className="rounded-full border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50"
+                  aria-label="Close Razorpay payment"
+                >
+                  <X size={18} />
+                </button>
+              )}
+            </div>
+
+            <div className={`mt-4 rounded-xl border px-3 py-2 text-sm font-black ${
+              razorpaySession.status === 'PAYMENT_CAPTURED'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                : razorpaySession.status === 'FAILED' || razorpaySession.status === 'PAYMENT_REVIEW_REQUIRED'
+                  ? 'border-red-200 bg-red-50 text-red-700'
+                  : razorpaySession.status === 'EXPIRED' || razorpaySession.status === 'CANCELLED'
+                    ? 'border-neutral-200 bg-neutral-50 text-neutral-700'
+                    : 'border-amber-200 bg-amber-50 text-amber-800'
+            }`}>
+              {posRazorpayStatusLabel(razorpaySession.status)}
+            </div>
+
+            <div className="mt-5 text-center">
+              <p className="text-xs font-black uppercase tracking-widest text-neutral-500">Exact amount</p>
+              <p className="mt-1 font-mono text-4xl font-black text-[#3e2723]">₹{razorpaySession.amount.toFixed(2)}</p>
+              <p className="mt-1 text-xs font-bold text-neutral-500">Full payment only · INR</p>
+            </div>
+
+            {['CREATING', 'WAITING_FOR_PAYMENT', 'RECOVERING'].includes(razorpaySession.status) && (
+              <div className="mt-5">
+                <div className="mx-auto flex min-h-[260px] w-full max-w-[280px] items-center justify-center rounded-xl border border-neutral-200 bg-white p-4">
+                  {razorpaySession.qrImageUrl ? (
+                    <img
+                      src={razorpaySession.qrImageUrl}
+                      alt="Razorpay payment QR"
+                      className="h-auto max-h-[248px] w-full object-contain"
+                    />
+                  ) : razorpaySession.paymentUrl ? (
+                    <QRCode
+                      value={razorpaySession.paymentUrl}
+                      size={248}
+                      level="M"
+                      className="h-auto w-full max-w-[248px]"
+                      aria-label="Razorpay payment link QR"
+                    />
+                  ) : (
+                    <Loader2 size={38} className="animate-spin text-[#5c4033]" />
+                  )}
+                </div>
+                <div className="mt-3 flex items-center justify-center gap-2 text-xs font-bold text-neutral-600">
+                  <span>Expires in</span>
+                  <span className="rounded-full bg-neutral-100 px-2.5 py-1 font-mono text-neutral-900">{razorpayExpiryLabel}</span>
+                </div>
+              </div>
+            )}
+
+            {razorpaySession.paymentUrl && (
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(razorpaySession.paymentUrl!)}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-black text-neutral-700 hover:bg-neutral-50"
+                >
+                  <Copy size={15} /> Copy link
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.share) {
+                      void navigator.share({ title: 'Coffee Bond payment', url: razorpaySession.paymentUrl! });
+                    } else {
+                      window.open(razorpaySession.paymentUrl!, '_blank', 'noopener,noreferrer');
+                    }
+                  }}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-black text-neutral-700 hover:bg-neutral-50"
+                >
+                  <ExternalLink size={15} /> Share / open
+                </button>
+              </div>
+            )}
+
+            {razorpaySession.failureMessage && (
+              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold leading-relaxed text-red-700">
+                {razorpaySession.failureMessage}
+              </p>
+            )}
+
+            <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {['CREATING', 'WAITING_FOR_PAYMENT', 'RECOVERING'].includes(razorpaySession.status) && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void refreshRazorpayStatus(true)}
+                    disabled={razorpayActionLoading}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#5c4033] bg-white px-4 text-sm font-black text-[#5c4033] disabled:opacity-50"
+                  >
+                    <RefreshCw size={16} className={razorpayActionLoading ? 'animate-spin' : ''} />
+                    Retry status
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void cancelRazorpayPayment()}
+                    disabled={razorpayActionLoading}
+                    className="h-11 rounded-xl bg-neutral-900 px-4 text-sm font-black text-white disabled:opacity-50"
+                  >
+                    Cancel request
+                  </button>
+                </>
+              )}
+              {razorpaySession.status === 'FAILED' && (
+                <button
+                  type="button"
+                  onClick={() => void handleCheckout('RAZORPAY')}
+                  disabled={isSaving}
+                  className="h-11 rounded-xl bg-[#3e2723] px-4 text-sm font-black text-white disabled:opacity-50 sm:col-span-2"
+                >
+                  Retry payment request
+                </button>
+              )}
+              {['EXPIRED', 'CANCELLED'].includes(razorpaySession.status) && (
+                <button
+                  type="button"
+                  onClick={closeFinalRazorpaySession}
+                  className="h-11 rounded-xl bg-[#3e2723] px-4 text-sm font-black text-white sm:col-span-2"
+                >
+                  Return to cart
+                </button>
+              )}
+            </div>
+
+            <p className="mt-4 text-center text-[10px] font-semibold leading-relaxed text-neutral-500">
+              The sale is created only after Coffee Bond verifies a captured payment directly with Razorpay.
+            </p>
+          </section>
+        </div>
       )}
 
       {/* Sticky Mobile Cart Bar */}

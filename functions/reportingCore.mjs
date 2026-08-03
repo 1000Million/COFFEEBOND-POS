@@ -1049,6 +1049,7 @@ function billerRows(records) {
       cash: metrics.paymentBreakdown.CASH || 0,
       upi: metrics.paymentBreakdown.UPI || 0,
       card: metrics.paymentBreakdown.CARD || 0,
+      razorpay: metrics.paymentBreakdown.RAZORPAY || 0,
       splitOrders: row.records.filter((record) => record.payments.length > 1).length,
       discountValue: metrics.discounts,
       complimentaryCount: metrics.complimentaryOrderCount,

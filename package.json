@@ -49,6 +49,7 @@
     "test:franchise-viewer": "esbuild scripts/test-franchise-viewer.ts --bundle --platform=node --format=esm --outfile=/tmp/franchise-viewer-test.mjs && node /tmp/franchise-viewer-test.mjs",
     "test:reporting-centre": "esbuild scripts/test-reporting-centre.ts --bundle --platform=node --format=esm --outfile=/tmp/reporting-centre-test.mjs && node /tmp/reporting-centre-test.mjs",
     "test:razorpay-checkout": "node scripts/test-razorpay-checkout.mjs",
+    "test:pos-razorpay": "node scripts/test-pos-razorpay.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs",
     "test:product-addon-controls": "node scripts/test-product-addon-controls.mjs"
   },
@@ -66,6 +67,7 @@
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "react-qr-code": "^2.2.0",
     "react-router-dom": "^7.15.1",
     "shadcn": "^4.8.0",
     "tailwind-merge": "^3.6.0",

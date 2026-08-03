@@ -9,6 +9,7 @@ const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
 const { createReportingFunctions } = require('./reporting');
 const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst');
+const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 
 admin.initializeApp();
@@ -51,7 +52,19 @@ exports.setPosLaunchException = storeProvisioningFunctions.setPosLaunchException
 exports.activateStore = storeProvisioningFunctions.activateStore;
 exports.setStoreCustomerOrdering = storeProvisioningFunctions.setStoreCustomerOrdering;
 
-const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
+const posRazorpayFunctions = createPosRazorpayFunctions({ admin, db, region: REGION });
+exports.createPosRazorpaySession = posRazorpayFunctions.createPosRazorpaySession;
+exports.getPosRazorpayStatus = posRazorpayFunctions.getPosRazorpayStatus;
+exports.cancelPosRazorpaySession = posRazorpayFunctions.cancelPosRazorpaySession;
+exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund;
+
+const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({
+  admin,
+  db,
+  region: REGION,
+  posPaymentWebhookHandler: posRazorpayFunctions.processPaymentWebhook,
+  posRefundWebhookHandler: posRazorpayFunctions.processRefundWebhook,
+});
 exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
 exports.updateCustomerProfile = razorpayCheckoutFunctions.updateCustomerProfile;
 exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;

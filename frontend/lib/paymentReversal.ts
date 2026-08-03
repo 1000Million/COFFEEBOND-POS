@@ -135,6 +135,32 @@ export function buildPaymentReversalAudit(order: Order, payments?: OrderPayment[
   };
 }
 
+export function buildRazorpayRefundAudit(
+  order: Order,
+  payments: OrderPayment[],
+  refundStatus: 'REFUND_PENDING' | 'REFUNDED',
+): PaymentReversalAudit {
+  const paidRows = normalizePaymentRows(order, payments);
+  const amount = money(paidRows.reduce((sum, row) => sum + row.amount, 0));
+  const reversalStatus: PaymentReversalStatus = refundStatus;
+  return {
+    paymentReversalStatus: reversalStatus,
+    paymentReversalBreakdown: paidRows.map(row => ({
+      ...row,
+      reversalStatus,
+      reason: refundStatus === 'REFUNDED'
+        ? 'Razorpay confirmed the full provider refund.'
+        : 'The full Razorpay refund was initiated and awaits provider confirmation.',
+    })),
+    paymentReversalTotal: amount,
+    refundedAmount: refundStatus === 'REFUNDED' ? amount : 0,
+    reversedAmount: 0,
+    refundPendingAmount: refundStatus === 'REFUND_PENDING' ? amount : 0,
+    manualRefundRequiredAmount: 0,
+    netCollectionAmount: 0,
+  };
+}
+
 export function orderPaymentReversalAudit(order: Order): PaymentReversalAudit {
   const record = order as Order & Partial<PaymentReversalAudit>;
   if (Array.isArray(record.paymentReversalBreakdown) && record.paymentReversalBreakdown.length > 0) {

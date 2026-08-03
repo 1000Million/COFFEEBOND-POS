@@ -106,6 +106,7 @@ const razorpayPaymentIntentsBlock = extractMatchBlock(rules, 'match /razorpayPay
 const razorpayWebhookEventsBlock = extractMatchBlock(rules, 'match /razorpayWebhookEvents/{eventId}');
 const customerProfilesBlock = extractMatchBlock(rules, 'match /customerProfiles/{customerUid}');
 const customerCheckoutSessionsBlock = extractMatchBlock(rules, 'match /customerCheckoutSessions/{sessionId}');
+const posRazorpaySessionsBlock = extractMatchBlock(rules, 'match /posRazorpaySessions/{sessionId}');
 const inventoryReservationsBlock = extractMatchBlock(rules, 'match /inventoryReservations/{reservationId}');
 const razorpayRefundsBlock = extractMatchBlock(rules, 'match /razorpayRefunds/{refundId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
@@ -199,6 +200,7 @@ assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayPaymentIntentsBlock), 'Franc
 assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayWebhookEventsBlock), 'Franchise Viewer must not access private Razorpay webhook audits.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(customerProfilesBlock), 'Private customer profiles must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(customerCheckoutSessionsBlock), 'Customer checkout sessions must be server-only.');
+assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazorpaySessionsBlock), 'POS Razorpay sessions must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(inventoryReservationsBlock), 'Inventory reservations must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(razorpayRefundsBlock), 'Razorpay refunds must be server-only.');
 assert(/resource\.data\.paymentProvider\s*!=\s*'RAZORPAY'/.test(onlineOrdersBlock), 'All Razorpay online-order mutations must use secured backend callables.');
@@ -365,6 +367,7 @@ const cases = [
   'customer tracking reads are exact-token only: get allowed, list denied',
   'customer tracking writes remain sanitized: public fields exclude PII and internal IDs',
   'customer profiles and checkout sessions are server-only',
+  'POS Razorpay sessions are server-only',
   'soft inventory reservations and Razorpay refund records are server-only',
   'paid Razorpay online orders can be accepted or refunded only through secured callables',
   'Cashier creates orders only for assigned stores and as themselves',
