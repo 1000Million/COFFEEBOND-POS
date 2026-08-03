@@ -2,8 +2,8 @@
 
 const { randomBytes } = require('node:crypto');
 const Razorpay = require('razorpay');
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
-const { defineString } = require('firebase-functions/params');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
+const { defineSecret, defineString } = require('firebase-functions/params');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
 const {
@@ -19,21 +19,29 @@ const {
   rupeesToPaise,
   safeProviderError,
   sha256,
+  verifyWebhookSignature,
 } = require('./razorpayCheckoutPolicy');
 const {
-  RAZORPAY_KEY_ID,
-  RAZORPAY_KEY_SECRET,
   razorpayClient,
 } = require('./razorpayCheckout');
 
 const POS_SESSION_COLLECTION = 'posRazorpaySessions';
+const POS_WEBHOOK_AUDIT_COLLECTION = 'posRazorpayWebhookEvents';
 const REFUND_COLLECTION = 'razorpayRefunds';
 // Razorpay Dynamic QR requires close_by to be at least 15 minutes ahead.
 // A one-minute margin prevents request latency from falling below that limit.
 const POS_SESSION_TTL_MS = 16 * 60 * 1000;
 const PROVIDER_CREATION_LEASE_MS = 60 * 1000;
 const REFUND_REQUEST_LEASE_MS = 2 * 60 * 1000;
+const POS_WEBHOOK_LEASE_MS = 2 * 60 * 1000;
+const POS_RAZORPAY_KEY_ID = defineString('POS_RAZORPAY_KEY_ID', { default: '' });
+const POS_RAZORPAY_KEY_SECRET = defineSecret('POS_RAZORPAY_KEY_SECRET');
+const POS_RAZORPAY_WEBHOOK_SECRET = defineSecret('POS_RAZORPAY_WEBHOOK_SECRET');
 const POS_RAZORPAY_DYNAMIC_QR_ENABLED = defineString('POS_RAZORPAY_DYNAMIC_QR_ENABLED', { default: 'false' });
+const POS_RAZORPAY_EXPECTED_MODE = 'TEST';
+const POS_RAZORPAY_MODE_MISMATCH_MESSAGE = 'POS Razorpay mode mismatch: Test Mode required';
+const POS_PAYMENT_WEBHOOK_EVENTS = new Set(['payment_link.paid', 'qr_code.credited', 'payment.failed']);
+const POS_REFUND_WEBHOOK_EVENTS = new Set(['refund.created', 'refund.processed', 'refund.failed']);
 const ACTIVE_SESSION_STATUSES = new Set(['CREATING', 'WAITING_FOR_PAYMENT', 'RECOVERING']);
 const FINAL_SESSION_STATUSES = new Set(['PAYMENT_CAPTURED', 'EXPIRED', 'CANCELLED', 'FAILED']);
 
@@ -43,6 +51,14 @@ function fail(code, message) {
 
 function booleanParameter(parameter) {
   return String(parameter?.value?.() || 'false').trim().toLowerCase() === 'true';
+}
+
+function assertPosRazorpayTestMode(value) {
+  const keyId = cleanText(value, 120);
+  if (POS_RAZORPAY_EXPECTED_MODE !== 'TEST' || !/^rzp_test_[A-Za-z0-9]+$/.test(keyId)) {
+    fail('failed-precondition', POS_RAZORPAY_MODE_MISMATCH_MESSAGE);
+  }
+  return keyId;
 }
 
 function roundMoney(value) {
@@ -1411,13 +1427,171 @@ async function processPosRefundWebhook({ db, admin, eventName, refundEntity }) {
   return { handled: true, outcome: status };
 }
 
+async function claimPosWebhookEvent({ db, admin, eventId, eventName }) {
+  const auditRef = db.collection(POS_WEBHOOK_AUDIT_COLLECTION).doc(safeDocId(eventId, 180));
+  const leaseId = `pos_webhook_${randomBytes(12).toString('hex')}`;
+  const now = Date.now();
+  const claim = await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(auditRef);
+    const existing = snapshot.exists ? snapshot.data() : null;
+    if (existing?.status === 'PROCESSED') return { kind: 'DUPLICATE', auditRef };
+    const leaseUntil = timestampMillis(existing?.processingLeaseUntil);
+    if (existing?.status === 'PROCESSING' && leaseUntil && leaseUntil > now) {
+      return { kind: 'IN_PROGRESS', auditRef };
+    }
+    transaction.set(auditRef, {
+      eventId,
+      eventName,
+      provider: PROVIDER,
+      workflow: 'POS_IN_STORE',
+      mode: POS_RAZORPAY_EXPECTED_MODE,
+      status: 'PROCESSING',
+      processingLeaseId: leaseId,
+      processingLeaseUntil: admin.firestore.Timestamp.fromMillis(now + POS_WEBHOOK_LEASE_MS),
+      receivedAt: existing?.receivedAt || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { kind: 'CLAIMED', auditRef, leaseId };
+  });
+  return claim;
+}
+
+async function finishPosWebhookEvent({ db, auditRef, admin, leaseId, status, outcome, orderId = null }) {
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(auditRef);
+    if (!snapshot.exists || snapshot.data()?.processingLeaseId !== leaseId) {
+      throw new Error('POS Razorpay webhook audit lease changed before completion.');
+    }
+    transaction.set(auditRef, {
+      status,
+      outcome,
+      coffeeBondPosOrderId: orderId,
+      processingLeaseId: admin.firestore.FieldValue.delete(),
+      processingLeaseUntil: admin.firestore.FieldValue.delete(),
+      completedLeaseId: leaseId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+}
+
+async function handlePosRazorpayWebhook({
+  request,
+  response,
+  db,
+  admin,
+  keyId,
+  keySecret,
+  webhookSecret,
+  RazorpayClass = Razorpay,
+}) {
+  let testKeyId;
+  try {
+    testKeyId = assertPosRazorpayTestMode(keyId);
+  } catch {
+    console.error('pos-razorpay-mode-mismatch', { expectedMode: POS_RAZORPAY_EXPECTED_MODE });
+    response.status(503).json({ ok: false, error: POS_RAZORPAY_MODE_MISMATCH_MESSAGE });
+    return;
+  }
+  const rawBody = request.rawBody;
+  if (!verifyWebhookSignature({
+    rawBody,
+    signature: request.get('x-razorpay-signature'),
+    webhookSecret,
+  })) {
+    response.status(400).send('Invalid POS Razorpay webhook signature.');
+    return;
+  }
+  const event = request.body || {};
+  const eventName = cleanText(event.event, 80);
+  if (!POS_PAYMENT_WEBHOOK_EVENTS.has(eventName) && !POS_REFUND_WEBHOOK_EVENTS.has(eventName)) {
+    response.status(400).json({ ok: false, error: 'Unsupported POS Razorpay webhook event.' });
+    return;
+  }
+  const eventId = cleanText(request.get('x-razorpay-event-id'), 160)
+    || `pos_evt_${sha256(rawBody).slice(0, 48)}`;
+  const claim = await claimPosWebhookEvent({ db, admin, eventId, eventName });
+  if (claim.kind === 'DUPLICATE') {
+    response.status(200).json({ ok: true, duplicate: true });
+    return;
+  }
+  if (claim.kind === 'IN_PROGRESS') {
+    response.status(500).json({ ok: false, retry: true });
+    return;
+  }
+
+  try {
+    const paymentEntity = event.payload?.payment?.entity || null;
+    const paymentLinkEntity = event.payload?.payment_link?.entity || null;
+    const qrCodeEntity = event.payload?.qr_code?.entity || null;
+    const refundEntity = event.payload?.refund?.entity || null;
+    let result;
+    if (POS_REFUND_WEBHOOK_EVENTS.has(eventName)) {
+      result = await processPosRefundWebhook({ db, admin, eventName, refundEntity });
+    } else {
+      const client = razorpayClient(testKeyId, keySecret, RazorpayClass);
+      result = await processPosPaymentWebhook({
+        db,
+        admin,
+        eventName,
+        paymentEntity,
+        paymentLinkEntity,
+        qrCodeEntity,
+        client,
+      });
+    }
+    if (!result.handled) {
+      await finishPosWebhookEvent({
+        db,
+        auditRef: claim.auditRef,
+        admin,
+        leaseId: claim.leaseId,
+        status: 'REJECTED',
+        outcome: result.outcome || 'NOT_POS_RAZORPAY_EVENT',
+      });
+      response.status(400).json({ ok: false, error: 'Event does not belong to a POS Razorpay session.' });
+      return;
+    }
+    await finishPosWebhookEvent({
+      db,
+      auditRef: claim.auditRef,
+      admin,
+      leaseId: claim.leaseId,
+      status: result.retry ? 'FAILED' : 'PROCESSED',
+      outcome: result.outcome,
+      orderId: result.orderId || null,
+    });
+    response.status(result.retry ? 500 : 200).json({
+      ok: result.retry !== true,
+      duplicate: result.duplicate === true,
+      retry: result.retry === true,
+    });
+  } catch (error) {
+    const safe = safeProviderError(error);
+    await finishPosWebhookEvent({
+      db,
+      auditRef: claim.auditRef,
+      admin,
+      leaseId: claim.leaseId,
+      status: 'FAILED',
+      outcome: safe.code,
+    });
+    console.error('pos-razorpay-webhook-failed', {
+      eventHash: sha256(eventId).slice(0, 16),
+      eventName,
+      failureCode: safe.code,
+    });
+    response.status(500).json({ ok: false, retry: true });
+  }
+}
+
 function createPosRazorpayFunctions({
   admin,
   db,
   region,
   RazorpayClass = Razorpay,
-  keyIdParameter = RAZORPAY_KEY_ID,
-  keySecretParameter = RAZORPAY_KEY_SECRET,
+  keyIdParameter = POS_RAZORPAY_KEY_ID,
+  keySecretParameter = POS_RAZORPAY_KEY_SECRET,
+  webhookSecretParameter = POS_RAZORPAY_WEBHOOK_SECRET,
   dynamicQrParameter = POS_RAZORPAY_DYNAMIC_QR_ENABLED,
   fetchImpl = globalThis.fetch,
 }) {
@@ -1430,7 +1604,7 @@ function createPosRazorpayFunctions({
     request,
     db,
     admin,
-    keyId: cleanText(keyIdParameter.value(), 120),
+    keyId: assertPosRazorpayTestMode(keyIdParameter.value()),
     keySecret: keySecretParameter.value(),
     RazorpayClass,
     dynamicQrEnabled: booleanParameter(dynamicQrParameter),
@@ -1445,7 +1619,7 @@ function createPosRazorpayFunctions({
     request,
     db,
     admin,
-    keyId: cleanText(keyIdParameter.value(), 120),
+    keyId: assertPosRazorpayTestMode(keyIdParameter.value()),
     keySecret: keySecretParameter.value(),
     RazorpayClass,
   }));
@@ -1459,7 +1633,7 @@ function createPosRazorpayFunctions({
     request,
     db,
     admin,
-    keyId: cleanText(keyIdParameter.value(), 120),
+    keyId: assertPosRazorpayTestMode(keyIdParameter.value()),
     keySecret: keySecretParameter.value(),
     RazorpayClass,
   }));
@@ -1473,31 +1647,54 @@ function createPosRazorpayFunctions({
     request,
     db,
     admin,
-    keyId: cleanText(keyIdParameter.value(), 120),
+    keyId: assertPosRazorpayTestMode(keyIdParameter.value()),
     keySecret: keySecretParameter.value(),
     fetchImpl,
+  }));
+
+  const posRazorpayWebhook = onRequest({
+    region,
+    timeoutSeconds: 180,
+    memory: '1GiB',
+    secrets: [keySecretParameter, webhookSecretParameter],
+  }, (request, response) => handlePosRazorpayWebhook({
+    request,
+    response,
+    db,
+    admin,
+    keyId: keyIdParameter.value(),
+    keySecret: keySecretParameter.value(),
+    webhookSecret: webhookSecretParameter.value(),
+    RazorpayClass,
   }));
 
   return {
     cancelPosRazorpaySession,
     createPosRazorpaySession,
     getPosRazorpayStatus,
+    posRazorpayWebhook,
     requestPosRazorpayRefund,
-    processPaymentWebhook: input => processPosPaymentWebhook({ db, admin, ...input }),
-    processRefundWebhook: input => processPosRefundWebhook({ db, admin, ...input }),
   };
 }
 
 module.exports = {
   ACTIVE_SESSION_STATUSES,
   FINAL_SESSION_STATUSES,
+  POS_RAZORPAY_EXPECTED_MODE,
+  POS_RAZORPAY_KEY_ID,
+  POS_RAZORPAY_KEY_SECRET,
+  POS_RAZORPAY_MODE_MISMATCH_MESSAGE,
+  POS_RAZORPAY_WEBHOOK_SECRET,
   POS_RAZORPAY_DYNAMIC_QR_ENABLED,
   POS_SESSION_COLLECTION,
   POS_SESSION_TTL_MS,
+  POS_WEBHOOK_AUDIT_COLLECTION,
+  assertPosRazorpayTestMode,
   booleanParameter,
   canonicalizePosRequest,
   cancelPosSession,
   checksum,
+  claimPosWebhookEvent,
   createIdempotentProviderRefund,
   createPosRazorpayFunctions,
   createPosSession,
@@ -1505,6 +1702,7 @@ module.exports = {
   deterministicRefundId,
   finalizeCapturedPosPayment,
   getPosSessionStatus,
+  handlePosRazorpayWebhook,
   processPosPaymentWebhook,
   processPosRefundWebhook,
   requestPosRefund,

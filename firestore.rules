@@ -778,6 +778,10 @@ service cloud.firestore {
       allow read, create, update, delete: if false;
     }
 
+    match /posRazorpayWebhookEvents/{eventId} {
+      allow read, create, update, delete: if false;
+    }
+
     match /inventoryReservations/{reservationId} {
       allow read, create, update, delete: if false;
     }

@@ -57,14 +57,9 @@ exports.createPosRazorpaySession = posRazorpayFunctions.createPosRazorpaySession
 exports.getPosRazorpayStatus = posRazorpayFunctions.getPosRazorpayStatus;
 exports.cancelPosRazorpaySession = posRazorpayFunctions.cancelPosRazorpaySession;
 exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund;
+exports.posRazorpayWebhook = posRazorpayFunctions.posRazorpayWebhook;
 
-const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({
-  admin,
-  db,
-  region: REGION,
-  posPaymentWebhookHandler: posRazorpayFunctions.processPaymentWebhook,
-  posRefundWebhookHandler: posRazorpayFunctions.processRefundWebhook,
-});
+const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
 exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
 exports.updateCustomerProfile = razorpayCheckoutFunctions.updateCustomerProfile;
 exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;

@@ -42,8 +42,6 @@ const PROVIDER_CREATION_LEASE_MS = 60 * 1000;
 const REFUND_REQUEST_LEASE_MS = 2 * 60 * 1000;
 const MAGIC_CHECKOUT_ENABLED = defineString('RAZORPAY_MAGIC_CHECKOUT_ENABLED', { default: 'false' });
 const PHONE_PATTERN = /^\+91[6-9][0-9]{9}$/;
-const CUSTOMER_PAYMENT_WEBHOOK_EVENTS = ['payment.captured', 'payment.failed', 'order.paid'];
-const POS_PAYMENT_WEBHOOK_EVENTS = ['payment_link.paid', 'qr_code.credited'];
 
 function fail(code, message) {
   throw new HttpsError(code, message);
@@ -1117,8 +1115,6 @@ function createRazorpayPaymentFirstFunctions({
   keySecretParameter = RAZORPAY_KEY_SECRET,
   webhookSecretParameter = RAZORPAY_WEBHOOK_SECRET,
   magicCheckoutParameter = MAGIC_CHECKOUT_ENABLED,
-  posPaymentWebhookHandler = null,
-  posRefundWebhookHandler = null,
 }) {
   const resolveCustomerProfile = onCall({ region }, request => (
     resolveCustomerProfileHandler({ request, db, admin })
@@ -1207,8 +1203,6 @@ function createRazorpayPaymentFirstFunctions({
     const paymentEntity = event.payload?.payment?.entity || null;
     const orderEntity = event.payload?.order?.entity || null;
     const refundEntity = event.payload?.refund?.entity || null;
-    const paymentLinkEntity = event.payload?.payment_link?.entity || null;
-    const qrCodeEntity = event.payload?.qr_code?.entity || null;
     await auditRef.set({
       eventId,
       eventName,
@@ -1219,12 +1213,7 @@ function createRazorpayPaymentFirstFunctions({
     }, { merge: true });
 
     if (['refund.created', 'refund.processed', 'refund.failed'].includes(eventName)) {
-      const posOutcome = typeof posRefundWebhookHandler === 'function'
-        ? await posRefundWebhookHandler({ eventName, refundEntity })
-        : { handled: false, outcome: 'POS_REFUND_HANDLER_NOT_CONFIGURED' };
-      const outcome = posOutcome.handled
-        ? posOutcome
-        : await updateRefundFromWebhook({ db, admin, eventName, refundEntity });
+      const outcome = await updateRefundFromWebhook({ db, admin, eventName, refundEntity });
       await auditRef.set({
         status: outcome.handled ? 'PROCESSED' : 'FAILED',
         outcome: outcome.outcome,
@@ -1233,7 +1222,7 @@ function createRazorpayPaymentFirstFunctions({
       response.status(200).json({ ok: true, reviewRequired: !outcome.handled });
       return;
     }
-    if (![...CUSTOMER_PAYMENT_WEBHOOK_EVENTS, ...POS_PAYMENT_WEBHOOK_EVENTS].includes(eventName)) {
+    if (!['payment.captured', 'payment.failed', 'order.paid'].includes(eventName)) {
       await auditRef.set({
         status: 'PROCESSED',
         outcome: 'IGNORED_UNSUPPORTED_EVENT',
@@ -1243,60 +1232,14 @@ function createRazorpayPaymentFirstFunctions({
       return;
     }
     const providerOrderId = cleanText(paymentEntity?.order_id || orderEntity?.id, 120);
-    const sessionQuery = providerOrderId
-      ? await db.collection(CHECKOUT_SESSION_COLLECTION)
-        .where('razorpayOrderId', '==', providerOrderId)
-        .limit(2)
-        .get()
-      : null;
-    if (!sessionQuery || sessionQuery.size !== 1) {
-      if (typeof posPaymentWebhookHandler === 'function') {
-        const client = razorpayClient(
-          cleanText(keyIdParameter.value(), 120),
-          keySecretParameter.value(),
-          RazorpayClass,
-        );
-        try {
-          const posOutcome = await posPaymentWebhookHandler({
-            eventName,
-            paymentEntity,
-            orderEntity,
-            paymentLinkEntity,
-            qrCodeEntity,
-            client,
-          });
-          if (posOutcome.handled) {
-            await auditRef.set({
-              status: posOutcome.retry ? 'FAILED' : 'PROCESSED',
-              outcome: posOutcome.outcome,
-              coffeeBondPosOrderId: posOutcome.orderId || null,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            }, { merge: true });
-            response.status(posOutcome.retry ? 500 : 200).json({
-              ok: true,
-              duplicate: posOutcome.duplicate === true,
-              retry: posOutcome.retry === true,
-            });
-            return;
-          }
-        } catch (error) {
-          console.error('pos-razorpay-webhook-failed', {
-            eventId,
-            eventName,
-            failureCode: cleanText(error?.code || error?.message, 120),
-          });
-          await auditRef.set({
-            status: 'FAILED',
-            outcome: 'POS_PAYMENT_VERIFICATION_OR_FINALISATION_FAILED',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, { merge: true });
-          response.status(500).json({ ok: false });
-          return;
-        }
-      }
+    const sessionQuery = await db.collection(CHECKOUT_SESSION_COLLECTION)
+      .where('razorpayOrderId', '==', providerOrderId)
+      .limit(2)
+      .get();
+    if (sessionQuery.size !== 1) {
       await auditRef.set({
         status: 'FAILED',
-        outcome: 'CHECKOUT_OR_POS_SESSION_NOT_FOUND',
+        outcome: 'CHECKOUT_SESSION_NOT_FOUND',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       response.status(200).json({ ok: true, reviewRequired: true });
