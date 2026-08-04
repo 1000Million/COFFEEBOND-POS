@@ -135,7 +135,7 @@ export default function CustomerMyOrders() {
   ), [orders]);
 
   return (
-    <main className="min-h-[100dvh] bg-[#f8efe6] text-neutral-900">
+    <main className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] text-neutral-900 pb-[max(1.5rem,env(safe-area-inset-bottom))] [padding-left:env(safe-area-inset-left)] [padding-right:env(safe-area-inset-right)]">
       <CustomerHeader
         title="My Orders"
         profile={profile}

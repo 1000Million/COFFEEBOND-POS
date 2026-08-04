@@ -6,6 +6,7 @@ import {
   trustedDietaryClassification,
 } from '../frontend/lib/customerMenuPresentation';
 import { deriveCustomerOrderingState } from '../frontend/lib/customerOrderingState';
+import { isCustomerPath } from '../frontend/lib/customerPwaIdentity';
 
 const root = process.cwd();
 const source = (path: string) => readFileSync(resolve(root, path), 'utf8');
@@ -123,6 +124,81 @@ for (const path of protectedStaffActions) {
   assert.match(protectedSource, /requireOnlineAction\(\)/, `${path} must guard its mutation handler`);
   assert.match(protectedSource, /data-requires-online="true"/, `${path} must mark its mutation UI as online-only`);
   assert.match(protectedSource, /beginCriticalOperation\(/, `${path} must defer PWA prompts during mutations`);
+}
+
+// ---------------------------------------------------------------------------
+// Customer PWA identity: a second installable app served from the same origin.
+// The staff manifest assertions above must keep passing unchanged.
+// ---------------------------------------------------------------------------
+const customerManifest = JSON.parse(source('public/manifest-customer.webmanifest')) as Record<string, unknown>;
+const identity = source('frontend/lib/customerPwaIdentity.ts');
+const identitySync = source('frontend/components/PwaIdentitySync.tsx');
+const appRoot = source('frontend/App.tsx');
+const indexHtml = source('index.html');
+const orderStatus = source('frontend/pages/customer/CustomerOrderStatus.tsx');
+const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
+
+assert.equal(customerManifest.name, 'Coffee Bond');
+assert.equal(customerManifest.short_name, 'Coffee Bond');
+assert.equal(customerManifest.start_url, '/order');
+assert.equal(customerManifest.scope, '/order');
+assert.equal(customerManifest.display, 'standalone');
+assert.equal(customerManifest.id, '/order');
+assert.equal(customerManifest.background_color, '#fbf7f1');
+assert.ok(Array.isArray(customerManifest.icons) && (customerManifest.icons as unknown[]).length >= 3);
+assert.ok(
+  (customerManifest.icons as { purpose?: string }[]).some((icon) => icon.purpose === 'maskable'),
+  'the customer manifest must offer a maskable icon',
+);
+assert.notEqual(customerManifest.start_url, manifest.start_url, 'the two apps must not share a start URL');
+assert.notEqual(customerManifest.id, manifest.id, 'the two apps must be distinct install identities');
+
+// The document default stays on the staff manifest; the customer identity is applied
+// per route at runtime, never by repointing the shared manifest.
+assert.match(indexHtml, /<link rel="manifest" href="\/manifest\.webmanifest" \/>/);
+assert.doesNotMatch(indexHtml, /manifest-customer/);
+
+assert.match(identity, /export const CUSTOMER_MANIFEST_HREF = '\/manifest-customer\.webmanifest'/);
+assert.match(identity, /export const STAFF_MANIFEST_HREF = '\/manifest\.webmanifest'/);
+assert.match(identity, /apple-mobile-web-app-title/);
+assert.match(identity, /BROWSER LIMITATION/, 'the Chromium manifest-switching limitation must stay documented in code');
+assert.match(identitySync, /applyPwaIdentityForPath/);
+assert.match(appRoot, /<PwaIdentitySync \/>/);
+
+// Route classification drives which identity is advertised.
+assert.equal(isCustomerPath('/order'), true);
+assert.equal(isCustomerPath('/order/my-orders'), true);
+assert.equal(isCustomerPath('/order/status/abc123'), true);
+assert.equal(isCustomerPath('/pos'), false);
+assert.equal(isCustomerPath('/admin/locations'), false);
+assert.equal(isCustomerPath('/orders'), false, 'a lookalike staff path must not claim the customer identity');
+
+// Customer install/update prompts, kept separate from the staff ones.
+assert.match(pwaUi, /coffeeBondCustomerInstallDismissedAt/);
+assert.match(pwaUi, /coffeeBondCustomerIosInstallDismissedAt/);
+assert.notEqual('coffeeBondCustomerInstallDismissedAt', 'coffeeBondPosInstallDismissedAt');
+assert.match(pwaUi, /CUSTOMER_ENGAGEMENT_MS/, 'the customer prompt must wait for engagement, not first paint');
+assert.match(pwaUi, /A new Coffee Bond update is ready/);
+assert.match(pwaUi, /Add Coffee Bond to your home screen/);
+assert.match(pwaUi, /Add Coffee Bond to your Home Screen/, 'iOS customers need Add to Home Screen guidance');
+assert.match(pwaUi, /canShowCustomerInstall = isCustomerRoute/);
+assert.match(pwaUi, /&& !isStandalone\(\)/);
+// Staff behaviour must be untouched: still profile-gated and still off customer routes.
+assert.match(pwaUi, /canShowStaffInstall = authStatus === 'ready'/);
+assert.match(pwaUi, /staffProfile && staffProfile\.role !== 'FRANCHISE_VIEWER'/);
+assert.match(pwaUi, /if \(waitingRegistration && !isCustomerRoute\) return 'UPDATE';/);
+
+// A single service worker still serves both apps, with both manifests in the shell
+// and no relaxation of the caching exclusions.
+assert.match(serviceWorker, /'\/manifest-customer\.webmanifest'/);
+assert.match(serviceWorker, /CACHE_VERSION = 'v2'/, 'the shell changed, so the cache version must move');
+assert.doesNotMatch(serviceWorker, /idToken|phone|checkoutSession|authorization/i);
+
+// Safe-area coverage on the two customer screens that previously had none.
+for (const [label, screen] of [['CustomerOrderStatus', orderStatus], ['CustomerMyOrders', myOrders]] as const) {
+  assert.match(screen, /env\(safe-area-inset-bottom\)/, `${label} must pad for the home indicator`);
+  assert.match(screen, /padding-left:env\(safe-area-inset-left\)/, `${label} must pad for landscape notches`);
+  assert.match(screen, /overflow-x-hidden/, `${label} must not overflow horizontally`);
 }
 
 console.log('PWA safety and customer ordering UX tests passed.');

@@ -13,6 +13,7 @@ import EntryRedirect from './components/EntryRedirect';
 import AppLoading from './components/AppLoading';
 import ConnectionStatusBanner from './components/ConnectionStatusBanner';
 import PwaStatusUI from './components/PwaStatusUI';
+import PwaIdentitySync from './components/PwaIdentitySync';
 import { ConnectivityProvider } from './contexts/ConnectivityContext';
 import MissingProfile from './pages/MissingProfile';
 import InactiveProfile from './pages/InactiveProfile';
@@ -116,6 +117,7 @@ export default function App() {
     <AuthProvider>
       <ConnectivityProvider>
         <BrowserRouter>
+          <PwaIdentitySync />
           <ConnectionStatusBanner />
           <PwaStatusUI />
           <Suspense fallback={<RouteLoading />}>

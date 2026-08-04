@@ -1,7 +1,9 @@
 const CACHE_PREFIX = 'coffee-bond-pos-static';
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const STATIC_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}`;
-const APP_SHELL = ['/', '/index.html', '/offline.html', '/manifest.webmanifest', '/pwa/icon-192.png', '/pwa/icon-512.png', '/pwa/icon-maskable-512.png', '/pwa/apple-touch-icon.png'];
+// Both manifests are shell assets: the staff app and the customer ordering app are
+// two separate installable identities served from this origin.
+const APP_SHELL = ['/', '/index.html', '/offline.html', '/manifest.webmanifest', '/manifest-customer.webmanifest', '/pwa/icon-192.png', '/pwa/icon-512.png', '/pwa/icon-maskable-512.png', '/pwa/apple-touch-icon.png'];
 const STATIC_EXTENSION = /\.(?:css|js|mjs|png|jpg|jpeg|webp|svg|ico|woff|woff2)$/i;
 
 self.addEventListener('install', (event) => {

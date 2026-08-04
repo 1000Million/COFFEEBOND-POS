@@ -183,7 +183,7 @@ export default function CustomerOrderStatus() {
   };
 
   return (
-    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] font-sans text-neutral-900">
+    <div className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] font-sans text-neutral-900 pb-[max(1.5rem,env(safe-area-inset-bottom))] [padding-left:env(safe-area-inset-left)] [padding-right:env(safe-area-inset-right)]">
       <CustomerHeader
         title="Track order"
         profile={profile}
