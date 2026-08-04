@@ -17,6 +17,7 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { RawIngredient, PrepItem, StoreStock } from '../../types/menu-management';
 import { Store, StockMovement } from '../../types';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
 type IssueFilter = 'ALL' | 'NEGATIVE_STOCK' | 'MISSING_COST' | 'MISSING_STOCK_ROW';
@@ -380,6 +381,10 @@ export default function StockCorrection() {
 
   const saveEditor = async () => {
     if (!editor || !staffProfile || !selectedStore) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
 
     const reason = form.reason.trim();
     const notes = form.notes.trim();
@@ -392,6 +397,7 @@ export default function StockCorrection() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setSaving(true);
     setError('');
     setSuccess('');
@@ -560,6 +566,7 @@ export default function StockCorrection() {
       setError(err instanceof Error ? err.message : 'Unable to save the correction.');
     } finally {
       setSaving(false);
+      endCriticalOperation();
     }
   };
 
@@ -1038,6 +1045,7 @@ export default function StockCorrection() {
               </button>
               <button
                 onClick={saveEditor}
+                data-requires-online="true"
                 disabled={saving}
                 className="inline-flex items-center gap-2 rounded-full bg-[#3e2723] px-4 py-2 text-sm font-black text-white hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-60"
               >

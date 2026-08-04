@@ -22,7 +22,8 @@ function test(name, run) {
 }
 
 test('1. My Orders link is visible before OTP', () => {
-  assert.match(header, /Sign in \/ My Orders/);
+  assert.match(header, /aria-label="Sign in or view My Orders"/);
+  assert.doesNotMatch(header, />Sign in \/ My Orders</);
   assert.match(header, /to="\/order\/my-orders"/);
 });
 test('2. Before OTP My Orders asks the customer to verify', () => {

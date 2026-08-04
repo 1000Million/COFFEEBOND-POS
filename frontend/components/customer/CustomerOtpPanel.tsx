@@ -7,6 +7,7 @@ import {
   sendCustomerOtp,
   verifyCustomerOtp,
 } from '../../lib/customerAuth';
+import { OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type Props = {
   mobile: string;
@@ -41,6 +42,10 @@ export default function CustomerOtpPanel({
 
   const send = async () => {
     if (!recaptchaRef.current || busy || (confirmation && seconds > 0)) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     setBusy(true);
     setError(null);
     verifierRef.current?.clear();
@@ -59,6 +64,10 @@ export default function CustomerOtpPanel({
 
   const verify = async () => {
     if (!confirmation || busy) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -132,6 +141,7 @@ export default function CustomerOtpPanel({
           <button
             type="button"
             onClick={send}
+            data-requires-online="true"
             disabled={busy || mobile.length !== 10}
             className="mt-3 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#3b261d] px-4 py-3 text-sm font-black text-white disabled:bg-neutral-300"
           >
@@ -155,6 +165,7 @@ export default function CustomerOtpPanel({
           <button
             type="button"
             onClick={verify}
+            data-requires-online="true"
             disabled={busy || otp.length !== 6}
             className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white disabled:bg-neutral-300"
           >
@@ -162,7 +173,7 @@ export default function CustomerOtpPanel({
             Verify OTP
           </button>
           <div className="flex items-center justify-between gap-3 text-xs font-bold sm:col-span-2">
-            <button type="button" onClick={send} disabled={seconds > 0 || busy} className="text-[#5c4033] disabled:text-neutral-400">
+            <button type="button" data-requires-online="true" onClick={send} disabled={seconds > 0 || busy} className="min-h-11 text-[#5c4033] disabled:text-neutral-400">
               {seconds > 0 ? `Resend in ${seconds}s` : 'Resend OTP'}
             </button>
             <button type="button" onClick={changeNumber} className="text-neutral-600 underline">

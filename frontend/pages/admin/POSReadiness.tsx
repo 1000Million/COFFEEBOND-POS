@@ -20,6 +20,7 @@ import {
 } from '../../lib/addOnGroupMapping';
 import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
 import { useAuth } from '../../contexts/AuthContext';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import { Store } from '../../types';
 import { AddOnGroup, BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
 import addOnApprovalManifest from '../../../data/imports/addon-product-reconciliation-approvals.json';
@@ -718,6 +719,10 @@ export default function POSReadiness() {
     || isRefreshingAvailability;
 
   const refreshCustomerAvailabilitySnapshot = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!canRefreshCustomerAvailability) {
       setError('Admin or Store Manager access is required to refresh customer menu availability.');
       return;
@@ -744,6 +749,7 @@ export default function POSReadiness() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setIsRefreshingAvailability(true);
     setError('');
     setSuccessMessage('');
@@ -780,10 +786,15 @@ export default function POSReadiness() {
       }
     } finally {
       setIsRefreshingAvailability(false);
+      endCriticalOperation();
     }
   };
 
   const saveGstConfig = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!isAdmin) {
       setError('Admin access is required to update GST settings.');
       return;
@@ -824,6 +835,7 @@ export default function POSReadiness() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setIsSavingGst(true);
     setError('');
     setSuccessMessage('');
@@ -846,10 +858,15 @@ export default function POSReadiness() {
       setError(err instanceof Error ? err.message : 'Unable to save GST configuration.');
     } finally {
       setIsSavingGst(false);
+      endCriticalOperation();
     }
   };
 
   const restoreEspressoStock = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!isAdmin) {
       setError('Admin access is required for this stock fix.');
       return;
@@ -866,6 +883,7 @@ export default function POSReadiness() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setIsRestoring(true);
     setError('');
     setSuccessMessage('');
@@ -912,6 +930,7 @@ export default function POSReadiness() {
       setError(err instanceof Error ? err.message : 'Unable to restore espresso stock.');
     } finally {
       setIsRestoring(false);
+      endCriticalOperation();
     }
   };
 
@@ -1105,6 +1124,7 @@ export default function POSReadiness() {
               <button
                 type="button"
                 onClick={refreshCustomerAvailabilitySnapshot}
+                data-requires-online="true"
                 disabled={availabilityRefreshDisabled}
                 className="w-full md:w-auto px-4 py-3 bg-[#5c4033] text-white rounded-xl font-black hover:bg-[#4a332a] disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
               >

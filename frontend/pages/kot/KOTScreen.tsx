@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Store, KotItem, KotStatus } from '../../types';
 import { Loader2, Clock, X, ChefHat, Coffee, Store as StoreIcon, Search, AlertTriangle } from 'lucide-react';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -265,6 +266,11 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     }
     if (!item.id) return;
     if (savingItemId) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setSavingItemId(item.id);
     setFeedback('');
     setError('');
@@ -343,6 +349,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
        setError(e.message || 'Failed to update KOT ticket.');
     } finally {
        setSavingItemId(null);
+       endCriticalOperation();
     }
   };
 
@@ -670,6 +677,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                          <button
                            type="button"
                            onClick={() => handleStatusChange(item, action.next)}
+                           data-requires-online="true"
                            disabled={Boolean(savingItemId)}
                            className={`min-h-[52px] flex-1 rounded-2xl px-4 py-3 text-base font-black text-white transition-colors ${action.color} disabled:opacity-50`}
                          >
@@ -734,6 +742,7 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
                <button
                  type="button"
                  onClick={executeCancel}
+                 data-requires-online="true"
                  disabled={Boolean(savingItemId)}
                  className="min-h-[48px] rounded-2xl bg-red-600 px-4 py-3 font-black text-white hover:bg-red-700 disabled:opacity-50"
                >

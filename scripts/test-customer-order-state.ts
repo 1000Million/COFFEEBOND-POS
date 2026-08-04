@@ -62,7 +62,7 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
     orderableItemCount: 2,
   });
   assert.equal(state.canAcceptOrders, false);
-  assert.equal(state.statusLabel, 'Unavailable');
+  assert.equal(state.statusLabel, 'Temporarily unavailable');
   assert.match(state.message, /unavailable/i);
 }
 
@@ -74,7 +74,7 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
     orderableItemCount: 80,
   });
   assert.equal(state.canAcceptOrders, false);
-  assert.equal(state.statusLabel, 'Unavailable');
+  assert.equal(state.statusLabel, 'Closed');
 }
 
 {
@@ -85,7 +85,7 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
     orderableItemCount: 0,
   });
   assert.equal(state.canAcceptOrders, false);
-  assert.equal(state.statusLabel, 'Unavailable');
+  assert.equal(state.statusLabel, 'Menu unavailable');
   assert.match(state.message, /No items/i);
   assertNoAcceptingUnavailableContradiction(state);
 }
@@ -129,7 +129,7 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
     orderableItemCount: 0,
   });
   assert.equal(state.canAcceptOrders, false);
-  assert.equal(state.statusLabel, 'Menu updating');
+  assert.equal(state.statusLabel, 'Menu unavailable');
   assert.match(state.message, /menu is being refreshed/i);
   assertNoAcceptingUnavailableContradiction(state);
 }

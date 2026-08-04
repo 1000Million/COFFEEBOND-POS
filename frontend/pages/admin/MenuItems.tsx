@@ -4,6 +4,7 @@ import { db } from '../../lib/firebase';
 import { MenuSquare, Plus, Edit2, Loader2, Check, X, Search, Filter } from 'lucide-react';
 import { MenuItem, Category, Store, PrepStation } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
+import { beginCriticalOperation, requireOnlineAction } from '../../lib/connectivity';
 
 export default function MenuItems() {
   const { staffProfile } = useAuth();
@@ -103,6 +104,8 @@ export default function MenuItems() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!requireOnlineAction()) return;
+    const endCriticalOperation = beginCriticalOperation();
     setSubmitting(true);
     
     try {
@@ -146,6 +149,7 @@ export default function MenuItems() {
       console.error("Error saving menu item:", error);
     } finally {
       setSubmitting(false);
+      endCriticalOperation();
     }
   };
 
@@ -186,7 +190,7 @@ export default function MenuItems() {
       {isFormOpen && (
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 mb-6 font-sans">
           <h3 className="text-lg font-bold mb-4">{editingId ? 'Edit Item' : 'New Item'}</h3>
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} data-requires-online="true" className="space-y-6">
             
             {/* Core Details (Admin Only for Edit) */}
             <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${!isAdmin ? 'opacity-50 pointer-events-none' : ''}`}>

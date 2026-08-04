@@ -12,6 +12,8 @@ import ProtectedRoute from './components/ProtectedRoute';
 import EntryRedirect from './components/EntryRedirect';
 import AppLoading from './components/AppLoading';
 import ConnectionStatusBanner from './components/ConnectionStatusBanner';
+import PwaStatusUI from './components/PwaStatusUI';
+import { ConnectivityProvider } from './contexts/ConnectivityContext';
 import MissingProfile from './pages/MissingProfile';
 import InactiveProfile from './pages/InactiveProfile';
 
@@ -112,9 +114,11 @@ function FranchiseLoginRoute() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <ConnectionStatusBanner />
-        <Suspense fallback={<RouteLoading />}>
+      <ConnectivityProvider>
+        <BrowserRouter>
+          <ConnectionStatusBanner />
+          <PwaStatusUI />
+          <Suspense fallback={<RouteLoading />}>
           <Routes>
             <Route path="/order" element={<CustomerOrder />} />
             <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
@@ -185,8 +189,9 @@ export default function App() {
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
-        </Suspense>
-      </BrowserRouter>
+          </Suspense>
+        </BrowserRouter>
+      </ConnectivityProvider>
     </AuthProvider>
   );
 }

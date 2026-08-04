@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { Minus, Plus, X } from 'lucide-react';
 import type { AddOnSelection } from '../../types';
 import type { AddOnGroup } from '../../types/menu-management';
+import type { DietaryClassification } from '../../lib/customerMenuPresentation';
+import DietaryMarker from '../customer/DietaryMarker';
 import {
   AddOnQuantityByOption,
   buildAddOnSelections,
@@ -15,6 +17,7 @@ type Props = {
   groups: AddOnGroup[];
   initialSelections?: AddOnSelection[];
   mode?: 'POS' | 'CUSTOMER';
+  dietaryClassification?: DietaryClassification | null;
   onCancel: () => void;
   onConfirm: (addOns: AddOnSelection[]) => void;
 };
@@ -39,6 +42,7 @@ export default function AddOnSelector({
   groups,
   initialSelections = [],
   mode = 'POS',
+  dietaryClassification = null,
   onCancel,
   onConfirm,
 }: Props) {
@@ -89,11 +93,16 @@ export default function AddOnSelector({
           <div>
             <p className="text-xs font-black uppercase tracking-[0.14em] text-[#8a6a58]">Customise item</p>
             <h2 className="mt-1 text-xl font-black text-[#2d1c19]">{productName}</h2>
+            {dietaryClassification && (
+              <div className="mt-1.5">
+                <DietaryMarker value={dietaryClassification} />
+              </div>
+            )}
             <p className="mt-1 text-sm font-bold text-neutral-500">
               ₹{basePrice.toFixed(2)} + ₹{addOnValue.toFixed(2)} add-ons
             </p>
           </div>
-          <button type="button" onClick={onCancel} className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f5efe7] text-[#5c4033]" aria-label="Close">
+          <button type="button" onClick={onCancel} className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f5efe7] text-[#5c4033]" aria-label="Close">
             <X size={18} />
           </button>
         </header>
@@ -135,7 +144,7 @@ export default function AddOnSelector({
                             type="button"
                             onClick={() => updateQuantity(group, option.id, -1)}
                             disabled={quantity === 0}
-                            className="flex h-8 w-8 items-center justify-center rounded-full text-[#5c4033] disabled:opacity-30"
+                            className="flex h-11 w-11 items-center justify-center rounded-full text-[#5c4033] disabled:opacity-30"
                             aria-label={`Remove ${option.name}`}
                           >
                             <Minus size={15} />
@@ -144,7 +153,7 @@ export default function AddOnSelector({
                           <button
                             type="button"
                             onClick={() => updateQuantity(group, option.id, 1)}
-                            className="flex h-8 w-8 items-center justify-center rounded-full bg-[#5c4033] text-white"
+                            className="flex h-11 w-11 items-center justify-center rounded-full bg-[#5c4033] text-white"
                             aria-label={`Add ${option.name}`}
                           >
                             <Plus size={15} />
