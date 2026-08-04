@@ -8,12 +8,11 @@ import { PWA_UPDATE_AVAILABLE_EVENT, activateWaitingServiceWorker } from '../lib
 const DISMISS_MS = 14 * 24 * 60 * 60 * 1000;
 const INSTALL_DISMISSED_AT_KEY = 'coffeeBondPosInstallDismissedAt';
 const IOS_INSTALL_DISMISSED_AT_KEY = 'coffeeBondPosIosInstallDismissedAt';
-// Customer dismissals are tracked separately so declining one app never suppresses
-// the other. The staff keys above are untouched.
-const CUSTOMER_INSTALL_DISMISSED_AT_KEY = 'coffeeBondCustomerInstallDismissedAt';
-const CUSTOMER_IOS_INSTALL_DISMISSED_AT_KEY = 'coffeeBondCustomerIosInstallDismissedAt';
-/** Customers only see an install invitation after they have actually browsed. */
-const CUSTOMER_ENGAGEMENT_MS = 20 * 1000;
+// HOTFIX: customer install invitations are withdrawn on this origin. Installing from
+// /order produced a "CB POS" app pointing at /pos and Android folded it into the staff
+// app, so no install or Add to Home Screen guidance is offered to customers until the
+// customer app moves to order.coffeebond.in. The customer update prompt is retained —
+// it only offers a refresh for a waiting service worker and is blocked during checkout.
 
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -57,18 +56,11 @@ export default function PwaStatusUI() {
   const [showIosInstructions, setShowIosInstructions] = useState(false);
   const [waitingRegistration, setWaitingRegistration] = useState<ServiceWorkerRegistration | null>(null);
   const [installing, setInstalling] = useState(false);
-  const [customerEngaged, setCustomerEngaged] = useState(false);
 
   const isCustomerRoute = location.pathname === '/order' || location.pathname.startsWith('/order/');
   const canShowStaffInstall = authStatus === 'ready'
     && Boolean(staffProfile && staffProfile.role !== 'FRANCHISE_VIEWER')
     && !isCustomerRoute
-    && !criticalOperationActive
-    && !isStandalone();
-  // Customers order as guests, so no staff profile is required. The prompt is held
-  // back until the customer has spent real time on the ordering app.
-  const canShowCustomerInstall = isCustomerRoute
-    && customerEngaged
     && !criticalOperationActive
     && !isStandalone();
 
@@ -103,27 +95,15 @@ export default function PwaStatusUI() {
     setShowIosInstructions(true);
   }, [canShowStaffInstall]);
 
-  // Engagement gate: never on first paint, and the timer restarts if the customer
-  // leaves the ordering routes.
-  useEffect(() => {
-    if (!isCustomerRoute) {
-      setCustomerEngaged(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setCustomerEngaged(true), CUSTOMER_ENGAGEMENT_MS);
-    return () => window.clearTimeout(timer);
-  }, [isCustomerRoute]);
-
   const visiblePrompt = useMemo(() => {
     if (criticalOperationActive) return null;
     if (waitingRegistration && !isCustomerRoute) return 'UPDATE';
     if (waitingRegistration && isCustomerRoute) return 'CUSTOMER_UPDATE';
     if (canShowStaffInstall && installPrompt && !recentlyDismissed(INSTALL_DISMISSED_AT_KEY)) return 'INSTALL';
     if (canShowStaffInstall && showIosInstructions) return 'IOS';
-    if (canShowCustomerInstall && installPrompt && !recentlyDismissed(CUSTOMER_INSTALL_DISMISSED_AT_KEY)) return 'CUSTOMER_INSTALL';
-    if (canShowCustomerInstall && isIosOrIpadOs() && !recentlyDismissed(CUSTOMER_IOS_INSTALL_DISMISSED_AT_KEY)) return 'CUSTOMER_IOS';
+    // No customer install or Add to Home Screen prompt is offered on this origin.
     return null;
-  }, [canShowCustomerInstall, canShowStaffInstall, criticalOperationActive, installPrompt, isCustomerRoute, showIosInstructions, waitingRegistration]);
+  }, [canShowStaffInstall, criticalOperationActive, installPrompt, isCustomerRoute, showIosInstructions, waitingRegistration]);
 
   if (!visiblePrompt) return null;
 
@@ -179,54 +159,6 @@ export default function PwaStatusUI() {
         <button type="button" onClick={() => setWaitingRegistration(null)} className="flex h-11 w-11 items-center justify-center rounded-xl text-neutral-600" aria-label="Dismiss update">
           <X size={18} />
         </button>
-      </aside>
-    );
-  }
-
-  if (visiblePrompt === 'CUSTOMER_INSTALL' && installPrompt) {
-    const installCustomerApp = async () => {
-      setInstalling(true);
-      try {
-        await installPrompt.prompt();
-        const choice = await installPrompt.userChoice;
-        if (choice.outcome === 'dismissed') rememberDismissal(CUSTOMER_INSTALL_DISMISSED_AT_KEY);
-        setInstallPrompt(null);
-      } finally {
-        setInstalling(false);
-      }
-    };
-    return (
-      <aside className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[95] mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-[#dfd0c2] bg-white p-3 shadow-xl" aria-label="Install the Coffee Bond ordering app">
-        <Download size={19} className="shrink-0 text-[#5c4033]" />
-        <p className="min-w-0 flex-1 text-sm font-bold text-neutral-800">Add Coffee Bond to your home screen</p>
-        <button type="button" onClick={() => void installCustomerApp()} disabled={installing} className="min-h-11 rounded-xl bg-[#4a3026] px-3 text-sm font-black text-white disabled:opacity-60">
-          {installing ? 'Opening...' : 'Install'}
-        </button>
-        <button type="button" onClick={() => { rememberDismissal(CUSTOMER_INSTALL_DISMISSED_AT_KEY); setInstallPrompt(null); }} className="flex h-11 w-11 items-center justify-center rounded-xl text-neutral-600" aria-label="Dismiss install prompt">
-          <X size={18} />
-        </button>
-      </aside>
-    );
-  }
-
-  if (visiblePrompt === 'CUSTOMER_IOS') {
-    return (
-      <aside className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[95] mx-auto max-w-md rounded-2xl border border-[#dfd0c2] bg-white p-4 shadow-xl" aria-label="Add Coffee Bond to your iPhone or iPad Home Screen">
-        <div className="flex items-start gap-3">
-          <Share2 size={19} className="mt-0.5 shrink-0 text-[#5c4033]" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-black text-neutral-900">Add Coffee Bond to your Home Screen</p>
-            <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs font-semibold leading-relaxed text-neutral-600">
-              <li>Open this page in Safari.</li>
-              <li>Tap Share.</li>
-              <li>Select Add to Home Screen.</li>
-              <li>Tap Add.</li>
-            </ol>
-          </div>
-          <button type="button" onClick={() => { rememberDismissal(CUSTOMER_IOS_INSTALL_DISMISSED_AT_KEY); setCustomerEngaged(false); }} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-neutral-600" aria-label="Dismiss Home Screen instructions">
-            <X size={18} />
-          </button>
-        </div>
       </aside>
     );
   }

@@ -158,12 +158,26 @@ assert.notEqual(customerManifest.id, manifest.id, 'the two apps must be distinct
 assert.match(indexHtml, /<link rel="manifest" href="\/manifest\.webmanifest" \/>/);
 assert.doesNotMatch(indexHtml, /manifest-customer/);
 
-assert.match(identity, /export const CUSTOMER_MANIFEST_HREF = '\/manifest-customer\.webmanifest'/);
 assert.match(identity, /export const STAFF_MANIFEST_HREF = '\/manifest\.webmanifest'/);
 assert.match(identity, /apple-mobile-web-app-title/);
-assert.match(identity, /BROWSER LIMITATION/, 'the Chromium manifest-switching limitation must stay documented in code');
 assert.match(identitySync, /applyPwaIdentityForPath/);
 assert.match(appRoot, /<PwaIdentitySync \/>/);
+
+// HOTFIX: same-origin customer install is withdrawn. Customer routes must advertise
+// no manifest at all, so /order is not installable until the customer app has its
+// own origin. Installing from this origin produced a "CB POS" app pointing at /pos.
+assert.match(identity, /HOTFIX/, 'the withdrawal and its reason must stay documented in code');
+assert.match(identity, /function removeManifestLink/);
+assert.match(identity, /removeManifestLink\(\);/, 'customer routes must strip the manifest link');
+assert.match(identity, /link\[rel="manifest"\]'\)\.forEach\(\(link\) => link\.remove\(\)\)/);
+assert.doesNotMatch(
+  identity,
+  /setManifestHref\(customer \? CUSTOMER_MANIFEST_HREF/,
+  'the customer manifest must no longer be advertised on this origin',
+);
+// The staff branch must still restore the shipped staff manifest.
+assert.match(identity, /function ensureStaffManifestLink/);
+assert.match(identity, /link\.href = STAFF_MANIFEST_HREF;/);
 
 // Route classification drives which identity is advertised.
 assert.equal(isCustomerPath('/order'), true);
@@ -173,15 +187,17 @@ assert.equal(isCustomerPath('/pos'), false);
 assert.equal(isCustomerPath('/admin/locations'), false);
 assert.equal(isCustomerPath('/orders'), false, 'a lookalike staff path must not claim the customer identity');
 
-// Customer install/update prompts, kept separate from the staff ones.
-assert.match(pwaUi, /coffeeBondCustomerInstallDismissedAt/);
-assert.match(pwaUi, /coffeeBondCustomerIosInstallDismissedAt/);
-assert.notEqual('coffeeBondCustomerInstallDismissedAt', 'coffeeBondPosInstallDismissedAt');
-assert.match(pwaUi, /CUSTOMER_ENGAGEMENT_MS/, 'the customer prompt must wait for engagement, not first paint');
+// HOTFIX: no customer install invitation of any kind on this origin.
+assert.doesNotMatch(pwaUi, /CUSTOMER_INSTALL/, 'no customer install prompt may remain');
+assert.doesNotMatch(pwaUi, /CUSTOMER_IOS/, 'no customer Add to Home Screen guidance may remain');
+assert.doesNotMatch(pwaUi, /coffeeBondCustomerInstallDismissedAt/);
+assert.doesNotMatch(pwaUi, /coffeeBondCustomerIosInstallDismissedAt/);
+assert.doesNotMatch(pwaUi, /CUSTOMER_ENGAGEMENT_MS/);
+assert.doesNotMatch(pwaUi, /Add Coffee Bond to your home screen/);
+// The customer update prompt is retained: it only refreshes a waiting service worker
+// and is still suppressed while a checkout or payment is in flight.
 assert.match(pwaUi, /A new Coffee Bond update is ready/);
-assert.match(pwaUi, /Add Coffee Bond to your home screen/);
-assert.match(pwaUi, /Add Coffee Bond to your Home Screen/, 'iOS customers need Add to Home Screen guidance');
-assert.match(pwaUi, /canShowCustomerInstall = isCustomerRoute/);
+assert.match(pwaUi, /if \(criticalOperationActive\) return null;/);
 assert.match(pwaUi, /&& !isStandalone\(\)/);
 // Staff behaviour must be untouched: still profile-gated and still off customer routes.
 assert.match(pwaUi, /canShowStaffInstall = authStatus === 'ready'/);
