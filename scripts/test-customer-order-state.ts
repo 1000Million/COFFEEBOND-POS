@@ -196,4 +196,48 @@ function assertNoAcceptingUnavailableContradiction(state: ReturnType<typeof deri
   assert.equal(invalidPriceSnapshot.items[setupIncompleteCodes[0]].publicStatus, 'SETUP_INCOMPLETE');
 }
 
+{
+  const snapshot = buildPublicMenuAvailabilitySnapshot({
+    store: store(),
+    finishedGoods: [{
+      id: '36G_PROTEIN_POWER',
+      code: '36G_PROTEIN_POWER',
+      name: '36G Protein Power',
+      displayName: '36G Protein Power',
+      salePrice: 390,
+      prepStation: 'BARISTA',
+      itemType: 'NO_STOCK',
+      productionMode: 'NO_STOCK',
+      bom: [],
+      posCategoryCode: 'SMOOTHIES',
+      posCategoryName: 'Smoothies',
+      availableStoreIds: ['GOLDEN_I'],
+      isActive: true,
+      isSellable: true,
+      isAvailable: true,
+    }, {
+      id: 'MEDITERRANEAN_MEZZE_PLATTER',
+      code: 'MEDITERRANEAN_MEZZE_PLATTER',
+      name: 'Mediterranean Mezze Platter',
+      displayName: 'Mediterranean Mezze Platter',
+      salePrice: 390,
+      prepStation: 'KITCHEN',
+      itemType: 'NO_STOCK',
+      productionMode: 'NO_STOCK',
+      bom: [],
+      posCategoryCode: 'ALWAYS_AT_BOND',
+      posCategoryName: 'Always at Bond',
+      availableStoreIds: ['GOLDEN_I'],
+      isActive: true,
+      isSellable: true,
+      isAvailable: true,
+    }] as any,
+    storeStock: [],
+  });
+  assert.equal(snapshot.menuItems['36G_PROTEIN_POWER'].displayName, '36G Protein Power');
+  assert.equal(snapshot.items['36G_PROTEIN_POWER'].available, true);
+  assert.equal(snapshot.menuItems['MEDITERRANEAN_MEZZE_PLATTER'].posCategoryCode, 'ALWAYS_AT_BOND');
+  assert.equal(snapshot.menuItems['MEDITERRANEAN_MEZZE_PLATTER'].posCategoryName, 'Always at Bond');
+}
+
 console.log('Customer ordering state tests passed.');

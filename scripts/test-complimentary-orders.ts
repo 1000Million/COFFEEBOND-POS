@@ -127,6 +127,10 @@ assert(posSource.includes('planInventoryDeductionForSale'), 'Complimentary check
 assert(posSource.includes('createKotItem("BARISTA")') && posSource.includes('createKotItem("KITCHEN")'), 'Complimentary checkout must retain KOT creation.');
 assert(posSource.includes('COMPLIMENTARY — NO PAYMENT REQUIRED'), 'Receipt must state that no payment is required.');
 assert(posSource.includes('receiptLegalDetailsFromStore(selectedStore)'), 'Receipt GST/legal details must be sourced from store configuration.');
+assert(posSource.includes('function receiptGstSplit'), 'Receipt GST split helper must be present.');
+assert(posSource.includes('Total GST'), 'Receipt must clearly label the total GST amount.');
+assert(posSource.includes('CGST') && posSource.includes('SGST'), 'Receipt must show CGST/SGST when store GST registration and state code support it.');
+assert(posSource.includes('receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin'), 'Receipt must not show GSTIN unless the store is genuinely GST registered and configured.');
 assert(posSource.includes('setComplimentaryVerification(current => retainVerificationForPhone(current, normalized))'), 'Phone changes must invalidate verification.');
 assert(!posSource.includes('otpCode') && !posSource.includes('oneTimePassword'), 'POS must not store an OTP value.');
 assert(posSource.includes("transaction.get(complimentaryAuthorizationRef)"), 'Checkout must read the server authorization inside the sale transaction.');

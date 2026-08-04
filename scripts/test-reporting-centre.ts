@@ -45,6 +45,10 @@ const records = [
     paymentStatus: 'PAID',
     paymentMethod: 'CASH',
     isSplitPayment: true,
+    paymentBreakdown: [
+      { method: 'CASH', amount: 100 },
+      { method: 'UPI', amount: 230.75 },
+    ],
     subtotal: 350,
     discountAmount: 35,
     taxableAmount: 315,
@@ -83,7 +87,7 @@ const records = [
     }],
   }], [
     { method: 'CASH', amount: 100 },
-    { method: 'UPI', amount: 230.75 },
+    { method: 'UPI', amount: 330.75 },
   ]),
   record({
     id: 'paid-online',
@@ -229,6 +233,12 @@ test('complimentary values remain separate', metrics.complimentaryOrderCount ===
 test('voided values remain separate', metrics.voidOrderCount === 1 && metrics.voidedOrderValue === 105);
 test('payment reversals reduce net collections', metrics.grossPaymentsReceived === 645.75 && metrics.voidedPaymentTotal === 105 && metrics.netCollections === 540.75);
 test('split payments reconcile exactly', metrics.paymentBreakdown.CASH === 100 && metrics.paymentBreakdown.UPI === 440.75);
+const splitPaymentReport = buildReportDataset('split-payment-detail', records);
+test(
+  'split detail report uses authoritative order payment allocation over stale payment documents',
+  splitPaymentReport.rows.some((row: any) => row.orderNumber === 'CB-GOLDEN_I-1001' && row.tender === 'UPI' && row.amount === 230.75)
+    && !splitPaymentReport.rows.some((row: any) => row.orderNumber === 'CB-GOLDEN_I-1001' && row.tender === 'UPI' && row.amount === 330.75),
+);
 test('GST matches completed commercial order values', metrics.gstCollected === 25.75);
 test('unpaid orders are separated from commercial sales', metrics.unpaidOrderCount === 1 && metrics.unpaidAmount === 52.5);
 
@@ -464,7 +474,33 @@ test(
 
 const complimentaryReport = buildReportDataset('complimentary-orders', records);
 const serializedComplimentary = JSON.stringify(complimentaryReport.rows);
+test('complimentary report surfaces zero-payable complimentary rows', complimentaryReport.rows.length === 1 && complimentaryReport.rows[0].orderNumber === 'CB-GOLDEN_I-COMP' && complimentaryReport.rows[0].menuValue === 225);
 test('complimentary report contains no OTP code, token, or authorization ID', !serializedComplimentary.includes('123456') && !serializedComplimentary.includes('private-auth-id') && !serializedComplimentary.includes('complimentaryOtpCode'));
+const complimentaryCsv = buildReportingCsv({
+  report: REPORT_REGISTRY.find(report => report.reportId === 'complimentary-orders'),
+  summary: complimentaryReport.summary,
+  availabilityStatus: complimentaryReport.availabilityStatus,
+  unavailableReason: complimentaryReport.unavailableReason,
+  columns: complimentaryReport.columns,
+  rows: complimentaryReport.rows,
+  accessibleStores: [{ id: 'GOLDEN_I', code: 'GOLDEN_I', name: 'Golden I' }],
+  selectedStoreIds: ['GOLDEN_I'],
+  startDate: '2026-07-24',
+  endDate: '2026-07-24',
+  timeZone: 'Asia/Kolkata',
+  filters: { storeIds: ['GOLDEN_I'] },
+  filterOptions: { sources: [], orderTypes: [], paymentMethods: [], staff: [], categories: [], items: [] },
+  sourceOrderCount: records.length,
+  generatedAt: createdAt.toISOString(),
+  pagination: {
+    page: 1,
+    pageSize: 50,
+    totalRows: complimentaryReport.rows.length,
+    totalPages: 1,
+    hasNextPage: false,
+  },
+} as unknown as ReportingResponse);
+test('complimentary CSV export contains the complimentary order without OTP secrets', complimentaryCsv.includes('CB-GOLDEN_I-COMP') && !complimentaryCsv.includes('123456') && !complimentaryCsv.includes('private-auth-id'));
 
 const onlineOrders = [
   { publicOrderReference: 'CBWEB-ACCEPTED', storeId: 'GOLDEN_I', storeName: 'Golden I', status: 'CONVERTED', source: 'CUSTOMER_WEB', customerPhone: '9999999999', grandTotal: 210, createdAt, convertedAt: new Date(createdAt.getTime() + 5 * 60000) },

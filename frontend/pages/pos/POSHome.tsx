@@ -803,6 +803,17 @@ function printReceiptElement() {
   printWin?.close();
 }
 
+function receiptGstSplit(order: ReceiptOrderSnapshot): { cgst: number; sgst: number } | null {
+  if (!order.receiptLegalDetails?.gstRegistered || !order.receiptLegalDetails.stateCode || order.gstTotal <= 0) {
+    return null;
+  }
+  const half = Math.round((order.gstTotal / 2) * 100) / 100;
+  return {
+    cgst: half,
+    sgst: Math.round((order.gstTotal - half) * 100) / 100,
+  };
+}
+
 function formatQuantity(value: number | undefined, unit?: string): string {
   if (value === undefined || Number.isNaN(value)) return 'n/a';
   return `${value.toFixed(2)}${unit ? ` ${unit}` : ''}`;
@@ -4003,8 +4014,20 @@ export default function POSHome() {
                     <span>Taxable Amount</span>
                     <span className="font-mono text-neutral-800">₹{receiptView.order.taxableAmount.toFixed(2)}</span>
                  </div>
+                 {receiptGstSplit(receiptView.order) && (
+                   <>
+                     <div className="flex justify-between text-neutral-500">
+                        <span>CGST</span>
+                        <span className="font-mono text-neutral-800">₹{receiptGstSplit(receiptView.order)!.cgst.toFixed(2)}</span>
+                     </div>
+                     <div className="flex justify-between text-neutral-500">
+                        <span>SGST</span>
+                        <span className="font-mono text-neutral-800">₹{receiptGstSplit(receiptView.order)!.sgst.toFixed(2)}</span>
+                     </div>
+                   </>
+                 )}
                  <div className="flex justify-between text-neutral-500 pb-2 border-b border-neutral-100">
-                    <span>GST</span>
+                    <span>Total GST</span>
                     <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
                  </div>
 	                 <div className="flex justify-between font-black text-lg pt-1">

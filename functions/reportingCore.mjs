@@ -8,6 +8,8 @@ export const MAX_EXPORT_ROWS = 5000;
 const INTERNAL_REPORT_ROLES = ['ADMIN', 'STORE_MANAGER', 'CASHIER'];
 const MANAGER_REPORT_ROLES = ['ADMIN', 'STORE_MANAGER'];
 const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER', 'RAZORPAY'];
+const REPORTING_PAYMENT_METHODS = new Set(PAYMENT_METHODS);
+const MONEY_TOLERANCE = 0.01;
 
 const report = (
   reportId,
@@ -254,6 +256,8 @@ function reversalRows(order) {
 
 export function normalizedPaymentRows(order, paymentDocuments = []) {
   if (isComplimentaryOrder(order) || order?.paymentStatus !== 'PAID') return [];
+  const splitBreakdown = normalizedAuthoritativeSplitBreakdown(order);
+  if (splitBreakdown) return splitBreakdown;
   const source = Array.isArray(paymentDocuments) && paymentDocuments.length > 0
     ? paymentDocuments
     : Array.isArray(order?.paymentBreakdown) && order.paymentBreakdown.length > 0
@@ -276,6 +280,30 @@ export function normalizedPaymentRows(order, paymentDocuments = []) {
       && payment.method !== 'COMPLIMENTARY'
       && payment.method !== 'PAY_AT_COUNTER'
     ));
+}
+
+function normalizedAuthoritativeSplitBreakdown(order) {
+  if (!Array.isArray(order?.paymentBreakdown) || order.paymentBreakdown.length < 2) return null;
+  const payments = order.paymentBreakdown.map((payment) => {
+    const method = String(payment?.method || '').trim().toUpperCase();
+    const amount = money(payment?.amount);
+    return {
+      method,
+      amount,
+      reference: payment?.reference ? String(payment.reference).slice(0, 80) : null,
+      provider: null,
+      providerMethod: null,
+    };
+  });
+  if (!payments.every((payment) => REPORTING_PAYMENT_METHODS.has(payment.method) && payment.amount >= 0)) return null;
+  const total = money(payments.reduce((sum, payment) => sum + payment.amount, 0));
+  const payable = money(order?.grandTotal);
+  if (Math.abs(total - payable) > MONEY_TOLERANCE) return null;
+  return payments.filter((payment) => (
+    payment.amount > 0
+    && payment.method !== 'COMPLIMENTARY'
+    && payment.method !== 'PAY_AT_COUNTER'
+  ));
 }
 
 function paymentOutcome(order) {
