@@ -10,6 +10,7 @@ type CustomerOrderingStateInput = {
   availabilitySnapshot: AvailabilitySnapshotLike | null;
   availabilityLoading: boolean;
   orderableItemCount: number;
+  availabilityChecked?: boolean;
 };
 
 export type CustomerOrderingState = {
@@ -27,7 +28,8 @@ function toNumber(value: unknown): number {
 }
 
 export function prepWindowLabel(minutes?: number | null): string {
-  const safeMinutes = minutes && minutes > 0 ? minutes : 20;
+  if (!minutes || minutes <= 0) return '';
+  const safeMinutes = minutes;
   const min = Math.max(5, safeMinutes - 5);
   return `${min}-${safeMinutes} min`;
 }
@@ -43,7 +45,10 @@ export function isStoreOnlineEnabled(store: Store | null): boolean {
       && store.acceptingOrders === true
       && store.isAcceptingOrders === true;
   }
-  return store.onlineOrderingEnabled !== false;
+  return store.isActive !== false
+    && store.onlineOrderingEnabled !== false
+    && store.acceptingOrders !== false
+    && store.isAcceptingOrders !== false;
 }
 
 function looksLikeDisabledMessage(message: string): boolean {
@@ -66,13 +71,41 @@ export function storeOnlineMessage(store: Store | null): string {
   return 'Pickup available soon after store confirmation.';
 }
 
+function unavailableStoreState(store: Store): Pick<CustomerOrderingState, 'statusLabel' | 'message' | 'tone'> {
+  if (store.onlineOrderingPaused === true) {
+    return {
+      statusLabel: 'Temporarily unavailable',
+      message: 'Online ordering is temporarily unavailable for this store.',
+      tone: 'amber',
+    };
+  }
+  if (store.acceptingOrders === false || store.isAcceptingOrders === false) {
+    return {
+      statusLabel: 'Closed',
+      message: 'This store is not accepting online orders right now.',
+      tone: 'red',
+    };
+  }
+  return {
+    statusLabel: 'Temporarily unavailable',
+    message: 'Online ordering is currently unavailable for this store.',
+    tone: 'red',
+  };
+}
+
 function snapshotMenuItemCount(snapshot: AvailabilitySnapshotLike | null): number {
   if (!snapshot?.menuItems || typeof snapshot.menuItems !== 'object') return 0;
   return Object.keys(snapshot.menuItems).length;
 }
 
 export function deriveCustomerOrderingState(input: CustomerOrderingStateInput): CustomerOrderingState {
-  const { store, availabilitySnapshot, availabilityLoading, orderableItemCount } = input;
+  const {
+    store,
+    availabilitySnapshot,
+    availabilityLoading,
+    orderableItemCount,
+    availabilityChecked = true,
+  } = input;
   const storeOnlineEnabled = isStoreOnlineEnabled(store);
 
   if (!store) {
@@ -86,12 +119,11 @@ export function deriveCustomerOrderingState(input: CustomerOrderingStateInput): 
   }
 
   if (!storeOnlineEnabled) {
+    const unavailableState = unavailableStoreState(store);
     return {
       storeOnlineEnabled,
       canAcceptOrders: false,
-      statusLabel: 'Unavailable',
-      message: 'Online ordering is currently unavailable for this store.',
-      tone: 'red',
+      ...unavailableState,
     };
   }
 
@@ -105,30 +137,36 @@ export function deriveCustomerOrderingState(input: CustomerOrderingStateInput): 
     };
   }
 
-  if (snapshotMenuItemCount(availabilitySnapshot) === 0) {
+  if (availabilityChecked && snapshotMenuItemCount(availabilitySnapshot) === 0) {
     return {
       storeOnlineEnabled,
       canAcceptOrders: false,
-      statusLabel: 'Menu updating',
+      statusLabel: 'Menu unavailable',
       message: 'The online menu is being refreshed for this store.',
       tone: 'amber',
     };
   }
 
-  if (orderableItemCount <= 0) {
+  if (availabilityChecked && orderableItemCount <= 0) {
     return {
       storeOnlineEnabled,
       canAcceptOrders: false,
-      statusLabel: 'Unavailable',
+      statusLabel: 'Menu unavailable',
       message: 'No items are currently available for online ordering at this store.',
       tone: 'red',
     };
   }
 
+  const storeRecord = store as Store & Record<string, unknown>;
+  const busy = storeRecord.isBusy === true || storeRecord.orderingStatus === 'BUSY';
+  const busyMinutes = toNumber(store.estimatedPrepMinutes);
+
   return {
     storeOnlineEnabled,
     canAcceptOrders: true,
-    statusLabel: 'Accepting orders',
+    statusLabel: busy && busyMinutes > 0
+      ? `Busy · approximately ${busyMinutes} min`
+      : 'Accepting orders',
     message: storeOnlineMessage(store),
     tone: 'green',
   };

@@ -33,6 +33,7 @@ import {
 } from '../../lib/purchaseCalculations';
 import { Store, StockMovement } from '../../types';
 import { PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type PurchaseLineType = 'RAW_INGREDIENT' | 'PREP_ITEM';
 
@@ -783,6 +784,10 @@ export default function PurchaseEntry() {
 
   const uploadInvoiceFile = async (file: File, retry = false) => {
     setSuccess('');
+    if (!requireOnlineAction()) {
+      setInvoiceUpload((current) => ({ ...current, status: 'FAILED', file, error: OFFLINE_ACTION_MESSAGE }));
+      return;
+    }
     if (!selectedStore) {
       setInvoiceUpload((current) => ({ ...current, status: 'FAILED', file, error: 'Select a store before uploading an invoice.' }));
       return;
@@ -798,6 +803,7 @@ export default function PurchaseEntry() {
     const sourceFileName = sanitizeInvoiceFileName(file.name);
     const sourceFilePath = `purchase-invoices/${selectedStore.id}/${draftId}/${sourceFileName}`;
 
+    const endCriticalOperation = beginCriticalOperation();
     setInvoiceUpload({
       status: 'UPLOADING',
       file,
@@ -854,12 +860,19 @@ export default function PurchaseEntry() {
         status: 'FAILED',
         error: err instanceof Error ? err.message : 'Invoice upload or parsing failed.',
       }));
+    } finally {
+      endCriticalOperation();
     }
   };
 
   const retryInvoiceParsing = async () => {
     const file = invoiceUpload.file;
     if (!file || !selectedStore || !invoiceUpload.draftId || !invoiceUpload.sourceFilePath) return;
+    if (!requireOnlineAction()) {
+      setInvoiceUpload((current) => ({ ...current, status: 'FAILED', error: OFFLINE_ACTION_MESSAGE }));
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setSuccess('');
     setInvoiceUpload((current) => ({
       ...current,
@@ -906,6 +919,8 @@ export default function PurchaseEntry() {
         status: 'FAILED',
         error: err instanceof Error ? err.message : 'Retry failed.',
       }));
+    } finally {
+      endCriticalOperation();
     }
   };
 
@@ -949,6 +964,10 @@ export default function PurchaseEntry() {
 
   const postPurchase = async () => {
     if (!staffProfile || !selectedStore) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
 
     const supplier = supplierName.trim();
     const invoice = invoiceNumber.trim();
@@ -966,6 +985,7 @@ export default function PurchaseEntry() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setSaving(true);
     setError('');
     setSuccess('');
@@ -1138,6 +1158,7 @@ export default function PurchaseEntry() {
       setError(err instanceof Error ? err.message : 'Unable to post purchase entry.');
     } finally {
       setSaving(false);
+      endCriticalOperation();
     }
   };
 
@@ -1242,6 +1263,7 @@ export default function PurchaseEntry() {
 
           <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
             <label
+              data-requires-online="true"
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleInvoiceDrop}
               className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-[#5c4033]/25 bg-[#fffaf4] px-4 py-6 text-center transition hover:border-[#5c4033]/60"
@@ -1300,6 +1322,7 @@ export default function PurchaseEntry() {
                 <button
                   type="button"
                   onClick={() => void retryInvoiceParsing()}
+                  data-requires-online="true"
                   className="mt-3 rounded-full bg-[#3e2723] px-4 py-2 text-xs font-black text-white hover:bg-[#2d1c19]"
                 >
                   Retry parsing
@@ -1658,6 +1681,7 @@ export default function PurchaseEntry() {
               </button>
               <button
                 onClick={postPurchase}
+                data-requires-online="true"
                 disabled={saving || loading || !selectedStore}
                 className="inline-flex items-center justify-center gap-2 rounded-full bg-[#3e2723] px-6 py-3 text-sm font-black text-white shadow-sm hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -1709,6 +1733,7 @@ export default function PurchaseEntry() {
 
               <button
                 onClick={postPurchase}
+                data-requires-online="true"
                 disabled={saving || loading || !selectedStore}
                 className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3e2723] px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-50"
               >

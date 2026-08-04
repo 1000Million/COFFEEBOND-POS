@@ -7,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { OnlineOrder, Store } from '../../types';
 import { acceptOnlineOrder, isOnlineOrderAcceptError, OnlineOrderAcceptBlocker } from '../../lib/onlineOrderConversion';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 const acceptPaidRazorpayOrder = httpsCallable<
   { onlineOrderId: string },
@@ -157,6 +158,11 @@ export default function IncomingOnlineOrders() {
 
   const handleAccept = async (order: OnlineOrder) => {
     if (!staffProfile || !order.id) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioningId(order.id);
     setMessage(null);
     setError(null);
@@ -186,11 +192,16 @@ export default function IncomingOnlineOrders() {
       }
     } finally {
       setActioningId(null);
+      endCriticalOperation();
     }
   };
 
   const handleRefund = async (order: OnlineOrder) => {
     if (!staffProfile || !order.id) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     const reason = (rejectReasons[order.id] || '').trim();
     const confirmation = (refundConfirmations[order.id] || '').trim();
     if (!reason) {
@@ -201,6 +212,7 @@ export default function IncomingOnlineOrders() {
       setError('Type REFUND or the order reference to confirm the full refund.');
       return;
     }
+    const endCriticalOperation = beginCriticalOperation();
     setActioningId(order.id);
     setMessage(null);
     setError(null);
@@ -217,17 +229,23 @@ export default function IncomingOnlineOrders() {
       setError(err instanceof Error ? err.message : 'Could not initiate the full refund.');
     } finally {
       setActioningId(null);
+      endCriticalOperation();
     }
   };
 
   const handleReject = async (order: OnlineOrder) => {
     if (!staffProfile || !order.id) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     const reason = (rejectReasons[order.id] || '').trim();
     if (!reason) {
       setError('Please enter a rejection reason before rejecting the order.');
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setActioningId(order.id);
     setMessage(null);
     setError(null);
@@ -252,6 +270,7 @@ export default function IncomingOnlineOrders() {
       setError(err instanceof Error ? err.message : 'Could not reject the online order.');
     } finally {
       setActioningId(null);
+      endCriticalOperation();
     }
   };
 
@@ -411,6 +430,7 @@ export default function IncomingOnlineOrders() {
                     {order.paymentProvider !== 'RAZORPAY' && (
                       <button
                         onClick={() => handleReject(order)}
+                        data-requires-online="true"
                         disabled={isBusy}
                         className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
                       >
@@ -421,6 +441,7 @@ export default function IncomingOnlineOrders() {
                       || ['PAID_PENDING_ACCEPTANCE', 'PAYMENT_REVIEW_REQUIRED'].includes(order.status)) && (
                       <button
                         onClick={() => handleAccept(order)}
+                        data-requires-online="true"
                         disabled={isBusy}
                         className="min-h-12 rounded-xl bg-[#5c4033] px-5 py-3 text-sm font-black text-white disabled:opacity-60"
                       >
@@ -446,6 +467,7 @@ export default function IncomingOnlineOrders() {
                           <button
                             type="button"
                             onClick={() => handleRefund(order)}
+                            data-requires-online="true"
                             disabled={isBusy}
                             className="min-h-12 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-black text-red-700 disabled:opacity-60"
                           >

@@ -26,6 +26,7 @@ import { Link } from 'react-router-dom';
 import { db, functions } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store } from '../../types';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type ModuleId =
   | 'OPERATING'
@@ -839,12 +840,17 @@ export default function LocationManagement() {
 
   const saveOpeningStockRows = async (confirmAllZero = false) => {
     if (!openingStockSummary) return;
+    if (!requireOnlineAction()) {
+      setOpeningStockError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     const invalidRows = openingStockRows.map(validateOpeningStockEditorRow).filter((row) => row.validationStatus !== 'VALID');
     if (!confirmAllZero && invalidRows.length > 0) {
       setOpeningStockRows((current) => current.map(validateOpeningStockEditorRow));
       setOpeningStockError(`Fix or confirm ${invalidRows.length} opening-stock rows before saving.`);
       return;
     }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`opening-stock:${openingStockSummary.store.id}`);
     setOpeningStockError('');
     try {
@@ -867,6 +873,7 @@ export default function LocationManagement() {
       setOpeningStockError(err?.message || 'Could not save opening stock.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -884,11 +891,16 @@ export default function LocationManagement() {
 
   const saveDraftStaffAssignments = async () => {
     if (!staffAssignmentSummary) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     const requirement = staffRequirement(draftStaffUids);
     if (!requirement.hasSetupLead || !requirement.hasPosCapable) {
       setError('Assign at least one active Admin or Store Manager and one active POS-capable user.');
       return;
     }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`staff:${staffAssignmentSummary.store.id}`);
     setError('');
     try {
@@ -903,6 +915,7 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not save staff assignments.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -963,6 +976,11 @@ export default function LocationManagement() {
   };
 
   const handlePreview = async () => {
+    if (!requireOnlineAction()) {
+      setWizardError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning('preview');
     setWizardError('');
     setMessage('');
@@ -975,11 +993,17 @@ export default function LocationManagement() {
       setWizardError(err?.message || 'Could not preview this location.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const handleCreateDraft = async () => {
     if (!preview?.canCreate) return;
+    if (!requireOnlineAction()) {
+      setWizardError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning('create');
     setWizardError('');
     try {
@@ -992,6 +1016,7 @@ export default function LocationManagement() {
       setWizardError(err?.message || 'Could not create the draft location.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -1007,6 +1032,11 @@ export default function LocationManagement() {
   };
 
   const handleActivate = async (storeId: string) => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`activate:${storeId}`);
     setError('');
     try {
@@ -1017,12 +1047,18 @@ export default function LocationManagement() {
       setError(err?.message || 'Location readiness is incomplete.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const handleClassifyLegacyGoldenI = async (store: Store) => {
     if (!isGoldenI(store) || isLegacyMigratedGoldenI(store)) return;
     if (!window.confirm('Classify the existing Golden I operation as a migrated legacy store? This does not change stock, readiness, menu, GST, hours or ordering flags.')) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`legacy-migration:${store.id}`);
     setError('');
     try {
@@ -1033,6 +1069,7 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not classify Golden I as a migrated legacy store.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -1042,6 +1079,11 @@ export default function LocationManagement() {
     const reason = window.prompt('Enter the owner-approved reason for this temporary staff-POS launch exception. Customer ordering will stay disabled.');
     if (!reason?.trim()) return;
     if (!window.confirm('Approve temporary staff POS while opening stock remains pending? This does not enable customer ordering.')) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`pos-exception:${store.id}`);
     setError('');
     try {
@@ -1058,10 +1100,16 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not approve the POS launch exception.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const handleEnableInternalPosTest = async (storeId: string) => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`internal-test:${storeId}`);
     setError('');
     try {
@@ -1072,11 +1120,17 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not enable internal POS testing.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const handleMarkInternalPosTestPassed = async (storeId: string) => {
     if (!window.confirm('Mark POS test passed only after the setup-test bill was created, receipt/KOT/stock were checked, and the test order was voided. Continue?')) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`pos-test-passed:${storeId}`);
     setError('');
     try {
@@ -1087,11 +1141,17 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not mark the POS test complete.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const handleDeactivate = async (storeId: string) => {
     if (!window.confirm('Deactivate this location? Existing history will remain unchanged.')) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`deactivate:${storeId}`);
     setError('');
     try {
@@ -1102,6 +1162,7 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not deactivate the location.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -1127,6 +1188,11 @@ export default function LocationManagement() {
 
   const saveEdit = async () => {
     if (!editStore) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`edit:${editStore.id}`);
     setError('');
     try {
@@ -1158,10 +1224,16 @@ export default function LocationManagement() {
       setError(err?.message || 'Could not update location configuration.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
   const toggleCustomerOrdering = async (store: Store, enabled: boolean) => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setActioning(`ordering:${store.id}`);
     setError('');
     try {
@@ -1172,6 +1244,7 @@ export default function LocationManagement() {
       setError(err?.message || 'Customer ordering readiness is incomplete.');
     } finally {
       setActioning('');
+      endCriticalOperation();
     }
   };
 
@@ -1290,10 +1363,10 @@ export default function LocationManagement() {
                           <button onClick={() => startEdit(store)} title="Edit configuration" className="rounded-md p-2 text-neutral-500 hover:bg-neutral-100"><Pencil size={16} /></button>
                           <button onClick={() => openCloneWizard(store)} title="Clone location" className="rounded-md p-2 text-neutral-500 hover:bg-neutral-100"><Copy size={16} /></button>
                           {!store.isActive && (
-                            <button onClick={() => handleActivate(store.id)} title="Activate POS" className="rounded-md p-2 text-emerald-700 hover:bg-emerald-50"><Power size={16} /></button>
+                            <button data-requires-online="true" onClick={() => handleActivate(store.id)} title="Activate POS" className="rounded-md p-2 text-emerald-700 hover:bg-emerald-50"><Power size={16} /></button>
                           )}
                           {store.isActive && (
-                            <button onClick={() => handleDeactivate(store.id)} title="Deactivate" className="rounded-md p-2 text-red-600 hover:bg-red-50"><X size={16} /></button>
+                            <button data-requires-online="true" onClick={() => handleDeactivate(store.id)} title="Deactivate" className="rounded-md p-2 text-red-600 hover:bg-red-50"><X size={16} /></button>
                           )}
                           <button onClick={() => setSelectedSummary(summary)} title="Complete Setup" className="rounded-md px-2 py-2 text-xs font-black text-amber-700 hover:bg-amber-50"><ClipboardCheck size={16} className="inline" /> Setup</button>
                         </div>
@@ -1466,7 +1539,7 @@ export default function LocationManagement() {
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               {(!selectedSummary.store.isActive || (isLegacyMigratedGoldenI(selectedSummary.store) && selectedSummary.store.posEnabled !== true)) && (
-                <button onClick={() => handleActivate(selectedSummary.store.id)} className="h-11 flex-1 rounded-lg bg-[#3e2723] font-black text-white">
+                <button data-requires-online="true" onClick={() => handleActivate(selectedSummary.store.id)} className="h-11 flex-1 rounded-lg bg-[#3e2723] font-black text-white">
                   {isLegacyMigratedGoldenI(selectedSummary.store) ? 'Normalize staff POS' : 'Activate POS'}
                 </button>
               )}
@@ -1555,7 +1628,7 @@ export default function LocationManagement() {
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button onClick={() => setEditStore(null)} className="h-11 rounded-lg border border-neutral-200 px-4 font-bold">Cancel</button>
-              <button onClick={saveEdit} disabled={actioning.startsWith('edit:')} className="h-11 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">Save configuration</button>
+              <button data-requires-online="true" onClick={saveEdit} disabled={actioning.startsWith('edit:')} className="h-11 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">Save configuration</button>
             </div>
           </div>
         </div>
@@ -1724,6 +1797,7 @@ export default function LocationManagement() {
                     />
                     <button
                       onClick={() => saveOpeningStockRows(true)}
+                      data-requires-online="true"
                       disabled={actioning === `opening-stock:${openingStockSummary.store.id}`}
                       className="h-10 rounded-lg border border-amber-400 bg-white px-3 text-xs font-black text-amber-900 disabled:opacity-50"
                     >
@@ -1735,6 +1809,7 @@ export default function LocationManagement() {
                   <button onClick={closeOpeningStock} className="h-11 rounded-lg border border-neutral-200 px-4 font-bold">Close</button>
                   <button
                     onClick={() => saveOpeningStockRows(false)}
+                    data-requires-online="true"
                     disabled={actioning === `opening-stock:${openingStockSummary.store.id}` || openingStockLoading}
                     className="h-11 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50"
                   >
@@ -1808,6 +1883,7 @@ export default function LocationManagement() {
                     <button onClick={() => setStaffAssignmentSummary(null)} className="h-11 rounded-lg border border-neutral-200 px-4 font-bold">Cancel</button>
                     <button
                       onClick={saveDraftStaffAssignments}
+                      data-requires-online="true"
                       disabled={actioning === `staff:${staffAssignmentSummary.store.id}` || !requirement.hasSetupLead || !requirement.hasPosCapable}
                       className="h-11 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50"
                     >
@@ -2273,12 +2349,12 @@ export default function LocationManagement() {
                   </button>
                 )}
                 {wizardStep === 4 && (
-                  <button onClick={handlePreview} disabled={actioning === 'preview'} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
+                  <button data-requires-online="true" onClick={handlePreview} disabled={actioning === 'preview'} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
                     {actioning === 'preview' && <Loader2 size={16} className="animate-spin" />} Run validation preview
                   </button>
                 )}
                 {wizardStep === 5 && (
-                  <button onClick={handleCreateDraft} disabled={actioning === 'create' || !preview?.canCreate} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
+                  <button data-requires-online="true" onClick={handleCreateDraft} disabled={actioning === 'create' || !preview?.canCreate} className="flex h-11 items-center gap-2 rounded-lg bg-[#3e2723] px-5 font-black text-white disabled:opacity-50">
                     {actioning === 'create' && <Loader2 size={16} className="animate-spin" />} Create Draft
                   </button>
                 )}

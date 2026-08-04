@@ -34,6 +34,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
 import { requestPosRazorpayRefund } from '../../lib/posRazorpay';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import {
   DRAFT_SETUP_TEST_STORE_ID,
   isActiveRunningOrdersAdmin,
@@ -560,6 +561,10 @@ export default function RunningOrders() {
 
   const settlePayment = async () => {
     if (!settleBundle?.order.id || !staffProfile || !settlementReady) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (effectiveOrderStatus(settleBundle.order) === 'VOIDED') {
       setError('Voided orders cannot be settled.');
       return;
@@ -590,6 +595,7 @@ export default function RunningOrders() {
       ...cleanRows.map(row => ({ method: row.method, amount: row.amount })),
     ];
 
+    const endCriticalOperation = beginCriticalOperation();
     setSettling(true);
     setError('');
     setSuccess('');
@@ -638,11 +644,17 @@ export default function RunningOrders() {
       setError(err instanceof Error ? err.message : 'Could not settle payment.');
     } finally {
       setSettling(false);
+      endCriticalOperation();
     }
   };
 
   const updateKotStatus = async (bundle: OrderBundle, nextStatus: KotStatus) => {
     if (!canUpdateKot || bundle.kotItems.length === 0) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
     setError('');
     setSuccess('');
     try {
@@ -671,11 +683,17 @@ export default function RunningOrders() {
     } catch (err) {
       console.error('Failed to update KOT status', err);
       setError(err instanceof Error ? err.message : 'Could not update KOT status.');
+    } finally {
+      endCriticalOperation();
     }
   };
 
   const voidOrder = async () => {
     if (!voidBundle?.order.id || !staffProfile || !auth.currentUser) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!canVoidOrders) {
       setError('Only Admin or Store Manager can void orders.');
       return;
@@ -698,6 +716,7 @@ export default function RunningOrders() {
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setVoiding(true);
     setError('');
     setSuccess('');
@@ -882,6 +901,7 @@ export default function RunningOrders() {
       setError(err instanceof Error ? err.message : 'Could not void order.');
     } finally {
       setVoiding(false);
+      endCriticalOperation();
     }
   };
 
@@ -1059,12 +1079,12 @@ export default function RunningOrders() {
                     Reprint
                   </button>
                   {kot.label === 'Pending' && (
-                    <button onClick={() => updateKotStatus(bundle, 'READY')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-black text-white">
+                    <button data-requires-online="true" onClick={() => updateKotStatus(bundle, 'READY')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-black text-white">
                       Mark Ready
                     </button>
                   )}
                   {kot.label === 'Ready' && (
-                    <button onClick={() => updateKotStatus(bundle, 'SERVED')} className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-black text-white">
+                    <button data-requires-online="true" onClick={() => updateKotStatus(bundle, 'SERVED')} className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-black text-white">
                       Mark Served
                     </button>
                   )}
@@ -1221,6 +1241,7 @@ export default function RunningOrders() {
 
               <button
                 onClick={settlePayment}
+                data-requires-online="true"
                 disabled={!settlementReady || settling}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#5c4033] px-4 py-3 font-black text-white disabled:bg-neutral-200 disabled:text-neutral-500"
               >
@@ -1280,6 +1301,7 @@ export default function RunningOrders() {
               </label>
               <button
                 onClick={voidOrder}
+                data-requires-online="true"
                 disabled={voiding || !voidReason.trim() || voidConfirmation.trim() !== 'VOID ORDER'}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 py-3 font-black text-white disabled:bg-neutral-200 disabled:text-neutral-500"
               >

@@ -18,6 +18,7 @@ import {
   updateCustomerProfile,
 } from '../../lib/customerAuth';
 import { lastCustomerOrderTrackingToken } from '../../lib/customerOrderPersistence';
+import { OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type Props = {
   title: string;
@@ -66,6 +67,10 @@ export default function CustomerHeader({
   }, [accountOpen]);
 
   const saveProfile = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     const nextName = displayName.trim().replace(/\s+/g, ' ');
     if (!nextName || nextName.length > 80) {
       setError('Enter a name between 1 and 80 characters.');
@@ -92,6 +97,10 @@ export default function CustomerHeader({
   };
 
   const handleSignOut = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -108,25 +117,16 @@ export default function CustomerHeader({
   return (
     <>
       <header className={`${sticky ? 'sticky top-0 z-30' : ''} border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur`}>
-        <div className="mx-auto flex min-h-[58px] w-full min-w-0 items-center justify-between gap-2 py-1.5 lg:max-w-6xl">
-          <Link to="/order" className="flex min-w-0 items-center gap-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40">
-            <img src={coffeeBondLogo} alt="Coffee Bond" className="h-8 w-8 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
+        <div className="mx-auto flex min-h-[60px] w-full min-w-0 items-center justify-between gap-2 py-1.5 lg:max-w-6xl">
+          <Link to="/order" className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60">
+            <img src={coffeeBondLogo} alt="" className="h-9 w-9 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
             <div className="min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#8b5e42]">Coffee Bond</p>
-              <h1 className="truncate text-base font-black leading-tight text-[#271a16]">{title}</h1>
+              <p className="whitespace-nowrap text-sm font-black uppercase text-[#271a16]">Coffee Bond</p>
+              <h1 className="hidden truncate text-[11px] font-bold leading-tight text-[#8b5e42] sm:block">{title}</h1>
             </div>
           </Link>
 
-          <nav className="ml-auto hidden items-center gap-1 sm:flex" aria-label="Customer navigation">
-            <Link to="/order" className="rounded-full px-3 py-2 text-xs font-black text-[#5c4033] hover:bg-white">
-              Order
-            </Link>
-            <Link to="/order/my-orders" className="rounded-full px-3 py-2 text-xs font-black text-[#5c4033] hover:bg-white">
-              My Orders
-            </Link>
-          </nav>
-
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             {!authRestored ? (
               <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#8b5e42]" aria-label="Restoring customer session">
                 <Loader2 size={17} className="animate-spin" />
@@ -135,11 +135,11 @@ export default function CustomerHeader({
               <button
                 type="button"
                 onClick={() => setAccountOpen(true)}
-                className="inline-flex min-h-10 max-w-[148px] items-center gap-2 rounded-full bg-white px-2.5 py-1.5 text-left shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-left shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 sm:w-auto sm:max-w-[148px] sm:justify-start sm:gap-2 sm:px-2.5"
                 aria-label="Open customer account"
               >
                 <UserCircle2 size={20} className="shrink-0 text-[#8b5e42]" />
-                <span className="min-w-0">
+                <span className="hidden min-w-0 sm:block">
                   <span className="block truncate text-xs font-black text-[#2d2019]">{profile.displayName || 'My account'}</span>
                   <span className="block truncate text-[10px] font-bold text-emerald-700">{maskedPhone(profile.normalisedPhone)}</span>
                 </span>
@@ -147,11 +147,11 @@ export default function CustomerHeader({
             ) : (
               <Link
                 to="/order/my-orders"
-                className="inline-flex min-h-10 items-center gap-1.5 rounded-full bg-white px-3 py-2 text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 sm:w-auto sm:gap-1.5 sm:px-3"
+                aria-label="Sign in or view My Orders"
               >
                 <UserCircle2 size={17} />
-                <span className="hidden min-[375px]:inline">Sign in / My Orders</span>
-                <span className="min-[375px]:hidden">Sign in</span>
+                <span className="hidden sm:inline">Sign in</span>
               </Link>
             )}
             {rightSlot}
@@ -185,7 +185,7 @@ export default function CustomerHeader({
                   <p className="text-xs font-bold text-emerald-700">{maskedPhone(profile.normalisedPhone)}</p>
                 </div>
               </div>
-              <button type="button" onClick={() => setAccountOpen(false)} className="rounded-full bg-[#f5ede5] p-2 text-[#5c4033]">
+              <button type="button" onClick={() => setAccountOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f5ede5] text-[#5c4033]" aria-label="Close customer account">
                 <X size={17} />
               </button>
             </div>
@@ -228,7 +228,7 @@ export default function CustomerHeader({
                   <button type="button" onClick={() => setEditing(false)} disabled={saving} className="min-h-12 rounded-xl bg-[#f5ede5] px-4 text-sm font-black text-[#5c4033]">
                     Cancel
                   </button>
-                  <button type="button" onClick={saveProfile} disabled={saving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#3b261d] px-4 text-sm font-black text-white disabled:bg-neutral-300">
+                  <button type="button" data-requires-online="true" onClick={saveProfile} disabled={saving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#3b261d] px-4 text-sm font-black text-white disabled:bg-neutral-300">
                     {saving && <Loader2 size={16} className="animate-spin" />}
                     Save
                   </button>
@@ -250,7 +250,7 @@ export default function CustomerHeader({
                   <span className="inline-flex items-center gap-2"><Pencil size={18} /> Edit Profile</span>
                   <ChevronRight size={16} />
                 </button>
-                <button type="button" onClick={handleSignOut} disabled={saving} className="flex min-h-12 w-full items-center justify-between rounded-2xl bg-red-50 px-4 text-sm font-black text-red-800 disabled:opacity-60">
+                <button type="button" data-requires-online="true" onClick={handleSignOut} disabled={saving} className="flex min-h-12 w-full items-center justify-between rounded-2xl bg-red-50 px-4 text-sm font-black text-red-800 disabled:opacity-60">
                   <span className="inline-flex items-center gap-2"><LogOut size={18} /> Sign Out</span>
                   {saving && <Loader2 size={16} className="animate-spin" />}
                 </button>

@@ -6,6 +6,7 @@ import { Store, KotItem } from '../../types';
 import { Loader2, CheckCircle, Clock, Store as StoreIcon, AlertCircle, RefreshCw, Trash2, Bell, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
+import { beginCriticalOperation, requireOnlineAction } from '../../lib/connectivity';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -234,6 +235,8 @@ export default function ReadyToServe() {
 
   const handleMarkServed = async (item: KotItem) => {
     if (!item.id) return;
+    if (!requireOnlineAction()) return;
+    const endCriticalOperation = beginCriticalOperation();
     try {
       const itemRef = doc(db, 'kotItems', item.id);
       await updateDoc(itemRef, {
@@ -263,11 +266,15 @@ export default function ReadyToServe() {
     } catch (e: any) {
       console.error(e);
       alert("Error marking served: " + e.message);
+    } finally {
+      endCriticalOperation();
     }
   };
 
   const executeReturn = async (actionType: 'WASTAGE' | 'REMAKE') => {
     if (!returnModalItem?.id || !staffProfile) return;
+    if (!requireOnlineAction()) return;
+    const endCriticalOperation = beginCriticalOperation();
     setReturnLoading(true);
     setReturnError("");
 
@@ -424,6 +431,7 @@ export default function ReadyToServe() {
       setReturnError(e.message || "Failed to process return.");
     } finally {
       setReturnLoading(false);
+      endCriticalOperation();
     }
   };
 
@@ -549,6 +557,7 @@ export default function ReadyToServe() {
 
                           <button 
                             onClick={() => handleMarkServed(item)}
+                            data-requires-online="true"
                             className="w-full py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg transition-colors flex justify-center items-center gap-2 shadow-sm cursor-pointer"
                           >
                             <CheckCircle size={18} /> Mark Served
@@ -669,6 +678,7 @@ export default function ReadyToServe() {
                  <div className="flex flex-col gap-2 w-full sm:ml-auto sm:flex-row">
                     <button 
                        onClick={() => executeReturn('WASTAGE')}
+                       data-requires-online="true"
                        disabled={returnLoading}
                        className="flex-1 sm:flex-none px-4 py-2 bg-red-100 text-red-800 hover:bg-red-200 focus:ring-2 focus:ring-red-500 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors text-sm"
                     >
@@ -677,6 +687,7 @@ export default function ReadyToServe() {
                     </button>
                     <button 
                        onClick={() => executeReturn('REMAKE')}
+                       data-requires-online="true"
                        disabled={returnLoading}
                        className="flex-1 sm:flex-none px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white focus:ring-2 focus:ring-purple-500 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors shadow-sm text-sm"
                     >

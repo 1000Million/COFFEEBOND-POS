@@ -47,6 +47,7 @@ import {
 } from '../../lib/complimentaryPhoneVerification';
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 type CheckoutError = {
   message: string;
@@ -1560,6 +1561,11 @@ export default function POSHome() {
   };
 
   const handleSendComplimentaryOtp = async () => {
+    if (!requireOnlineAction()) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!selectedStoreId) {
       setComplimentaryOtpStatus('ERROR');
       setComplimentaryOtpMessage('Select a store before sending the OTP.');
@@ -1590,6 +1596,11 @@ export default function POSHome() {
   };
 
   const handleVerifyComplimentaryOtp = async () => {
+    if (!requireOnlineAction()) {
+      setComplimentaryOtpStatus('ERROR');
+      setComplimentaryOtpMessage(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!complimentaryConfirmationResult) {
       setComplimentaryOtpStatus('ERROR');
       setComplimentaryOtpMessage('Send an OTP before verifying.');
@@ -1742,6 +1753,7 @@ export default function POSHome() {
   };
 
   const holdCurrentBill = () => {
+    if (!requireOnlineAction()) return;
     if (razorpayPaymentLocked) {
       alert('Cancel the active Razorpay payment request before holding this bill.');
       return;
@@ -1781,6 +1793,7 @@ export default function POSHome() {
   };
 
   const recallHeldBill = (bill: HeldBill) => {
+    if (!requireOnlineAction()) return;
     if (razorpayPaymentLocked) return;
     if (!stores.some(store => store.id === bill.storeId)) {
       alert('This held bill belongs to a store that is not available for your account.');
@@ -1809,6 +1822,7 @@ export default function POSHome() {
   };
 
   const deleteHeldBill = (bill: HeldBill) => {
+    if (!requireOnlineAction()) return;
     const label = bill.customerName || bill.tableNumber || bill.storeName;
     if (!window.confirm(`Delete held bill for ${label}?`)) return;
     setIsRecallMenuOpen(false);
@@ -1923,6 +1937,10 @@ export default function POSHome() {
 
   const cancelRazorpayPayment = async () => {
     if (!razorpaySession || razorpayActionLoading) return;
+    if (!requireOnlineAction()) {
+      setCheckoutError({ message: OFFLINE_ACTION_MESSAGE });
+      return;
+    }
     setRazorpayActionLoading(true);
     setCheckoutError(null);
     try {
@@ -1955,6 +1973,10 @@ export default function POSHome() {
     const isComplimentaryCheckout = !isSplitPayment && selectedPaymentMethod === 'COMPLIMENTARY';
 
     if (!staffProfile || !auth.currentUser) return;
+    if (!requireOnlineAction()) {
+      setCheckoutError({ message: OFFLINE_ACTION_MESSAGE });
+      return;
+    }
     if (cart.length === 0) return alert("Cart is empty");
     if (!selectedStoreId) return alert("Please select a store");
     if (!isSplitPayment && !selectedPaymentMethod) return alert("Please select a payment method");
@@ -1989,6 +2011,7 @@ export default function POSHome() {
 
     setTableNumberError(null);
 
+    const endCriticalOperation = beginCriticalOperation();
     setIsSaving(true);
     setCheckoutError(null);
     const checkoutWriteTrace: CheckoutWriteTrace[] = [];
@@ -2660,6 +2683,7 @@ export default function POSHome() {
       setCheckoutError(buildCheckoutError(err));
     } finally {
       setIsSaving(false);
+      endCriticalOperation();
     }
   };
 
@@ -2997,6 +3021,7 @@ export default function POSHome() {
                   {cart.length > 0 && (
                     <button
                       onClick={holdCurrentBill}
+                      data-requires-online="true"
                       className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-black text-amber-700 transition-colors hover:bg-amber-100"
                     >
                       Hold
@@ -3040,12 +3065,14 @@ export default function POSHome() {
                                 <div className="mt-2 grid grid-cols-2 gap-2">
                                   <button
                                     onClick={() => recallHeldBill(bill)}
+                                    data-requires-online="true"
                                     className="rounded-xl bg-[#5c4033] px-3 py-1.5 text-[11px] font-black text-white hover:bg-[#4a332a]"
                                   >
                                     Recall
                                   </button>
                                   <button
                                     onClick={() => deleteHeldBill(bill)}
+                                    data-requires-online="true"
                                     className="rounded-xl border border-red-100 bg-red-50 px-3 py-1.5 text-[11px] font-black text-red-600 hover:bg-red-100"
                                   >
                                     Delete
@@ -3541,6 +3568,7 @@ export default function POSHome() {
                             <button
                               type="button"
                               onClick={() => void handleVerifyComplimentaryOtp()}
+                              data-requires-online="true"
                               disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryOtpCode.length !== 6}
                               className="h-10 w-full rounded-xl bg-[#5c4033] px-4 text-xs font-black text-white transition hover:bg-[#3e2723] disabled:cursor-not-allowed disabled:bg-neutral-300 md:w-auto"
                             >
@@ -3551,6 +3579,7 @@ export default function POSHome() {
                             <button
                               type="button"
                               onClick={() => void handleSendComplimentaryOtp()}
+                              data-requires-online="true"
                               disabled={complimentaryOtpStatus === 'VERIFYING' || complimentaryResendSeconds > 0}
                               className="text-amber-800 underline decoration-amber-300 underline-offset-2 disabled:cursor-not-allowed disabled:text-neutral-400 disabled:no-underline"
                             >
@@ -3574,6 +3603,7 @@ export default function POSHome() {
                         <button
                           type="button"
                           onClick={() => void handleSendComplimentaryOtp()}
+                          data-requires-online="true"
                           disabled={complimentaryOtpStatus === 'SENDING'}
                           className="h-10 w-full rounded-xl bg-[#5c4033] px-4 text-xs font-black text-white transition hover:bg-[#3e2723] disabled:cursor-not-allowed disabled:bg-neutral-300 md:w-auto"
                         >
@@ -3689,6 +3719,7 @@ export default function POSHome() {
                   : 'cursor-not-allowed border border-neutral-300 bg-neutral-200 text-neutral-400'
               }`}
               onClick={() => void handleCheckout()}
+              data-requires-online="true"
             >
               {isSaving
                 ? <Loader2 size={20} className="mx-auto animate-spin text-[#5c4033]" />
@@ -3847,6 +3878,7 @@ export default function POSHome() {
                   <button
                     type="button"
                     onClick={() => void cancelRazorpayPayment()}
+                    data-requires-online="true"
                     disabled={razorpayActionLoading}
                     className="h-11 rounded-xl bg-neutral-900 px-4 text-sm font-black text-white disabled:opacity-50"
                   >
@@ -3858,6 +3890,7 @@ export default function POSHome() {
                 <button
                   type="button"
                   onClick={() => void handleCheckout('RAZORPAY')}
+                  data-requires-online="true"
                   disabled={isSaving}
                   className="h-11 rounded-xl bg-[#3e2723] px-4 text-sm font-black text-white disabled:opacity-50 sm:col-span-2"
                 >

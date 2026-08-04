@@ -78,6 +78,7 @@ export interface FinishedGood {
   name: string;
   displayName?: string;
   description?: string;
+  dietaryClassification?: 'VEGETARIAN' | 'NON_VEGETARIAN' | 'EGG';
   imageUrl?: string;
   imageStoragePath?: string | null;
   imageSource?: 'ADMIN_UPLOAD' | null;

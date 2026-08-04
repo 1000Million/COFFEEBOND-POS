@@ -26,6 +26,10 @@ import { Link, useNavigate } from 'react-router-dom';
 import AddOnSelector from '../../components/add-ons/AddOnSelector';
 import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
+import CustomerProductImage from '../../components/customer/CustomerProductImage';
+import DietaryMarker from '../../components/customer/DietaryMarker';
+import HorizontalScroller from '../../components/customer/HorizontalScroller';
+import { useConnectivity } from '../../contexts/ConnectivityContext';
 import {
   activeAddOnGroupsForProduct,
   addOnSelectionKey,
@@ -48,6 +52,12 @@ import {
   writeCustomerCheckoutDraft,
 } from '../../lib/customerCheckoutPersistence';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE } from '../../lib/connectivity';
+import {
+  CUSTOMER_CATEGORY_ORDER,
+  customerMenuCategory,
+  trustedDietaryClassification,
+} from '../../lib/customerMenuPresentation';
 import {
   loadRazorpayCheckout,
   RazorpayCheckoutSuccess,
@@ -188,7 +198,6 @@ const verifyCustomerRazorpayPayment = httpsCallable<
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
-const CATEGORY_ORDER = ['ALL', 'Coffee', 'Cold Coffee', 'Matcha & Tea', 'Food', 'Desserts', 'Add Ons'];
 const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
@@ -327,16 +336,6 @@ function estimatedPrepLabel(store: Store | null): string {
   return prepWindowLabel(store?.estimatedPrepMinutes);
 }
 
-function categoryGroupName(item: CustomerMenuItem): string {
-  const raw = `${item.posCategoryName || ''} ${item.name || ''} ${item.displayName || ''}`.toLowerCase();
-  if (raw.includes('add on') || raw.includes('add-ons') || raw.includes('extra') || raw.includes('bread')) return 'Add Ons';
-  if (raw.includes('dessert') || raw.includes('baked') || raw.includes('ice cream') || raw.includes('brownie') || raw.includes('cookie')) return 'Desserts';
-  if (raw.includes('matcha') || raw.includes('tea') || raw.includes('herbal')) return 'Matcha & Tea';
-  if (raw.includes('cold brew') || raw.includes('iced') || raw.includes('vietnamese') || raw.includes('cold coffee')) return 'Cold Coffee';
-  if (raw.includes('coffee') || raw.includes('latte') || raw.includes('espresso') || raw.includes('cappuccino') || raw.includes('americano') || raw.includes('mocha') || raw.includes('brew') || raw.includes('milk based') || raw.includes('black') || raw.includes('specialty')) return 'Coffee';
-  return 'Food';
-}
-
 function categoryLabel(category: string): string {
   if (category === 'ALL') return 'All';
   if (category === 'Matcha & Tea') return 'Matcha';
@@ -345,11 +344,11 @@ function categoryLabel(category: string): string {
 
 function shortDescription(item: CustomerMenuItem): string {
   if (item.description?.trim()) return item.description.trim();
-  const group = categoryGroupName(item);
+  const group = customerMenuCategory(item);
   if (group === 'Coffee') return 'Freshly prepared by the Coffee Bond bar.';
   if (group === 'Cold Coffee') return 'Chilled, smooth, and made for pickup.';
   if (group === 'Matcha & Tea') return 'A calm cup for a slower moment.';
-  if (group === 'Food') return 'Made fresh for your order.';
+  if (group === 'Food' || group === 'Baked by Bond') return 'Made fresh for your order.';
   if (group === 'Desserts') return 'A sweet finish from Coffee Bond.';
   return 'Add it to your pickup basket.';
 }
@@ -369,23 +368,29 @@ function visualMeta(item: CustomerMenuItem): {
   iconColor: string;
   icon: IconComponent;
 } {
-  const group = categoryGroupName(item);
+  const group = customerMenuCategory(item);
   if (group === 'Coffee') {
-    return { label: 'Coffee', gradient: 'from-[#f7eadc] to-[#ead0ad]', iconColor: 'text-[#6c4025]', icon: Coffee };
+    return { label: 'Coffee', gradient: 'bg-[#f1dfca]', iconColor: 'text-[#6c4025]', icon: Coffee };
   }
   if (group === 'Cold Coffee') {
-    return { label: 'Cold coffee', gradient: 'from-[#eef6f1] to-[#cfe7dc]', iconColor: 'text-[#2f6b4b]', icon: CupSoda };
+    return { label: 'Cold coffee', gradient: 'bg-[#dcece4]', iconColor: 'text-[#2f6b4b]', icon: CupSoda };
+  }
+  if (group === 'Cold Drinks') {
+    return { label: 'Cold drink', gradient: 'bg-[#e5f2ec]', iconColor: 'text-[#2f6b4b]', icon: CupSoda };
   }
   if (group === 'Matcha & Tea') {
-    return { label: 'Matcha', gradient: 'from-[#eef3e5] to-[#dce8cb]', iconColor: 'text-[#4d6b34]', icon: Leaf };
+    return { label: 'Matcha', gradient: 'bg-[#e3ecd5]', iconColor: 'text-[#4d6b34]', icon: Leaf };
   }
   if (group === 'Desserts') {
-    return { label: 'Dessert', gradient: 'from-[#f9ece6] to-[#f2d2c4]', iconColor: 'text-[#8a4a38]', icon: CakeSlice };
+    return { label: 'Dessert', gradient: 'bg-[#f3ddd3]', iconColor: 'text-[#8a4a38]', icon: CakeSlice };
+  }
+  if (group === 'Baked by Bond') {
+    return { label: 'Baked by Bond', gradient: 'bg-[#f4e5dc]', iconColor: 'text-[#8a4a38]', icon: CakeSlice };
   }
   if (group === 'Add Ons') {
-    return { label: 'Add on', gradient: 'from-[#f7efe9] to-[#e9dfd2]', iconColor: 'text-[#705748]', icon: Sparkles };
+    return { label: 'Add on', gradient: 'bg-[#eee4da]', iconColor: 'text-[#705748]', icon: Sparkles };
   }
-  return { label: 'Food', gradient: 'from-[#f8efe8] to-[#ecd8c9]', iconColor: 'text-[#7f5136]', icon: Utensils };
+  return { label: group === 'Other' ? 'Other' : 'Food', gradient: 'bg-[#f0e0d4]', iconColor: 'text-[#7f5136]', icon: Utensils };
 }
 
 function getItemAvailability(item: CustomerMenuItem, storeId: string): ItemAvailability {
@@ -496,6 +501,7 @@ function customerSubmitErrorMessage(err: unknown): string {
 
 export default function CustomerOrder() {
   const navigate = useNavigate();
+  const { isOffline, requireOnline } = useConnectivity();
   const [stores, setStores] = useState<Store[]>([]);
   const [items, setItems] = useState<CustomerMenuItem[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
@@ -528,6 +534,8 @@ export default function CustomerOrder() {
   const [checkoutDraftNotice, setCheckoutDraftNotice] = useState('');
   const [paymentNotice, setPaymentNotice] = useState('');
   const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
+  const [basketAnnouncement, setBasketAnnouncement] = useState('');
+  const [basketBumpKey, setBasketBumpKey] = useState(0);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
@@ -581,6 +589,7 @@ export default function CustomerOrder() {
           ? loadedStores.find(store => store.id === draftResult.draft?.selectedStoreId)
           : null;
         if (draftResult.draft && draftStore) {
+          triedAutoLocationRef.current = true;
           pendingCheckoutDraftRef.current = draftResult.draft;
           setCheckoutHydration('RESTORING');
         } else {
@@ -594,9 +603,7 @@ export default function CustomerOrder() {
         const initialStoreId = draftStore?.id || savedStoreId || loadedStores[0]?.id || '';
         setStores(loadedStores);
         setSelectedStoreId(prev => prev || initialStoreId);
-        if (draftStore) {
-          setStorePreferenceMessage(`Restoring your basket from ${draftStore.name}.`);
-        } else if (savedStoreId) {
+        if (!draftStore && savedStoreId) {
           const savedStore = loadedStores.find(store => store.id === savedStoreId);
           setStorePreferenceMessage(savedStore ? `Using your default store: ${savedStore.name}.` : '');
         }
@@ -854,14 +861,14 @@ export default function CustomerOrder() {
   ]);
 
   const categories = useMemo(() => {
-    const names = Array.from(new Set(storeItems.map(item => categoryGroupName(item))));
-    return CATEGORY_ORDER.filter(name => name === 'ALL' || names.includes(name));
+    const names = Array.from(new Set(storeItems.map(item => customerMenuCategory(item))));
+    return CUSTOMER_CATEGORY_ORDER.filter(name => name === 'ALL' || names.includes(name));
   }, [storeItems]);
 
   const visibleItems = useMemo(() => {
     const searchText = search.trim().toLowerCase();
     return storeItems.filter(item => {
-      const matchesCategory = category === 'ALL' || categoryGroupName(item) === category;
+      const matchesCategory = category === 'ALL' || customerMenuCategory(item) === category;
       const name = `${item.displayName || item.name} ${item.code} ${item.description || ''}`.toLowerCase();
       return matchesCategory && (!searchText || name.includes(searchText));
     });
@@ -1031,6 +1038,10 @@ export default function CustomerOrder() {
         addOns: canonicalAddOns,
       }];
     });
+    setBasketAnnouncement(editingLineId
+      ? `${item.displayName || item.name} customizations updated.`
+      : `${item.displayName || item.name} added to basket.`);
+    setBasketBumpKey(current => current + 1);
   };
 
   const addItem = (item: CustomerMenuItem) => {
@@ -1089,6 +1100,11 @@ export default function CustomerOrder() {
         : `${blockedLine.item.displayName || blockedLine.item.name} is currently unavailable: ${availability.reason}.`);
     }
 
+    if (!requireOnline()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+
     const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, paymentProvider, cart);
     const lockKey = submissionLockKey(signature);
     let clientIdempotencyKey = createClientIdempotencyKey();
@@ -1112,6 +1128,7 @@ export default function CustomerOrder() {
     }
 
     submittingRef.current = true;
+    const endCriticalOperation = beginCriticalOperation();
     setSaving(true);
     setError(null);
     setPaymentNotice('');
@@ -1288,6 +1305,7 @@ export default function CustomerOrder() {
     } finally {
       submittingRef.current = false;
       setSaving(false);
+      endCriticalOperation();
     }
   };
 
@@ -1301,50 +1319,36 @@ export default function CustomerOrder() {
     }
   };
 
-  const renderItemThumb = (item: CustomerMenuItem, sizeClass = 'h-20 w-20') => {
+  const renderItemThumb = (item: CustomerMenuItem, sizeClass = 'h-20 w-20', priority = false) => {
     const meta = visualMeta(item);
     const Icon = meta.icon;
     const imageUrl = getItemImage(item);
 
-    return (
-      <div className={`${sizeClass} shrink-0 overflow-hidden rounded-2xl bg-[#f5eadf]`}>
-        {imageUrl ? (
-          <>
-            <img
-              src={imageUrl}
-              alt={item.displayName || item.name}
-              loading="lazy"
-              decoding="async"
-              className="h-full w-full object-cover"
-              onError={(event) => {
-                event.currentTarget.style.display = 'none';
-                const fallback = event.currentTarget.nextElementSibling;
-                if (fallback instanceof HTMLElement) fallback.style.display = 'flex';
-              }}
-            />
-            <div className={`hidden h-full w-full items-center justify-center bg-gradient-to-br ${meta.gradient}`}>
-              <Icon size={24} className={meta.iconColor} />
-            </div>
-          </>
-        ) : (
-          <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${meta.gradient}`}>
-            <Icon size={24} className={meta.iconColor} />
-          </div>
-        )}
-      </div>
-    );
+    return <CustomerProductImage
+      src={imageUrl}
+      alt={item.displayName || item.name}
+      icon={Icon}
+      iconClassName={meta.iconColor}
+      className={`${sizeClass} ${meta.gradient}`}
+      priority={priority}
+    />;
   };
 
-  const renderPopularCard = (item: CustomerMenuItem) => {
+  const renderPopularCard = (item: CustomerMenuItem, index: number) => {
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
 
     return (
       <article key={`popular-${item.code}`} className="min-w-[158px] max-w-[158px] rounded-[20px] bg-white p-2.5 shadow-sm ring-1 ring-[#e7ddd3]">
-        {renderItemThumb(item, 'h-[96px] w-full')}
+        {renderItemThumb(item, 'aspect-[4/3] w-full', index < 3)}
         <div className="mt-2 min-h-[76px]">
           <div className="mb-1 inline-flex rounded-full bg-[#ecf8ef] px-2 py-0.5 text-[10px] font-bold text-emerald-700">Popular</div>
           <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
+          {trustedDietaryClassification(item as unknown as Record<string, unknown>) && (
+            <div className="mt-1">
+              <DietaryMarker value={trustedDietaryClassification(item as unknown as Record<string, unknown>)!} compact />
+            </div>
+          )}
           <p className="mt-1 text-xs font-bold text-[#8b5e42]">{formatMoney(toNumber(item.salePrice))}</p>
         </div>
         <button
@@ -1374,6 +1378,11 @@ export default function CustomerOrder() {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-bold text-[#a06f48]">{meta.label}</p>
+              {trustedDietaryClassification(item as unknown as Record<string, unknown>) && (
+                <div className="mb-1">
+                  <DietaryMarker value={trustedDietaryClassification(item as unknown as Record<string, unknown>)!} compact />
+                </div>
+              )}
               <h3 className="line-clamp-2 text-[15px] font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
             </div>
             {qty > 0 ? (
@@ -1418,7 +1427,12 @@ export default function CustomerOrder() {
             {itemCount} item{itemCount === 1 ? '' : 's'} for {orderType === 'DINE_IN' ? 'dine in' : 'pickup'}
           </p>
         </div>
-        <button onClick={() => setBasketOpen(false)} className="rounded-full bg-[#f8efe6] p-2 text-[#5c4033] lg:hidden">
+        <button
+          type="button"
+          onClick={() => setBasketOpen(false)}
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f8efe6] text-[#5c4033] lg:hidden"
+          aria-label="Close basket"
+        >
           <X size={18} />
         </button>
       </div>
@@ -1439,6 +1453,11 @@ export default function CustomerOrder() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{line.item.displayName || line.item.name}</p>
+                      {trustedDietaryClassification(line.item as unknown as Record<string, unknown>) && (
+                        <div className="mt-1">
+                          <DietaryMarker value={trustedDietaryClassification(line.item as unknown as Record<string, unknown>)!} compact />
+                        </div>
+                      )}
                       <p className="mt-1 text-xs font-bold text-neutral-500">
                         {formatMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns))} each
                       </p>
@@ -1583,8 +1602,10 @@ export default function CustomerOrder() {
 
           <button
             onClick={submitOrder}
+            data-requires-online="true"
             disabled={
               saving
+              || isOffline
               || loading
               || cart.length === 0
               || !selectedStoreOnline
@@ -1745,7 +1766,7 @@ export default function CustomerOrder() {
           >
             <ShoppingBag size={15} />
             {itemCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#07855b] px-1 text-[10px] text-white">
+              <span key={basketBumpKey} className="absolute -right-1 -top-1 flex h-5 min-w-5 animate-[basket-bump_180ms_ease-out] items-center justify-center rounded-full bg-[#07855b] px-1 text-[10px] text-white motion-reduce:animate-none">
                 {itemCount}
               </span>
             )}
@@ -1777,7 +1798,6 @@ export default function CustomerOrder() {
                 }`}>
                   {customerOrderingState.statusLabel}
                 </span>
-                <span className="text-xs font-bold text-[#71645d]">{selectedStore ? estimatedPrepLabel(selectedStore) : '--'}</span>
                 {selectedStoreMessage && <span className="truncate text-xs font-bold text-[#71645d]">{selectedStoreMessage}</span>}
               </div>
             </div>
@@ -1815,7 +1835,7 @@ export default function CustomerOrder() {
             />
           </label>
 
-          <nav className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label="Menu categories">
+          <HorizontalScroller className="-mx-4" contentClassName="px-4 pb-1" itemGapClassName="gap-2" ariaLabel="Menu categories" role="navigation">
             {categories.map(cat => (
               <button
                 key={cat}
@@ -1827,7 +1847,7 @@ export default function CustomerOrder() {
                 {categoryLabel(cat)}
               </button>
             ))}
-          </nav>
+          </HorizontalScroller>
 
           {error && (
             <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
@@ -1839,7 +1859,6 @@ export default function CustomerOrder() {
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-lg font-black text-[#271a16]">Popular today</h2>
-              <p className="text-xs font-bold text-[#71645d]">Quick add</p>
             </div>
             {loading ? (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -1848,9 +1867,9 @@ export default function CustomerOrder() {
             ) : popularItems.length === 0 ? (
               <div className="rounded-2xl bg-white p-4 text-center text-sm font-bold text-[#71645d]">No popular items available.</div>
             ) : (
-              <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {popularItems.map(item => renderPopularCard(item))}
-              </div>
+              <HorizontalScroller className="-mx-4" contentClassName="px-4 pb-2" ariaLabel="Popular today">
+                {popularItems.map((item, index) => renderPopularCard(item, index))}
+              </HorizontalScroller>
             )}
           </section>
 
@@ -1867,6 +1886,16 @@ export default function CustomerOrder() {
               <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
                 <p className="font-black text-[#271a16]">Nothing found here</p>
                 <p className="text-sm text-[#71645d]">Try another category or search.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearch('');
+                    setCategory('ALL');
+                  }}
+                  className="mt-3 min-h-11 rounded-2xl bg-[#f5ede5] px-4 text-sm font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+                >
+                  Show full menu
+                </button>
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">
@@ -1883,18 +1912,22 @@ export default function CustomerOrder() {
 
       {itemCount > 0 && (
         <button
+          key={basketBumpKey}
           onClick={() => setBasketOpen(true)}
-          className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex min-h-14 items-center justify-between rounded-2xl bg-[#3b241c] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] transition lg:hidden"
+          className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex min-h-14 animate-[basket-bump_180ms_ease-out] items-center justify-between rounded-2xl bg-[#3b241c] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] transition motion-reduce:animate-none lg:hidden"
         >
           <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
           <span>{formatMoney(totals.grandTotal)}</span>
         </button>
       )}
 
+      <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
+
       {pendingAddOnItem && (
         <AddOnSelector
           mode="CUSTOMER"
           productName={pendingAddOnItem.displayName || pendingAddOnItem.name}
+          dietaryClassification={trustedDietaryClassification(pendingAddOnItem as unknown as Record<string, unknown>)}
           basePrice={toNumber(pendingAddOnItem.salePrice)}
           taxRate={itemTaxRate(pendingAddOnItem, selectedStoreTaxRate)}
           groups={activeAddOnGroupsForProduct(
@@ -1917,7 +1950,7 @@ export default function CustomerOrder() {
 
       {basketOpen && (
         <div className="fixed inset-0 z-50 bg-black/35 lg:hidden">
-          <button aria-label="Close basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
+          <button aria-label="Dismiss basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
           <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[28px] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:p-5">
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-neutral-200" />
             {basketPanel}
@@ -1927,7 +1960,7 @@ export default function CustomerOrder() {
 
       {storeSelectorOpen && (
         <div className="fixed inset-0 z-50 bg-black/35">
-          <button aria-label="Close store selector" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setStoreSelectorOpen(false)} />
+          <button aria-label="Dismiss store selector" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setStoreSelectorOpen(false)} />
           <section className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[28px] bg-[#fbf7f1] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl lg:left-1/2 lg:right-auto lg:w-[430px] lg:-translate-x-1/2">
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-[#d9cec3]" />
             <div className="mb-4 flex items-start justify-between gap-3">
@@ -1997,6 +2030,7 @@ export default function CustomerOrder() {
                     availabilitySnapshot: store.id === selectedStoreId ? publicAvailability : null,
                     availabilityLoading: store.id === selectedStoreId ? availabilityLoading : false,
                     orderableItemCount: store.id === selectedStoreId ? orderableItems.length : 1,
+                    availabilityChecked: store.id === selectedStoreId,
                   });
                   const isSelected = store.id === selectedStoreId;
                   const hasCoordinates = !!storeCoordinate(store);
@@ -2005,14 +2039,18 @@ export default function CustomerOrder() {
                       key={store.id}
                       type="button"
                       onClick={() => handleStoreChange(store.id)}
-                      className={`flex min-h-[72px] w-full items-center justify-between gap-3 rounded-3xl p-4 text-left ring-1 transition ${
-                        isSelected ? 'bg-[#3b241c] text-white ring-[#3b241c]' : 'bg-white text-[#271a16] ring-[#e7ddd3]'
+                      className={`flex min-h-[72px] w-full items-center justify-between gap-3 rounded-3xl p-4 text-left ring-1 transition focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40 ${
+                        isSelected
+                          ? 'bg-[#3b241c] text-white ring-[#3b241c]'
+                          : state.canAcceptOrders
+                            ? 'bg-white text-[#271a16] ring-[#e7ddd3]'
+                            : 'bg-neutral-100 text-neutral-500 ring-neutral-200'
                       }`}
                     >
                       <div className="min-w-0">
                         <p className="truncate text-base font-black">{store.name}</p>
                         <p className={`mt-1 text-xs font-bold ${isSelected ? 'text-white/75' : 'text-[#71645d]'}`}>
-                          {state.statusLabel} · {estimatedPrepLabel(store)}
+                          {state.statusLabel}{estimatedPrepLabel(store) ? ` · ${estimatedPrepLabel(store)}` : ''}
                           {!hasCoordinates ? ' · Coordinates needed' : ''}
                         </p>
                       </div>

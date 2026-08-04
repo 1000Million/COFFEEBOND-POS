@@ -1,6 +1,7 @@
 import { Store } from '../types';
 import { AddOnGroup, BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
 import { normalizeAddOnOptionIdsByGroup, sanitizeAddOnGroupsForPublic } from './addOns';
+import { trustedDietaryClassification } from './customerMenuPresentation';
 
 export type PublicMenuAvailabilityStatus = 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
 
@@ -33,6 +34,7 @@ export type PublicMenuDisplayItem = {
   isActive: boolean;
   taxRate?: number;
   imageUrl?: string;
+  dietaryClassification?: 'VEGETARIAN' | 'NON_VEGETARIAN' | 'EGG';
 };
 
 export type PublicMenuAvailabilitySnapshot = {
@@ -298,6 +300,7 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
   const imageUrl = ['imageUrl', 'image', 'photoUrl', 'photo', 'thumbnailUrl', 'thumbnail']
     .map((key) => record[key])
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const dietaryClassification = trustedDietaryClassification(record);
 
   return {
     id: item.code,
@@ -321,6 +324,7 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
     isActive: item.isActive !== false,
     ...(toNumber(item.taxRate) > 0 ? { taxRate: toNumber(item.taxRate) } : {}),
     ...(imageUrl ? { imageUrl: imageUrl.trim() } : {}),
+    ...(dietaryClassification ? { dietaryClassification } : {}),
   };
 }
 

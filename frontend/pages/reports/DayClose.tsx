@@ -6,6 +6,7 @@ import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
 import { summarizeReportingRecords } from '../../../functions/reportingCore.mjs';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'RAZORPAY', 'ONLINE', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 
@@ -209,11 +210,16 @@ export default function DayClose() {
 
   const handleSave = async () => {
     if (!staffProfile || !auth.currentUser || !selectedStore) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
     if (!canSave) {
       setError('This day is already closed. Ask an Admin or Store Manager to update it.');
       return;
     }
 
+    const endCriticalOperation = beginCriticalOperation();
     setSaving(true);
     setError(null);
     setMessage(null);
@@ -257,6 +263,7 @@ export default function DayClose() {
       setError(`Failed to save day close: ${err.message || err.toString()}`);
     } finally {
       setSaving(false);
+      endCriticalOperation();
     }
   };
 
@@ -420,6 +427,7 @@ export default function DayClose() {
 
                 <button
                   onClick={handleSave}
+                  data-requires-online="true"
                   disabled={!canSave || saving}
                   className="w-full rounded-xl bg-[#3e2723] px-4 py-3 text-sm font-black uppercase tracking-widest text-white hover:bg-[#2d1c19] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
