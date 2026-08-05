@@ -19,6 +19,7 @@ import {
 } from '../../lib/customerAuth';
 import { lastCustomerOrderTrackingToken } from '../../lib/customerOrderPersistence';
 import { OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerStatusPath } from '../../lib/customerRoutes';
 
 type Props = {
   title: string;
@@ -118,7 +119,7 @@ export default function CustomerHeader({
     <>
       <header className={`${sticky ? 'sticky top-0 z-30' : ''} border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur`}>
         <div className="mx-auto flex min-h-[60px] w-full min-w-0 items-center justify-between gap-2 py-1.5 lg:max-w-6xl">
-          <Link to="/order" className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60">
+          <Link to={CUSTOMER_HOME_PATH} className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60">
             <img src={coffeeBondLogo} alt="" className="h-9 w-9 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
             <div className="min-w-0">
               <p className="whitespace-nowrap text-sm font-black uppercase text-[#271a16]">Coffee Bond</p>
@@ -146,7 +147,7 @@ export default function CustomerHeader({
               </button>
             ) : (
               <Link
-                to="/order/my-orders"
+                to={CUSTOMER_MY_ORDERS_PATH}
                 className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 sm:w-auto sm:gap-1.5 sm:px-3"
                 aria-label="Sign in or view My Orders"
               >
@@ -236,12 +237,12 @@ export default function CustomerHeader({
               </div>
             ) : (
               <div className="mt-5 space-y-2">
-                <Link to="/order/my-orders" onClick={() => setAccountOpen(false)} className="flex min-h-12 items-center justify-between rounded-2xl bg-white px-4 text-sm font-black text-[#2d2019] ring-1 ring-[#e7ddd3]">
+                <Link to={CUSTOMER_MY_ORDERS_PATH} onClick={() => setAccountOpen(false)} className="flex min-h-12 items-center justify-between rounded-2xl bg-white px-4 text-sm font-black text-[#2d2019] ring-1 ring-[#e7ddd3]">
                   <span className="inline-flex items-center gap-2"><ClipboardList size={18} /> My Orders</span>
                   <ChevronRight size={16} />
                 </Link>
                 {currentOrderToken && (
-                  <Link to={`/order/status/${currentOrderToken}`} onClick={() => setAccountOpen(false)} className="flex min-h-12 items-center justify-between rounded-2xl bg-white px-4 text-sm font-black text-[#2d2019] ring-1 ring-[#e7ddd3]">
+                  <Link to={customerStatusPath(currentOrderToken)} onClick={() => setAccountOpen(false)} className="flex min-h-12 items-center justify-between rounded-2xl bg-white px-4 text-sm font-black text-[#2d2019] ring-1 ring-[#e7ddd3]">
                     <span className="inline-flex items-center gap-2"><ShoppingBag size={18} /> Current Order</span>
                     <ChevronRight size={16} />
                   </Link>

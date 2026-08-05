@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "tsc --noEmit",
-    "deploy:preview": "npm run build && firebase hosting:channel:deploy go-live-preview --project coffee-bond-pos --expires 7d",
-    "deploy:hosting": "npm run build && firebase deploy --only hosting --project coffee-bond-pos",
+    "deploy:preview": "npm run build:staff && firebase hosting:channel:deploy go-live-preview --only staff --project coffee-bond-pos --expires 7d",
+    "deploy:hosting": "npm run build:staff && firebase deploy --only hosting:staff --project coffee-bond-pos",
     "provision:go-live-users": "node scripts/provision-go-live-users.mjs",
     "provision:golden-i": "node scripts/provision-golden-i-store.mjs",
     "dry-run:location-management": "node scripts/dry-run-location-management.mjs",
@@ -57,7 +57,15 @@
     "test:razorpay-checkout": "node scripts/test-razorpay-checkout.mjs",
     "test:pos-razorpay": "node scripts/test-pos-razorpay.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs",
-    "test:product-addon-controls": "node scripts/test-product-addon-controls.mjs"
+    "test:product-addon-controls": "node scripts/test-product-addon-controls.mjs",
+    "build:staff": "vite build",
+    "build:customer": "vite build --config vite.customer.config.ts",
+    "build:all": "npm run build:staff && npm run build:customer",
+    "preview:customer": "vite --config vite.customer.config.ts",
+    "deploy:hosting:staff": "npm run build:staff && firebase deploy --only hosting:staff --project coffee-bond-pos",
+    "deploy:hosting:customer": "npm run build:customer && firebase deploy --only hosting:customer --project coffee-bond-pos",
+    "deploy:preview:customer": "npm run build:customer && firebase hosting:channel:deploy customer-origin-pwa --only customer --project coffee-bond-pos --expires 7d",
+    "test:customer-separate-origin": "node scripts/test-customer-separate-origin.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

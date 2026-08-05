@@ -1,0 +1,16 @@
+{
+  "projects": {},
+  "targets": {
+    "coffee-bond-pos": {
+      "hosting": {
+        "staff": [
+          "coffee-bond-pos"
+        ],
+        "customer": [
+          "coffee-bond-order"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

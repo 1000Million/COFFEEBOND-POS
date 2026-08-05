@@ -86,8 +86,12 @@ assert.match(
   'a valid saved basket must suppress automatic nearest-store selection during hydration',
 );
 
-const headerMyOrderLinks = customerHeader.match(/to="\/order\/my-orders"/g) || [];
+// Customer links now resolve through the shared route helper so the same components
+// serve both the staff origin (/order/my-orders) and the customer origin (/my-orders).
+const headerMyOrderLinks = customerHeader.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || [];
 assert.equal(headerMyOrderLinks.length, 2, 'one conditional header account entry and one account-menu history entry are expected');
+assert.match(customerHeader, /from '\.\.\/\.\.\/lib\/customerRoutes'/, 'header links must come from the route helper');
+assert.doesNotMatch(customerHeader, /to="\/order/, 'no customer link may hardcode the staff-origin path');
 assert.doesNotMatch(customerHeader, /Order[\s\S]{0,80}My Orders[\s\S]{0,80}Sign in \/ My Orders/);
 assert.match(customerHeader, /h-11 w-11/);
 assert.match(customerHeader, /hidden[\s\S]{0,30}sm:block/);

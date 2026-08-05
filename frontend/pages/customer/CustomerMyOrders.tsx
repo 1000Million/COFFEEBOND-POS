@@ -13,6 +13,7 @@ import {
 } from '../../lib/customerAuth';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { PaymentStatus, PublicOrderStatus } from '../../types';
+import { CUSTOMER_HOME_PATH, customerStatusPath } from '../../lib/customerRoutes';
 
 type CustomerOrderSummary = {
   trackingToken: string;
@@ -161,7 +162,7 @@ export default function CustomerMyOrders() {
             <ShoppingBag className="mx-auto text-[#9a6a45]" size={32} />
             <h2 className="mt-3 text-lg font-black">Verify your mobile number to view your orders</h2>
             <p className="mt-2 text-sm text-neutral-500">Return to ordering and choose Pay Online to verify securely.</p>
-            <Link to="/order" className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
+            <Link to={CUSTOMER_HOME_PATH} className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
               Verify on order page
             </Link>
           </section>
@@ -170,7 +171,7 @@ export default function CustomerMyOrders() {
             <ShoppingBag className="mx-auto text-[#9a6a45]" size={32} />
             <h2 className="mt-3 text-lg font-black">No orders yet</h2>
             <p className="mt-2 text-sm text-neutral-500">Your paid Coffee Bond orders will appear here.</p>
-            <Link to="/order" className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
+            <Link to={CUSTOMER_HOME_PATH} className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
               Order Now
             </Link>
           </section>
@@ -212,7 +213,7 @@ export default function CustomerMyOrders() {
                   </span>
                 </div>
                 <Link
-                  to={`/order/status/${order.trackingToken}`}
+                  to={customerStatusPath(order.trackingToken)}
                   className="mt-4 block rounded-2xl bg-[#3b261d] px-4 py-3 text-center text-sm font-black text-white"
                 >
                   View Order

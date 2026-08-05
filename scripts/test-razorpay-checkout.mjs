@@ -189,7 +189,9 @@ test('37. Refresh restores the status page', () => {
   assert.match(tracking, /rememberCustomerOrder\(trackingToken\)/);
 });
 test('38. Stable tracking URL survives refresh', () => {
-  assert.match(customerOrder, /\/order\/status\/\$\{verifiedOrder\.trackingToken\}/);
+  // The verified order still routes to a stable, origin-correct status path built
+  // from the same tracking token; only the path prefix differs per origin.
+  assert.match(customerOrder, /normalizeTrackingPath\(verifiedOrder\.trackingPath, verifiedOrder\.trackingToken\)/);
   assert.match(tracking, /useParams/);
 });
 test('39. Local storage restores the last order', () => {

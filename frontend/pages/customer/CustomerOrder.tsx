@@ -58,6 +58,7 @@ import {
   customerMenuCategory,
   trustedDietaryClassification,
 } from '../../lib/customerMenuPresentation';
+import { CUSTOMER_HOME_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
 import {
   loadRazorpayCheckout,
   RazorpayCheckoutSuccess,
@@ -1154,7 +1155,7 @@ export default function CustomerOrder() {
           clientIdempotencyKey,
         })).data;
         if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
-          const trackingPath = checkoutResult.trackingPath || `/order/status/${checkoutResult.trackingToken}`;
+          const trackingPath = normalizeTrackingPath(checkoutResult.trackingPath, checkoutResult.trackingToken);
           rememberCustomerOrder(checkoutResult.trackingToken);
           clearCustomerCheckoutDraft(window.localStorage);
           setCart([]);
@@ -1225,7 +1226,7 @@ export default function CustomerOrder() {
           ))));
           checkout.open();
         });
-        const trackingPath = verifiedOrder.trackingPath || `/order/status/${verifiedOrder.trackingToken}`;
+        const trackingPath = normalizeTrackingPath(verifiedOrder.trackingPath, verifiedOrder.trackingToken);
         rememberCustomerOrder(verifiedOrder.trackingToken);
         clearCustomerCheckoutDraft(window.localStorage);
         setCart([]);
@@ -1310,7 +1311,7 @@ export default function CustomerOrder() {
   };
 
   const copyTrackingLink = async (trackingToken: string) => {
-    const trackingUrl = `${window.location.origin}/order/status/${trackingToken}`;
+    const trackingUrl = customerTrackingUrl(trackingToken);
     try {
       await navigator.clipboard.writeText(trackingUrl);
       setCopyMessage('Tracking link copied.');
@@ -1717,7 +1718,7 @@ export default function CustomerOrder() {
             </div>
 
             <div className="mt-5 grid gap-3">
-              <Link to={`/order/status/${confirmation.id}`} className="rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white">
+              <Link to={customerStatusPath(confirmation.id)} className="rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white">
                 Track your order
               </Link>
               <button onClick={() => copyTrackingLink(confirmation.id)} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[#e4d7c8] bg-white px-4 py-4 text-sm font-black text-[#5c4033]">

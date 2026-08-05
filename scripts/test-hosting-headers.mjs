@@ -18,8 +18,12 @@ const NO_STORE = 'no-cache, no-store, must-revalidate';
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 const config = JSON.parse(readFileSync(resolve(process.cwd(), 'firebase.json'), 'utf8'));
-const hosting = config.hosting;
-assert.ok(hosting, 'hosting configuration must exist');
+// Hosting is a multi-site array since the customer app moved to its own site. These
+// assertions cover the STAFF site; the customer site is covered by
+// scripts/test-customer-separate-origin.mjs.
+assert.ok(Array.isArray(config.hosting), 'hosting must be a multi-site array');
+const hosting = config.hosting.find((site) => site.target === 'staff');
+assert.ok(hosting, 'a staff hosting target must exist');
 
 const headerRules = hosting.headers || [];
 const cacheControlFor = (source) => {

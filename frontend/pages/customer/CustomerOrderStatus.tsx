@@ -7,6 +7,7 @@ import CustomerHeader from '../../components/customer/CustomerHeader';
 import { CustomerProfile, restoreCustomerProfile } from '../../lib/customerAuth';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
+import { CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerTrackingUrl } from '../../lib/customerRoutes';
 
 function formatMoney(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
@@ -173,7 +174,7 @@ export default function CustomerOrderStatus() {
 
   const copyTrackingLink = async () => {
     if (!trackingToken) return;
-    const trackingUrl = `${window.location.origin}/order/status/${trackingToken}`;
+    const trackingUrl = customerTrackingUrl(trackingToken);
     try {
       await navigator.clipboard.writeText(trackingUrl);
       setCopyMessage('Tracking link copied.');
@@ -217,7 +218,7 @@ export default function CustomerOrderStatus() {
               Order status unavailable
             </div>
             <p className="text-sm font-medium">{error}</p>
-            <Link to="/order" className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-4 py-3 text-sm font-black text-white">
+            <Link to={CUSTOMER_HOME_PATH} className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-4 py-3 text-sm font-black text-white">
               Back to ordering
             </Link>
           </div>
@@ -396,10 +397,10 @@ export default function CustomerOrderStatus() {
                 <RefreshCw size={16} />
                 Refresh
               </button>
-              <Link to="/order" className="rounded-2xl bg-[#3b261d] px-4 py-3 text-center text-sm font-black text-white">
+              <Link to={CUSTOMER_HOME_PATH} className="rounded-2xl bg-[#3b261d] px-4 py-3 text-center text-sm font-black text-white">
                 Place another order
               </Link>
-              <Link to="/order/my-orders" className="rounded-2xl border border-[#eadfd2] bg-white px-4 py-3 text-center text-sm font-black text-[#5c4033]">
+              <Link to={CUSTOMER_MY_ORDERS_PATH} className="rounded-2xl border border-[#eadfd2] bg-white px-4 py-3 text-center text-sm font-black text-[#5c4033]">
                 My Orders
               </Link>
             </div>

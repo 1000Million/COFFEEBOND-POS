@@ -24,7 +24,9 @@ function test(name, run) {
 test('1. My Orders link is visible before OTP', () => {
   assert.match(header, /aria-label="Sign in or view My Orders"/);
   assert.doesNotMatch(header, />Sign in \/ My Orders</);
-  assert.match(header, /to="\/order\/my-orders"/);
+  // The path is resolved by the shared route helper so the same header serves the
+  // staff origin (/order/my-orders) and the customer origin (/my-orders).
+  assert.match(header, /to=\{CUSTOMER_MY_ORDERS_PATH\}/);
 });
 test('2. Before OTP My Orders asks the customer to verify', () => {
   assert.match(myOrders, /Verify your mobile number to view your orders/);
@@ -110,7 +112,8 @@ test('20. Current orders sort before completed orders', () => {
   assert.match(myOrders, /activeDifference = Number\(isCurrentOrder\(right\)\) - Number\(isCurrentOrder\(left\)\)/);
 });
 test('21. View Order uses the stable tracking route', () => {
-  assert.match(myOrders, /to=\{`\/order\/status\/\$\{order\.trackingToken\}`\}/);
+  // Origin-correct status path, with the tracking token passed through unchanged.
+  assert.match(myOrders, /to=\{customerStatusPath\(order\.trackingToken\)\}/);
 });
 test('22. Razorpay dismissal creates no online order', () => {
   const dismissal = order.match(/modal:\s*\{[\s\S]{0,260}?\}/)?.[0] || '';

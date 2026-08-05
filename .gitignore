@@ -1,12 +1,15 @@
 node_modules/
 build/
 dist/
+dist-customer/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
-.firebaserc
+# .firebaserc is tracked: multi-site Hosting deploys resolve `hosting:staff` and
+# `hosting:customer` from its target mapping, so an untracked copy would make
+# `npm run deploy:hosting:staff` fail on any other machine. It holds no secrets.
 .firebase/
 data/imports/*.xlsx
 /reports/
