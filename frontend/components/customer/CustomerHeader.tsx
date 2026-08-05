@@ -29,6 +29,16 @@ type Props = {
   onSignedOut?: () => void;
   rightSlot?: ReactNode;
   sticky?: boolean;
+  /**
+   * Supplied by screens that already expose a My Orders destination in the bottom
+   * navigation. When present, the signed-out header control becomes a plain account
+   * button that raises this callback instead of linking to /my-orders, so the home
+   * screen has exactly one direct My Orders link.
+   *
+   * When omitted (order status, and any screen without the bottom navigation) the
+   * control stays a link to My Orders, so account access is never lost.
+   */
+  onSignedOutAccountPress?: () => void;
 };
 
 function maskedPhone(phone: string): string {
@@ -44,6 +54,7 @@ export default function CustomerHeader({
   onSignedOut,
   rightSlot,
   sticky = false,
+  onSignedOutAccountPress,
 }: Props) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -145,14 +156,37 @@ export default function CustomerHeader({
                   <span className="block truncate text-[10px] font-bold text-emerald-700">{maskedPhone(profile.normalisedPhone)}</span>
                 </span>
               </button>
+            ) : onSignedOutAccountPress ? (
+              /* The bottom navigation owns the My Orders destination, but it is
+                 mobile-only (lg:hidden). So below lg the header is a plain account
+                 control, and from lg — where the bar is gone — it becomes the My
+                 Orders link again. Exactly one visible entry at every breakpoint. */
+              <>
+                <button
+                  type="button"
+                  onClick={onSignedOutAccountPress}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 lg:hidden"
+                  aria-label="Customer account"
+                >
+                  <UserCircle2 size={17} />
+                </button>
+                <Link
+                  to={CUSTOMER_MY_ORDERS_PATH}
+                  className="hidden h-11 items-center gap-1.5 rounded-full bg-white px-3 text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 lg:inline-flex"
+                  aria-label="Customer account and My Orders"
+                >
+                  <UserCircle2 size={17} />
+                  <span>Account</span>
+                </Link>
+              </>
             ) : (
               <Link
                 to={CUSTOMER_MY_ORDERS_PATH}
                 className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 sm:w-auto sm:gap-1.5 sm:px-3"
-                aria-label="Sign in or view My Orders"
+                aria-label="Customer account and My Orders"
               >
                 <UserCircle2 size={17} />
-                <span className="hidden sm:inline">Sign in</span>
+                <span className="hidden sm:inline">Account</span>
               </Link>
             )}
             {rightSlot}

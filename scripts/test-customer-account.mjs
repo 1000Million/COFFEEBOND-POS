@@ -21,9 +21,15 @@ function test(name, run) {
   tests.push({ name, run });
 }
 
-test('1. My Orders link is visible before OTP', () => {
-  assert.match(header, /aria-label="Sign in or view My Orders"/);
+test('1. Account access is available before OTP', () => {
+  // Screens with the customer bottom navigation pass onSignedOutAccountPress so the
+  // header does not duplicate the Orders destination; screens without it keep the
+  // link, so a signed-out customer can always reach My Orders.
+  assert.match(header, /aria-label="Customer account"/);
+  assert.match(header, /aria-label="Customer account and My Orders"/);
+  assert.match(header, /onSignedOutAccountPress/);
   assert.doesNotMatch(header, />Sign in \/ My Orders</);
+  assert.doesNotMatch(header, /Sign in or view My Orders/);
   // The path is resolved by the shared route helper so the same header serves the
   // staff origin (/order/my-orders) and the customer origin (/my-orders).
   assert.match(header, /to=\{CUSTOMER_MY_ORDERS_PATH\}/);

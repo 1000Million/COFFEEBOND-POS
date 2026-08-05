@@ -10,6 +10,9 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import CustomerApp from './CustomerApp';
 import './index.css';
+// Customer-only design tokens. Imported here and nowhere else, so these styles
+// cannot reach the staff POS bundle.
+import './customer.css';
 import { registerCoffeeBondServiceWorker } from './lib/pwa';
 
 const root = createRoot(document.getElementById('root')!);

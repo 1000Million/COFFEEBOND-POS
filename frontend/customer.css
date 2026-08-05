@@ -1,0 +1,229 @@
+/*
+ * Coffee Bond customer ordering app — design tokens.
+ *
+ * Imported ONLY by frontend/customer-main.tsx, so nothing here can reach the staff
+ * POS bundle. Staff styling in frontend/index.css is untouched.
+ *
+ * Palette is taken from the Coffee Bond brand site, not invented:
+ *   #2B2118 espresso   #FAF6EF cream   #C4572A terracotta   #E8B44C gold
+ *
+ * Accent is Coffee Bond gold. Gold is a mid-tone, so white text on it fails contrast;
+ * every gold surface therefore carries espresso text (~8:1), which is both accessible
+ * and on-brand. Terracotta is reserved for small emphasis on light surfaces where gold
+ * would be too low-contrast for text.
+ */
+
+:root {
+  /* Surfaces */
+  --cb-bg: #fbf7f1;
+  --cb-surface: #ffffff;
+  --cb-surface-muted: #f5ede5;
+  --cb-espresso: #2b2118;
+  --cb-espresso-soft: #3b241c;
+
+  /* Accent */
+  --cb-gold: #e8b44c;
+  --cb-gold-strong: #d9a233;
+  --cb-gold-soft: #fbeccb;
+  --cb-terracotta: #c4572a;
+
+  /* Text — on-light and on-accent pairings */
+  --cb-text: #271a16;
+  --cb-text-muted: #71645d;
+  --cb-text-on-gold: #2b2118;
+  --cb-text-on-espresso: #fbf7f1;
+
+  /* Lines */
+  --cb-border: #e7ddd3;
+  --cb-border-soft: #f0e6dc;
+
+  /* Semantic */
+  --cb-success: #1f7a4d;
+  --cb-success-soft: #e7f4ec;
+  --cb-warning: #9a6a12;
+  --cb-warning-soft: #fdf3dd;
+  --cb-danger: #b3261e;
+  --cb-danger-soft: #fbeae9;
+
+  /* Shape */
+  --cb-radius-sm: 14px;
+  --cb-radius: 20px;
+  --cb-radius-lg: 28px;
+  --cb-shadow-card: 0 6px 18px rgba(43, 33, 24, 0.06);
+  --cb-shadow-raised: 0 10px 26px rgba(43, 33, 24, 0.16);
+
+  /* Safe areas + persistent bottom navigation height */
+  --cb-safe-top: env(safe-area-inset-top, 0px);
+  --cb-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --cb-safe-left: env(safe-area-inset-left, 0px);
+  --cb-safe-right: env(safe-area-inset-right, 0px);
+  --cb-bottom-nav-h: 64px;
+  /* Where the sticky category rail parks: below the compact header. */
+  --cb-rail-top: calc(var(--cb-safe-top) + 68px);
+  /* Content padding that clears the bottom bar plus the home indicator. */
+  --cb-content-bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom) + 12px);
+}
+
+/*
+ * Semantic customer classes.
+ *
+ * These exist instead of Tailwind arbitrary-value utilities such as
+ * bg-[color:var(--cb-gold)]. Tailwind's JIT scans all of frontend/**, so any arbitrary
+ * utility written in a customer component is generated into the SHARED stylesheet and
+ * therefore leaks into the staff build. Plain classes declared here are only ever
+ * emitted into customer.css, which nothing but customer-main.tsx imports.
+ */
+
+.cb-customer-card {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-store-card {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius-lg);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-accent-button {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-accent-button:disabled {
+  background: var(--cb-surface-muted);
+  color: var(--cb-text-muted);
+  box-shadow: none;
+}
+
+.cb-customer-basket-button {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: var(--cb-shadow-raised);
+}
+
+.cb-customer-basket-badge {
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+}
+
+/* The rail sticks below the compact header. Declared here rather than as a Tailwind
+   arbitrary utility (top-[var(--cb-rail-top)]) because arbitrary utilities are emitted
+   into the shared stylesheet and would leak the customer variable into the staff build. */
+.cb-customer-rail {
+  position: sticky;
+  top: var(--cb-rail-top);
+}
+
+/* Sticky vertical category rail. The tab shape echoes the reference's curved active
+   tab: rounded on the menu-facing edge only, so it reads as attached to the content. */
+.cb-customer-rail-tab {
+  color: var(--cb-text-muted);
+  background: transparent;
+  border-top-left-radius: var(--cb-radius-sm);
+  border-bottom-left-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-rail-tab-active {
+  color: var(--cb-text-on-gold);
+  background: var(--cb-gold);
+  border-top-right-radius: var(--cb-radius-sm);
+  border-bottom-right-radius: var(--cb-radius-sm);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-chip {
+  background: var(--cb-surface);
+  color: var(--cb-espresso);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+.cb-customer-chip-active {
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-bottom-nav {
+  background: color-mix(in srgb, var(--cb-surface) 95%, transparent);
+  border-top: 1px solid var(--cb-border);
+  padding-bottom: var(--cb-safe-bottom);
+  padding-left: var(--cb-safe-left);
+  padding-right: var(--cb-safe-right);
+  backdrop-filter: blur(8px);
+}
+
+.cb-customer-nav-item { color: var(--cb-text-muted); }
+.cb-customer-nav-item-active { color: var(--cb-espresso); }
+
+.cb-customer-stepper {
+  background: var(--cb-gold-soft);
+  box-shadow: inset 0 0 0 1px var(--cb-gold-strong);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-title { color: var(--cb-text); }
+.cb-customer-muted { color: var(--cb-text-muted); }
+.cb-customer-meta { color: var(--cb-terracotta); }
+.cb-customer-price { color: var(--cb-text); }
+.cb-customer-surface { background: var(--cb-bg); }
+.cb-customer-skeleton { background: var(--cb-surface-muted); }
+
+.cb-customer-status-green { background: var(--cb-success-soft); color: var(--cb-success); }
+.cb-customer-status-amber { background: var(--cb-warning-soft); color: var(--cb-warning); }
+.cb-customer-status-red { background: var(--cb-danger-soft); color: var(--cb-danger); }
+
+/* Unavailable products stay legible rather than being colour-dimmed only. */
+.cb-customer-unavailable { opacity: 0.72; }
+
+/* Reserves space so the fixed bottom navigation never covers page content.
+   The bar is lg:hidden, so the reservation is dropped at the same breakpoint. */
+.cb-customer-page-bottom { padding-bottom: var(--cb-content-bottom); }
+
+@media (min-width: 1024px) {
+  .cb-customer-page-bottom { padding-bottom: 2rem; }
+}
+
+/* Visible focus for keyboard users across every customer control. */
+.cb-focusable:focus-visible,
+.cb-app button:focus-visible,
+.cb-app a:focus-visible,
+.cb-app input:focus-visible,
+.cb-app select:focus-visible {
+  outline: 3px solid var(--cb-gold-strong);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+/* Curved transition between a coloured band and the surface below it. */
+.cb-curve-top {
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+}
+
+/* Two-line clamp for product names — never hides a price or an action. */
+.cb-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Basket bump on a successful add. Honours reduced-motion. */
+@keyframes cb-bump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+
+.cb-bump {
+  animation: cb-bump 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-bump {
+    animation: none;
+  }
+}

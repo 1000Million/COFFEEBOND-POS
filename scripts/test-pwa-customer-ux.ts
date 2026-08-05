@@ -88,8 +88,16 @@ assert.match(
 
 // Customer links now resolve through the shared route helper so the same components
 // serve both the staff origin (/order/my-orders) and the customer origin (/my-orders).
+// Three source-level links, but only ever one visible at a time:
+//   1. the lg-only link shown when the screen supplies onSignedOutAccountPress
+//      (the mobile bottom bar owns the destination below lg),
+//   2. the default link for screens without a bottom bar,
+//   3. the entry inside the signed-in account menu.
+// Simultaneous visibility is what matters, and that is measured per breakpoint in
+// scripts/test-customer-home-ui.mjs.
 const headerMyOrderLinks = customerHeader.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || [];
-assert.equal(headerMyOrderLinks.length, 2, 'one conditional header account entry and one account-menu history entry are expected');
+assert.equal(headerMyOrderLinks.length, 3, 'lg-only entry, default entry and account-menu entry are expected');
+assert.match(customerHeader, /onSignedOutAccountPress/, 'the header must be able to yield the destination to the bottom bar');
 assert.match(customerHeader, /from '\.\.\/\.\.\/lib\/customerRoutes'/, 'header links must come from the route helper');
 assert.doesNotMatch(customerHeader, /to="\/order/, 'no customer link may hardcode the staff-origin path');
 assert.doesNotMatch(customerHeader, /Order[\s\S]{0,80}My Orders[\s\S]{0,80}Sign in \/ My Orders/);

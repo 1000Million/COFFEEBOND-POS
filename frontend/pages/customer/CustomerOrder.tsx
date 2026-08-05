@@ -28,7 +28,6 @@ import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import CustomerProductImage from '../../components/customer/CustomerProductImage';
 import DietaryMarker from '../../components/customer/DietaryMarker';
-import HorizontalScroller from '../../components/customer/HorizontalScroller';
 import { useConnectivity } from '../../contexts/ConnectivityContext';
 import {
   activeAddOnGroupsForProduct,
@@ -59,6 +58,10 @@ import {
   trustedDietaryClassification,
 } from '../../lib/customerMenuPresentation';
 import { CUSTOMER_HOME_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
+import CustomerProductCard from '../../components/customer/CustomerProductCard';
+import CustomerStoreCard from '../../components/customer/CustomerStoreCard';
+import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
+import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
 import {
   loadRazorpayCheckout,
   RazorpayCheckoutSuccess,
@@ -537,6 +540,9 @@ export default function CustomerOrder() {
   const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const [basketAnnouncement, setBasketAnnouncement] = useState('');
   const [basketBumpKey, setBasketBumpKey] = useState(0);
+  // Lets the bottom-navigation Search action focus the existing menu search input
+  // rather than introducing a second search control.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
@@ -866,6 +872,26 @@ export default function CustomerOrder() {
     return CUSTOMER_CATEGORY_ORDER.filter(name => name === 'ALL' || names.includes(name));
   }, [storeItems]);
 
+  /**
+   * The menu is one continuous vertical flow grouped by category. Search collapses it
+   * to a single flat result list so results stay in the same vertical direction.
+   * Grouping reuses the same authoritative category derivation as the rail.
+   */
+  const isSearching = search.trim().length > 0;
+  const menuSections = useMemo(() => {
+    if (isSearching) return [];
+    return categories
+      .filter(name => name !== 'ALL')
+      .map(name => ({
+        // The category name is already the canonical identifier used by the rail,
+        // the section attribute and the spy — one source of truth, no mapping table.
+        id: name,
+        category: name,
+        items: storeItems.filter(item => customerMenuCategory(item) === name),
+      }))
+      .filter(section => section.items.length > 0);
+  }, [categories, storeItems, isSearching]);
+
   const visibleItems = useMemo(() => {
     const searchText = search.trim().toLowerCase();
     return storeItems.filter(item => {
@@ -879,6 +905,12 @@ export default function CustomerOrder() {
     return storeItems.filter(item => (itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)).available);
   }, [storeItems, itemAvailability, selectedStoreId]);
 
+  /**
+   * The vertical rail is a FILTER, not an in-page navigator. Selecting a category only
+   * updates `category`, which the existing `visibleItems` memo already filters on — so
+   * there is no scroll-spy, no IntersectionObserver, no scroll calculation and no
+   * second scroll container. Active state is pure React state.
+   */
   const popularItems = useMemo(() => {
     return [...orderableItems]
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name))
@@ -1364,58 +1396,39 @@ export default function CustomerOrder() {
     );
   };
 
-  const renderMenuCard = (item: CustomerMenuItem) => {
+  const renderMenuCard = (item: CustomerMenuItem, index = 0) => {
+    // Every value below comes from the existing helpers. The card is presentation
+    // only: no pricing, availability, add-on or cart logic moved into it.
     const itemLines = cart.filter(line => line.item.code === item.code);
     const qty = itemLines.reduce((sum, line) => sum + line.quantity, 0);
     const firstLine = itemLines[0];
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
     const meta = visualMeta(item);
+    const opensCustomization = activeAddOnGroupsForProduct(
+      item.addOnGroupIds,
+      item.addOnOptionIdsByGroup,
+      addOnGroups,
+    ).length > 0;
 
     return (
-      <article key={`menu-${item.code}`} className={`flex min-h-[112px] w-full min-w-0 gap-3 overflow-hidden rounded-[20px] bg-white p-3 shadow-sm ring-1 ring-[#e7ddd3] ${canOrder ? '' : 'opacity-75'}`}>
-        {renderItemThumb(item, 'h-20 w-20 min-[380px]:h-[88px] min-[380px]:w-[88px]')}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-bold text-[#a06f48]">{meta.label}</p>
-              {trustedDietaryClassification(item as unknown as Record<string, unknown>) && (
-                <div className="mb-1">
-                  <DietaryMarker value={trustedDietaryClassification(item as unknown as Record<string, unknown>)!} compact />
-                </div>
-              )}
-              <h3 className="line-clamp-2 text-[15px] font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
-            </div>
-            {qty > 0 ? (
-              <div className="inline-flex h-11 shrink-0 items-center rounded-full border border-[#ead8c7] bg-[#fffaf5] p-0.5">
-                <button
-                  onClick={() => firstLine && setLineQuantity(firstLine.id, firstLine.quantity - 1)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]"
-                  aria-label={`Decrease ${item.displayName || item.name}`}
-                >
-                  <Minus size={14} />
-                </button>
-                <span className="min-w-6 text-center text-xs font-black">{qty}</span>
-                <button onClick={() => addItem(item)} className="flex h-9 w-9 items-center justify-center rounded-full text-[#5c4033]" aria-label={`Increase ${item.displayName || item.name}`}><Plus size={14} /></button>
-              </div>
-            ) : (
-              <button
-                onClick={() => addItem(item)}
-                disabled={!canOrder}
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#3b241c] text-white disabled:bg-neutral-300"
-                aria-label={`Add ${item.displayName || item.name}`}
-              >
-                <Plus size={16} />
-              </button>
-            )}
-          </div>
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#71645d]">{shortDescription(item)}</p>
-          <div className="mt-2 flex items-center justify-between">
-            <p className="text-sm font-black text-[#271a16]">{formatMoney(toNumber(item.salePrice))}</p>
-            {!canOrder && <p className="text-[11px] font-bold text-red-700">{availability.reason}</p>}
-          </div>
-        </div>
-      </article>
+      <CustomerProductCard
+        key={`menu-${item.code}`}
+        name={item.displayName || item.name}
+        priceLabel={formatMoney(toNumber(item.salePrice))}
+        imageUrl={getItemImage(item)}
+        fallbackIcon={meta.icon}
+        metaLabel={meta.label}
+        dietary={trustedDietaryClassification(item as unknown as Record<string, unknown>)}
+        quantity={qty}
+        canOrder={canOrder}
+        unavailableReason={availability.reason}
+        priority={index < 2}
+        opensCustomization={opensCustomization}
+        onAdd={() => addItem(item)}
+        onIncrement={() => addItem(item)}
+        onDecrement={() => firstLine && setLineQuantity(firstLine.id, firstLine.quantity - 1)}
+      />
     );
   };
 
@@ -1744,7 +1757,7 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className={`min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] ${itemCount > 0 ? 'pb-24' : 'pb-6'} lg:pb-8`}>
+    <div className="cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]">
       <CustomerHeader
         sticky
         title="Order ahead"
@@ -1759,10 +1772,13 @@ export default function CustomerOrder() {
           setVerifiedCustomer(null);
           setCustomerPhone('');
         }}
+        onSignedOutAccountPress={() => setBasketOpen(true)}
         rightSlot={(
+          /* Desktop-only basket entry. Below lg the raised basket in the bottom
+             navigation is the single basket control, so the two never coexist. */
           <button
             onClick={() => setBasketOpen(true)}
-            className="relative inline-flex h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+            className="relative hidden h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40 lg:inline-flex"
             aria-label={`Open basket with ${itemCount} item${itemCount === 1 ? '' : 's'}`}
           >
             <ShoppingBag size={15} />
@@ -1777,33 +1793,14 @@ export default function CustomerOrder() {
 
       <main className="mx-auto grid w-full min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
         <section className="min-w-0 space-y-4">
-          <button
-            type="button"
-            onClick={() => setStoreSelectorOpen(true)}
-            className="flex min-h-[76px] w-full items-center justify-between gap-3 rounded-3xl bg-white px-4 py-3 text-left shadow-sm ring-1 ring-[#e7ddd3] transition hover:bg-[#fffdf9] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/35"
-            aria-label="Choose pickup store"
-          >
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-[#71645d]">{orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}</p>
-              <div className="mt-1 flex min-w-0 items-center gap-2">
-                <MapPin size={16} className="shrink-0 text-[#8b5e42]" />
-                <h2 className="truncate text-lg font-black text-[#271a16]">{selectedStore?.name || 'Choose store'}</h2>
-              </div>
-              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-black ${
-                  customerOrderingState.tone === 'green'
-                    ? 'bg-emerald-50 text-[#07855b]'
-                    : customerOrderingState.tone === 'amber'
-                      ? 'bg-amber-50 text-amber-800'
-                      : 'bg-red-50 text-red-700'
-                }`}>
-                  {customerOrderingState.statusLabel}
-                </span>
-                {selectedStoreMessage && <span className="truncate text-xs font-bold text-[#71645d]">{selectedStoreMessage}</span>}
-              </div>
-            </div>
-            <ChevronDown size={18} className="shrink-0 text-[#8b5e42]" />
-          </button>
+          <CustomerStoreCard
+            contextLabel={orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}
+            storeName={selectedStore?.name || 'Choose store'}
+            statusLabel={customerOrderingState.statusLabel}
+            tone={customerOrderingState.tone}
+            message={selectedStoreMessage}
+            onOpenSelector={() => setStoreSelectorOpen(true)}
+          />
 
           {!customerOrderingState.canAcceptOrders && !availabilityLoading && (
             <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold leading-relaxed text-red-800">
@@ -1828,6 +1825,7 @@ export default function CustomerOrder() {
           <label className="flex h-12 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
             <Search size={18} className="shrink-0 text-[#8b5e42]" />
             <input
+              ref={searchInputRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               className="w-full bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
@@ -1836,20 +1834,6 @@ export default function CustomerOrder() {
             />
           </label>
 
-          <HorizontalScroller className="-mx-4" contentClassName="px-4 pb-1" itemGapClassName="gap-2" ariaLabel="Menu categories" role="navigation">
-            {categories.map(cat => (
-              <button
-                key={cat}
-                onClick={() => setCategory(cat)}
-                className={`min-h-10 shrink-0 rounded-full px-4 text-sm font-black transition-colors ${
-                  category === cat ? 'bg-[#3b241c] text-white' : 'bg-white text-[#3b241c] ring-1 ring-[#e7ddd3]'
-                }`}
-              >
-                {categoryLabel(cat)}
-              </button>
-            ))}
-          </HorizontalScroller>
-
           {error && (
             <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
               <AlertCircle size={18} className="shrink-0" />
@@ -1857,53 +1841,100 @@ export default function CustomerOrder() {
             </div>
           )}
 
-          <section>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-black text-[#271a16]">Popular today</h2>
-            </div>
-            {loading ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {[1, 2, 3, 4].map(key => <div key={key} className="h-40 animate-pulse rounded-3xl bg-white/80" />)}
-              </div>
-            ) : popularItems.length === 0 ? (
-              <div className="rounded-2xl bg-white p-4 text-center text-sm font-bold text-[#71645d]">No popular items available.</div>
-            ) : (
-              <HorizontalScroller className="-mx-4" contentClassName="px-4 pb-2" ariaLabel="Popular today">
-                {popularItems.map((item, index) => renderPopularCard(item, index))}
-              </HorizontalScroller>
-            )}
-          </section>
+          {/* Two-area menu: sticky vertical rail on the left, one continuous vertical
+              content column on the right. No nested scroller, no horizontal movement. */}
+          <div className="flex min-w-0 items-start gap-2 sm:gap-3">
+            <CustomerCategoryRail
+              categories={categories}
+              selected={category}
+              onSelectCategory={setCategory}
+              labelFor={categoryLabel}
+            />
 
-          <section>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-black text-[#271a16]">Full menu</h2>
-              <p className="text-xs font-bold text-[#71645d]">{visibleItems.length} items</p>
+            <div className="min-w-0 flex-1 space-y-6">
+              {loading ? (
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                  {[1, 2, 3, 4].map(key => <div key={key} className="cb-customer-skeleton aspect-[4/5] animate-pulse rounded-[20px] motion-reduce:animate-none" />)}
+                </div>
+              ) : isSearching ? (
+                /* Search collapses the menu to one flat vertical result list. */
+                <section>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h2 className="text-lg font-black text-[#271a16]">Search results</h2>
+                    <p className="text-xs font-bold text-[#71645d]">{visibleItems.length} items</p>
+                  </div>
+                  {visibleItems.length === 0 ? (
+                    <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
+                      <p className="font-black text-[#271a16]">Nothing found here</p>
+                      <p className="text-sm text-[#71645d]">Try another search.</p>
+                      <button
+                        type="button"
+                        onClick={() => { setSearch(''); setCategory('ALL'); }}
+                        className="mt-3 min-h-11 rounded-2xl bg-[#f5ede5] px-4 text-sm font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+                      >
+                        Show full menu
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                      {visibleItems.map((item, index) => renderMenuCard(item, index))}
+                    </div>
+                  )}
+                </section>
+              ) : category === 'ALL' ? (
+                /* All: Popular first, then the whole menu grouped by category heading,
+                   in one continuous vertical flow. */
+                <>
+                  {popularItems.length > 0 && (
+                    <section>
+                      <h2 className="mb-3 text-lg font-black text-[#271a16]">Popular today</h2>
+                      {/* Fixed 2×2 grid — never a carousel, and never a clipped fifth card. */}
+                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                        {popularItems.slice(0, 4).map((item, index) => renderMenuCard(item, index))}
+                      </div>
+                    </section>
+                  )}
+
+                  {menuSections.map(section => (
+                    <section key={section.id} data-customer-category={section.id}>
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <h2 className="text-lg font-black text-[#271a16]">{categoryLabel(section.category)}</h2>
+                        <p className="text-xs font-bold text-[#71645d]">{section.items.length} items</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                        {section.items.map((item, index) => renderMenuCard(item, index))}
+                      </div>
+                    </section>
+                  ))}
+                </>
+              ) : (
+                /* A specific category: one compact vertical grid of just that category. */
+                <section data-customer-category={category}>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h2 className="text-lg font-black text-[#271a16]">{categoryLabel(category)}</h2>
+                    <p className="text-xs font-bold text-[#71645d]">{visibleItems.length} items</p>
+                  </div>
+                  {visibleItems.length === 0 ? (
+                    <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
+                      <p className="font-black text-[#271a16]">Nothing here right now</p>
+                      <p className="text-sm text-[#71645d]">Try another category.</p>
+                      <button
+                        type="button"
+                        onClick={() => setCategory('ALL')}
+                        className="mt-3 min-h-11 rounded-2xl bg-[#f5ede5] px-4 text-sm font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
+                      >
+                        Show full menu
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                      {visibleItems.map((item, index) => renderMenuCard(item, index))}
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
-            {loading ? (
-              <div className="space-y-3">
-                {[1, 2, 3, 4].map(key => <div key={key} className="h-28 animate-pulse rounded-3xl bg-white/80" />)}
-              </div>
-            ) : visibleItems.length === 0 ? (
-              <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
-                <p className="font-black text-[#271a16]">Nothing found here</p>
-                <p className="text-sm text-[#71645d]">Try another category or search.</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearch('');
-                    setCategory('ALL');
-                  }}
-                  className="mt-3 min-h-11 rounded-2xl bg-[#f5ede5] px-4 text-sm font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
-                >
-                  Show full menu
-                </button>
-              </div>
-            ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
-                {visibleItems.map(item => renderMenuCard(item))}
-              </div>
-            )}
-          </section>
+          </div>
         </section>
 
         <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-sm ring-1 ring-[#e7ddd3] lg:sticky lg:top-24 lg:block">
@@ -1911,16 +1942,36 @@ export default function CustomerOrder() {
         </aside>
       </main>
 
-      {itemCount > 0 && (
-        <button
-          key={basketBumpKey}
-          onClick={() => setBasketOpen(true)}
-          className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex min-h-14 animate-[basket-bump_180ms_ease-out] items-center justify-between rounded-2xl bg-[#3b241c] px-5 py-4 text-sm font-black text-white shadow-[0_14px_40px_rgba(45,32,25,0.25)] transition motion-reduce:animate-none lg:hidden"
-        >
-          <span>View basket · {itemCount} item{itemCount === 1 ? '' : 's'}</span>
-          <span>{formatMoney(totals.grandTotal)}</span>
-        </button>
-      )}
+      {/* Replaces the old mobile-only "View basket" bar. Every behaviour it had is
+          retained by the bottom navigation: it opens the same basket sheet, shows the
+          same item count, announces the same total, and bumps on a successful add.
+          Unlike the old bar it is always present, so the basket is reachable even
+          when the cart is empty. */}
+      <CustomerBottomNav
+        itemCount={itemCount}
+        totalLabel={formatMoney(totals.grandTotal)}
+        onOpenBasket={() => setBasketOpen(true)}
+        onFocusSearch={() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }}
+        onGoToMenu={() => {
+          // Menu returns to the unfiltered menu at the top.
+          setCategory('ALL');
+          setSearch('');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
+        onOpenAccount={() => {
+          // Reuse the header's existing account control rather than adding a second
+          // account implementation. Signed in, it opens the account menu; signed out,
+          // it raises the same verification entry the header uses.
+          const headerAccount = document.querySelector<HTMLElement>(
+            'header [aria-label="Open customer account"], header [aria-label="Customer account"]',
+          );
+          if (headerAccount) headerAccount.click();
+          else setBasketOpen(true);
+        }}
+      />
 
       <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
 
