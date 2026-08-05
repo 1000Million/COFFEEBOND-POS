@@ -82,13 +82,20 @@ export default function Login() {
               <div className="flex items-start gap-3">
                 <AlertCircle size={18} className="shrink-0 mt-0.5" />
                 <span className="font-medium">
-                  {errorCode === "auth/network-request-failed"
-                    ? "Firebase Authentication is blocking this preview domain."
-                    : errorMsg}
+                  {errorCode === "auth/unauthorized-domain"
+                    ? `Firebase Authentication has not authorized ${window.location.hostname}.`
+                    : errorCode === "auth/network-request-failed"
+                      ? "Could not reach Firebase Authentication. Check this device's internet connection and try again."
+                      : errorMsg}
                 </span>
               </div>
 
-              {errorCode === "auth/network-request-failed" ? (
+              {/* The authorized-domain panel belongs to auth/unauthorized-domain only.
+                  It used to render for auth/network-request-failed, which is a
+                  connectivity failure, and told staff their production origin was an
+                  unauthorized "preview domain" — a misdiagnosis that sent them to the
+                  Firebase Console for a problem that was never there. */}
+              {errorCode === "auth/unauthorized-domain" ? (
                 <div className="mt-2 text-xs bg-white p-4 rounded-lg border border-red-200 space-y-3 shadow-sm">
                   <div className="flex flex-col gap-1">
                     <span className="text-neutral-500 font-bold uppercase tracking-widest text-[10px]">
