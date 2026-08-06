@@ -9,6 +9,7 @@ const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization
 const { createFranchiseSalesFunctions } = require('./franchiseSales');
 const { createReportingFunctions } = require('./reporting');
 const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst');
+const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 
@@ -68,6 +69,13 @@ exports.listMyCustomerOrders = razorpayCheckoutFunctions.listMyCustomerOrders;
 exports.acceptPaidRazorpayOrder = razorpayCheckoutFunctions.acceptPaidRazorpayOrder;
 exports.cancelAndRefundRazorpayOrder = razorpayCheckoutFunctions.cancelAndRefundRazorpayOrder;
 exports.razorpayWebhook = razorpayCheckoutFunctions.razorpayWebhook;
+
+// "My Usual" lives in the customer's own private profile. These three callables are
+// the only path to it — customerProfiles is closed to every client in firestore.rules.
+const customerMyUsualFunctions = createCustomerMyUsualFunctions({ admin, db, region: REGION });
+exports.getCustomerMyUsual = customerMyUsualFunctions.getCustomerMyUsual;
+exports.saveCustomerMyUsual = customerMyUsualFunctions.saveCustomerMyUsual;
+exports.deleteCustomerMyUsual = customerMyUsualFunctions.deleteCustomerMyUsual;
 
 function publicStatusMessage(status) {
   if (status === 'PENDING') return 'Your order request has been received. The store will confirm shortly.';

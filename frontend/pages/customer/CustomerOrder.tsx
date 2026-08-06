@@ -51,6 +51,17 @@ import {
   writeCustomerCheckoutDraft,
 } from '../../lib/customerCheckoutPersistence';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
+import CustomerMyUsualCard from '../../components/customer/CustomerMyUsualCard';
+import {
+  CustomerMyUsual,
+  buildMyUsualPayload,
+  purgeLegacyDeviceMyUsual,
+} from '../../lib/customerMyUsual';
+import {
+  deleteCustomerMyUsual as deleteCustomerMyUsualRequest,
+  getCustomerMyUsual as getCustomerMyUsualRequest,
+  saveCustomerMyUsual as saveCustomerMyUsualRequest,
+} from '../../lib/customerMyUsualApi';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE } from '../../lib/connectivity';
 import {
   CUSTOMER_CATEGORY_ORDER,
@@ -85,6 +96,22 @@ type CartLine = {
   quantity: number;
   addOns: AddOnSelection[];
 };
+
+/**
+ * Confirmation dialogs owned by My Usual. Nothing here submits an order, creates a
+ * payment or opens a checkout session — SIGN_IN reuses the existing customer OTP panel
+ * purely to obtain the profile the usual is saved to.
+ */
+type MyUsualDialog =
+  | null
+  | { type: 'SIGN_IN' }
+  | { type: 'CONFIRM_PENDING_SAVE' }
+  | { type: 'SAVE_NEW' }
+  | { type: 'REPLACE_USUAL' }
+  | { type: 'REPLACE_BASKET'; lines: CartLine[]; intent: 'ORDER' | 'EDIT' }
+  | { type: 'STORE_MISMATCH'; intent: 'ORDER' | 'EDIT' }
+  | { type: 'BLOCKED'; message: string }
+  | { type: 'DELETE' };
 
 type ConfirmationState = {
   id: string;
@@ -788,14 +815,32 @@ export default function CustomerOrder() {
     }
 
     hydrationAppliedRef.current = true;
-    const restored = restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>(draft, {
+    const restored = restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>(draft, checkoutRestoreOptions());
+    applyRestoredDraft(draft, restored);
+  }, [
+    addOnGroups,
+    checkoutHydration,
+    itemAvailability,
+    loadedMenuStoreId,
+    selectedStoreId,
+    selectedStoreTaxRate,
+    storeItems,
+  ]);
+
+  /**
+   * One definition of the product/add-on/availability/marker rules, shared by the
+   * checkout-draft hydration above and by My Usual revalidation. Forking these would
+   * let the two paths disagree about what is orderable.
+   */
+  function checkoutRestoreOptions() {
+    return {
       items: storeItems,
-      itemId: item => item.id,
-      itemCode: item => item.code,
-      isItemAvailable: item => (
+      itemId: (item: CustomerMenuItem) => item.id,
+      itemCode: (item: CustomerMenuItem) => item.code,
+      isItemAvailable: (item: CustomerMenuItem) => (
         itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)
       ).available,
-      restoreAddOns: (item, savedAddOns: PersistedCheckoutAddOn[]) => {
+      restoreAddOns: (item: CustomerMenuItem, savedAddOns: PersistedCheckoutAddOn[]) => {
         const activeGroups = activeAddOnGroupsForProduct(
           item.addOnGroupIds,
           item.addOnOptionIdsByGroup,
@@ -827,9 +872,16 @@ export default function CustomerOrder() {
           };
         }
       },
-      catalogMarker: (item, currentAddOns) => cartLineCatalogMarker(item, currentAddOns, selectedStoreTaxRate),
-    });
+      catalogMarker: (item: CustomerMenuItem, currentAddOns: AddOnSelection[]) =>
+        cartLineCatalogMarker(item, currentAddOns, selectedStoreTaxRate),
+    };
+  }
 
+  /** Applies a restored checkout draft to the live cart. Unchanged behaviour. */
+  function applyRestoredDraft(
+    draft: CustomerCheckoutDraft,
+    restored: { lines: CartLine[]; notices: { code: string; productCode: string }[] },
+  ) {
     setCart(restored.lines);
     setPaymentProvider(draft.paymentProvider);
     setOrderType(draft.orderType);
@@ -857,20 +909,250 @@ export default function CustomerOrder() {
     });
     pendingCheckoutDraftRef.current = null;
     setCheckoutHydration('RESTORED');
-  }, [
-    addOnGroups,
-    checkoutHydration,
-    itemAvailability,
-    loadedMenuStoreId,
-    selectedStoreId,
-    selectedStoreTaxRate,
-    storeItems,
-  ]);
+  }
 
   const categories = useMemo(() => {
     const names = Array.from(new Set(storeItems.map(item => customerMenuCategory(item))));
     return CUSTOMER_CATEGORY_ORDER.filter(name => name === 'ALL' || names.includes(name));
   }, [storeItems]);
+
+  // --- My Usual (profile-synced) ---------------------------------------------
+  // The authenticated Coffee Bond profile is the source of truth. Nothing about a
+  // usual is persisted on the device, so signing out or switching accounts leaves
+  // nothing behind for the next person to see.
+  const [myUsual, setMyUsual] = useState<CustomerMyUsual | null>(null);
+  const [myUsualLoading, setMyUsualLoading] = useState(false);
+  const [myUsualBusy, setMyUsualBusy] = useState(false);
+  const [myUsualNotice, setMyUsualNotice] = useState('');
+  const [myUsualDialog, setMyUsualDialog] = useState<MyUsualDialog>(null);
+  /** Memory only. A save intent must never outlive the tab or reach storage. */
+  const pendingMyUsualSaveRef = useRef(false);
+  /** The uid whose usual is currently on screen; guards late responses. */
+  const myUsualUidRef = useRef('');
+  const previousMyUsualUidRef = useRef('');
+  const myUsualUid = verifiedCustomer?.customerUid || '';
+
+  useEffect(() => {
+    // A pre-release build could have left a device-local usual behind. It is not a
+    // source of truth any more and must not be shown to whoever signs in next.
+    purgeLegacyDeviceMyUsual(typeof window === 'undefined' ? null : window.localStorage);
+  }, []);
+
+  useEffect(() => {
+    const previousUid = previousMyUsualUidRef.current;
+    previousMyUsualUidRef.current = myUsualUid;
+    myUsualUidRef.current = myUsualUid;
+
+    // Sign-out and account switching both land here. Clear the previous customer's
+    // usual BEFORE the new profile is fetched, so their data is never on screen for
+    // even one frame. The server copy is untouched, and the basket is left alone.
+    setMyUsual(null);
+    if (previousUid && previousUid !== myUsualUid) {
+      setMyUsualDialog(null);
+      setMyUsualNotice('');
+      pendingMyUsualSaveRef.current = false;
+    }
+
+    if (!myUsualUid) {
+      setMyUsualLoading(false);
+      return undefined;
+    }
+
+    let active = true;
+    setMyUsualLoading(true);
+    getCustomerMyUsualRequest()
+      .then(response => {
+        // A response that arrives after the account changed belongs to nobody here.
+        if (!active || myUsualUidRef.current !== myUsualUid) return;
+        setMyUsual(response.myUsual);
+      })
+      .catch((err: unknown) => {
+        if (!active || myUsualUidRef.current !== myUsualUid) return;
+        setMyUsualNotice(err instanceof Error ? err.message : 'We could not reach your Coffee Bond profile. Please try again.');
+      })
+      .finally(() => {
+        if (active && myUsualUidRef.current === myUsualUid) setMyUsualLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [myUsualUid]);
+
+  /**
+   * Revalidates the saved usual against the CURRENT menu using the same restore engine
+   * as checkout-draft hydration. Nothing here mutates the cart — it is a pure preview.
+   *
+   * Unlike the checkout draft, ITEM_REMOVED / ADD_ON_REMOVED are hard blockers: a usual
+   * must never be silently reduced to a partial order.
+   */
+  const myUsualPreview = useMemo(() => {
+    if (!myUsual) return null;
+    if (storeItems.length === 0 || loadedMenuStoreId !== selectedStoreId) return { state: 'LOADING' as const };
+
+    const restored = restoreCustomerCheckoutDraft<CustomerMenuItem, AddOnSelection>({
+      schemaVersion: 1,
+      updatedAt: 0,
+      selectedStoreId,
+      paymentProvider,
+      orderType: myUsual.orderType,
+      customerName: '',
+      notes: '',
+      lines: myUsual.items,
+    } as CustomerCheckoutDraft, checkoutRestoreOptions());
+
+    const removed = restored.notices.filter(n => n.code === 'ITEM_REMOVED' || n.code === 'ADD_ON_REMOVED');
+    const priceChanged = restored.notices.some(n => n.code === 'PRICE_CHANGED');
+    const blocked = removed.length > 0 || restored.lines.length !== myUsual.items.length;
+
+    return {
+      state: 'SAVED' as const,
+      lines: restored.lines,
+      totals: totalsForLines(restored.lines),
+      blockerMessage: blocked
+        ? `Your usual needs a quick update. ${removed.map(n => n.productCode).join(', ')} changed or is unavailable.`
+        : undefined,
+      noticeMessage: priceChanged ? 'Price updated since your usual was saved.' : undefined,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myUsual, storeItems, loadedMenuStoreId, selectedStoreId, itemAvailability, addOnGroups, selectedStoreTaxRate, paymentProvider]);
+
+  const myUsualStoreName = useMemo(
+    () => stores.find(store => store.id === myUsual?.preferredStoreId)?.name || 'Saved store',
+    [stores, myUsual],
+  );
+
+  /**
+   * Basket entry point. A signed-out customer is sent through the EXISTING customer
+   * OTP flow with the basket left exactly as it is; the save intent is held in memory
+   * and still requires an explicit confirmation afterwards. No order, payment or
+   * checkout session is created on this path.
+   */
+  const requestSaveMyUsual = () => {
+    if (cart.length === 0 || !selectedStoreId) return;
+    if (isOffline) {
+      setMyUsualNotice('Reconnect to check current prices and availability.');
+      return;
+    }
+    if (!verifiedCustomer) {
+      pendingMyUsualSaveRef.current = true;
+      setMyUsualDialog({ type: 'SIGN_IN' });
+      return;
+    }
+    setMyUsualDialog(myUsual ? { type: 'REPLACE_USUAL' } : { type: 'SAVE_NEW' });
+  };
+
+  /** Verification completed inside the My Usual sheet — never a checkout submission. */
+  const handleMyUsualVerified = (profile: CustomerProfile) => {
+    const wantsSave = pendingMyUsualSaveRef.current;
+    pendingMyUsualSaveRef.current = false;
+    setVerifiedCustomer(profile);
+    setCustomerPhone(profile.normalisedPhone.replace('+91', ''));
+    if (!customerName.trim() && profile.displayName) setCustomerName(profile.displayName);
+    // The basket survived verification untouched; saving it still needs a yes.
+    setMyUsualDialog(wantsSave && cart.length > 0 && selectedStoreId ? { type: 'CONFIRM_PENDING_SAVE' } : null);
+  };
+
+  /**
+   * The only permanent save. It writes through the secured profile callable and the UI
+   * is updated from the SERVER response, never from the local basket — so a failed
+   * request can never look like a success. The basket itself is never modified.
+   */
+  const confirmSaveMyUsual = async () => {
+    if (cart.length === 0 || !selectedStoreId || myUsualBusy) return;
+    if (!verifiedCustomer) {
+      pendingMyUsualSaveRef.current = true;
+      setMyUsualDialog({ type: 'SIGN_IN' });
+      return;
+    }
+    if (isOffline) {
+      setMyUsualNotice('Reconnect to check current prices and availability.');
+      return;
+    }
+    const uid = verifiedCustomer.customerUid;
+    setMyUsualBusy(true);
+    setMyUsualNotice('');
+    try {
+      const response = await saveCustomerMyUsualRequest(buildMyUsualPayload({
+        preferredStoreId: selectedStoreId,
+        orderType,
+        items: persistedCheckoutLines(cart, selectedStoreTaxRate),
+      }));
+      if (myUsualUidRef.current !== uid) return;
+      setMyUsual(response.myUsual);
+      setMyUsualNotice('Saved to your Coffee Bond profile');
+      setMyUsualDialog(null);
+    } catch (err: unknown) {
+      // Previous state is retained and the dialog stays open for a retry.
+      if (myUsualUidRef.current !== uid) return;
+      setMyUsualNotice(err instanceof Error ? err.message : 'We could not save My Usual. Please try again.');
+    } finally {
+      if (myUsualUidRef.current === uid) setMyUsualBusy(false);
+    }
+  };
+
+  /** Loads validated lines into the EXISTING cart and opens the EXISTING basket. */
+  const applyMyUsualToBasket = (lines: CartLine[]) => {
+    setCart(lines);
+    if (myUsual) setOrderType(myUsual.orderType);
+    setMyUsualDialog(null);
+    setBasketOpen(true);
+  };
+
+  const startMyUsualOrder = (intent: 'ORDER' | 'EDIT') => {
+    if (!myUsual || myUsualBusy) return;
+    if (isOffline) {
+      setMyUsualNotice('Reconnect to check current prices and availability.');
+      return;
+    }
+    setMyUsualBusy(true);
+    try {
+      if (myUsual.preferredStoreId !== selectedStoreId) {
+        setMyUsualDialog({ type: 'STORE_MISMATCH', intent });
+        return;
+      }
+      const preview = myUsualPreview;
+      if (!preview || preview.state !== 'SAVED') return;
+      if (preview.blockerMessage) {
+        setMyUsualDialog({ type: 'BLOCKED', message: preview.blockerMessage });
+        return;
+      }
+      if (cart.length > 0) {
+        setMyUsualDialog({ type: 'REPLACE_BASKET', lines: preview.lines, intent });
+        return;
+      }
+      applyMyUsualToBasket(preview.lines);
+    } finally {
+      setMyUsualBusy(false);
+    }
+  };
+
+  /**
+   * Removes the usual from the profile through the secured callable. The current
+   * basket is deliberately untouched, and the card only clears once the server has
+   * confirmed the delete.
+   */
+  const deleteMyUsual = async () => {
+    if (!verifiedCustomer || myUsualBusy) return;
+    if (isOffline) {
+      setMyUsualNotice('Reconnect to check current prices and availability.');
+      return;
+    }
+    const uid = verifiedCustomer.customerUid;
+    setMyUsualBusy(true);
+    setMyUsualNotice('');
+    try {
+      await deleteCustomerMyUsualRequest();
+      if (myUsualUidRef.current !== uid) return;
+      setMyUsual(null);
+      setMyUsualDialog(null);
+      setMyUsualNotice('My Usual deleted from your Coffee Bond profile.');
+    } catch (err: unknown) {
+      if (myUsualUidRef.current !== uid) return;
+      setMyUsualNotice(err instanceof Error ? err.message : 'We could not delete My Usual. Please try again.');
+    } finally {
+      if (myUsualUidRef.current === uid) setMyUsualBusy(false);
+    }
+  };
 
   /**
    * The menu is one continuous vertical flow grouped by category. Search collapses it
@@ -927,11 +1209,16 @@ export default function CustomerOrder() {
   const storesMissingCoordinates = useMemo(() => stores.filter(store => !storeCoordinate(store)), [stores]);
   const selectedStoreHasCoordinates = selectedStore ? !!storeCoordinate(selectedStore) : false;
 
-  const totals = useMemo(() => {
-    const subtotal = cart.reduce((sum, line) => (
+  /**
+   * Single money calculation, used by the live basket and by My Usual previews.
+   * Declared as a function so it is hoisted: the My Usual preview memo runs earlier in
+   * the render and would hit the temporal dead zone with a const arrow.
+   */
+  function totalsForLines(lines: CartLine[]) {
+    const subtotal = lines.reduce((sum, line) => (
       sum + unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity
     ), 0);
-    const gstTotal = cart.reduce((sum, line) => {
+    const gstTotal = lines.reduce((sum, line) => {
       const rate = itemTaxRate(line.item, selectedStoreTaxRate);
       const baseTax = toNumber(line.item.salePrice) * line.quantity * rate / 100;
       return sum + baseTax + addOnTaxForLine(line.addOns, line.quantity, 0);
@@ -942,7 +1229,13 @@ export default function CustomerOrder() {
       gstTotal,
       grandTotal: subtotal + gstTotal,
     };
-  }, [cart, selectedStoreTaxRate]);
+  }
+
+  const totals = useMemo(
+    () => totalsForLines(cart),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cart, selectedStoreTaxRate],
+  );
 
   const checkoutDraftInput = useMemo<CustomerCheckoutDraftInput>(() => ({
     selectedStoreId,
@@ -1515,6 +1808,20 @@ export default function CustomerOrder() {
             </div>
           </div>
 
+          {/* Save as My Usual — one small action, no basket redesign. Hidden while a
+              submission or payment is in flight so it can never race checkout. */}
+          {cart.length > 0 && selectedStoreId && !saving && !submittingRef.current && (
+            <button
+              type="button"
+              onClick={requestSaveMyUsual}
+              data-requires-online="true"
+              disabled={myUsualBusy || isOffline}
+              className="mt-3 min-h-11 w-full rounded-2xl bg-[#f5ede5] text-sm font-black text-[#3b241c] disabled:text-neutral-400"
+            >
+              Save as My Usual
+            </button>
+          )}
+
           <div className="mt-4 space-y-3">
             <fieldset className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
               <legend className="px-1 text-xs font-black uppercase tracking-wider text-neutral-500">Payment</legend>
@@ -1802,6 +2109,54 @@ export default function CustomerOrder() {
             onOpenSelector={() => setStoreSelectorOpen(true)}
           />
 
+          {/* My Usual sits between the store strip and search, per the approved order. */}
+          <CustomerMyUsualCard
+            state={
+              !verifiedCustomer
+                ? 'SIGNED_OUT'
+                : myUsualLoading
+                  ? 'LOADING'
+                  : !myUsual
+                    ? 'EMPTY'
+                    : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
+            }
+            lines={(myUsualPreview?.state === 'SAVED' ? myUsualPreview.lines : []).map(line => ({
+              key: line.id,
+              name: line.item.displayName || line.item.name,
+              quantity: line.quantity,
+              addOnSummary: line.addOns.map(addOn => addOn.optionName).filter(Boolean).join(', '),
+              imageUrl: getItemImage(line.item),
+              isFood: customerMenuCategory(line.item) === 'Food',
+            }))}
+            totalLabel={myUsualPreview?.state === 'SAVED' ? formatMoney(myUsualPreview.totals.grandTotal) : null}
+            preferredStoreName={myUsualStoreName}
+            blockerMessage={
+              isOffline
+                ? 'Reconnect to check current prices and availability.'
+                : myUsualPreview?.state === 'SAVED' ? myUsualPreview.blockerMessage : undefined
+            }
+            noticeMessage={myUsualPreview?.state === 'SAVED' ? myUsualPreview.noticeMessage : undefined}
+            busy={myUsualBusy}
+            offline={isOffline}
+            onSignIn={() => {
+              pendingMyUsualSaveRef.current = false;
+              setMyUsualDialog({ type: 'SIGN_IN' });
+            }}
+            onCreate={() => {
+              searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+              setMyUsualNotice('Add your regular items to the basket, then choose Save as My Usual.');
+            }}
+            onOrder={() => startMyUsualOrder('ORDER')}
+            onEdit={() => startMyUsualOrder('EDIT')}
+            onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
+          />
+
+          {myUsualNotice && (
+            <p role="status" aria-live="polite" className="cb-customer-usual-note px-3 py-2 text-sm font-bold">
+              {myUsualNotice}
+            </p>
+          )}
+
           {!customerOrderingState.canAcceptOrders && !availabilityLoading && (
             <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold leading-relaxed text-red-800">
               {customerOrderingState.message}
@@ -1974,6 +2329,159 @@ export default function CustomerOrder() {
       />
 
       <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
+
+      {/* My Usual confirmations. Every consequence is stated before it happens, and
+          none of these actions submits an order, OTP or payment. */}
+      {myUsualDialog && (
+        <div className="cb-customer-sheet-scrim fixed inset-0 z-[70] flex items-end justify-center" role="dialog" aria-modal="true" aria-label="My Usual">
+          <button type="button" className="absolute inset-0 h-full w-full" aria-label="Dismiss" onClick={() => setMyUsualDialog(null)} />
+          <div className="cb-customer-sheet relative w-full max-w-md p-5">
+            {myUsualDialog.type === 'SIGN_IN' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Sign in to save My Usual</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">
+                  My Usual lives in your Coffee Bond profile so it follows you across devices. Your basket is kept exactly as it is, and nothing is ordered or paid for here.
+                </p>
+                {/* The existing customer OTP panel — there is no second OTP path. */}
+                <div className="mt-4">
+                  <CustomerOtpPanel
+                    mobile={customerPhone}
+                    verifiedPhone={verifiedCustomer?.normalisedPhone || null}
+                    onMobileChange={(mobile) => {
+                      setCustomerPhone(mobile);
+                      setVerifiedCustomer(null);
+                    }}
+                    onVerified={handleMyUsualVerified}
+                  />
+                </div>
+              </>
+            )}
+            {myUsualDialog.type === 'CONFIRM_PENDING_SAVE' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Save this basket as My Usual?</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">
+                  {itemCount} item{itemCount === 1 ? '' : 's'} from {selectedStore?.name || 'this store'} will be saved to your Coffee Bond profile. Nothing is ordered.
+                </p>
+                <button
+                  type="button"
+                  onClick={confirmSaveMyUsual}
+                  data-requires-online="true"
+                  disabled={myUsualBusy || isOffline}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  {myUsualBusy ? 'Saving...' : 'Save My Usual'}
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'SAVE_NEW' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Save as My Usual?</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">
+                  {itemCount} item{itemCount === 1 ? '' : 's'} from {selectedStore?.name || 'this store'} will be saved to your Coffee Bond profile.
+                </p>
+                <button
+                  type="button"
+                  onClick={confirmSaveMyUsual}
+                  data-requires-online="true"
+                  disabled={myUsualBusy || isOffline}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  {myUsualBusy ? 'Saving...' : 'Save My Usual'}
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'REPLACE_USUAL' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Replace your current My Usual with this basket?</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">Your previously saved usual will be overwritten in your Coffee Bond profile.</p>
+                <button
+                  type="button"
+                  onClick={confirmSaveMyUsual}
+                  data-requires-online="true"
+                  disabled={myUsualBusy || isOffline}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  {myUsualBusy ? 'Saving...' : 'Replace My Usual'}
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'REPLACE_BASKET' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Replace your current basket with My Usual?</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">Your current basket items will be removed. Nothing is ordered yet.</p>
+                <button
+                  type="button"
+                  onClick={() => applyMyUsualToBasket(myUsualDialog.lines)}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  Replace basket
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'STORE_MISMATCH' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Your usual was saved for {myUsualStoreName}.</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">Switch to that store to check current prices and availability.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (myUsual) handleStoreChange(myUsual.preferredStoreId);
+                    setMyUsualDialog(null);
+                    setMyUsualNotice('Switched to your saved store. Checking current prices.');
+                  }}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  Switch to saved store
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'BLOCKED' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Your usual needs a quick update.</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">{myUsualDialog.message}</p>
+                <button
+                  type="button"
+                  onClick={() => { setMyUsualDialog(null); setBasketOpen(true); }}
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  Edit My Usual
+                </button>
+              </>
+            )}
+            {myUsualDialog.type === 'DELETE' && (
+              <>
+                <h2 className="cb-customer-title text-lg font-black">Delete My Usual?</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">
+                  This removes the saved bundle from your Coffee Bond profile on every device. Your basket and past orders are not affected.
+                </p>
+                <button
+                  type="button"
+                  onClick={deleteMyUsual}
+                  data-requires-online="true"
+                  disabled={myUsualBusy || isOffline}
+                  className="cb-customer-icon-button-danger mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
+                >
+                  {myUsualBusy ? 'Deleting...' : 'Delete My Usual'}
+                </button>
+              </>
+            )}
+            {/* A failed save or delete is reported here, with the sheet still open so
+                the customer can retry. Nothing claims success it did not get. */}
+            {myUsualNotice && (
+              <p role="status" aria-live="polite" className="cb-customer-usual-note mt-3 px-3 py-2 text-[12px] font-bold">
+                {myUsualNotice}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => setMyUsualDialog(null)}
+              className="mt-2 min-h-11 w-full rounded-2xl bg-white text-sm font-black text-[#3b241c]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {pendingAddOnItem && (
         <AddOnSelector

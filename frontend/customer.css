@@ -175,6 +175,67 @@
 .cb-customer-status-amber { background: var(--cb-warning-soft); color: var(--cb-warning); }
 .cb-customer-status-red { background: var(--cb-danger-soft); color: var(--cb-danger); }
 
+/* --- My Usual (Stage 2) ---------------------------------------------------
+   Semantic classes only — no Tailwind arbitrary CSS-variable utilities, which
+   would be emitted into the shared stylesheet and leak into the staff build. */
+.cb-customer-usual {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-usual-empty {
+  background: var(--cb-gold-soft);
+  border-radius: var(--cb-radius);
+  box-shadow: inset 0 0 0 1px var(--cb-gold-strong);
+}
+
+.cb-customer-usual-eyebrow {
+  color: var(--cb-terracotta);
+  letter-spacing: 0.08em;
+}
+
+.cb-customer-usual-thumb {
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+  box-shadow: 0 0 0 2px var(--cb-surface);
+}
+
+.cb-customer-usual-note {
+  background: var(--cb-warning-soft);
+  color: var(--cb-warning);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-usual-blocker {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-sheet {
+  background: var(--cb-bg);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  padding-bottom: max(1rem, var(--cb-safe-bottom));
+}
+
+.cb-customer-sheet-scrim { background: rgba(43, 33, 24, 0.5); }
+
+.cb-customer-totals-row { color: var(--cb-text-muted); }
+.cb-customer-totals-strong { color: var(--cb-text); }
+
+/* Secondary icon buttons beside the primary action. */
+.cb-customer-icon-button {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-icon-button-danger {
+  background: var(--cb-surface-muted);
+  color: var(--cb-danger);
+}
+
 /* Unavailable products stay legible rather than being colour-dimmed only. */
 .cb-customer-unavailable { opacity: 0.72; }
 

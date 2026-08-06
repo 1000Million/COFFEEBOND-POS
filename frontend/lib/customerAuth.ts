@@ -4,12 +4,13 @@ import {
   ConfirmationResult,
   RecaptchaVerifier,
   browserLocalPersistence,
+  connectAuthEmulator,
   getAuth,
   setPersistence,
   signInWithPhoneNumber,
   signOut,
 } from 'firebase/auth';
-import { Functions, getFunctions, httpsCallable } from 'firebase/functions';
+import { Functions, connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
 import { firebaseConfig } from './firebase';
 
 const CUSTOMER_APP_NAME = 'coffee-bond-customer-auth';
@@ -25,6 +26,29 @@ export const customerFunctions: Functions = getFunctions(
   customerApp(),
   import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-central1',
 );
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __coffeeBondCustomerEmulatorsConnected: boolean | undefined;
+}
+
+// The customer app is a separate Firebase app from the staff one, so it needs its own
+// emulator wiring. Same opt-in flag; production builds leave this untouched.
+if (
+  import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+  && typeof window !== 'undefined'
+  && !globalThis.__coffeeBondCustomerEmulatorsConnected
+) {
+  connectAuthEmulator(customerAuth, import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_URL || 'http://127.0.0.1:9099', {
+    disableWarnings: true,
+  });
+  connectFunctionsEmulator(
+    customerFunctions,
+    import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_HOST || '127.0.0.1',
+    Number(import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT || 5001),
+  );
+  globalThis.__coffeeBondCustomerEmulatorsConnected = true;
+}
 
 export const customerAuthPersistenceReady = setPersistence(customerAuth, browserLocalPersistence);
 
