@@ -4,13 +4,18 @@ import CustomerProductImage from './CustomerProductImage';
 
 export type MyUsualPreviewLine = {
   key: string;
-  /** Live product name — never the saved name. */
+  /** Live product name where this store sells it, else the readable saved code. */
   name: string;
   quantity: number;
   /** Concise add-on summary built from current add-on data. */
   addOnSummary: string;
   imageUrl: string | null;
   isFood: boolean;
+  /**
+   * Set when THIS store cannot fulfil the line. The line is still rendered — a
+   * blocked line that disappeared would read as a silently reduced usual.
+   */
+  unavailableReason?: string;
 };
 
 type Props = {
@@ -124,11 +129,14 @@ export default function CustomerMyUsualCard({
               this heading is always recalculated for the store selected right now. */}
           <h2 id="cb-my-usual-heading" className="sr-only">My Usual</h2>
         </div>
-        {totalLabel && (
+        {/* A partial sum is never presented as the usual's total. */}
+        {totalLabel ? (
           <p className="shrink-0 cb-customer-title text-base font-black" aria-label={`Current total ${totalLabel}`}>
             {totalLabel}
           </p>
-        )}
+        ) : blockerMessage ? (
+          <p className="shrink-0 cb-customer-muted text-[12px] font-black uppercase">Review required</p>
+        ) : null}
       </div>
 
       {/* Up to three thumbnails, laid out as a fixed collage — never a scroller. */}
@@ -140,21 +148,28 @@ export default function CustomerMyUsualCard({
               src={line.imageUrl}
               alt=""
               icon={icon(line.isFood)}
-              iconClassName="text-[#b99b7d]"
+              // Brand brown, not the surface beige: the fallback must be visible
+              // against the muted thumbnail background rather than vanish into it.
+              iconClassName="text-[#5c4033]"
               className="cb-customer-usual-thumb h-12 w-12"
             />
           ))}
         </div>
+        {/* EVERY saved line is listed — a blocked one is labelled, never omitted. */}
         <ul className="min-w-0 flex-1 space-y-0.5">
-          {lines.slice(0, 3).map(line => (
-            <li key={line.key} className="truncate cb-customer-title text-[12px] font-bold">
-              {line.quantity}× {line.name}
-              {line.addOnSummary && <span className="cb-customer-muted font-semibold"> · {line.addOnSummary}</span>}
+          {lines.map(line => (
+            <li key={line.key} className="min-w-0 cb-customer-title text-[12px] font-bold">
+              <span className={line.unavailableReason ? 'line-through opacity-70' : undefined}>
+                {line.quantity}× {line.name}
+                {line.addOnSummary && <span className="cb-customer-muted font-semibold"> · {line.addOnSummary}</span>}
+              </span>
+              {line.unavailableReason && (
+                <span className="cb-customer-usual-unavailable block text-[11px] font-black">
+                  {line.unavailableReason}
+                </span>
+              )}
             </li>
           ))}
-          {lines.length > 3 && (
-            <li className="cb-customer-muted text-[11px] font-bold">+{lines.length - 3} more</li>
-          )}
         </ul>
       </div>
 
@@ -182,7 +197,7 @@ export default function CustomerMyUsualCard({
           className="cb-customer-accent-button inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-black"
         >
           <RefreshCw size={16} aria-hidden="true" />
-          {busy ? 'Checking...' : blockerMessage ? 'Update My Usual' : 'Order My Usual'}
+          {busy ? 'Checking...' : blockerMessage ? 'Review My Usual' : 'Order My Usual'}
         </button>
         <button
           type="button"

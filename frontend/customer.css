@@ -213,6 +213,12 @@
   border-radius: var(--cb-radius-sm);
 }
 
+/* Per-line "unavailable at this store" label. Stated in words as well as colour,
+   so a blocked line reads as blocked without relying on hue alone. */
+.cb-customer-usual-unavailable {
+  color: var(--cb-danger);
+}
+
 .cb-customer-sheet {
   background: var(--cb-bg);
   border-top-left-radius: var(--cb-radius-lg);

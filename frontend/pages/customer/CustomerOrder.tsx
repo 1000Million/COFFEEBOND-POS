@@ -1024,41 +1024,77 @@ export default function CustomerOrder() {
     const blocked = removedItems.length + removedAddOns.length > 0
       || restored.lines.length !== myUsual.items.length;
 
+    const storeName = selectedStore?.name || 'this store';
+
     // Name the affected products in the CURRENT store's language. A product missing
     // from this store has no live name, so its saved code is humanised rather than
     // shown raw.
     const unavailableItems = [...new Set(removedItems.map(n => productLabel(n.productCode)))];
 
-    // The shared restore engine reports which product lost an add-on, not which
-    // option. Diffing the saved options against the ones this store still offers
-    // names the missing add-on without forking that engine.
-    const unavailableAddOns = removedAddOns.map(notice => {
-      const savedLine = myUsual.items.find(line => line.productCode === notice.productCode);
-      const item = storeItems.find(candidate => candidate.code === notice.productCode);
+    /**
+     * The shared restore engine reports which product lost an add-on, not which
+     * option. Diffing the saved options against the ones this store still offers
+     * names the missing add-on without forking that engine.
+     */
+    const missingAddOnsFor = (productCode: string) => {
+      const savedLine = myUsual.items.find(line => line.productCode === productCode);
+      const item = storeItems.find(candidate => candidate.code === productCode);
       const activeOptionIds = new Set(
         item
           ? activeAddOnGroupsForProduct(item.addOnGroupIds, item.addOnOptionIdsByGroup, addOnGroups)
             .flatMap(group => group.options.map(option => option.id))
           : [],
       );
-      const missing = (savedLine?.addOns || [])
+      return (savedLine?.addOns || [])
         .filter(addOn => !activeOptionIds.has(addOn.optionId))
         .map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId));
+    };
+
+    const unavailableAddOns = removedAddOns.map(notice => ({
+      product: productLabel(notice.productCode),
+      addOn: missingAddOnsFor(notice.productCode).join(', ') || 'a saved add-on',
+    }));
+
+    const removedItemCodes = new Set(removedItems.map(n => n.productCode));
+    const removedAddOnCodes = new Set(removedAddOns.map(n => n.productCode));
+
+    /**
+     * EVERY saved line, in saved order — including the ones this store cannot
+     * fulfil. A blocked line is labelled, never dropped: hiding it would imply the
+     * customer's usual had been silently reduced.
+     */
+    const displayLines = myUsual.items.map((saved, index) => {
+      const item = storeItems.find(candidate => candidate.code === saved.productCode);
+      const itemUnavailable = removedItemCodes.has(saved.productCode) || !item;
+      const missingAddOns = removedAddOnCodes.has(saved.productCode)
+        ? missingAddOnsFor(saved.productCode)
+        : [];
       return {
-        product: productLabel(notice.productCode),
-        addOn: missing.join(', ') || 'a saved add-on',
+        key: saved.lineId || `${saved.productCode}-${index}`,
+        name: productLabel(saved.productCode),
+        quantity: saved.quantity,
+        addOnSummary: saved.addOns.map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId)).join(', '),
+        imageUrl: item ? getItemImage(item) : null,
+        isFood: item ? customerMenuCategory(item) === 'Food' : false,
+        unavailableReason: itemUnavailable
+          ? `Unavailable at ${storeName}`
+          : missingAddOns.length > 0
+            ? `${missingAddOns.join(', ')} is unavailable at ${storeName}`
+            : undefined,
       };
     });
 
     return {
       state: 'SAVED' as const,
       lines: restored.lines,
+      displayLines,
+      // Only meaningful when nothing is blocked: a partial sum must never be shown
+      // as the usual's total.
       totals: totalsForLines(restored.lines),
       unavailableItems,
       unavailableAddOns,
-      blockerMessage: blocked
-        ? `Some items are not available at ${selectedStore?.name || 'this store'}.`
-        : undefined,
+      blocked,
+      blockerMessage: blocked ? 'Your usual needs a quick update.' : undefined,
       noticeMessage: priceChanged ? 'Price updated since your usual was saved.' : undefined,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2169,15 +2205,14 @@ export default function CustomerOrder() {
                     ? 'EMPTY'
                     : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
             }
-            lines={(myUsualPreview?.state === 'SAVED' ? myUsualPreview.lines : []).map(line => ({
-              key: line.id,
-              name: line.item.displayName || line.item.name,
-              quantity: line.quantity,
-              addOnSummary: line.addOns.map(addOn => addOn.optionName).filter(Boolean).join(', '),
-              imageUrl: getItemImage(line.item),
-              isFood: customerMenuCategory(line.item) === 'Food',
-            }))}
-            totalLabel={myUsualPreview?.state === 'SAVED' ? formatMoney(myUsualPreview.totals.grandTotal) : null}
+            // Every saved line, including any this store cannot fulfil. A blocked
+            // usual has no complete total, so none is offered.
+            lines={myUsualPreview?.state === 'SAVED' ? myUsualPreview.displayLines : []}
+            totalLabel={
+              myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
+                ? formatMoney(myUsualPreview.totals.grandTotal)
+                : null
+            }
             blockerMessage={
               isOffline
                 ? 'Reconnect to check current prices and availability.'
@@ -2499,19 +2534,21 @@ export default function CustomerOrder() {
                     <li key={`${entry.product}-${entry.addOn}`}>{entry.product} — {entry.addOn} is not available here</li>
                   ))}
                 </ul>
-                <button
-                  type="button"
-                  onClick={() => { setMyUsualDialog(null); setBasketOpen(true); }}
-                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
-                >
-                  Edit My Usual
-                </button>
+                {/* Choosing a store that can fulfil the usual keeps it intact, so it
+                    leads. Editing changes the saved profile and follows. */}
                 <button
                   type="button"
                   onClick={() => { setMyUsualDialog(null); setStoreSelectorOpen(true); }}
-                  className="mt-2 min-h-11 w-full rounded-2xl bg-[#f5ede5] text-sm font-black text-[#3b241c]"
+                  className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
                 >
                   Choose another store
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMyUsualDialog(null); setBasketOpen(true); }}
+                  className="mt-2 min-h-11 w-full rounded-2xl bg-[#f5ede5] text-sm font-black text-[#3b241c]"
+                >
+                  Edit My Usual
                 </button>
               </>
             )}

@@ -440,8 +440,59 @@ check('11. an unavailable add-on names the product and the add-on',
   homeCode.includes('unavailableAddOns')
   && home.includes('{entry.product} — {entry.addOn} is not available here')
   && /removedAddOns\.map/.test(homeCode));
-check('11. a missing add-on still requires Edit My Usual',
-  /UNAVAILABLE'[\s\S]{0,1600}Edit My Usual/.test(home));
+check('11. a missing add-on still offers Edit My Usual',
+  /UNAVAILABLE'[\s\S]{0,2200}Edit My Usual/.test(home));
+
+// ---------------------------------------------------------------------------
+// Blocked-state presentation: a usual that this store cannot fulfil must LOOK
+// blocked, not look silently reduced.
+// ---------------------------------------------------------------------------
+check('every saved line is rendered, blocked ones included',
+  /const displayLines = myUsual\.items\.map/.test(homeCode)
+  && homeCode.includes('myUsualPreview.displayLines')
+  && card.includes('{lines.map(line => (')
+  && !card.includes('lines.slice(0, 3).map(line => (\n            <li'));
+check('the card no longer truncates the saved line list',
+  !card.includes('+{lines.length - 3} more'));
+check('a blocked line is labelled with the current store',
+  homeCode.includes('`Unavailable at ${storeName}`')
+  && homeCode.includes('is unavailable at ${storeName}`')
+  && card.includes('{line.unavailableReason}'));
+check('a blocked line is struck through as well as labelled',
+  card.includes("line.unavailableReason ? 'line-through opacity-70' : undefined"));
+check('a blocked line is never dropped from the list',
+  /displayLines = myUsual\.items\.map[\s\S]{0,1400}unavailableReason/.test(homeCode)
+  && !/displayLines[\s\S]{0,600}\.filter\(/.test(homeCode));
+check('no partial total is presented as the usual total',
+  /!myUsualPreview\.blocked[\s\S]{0,140}formatMoney\(myUsualPreview\.totals\.grandTotal\)/.test(homeCode)
+  && card.includes('Review required')
+  && /totalLabel \? \([\s\S]{0,400}\) : blockerMessage \? \([\s\S]{0,220}Review required/.test(card));
+check('the blocked headline states the usual needs an update',
+  homeCode.includes("blocked ? 'Your usual needs a quick update.' : undefined"));
+check('the blocked CTA reads Review My Usual',
+  card.includes("blockerMessage ? 'Review My Usual' : 'Order My Usual'")
+  && !card.includes('Update My Usual'));
+check('the review dialog offers choose-store, edit and cancel in that order',
+  /UNAVAILABLE'[\s\S]{0,1600}Choose another store[\s\S]{0,400}Edit My Usual/.test(home)
+  && /myUsualDialog\.type === 'UNAVAILABLE'[\s\S]{0,3600}Cancel/.test(home));
+// Anchor on the JSX dialog, not the type declaration that shares the name.
+const reviewDialogBlock = home.slice(
+  home.indexOf("myUsualDialog.type === 'UNAVAILABLE'"),
+  home.indexOf("myUsualDialog.type === 'DELETE'"),
+);
+check('reviewing writes nothing to the profile',
+  reviewDialogBlock.length > 200
+  && !/saveCustomerMyUsualRequest|deleteCustomerMyUsualRequest|setMyUsual\(/.test(reviewDialogBlock));
+check('a compatible store keeps the full total and Order My Usual',
+  /myUsualPreview\?\.state === 'SAVED' && !myUsualPreview\.blocked/.test(homeCode)
+  && card.includes("'Order My Usual'"));
+check('the thumbnail fallback is legible, not beige-on-beige',
+  card.includes('iconClassName="text-[#5c4033]"') && !card.includes('text-[#b99b7d]'));
+check('the fallback icon renders whenever no image resolves',
+  read('frontend/components/customer/CustomerProductImage.tsx').includes('image unavailable')
+  && homeCode.includes('imageUrl: item ? getItemImage(item) : null'));
+check('the per-line unavailable style is a semantic class in customer.css',
+  tokens.includes('.cb-customer-usual-unavailable'));
 check('12. no line is silently removed', homeCode.includes('restored.lines.length !== myUsual.items.length'));
 check('13. a closed store blocks with a choose-store action',
   homeCode.includes("{ type: 'STORE_CLOSED'")
@@ -479,7 +530,7 @@ check('offline blocks reorder',
 // unavailable items and offers Edit / Choose another store. Offline still disables
 // all three, and the screen still refuses the reorder itself.
 check('a blocked usual stays tappable so the customer can see why',
-  card.includes("blockerMessage ? 'Update My Usual' : 'Order My Usual'")
+  card.includes("blockerMessage ? 'Review My Usual' : 'Order My Usual'")
   && !card.includes('Boolean(blockerMessage)'));
 check('offline disables every server action',
   (card.match(/disabled=\{busy \|\| offline\}/g) || []).length === 3
