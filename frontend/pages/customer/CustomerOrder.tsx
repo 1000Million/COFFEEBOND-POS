@@ -24,6 +24,9 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import CustomerProductCustomizationSheet from '../../components/customer/CustomerProductCustomizationSheet';
+import CustomerBasketItemCard from '../../components/customer/CustomerBasketItemCard';
+import CustomerBasketEmptyState from '../../components/customer/CustomerBasketEmptyState';
+import CustomerPickupSummary from '../../components/customer/CustomerPickupSummary';
 import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import CustomerProductImage from '../../components/customer/CustomerProductImage';
@@ -960,6 +963,33 @@ export default function CustomerOrder() {
     purgeLegacyDeviceMyUsual(typeof window === 'undefined' ? null : window.localStorage);
   }, []);
 
+  /**
+   * Stage 4a: the mobile basket is a modal surface, so the page behind it must not
+   * scroll and Escape must close it. Desktop renders the basket inline as an aside,
+   * where neither applies — hence the viewport guard.
+   */
+  useEffect(() => {
+    if (!basketOpen || typeof window === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const mobile = window.matchMedia('(max-width: 1023px)');
+    // Follows the breakpoint: resizing up to the desktop layout, where the basket is
+    // an inline aside rather than a modal, must release the lock again.
+    const applyLock = () => {
+      document.body.style.overflow = mobile.matches ? 'hidden' : previousOverflow;
+    };
+    applyLock();
+    mobile.addEventListener('change', applyLock);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && mobile.matches) setBasketOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      mobile.removeEventListener('change', applyLock);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [basketOpen]);
+
   useEffect(() => {
     const previousUid = previousMyUsualUidRef.current;
     previousMyUsualUidRef.current = myUsualUid;
@@ -1842,79 +1872,76 @@ export default function CustomerOrder() {
   };
 
   const basketPanel = (
-    <div className="flex h-full flex-col">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-black text-[#2d2019]">Your basket</h2>
-          <p className="text-sm font-medium text-neutral-500">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Stage 4a header: title, count and one close action. */}
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 id="cb-basket-heading" className="cb-customer-title text-xl font-black">Your basket</h2>
+          <p className="cb-customer-muted text-sm font-bold">
             {itemCount} item{itemCount === 1 ? '' : 's'} for {orderType === 'DINE_IN' ? 'dine in' : 'pickup'}
           </p>
         </div>
         <button
           type="button"
           onClick={() => setBasketOpen(false)}
-          className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f8efe6] text-[#5c4033] lg:hidden"
+          className="cb-customer-icon-button flex h-11 w-11 items-center justify-center rounded-full lg:hidden"
           aria-label="Close basket"
         >
-          <X size={18} />
+          <X size={18} aria-hidden="true" />
         </button>
       </div>
 
       {cart.length === 0 ? (
-        <div className="rounded-2xl bg-[#fbf5ee] p-4 text-center">
-          <ShoppingBag className="mx-auto mb-2 text-[#9b6a43]" size={28} />
-          <p className="font-black text-[#2d2019]">Basket is empty</p>
-          <p className="mt-1 text-sm text-neutral-500">Add your favourites to continue.</p>
-        </div>
+        <CustomerBasketEmptyState
+          onBrowseMenu={() => {
+            setBasketOpen(false);
+            searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }}
+        />
       ) : (
         <>
-          <div className="space-y-3">
-            {cart.map(line => (
-              <div key={line.id} className="flex gap-3 rounded-2xl bg-[#fffaf5] p-3">
-                {renderItemThumb(line.item, 'h-14 w-14')}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="line-clamp-2 text-sm font-black leading-tight text-[#2d2019]">{line.item.displayName || line.item.name}</p>
-                      {trustedDietaryClassification(line.item as unknown as Record<string, unknown>) && (
-                        <div className="mt-1">
-                          <DietaryMarker value={trustedDietaryClassification(line.item as unknown as Record<string, unknown>)!} compact />
-                        </div>
-                      )}
-                      <p className="mt-1 text-xs font-bold text-neutral-500">
-                        {formatMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns))} each
-                      </p>
-                      {line.addOns.length > 0 && (
-                        <div className="mt-1 space-y-0.5">
-                          {line.addOns.map(addOn => (
-                            <p key={`${addOn.groupId}-${addOn.optionId}`} className="text-[11px] font-semibold text-neutral-500">
-                              + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''} · {formatMoney(addOn.totalPrice)}
-                            </p>
-                          ))}
-                          <button type="button" onClick={() => editLineAddOns(line)} className="text-[11px] font-black text-[#8b5e42] underline underline-offset-2">
-                            Edit add-ons
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button onClick={() => setLineQuantity(line.id, 0)} className="rounded-full bg-red-50 p-1.5 text-red-700">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between">
-                    <div className="inline-flex items-center rounded-full border border-[#ead8c7] bg-white p-0.5">
-                      <button onClick={() => setLineQuantity(line.id, line.quantity - 1)} className="rounded-full p-1.5"><Minus size={13} /></button>
-                      <span className="min-w-7 text-center text-xs font-black">{line.quantity}</span>
-                      <button onClick={() => setLineQuantity(line.id, line.quantity + 1)} className="rounded-full p-1.5"><Plus size={13} /></button>
-                    </div>
-                    <span className="text-sm font-black text-[#2d2019]">
-                      {formatMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* Pickup context, from the parent's existing store state. */}
+          <CustomerPickupSummary
+            contextLabel={orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}
+            storeName={selectedStore?.name || 'Choose store'}
+            statusLabel={customerOrderingState.statusLabel}
+            tone={customerOrderingState.tone}
+            prepLabel={prepWindowLabel(selectedStore?.estimatedPrepMinutes)}
+            onChangeStore={() => setStoreSelectorOpen(true)}
+          />
+
+          <ul className="mt-3 space-y-3">
+            {cart.map(line => {
+              const unitPrice = unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns);
+              return (
+                <CustomerBasketItemCard
+                  key={line.id}
+                  productName={line.item.displayName || line.item.name}
+                  unitPriceLabel={formatMoney(unitPrice)}
+                  lineTotalLabel={formatMoney(unitPrice * line.quantity)}
+                  quantity={line.quantity}
+                  maxQuantity={CUSTOMER_MAX_LINE_QUANTITY}
+                  imageUrl={getItemImage(line.item)}
+                  fallbackIcon={visualMeta(line.item).icon}
+                  dietaryClassification={trustedDietaryClassification(line.item as unknown as Record<string, unknown>)}
+                  addOns={line.addOns.map(addOn => ({
+                    key: `${addOn.groupId}-${addOn.optionId}`,
+                    name: addOn.optionName,
+                    quantity: addOn.quantity,
+                    priceLabel: formatMoney(addOn.totalPrice),
+                  }))}
+                  canEdit={activeAddOnGroupsForProduct(
+                    line.item.addOnGroupIds,
+                    line.item.addOnOptionIdsByGroup,
+                    addOnGroups,
+                  ).length > 0}
+                  onQuantityChange={next => setLineQuantity(line.id, next)}
+                  onEdit={() => editLineAddOns(line)}
+                  onRemove={() => setLineQuantity(line.id, 0)}
+                />
+              );
+            })}
+          </ul>
 
           <div className="mt-4 rounded-2xl bg-[#fbf5ee] p-4 text-sm">
             <div className="flex justify-between"><span>Subtotal</span><span className="font-black">{formatMoney(totals.subtotal)}</span></div>
@@ -2653,12 +2680,22 @@ export default function CustomerOrder() {
         />
       )}
 
+      {/* Stage 4a mobile basket: a near-full-height surface with one vertical scroll
+          region. The underlying page is scroll-locked and the bottom navigation sits
+          behind the scrim, so there is only ever one basket control in reach. */}
       {basketOpen && (
-        <div className="fixed inset-0 z-50 bg-black/35 lg:hidden">
+        <div className="cb-customer-sheet-scrim fixed inset-0 z-[75] lg:hidden">
           <button aria-label="Dismiss basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[28px] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:p-5">
-            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-neutral-200" />
-            {basketPanel}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cb-basket-heading"
+            className="cb-customer-basket-sheet absolute inset-x-0 bottom-0 flex flex-col overflow-hidden"
+          >
+            <div className="mx-auto mt-3 mb-2 h-1.5 w-12 shrink-0 rounded-full bg-[#e0d4c7]" aria-hidden="true" />
+            <div className="cb-customer-basket-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5">
+              {basketPanel}
+            </div>
           </div>
         </div>
       )}

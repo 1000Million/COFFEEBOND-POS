@@ -421,3 +421,78 @@
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Stage 4a — customer basket surface.
+ *
+ * Customer-only (this file is imported solely by frontend/customer-main.tsx).
+ * The basket is a near-full-height mobile sheet with ONE vertical scroll region;
+ * nothing here is wider than the sheet.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-basket-sheet {
+  background: var(--cb-bg);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  box-shadow: 0 -10px 30px rgba(43, 33, 24, 0.18);
+  height: 92dvh;
+  max-height: 92dvh;
+}
+
+.cb-customer-basket-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.cb-customer-basket-line {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+  list-style: none;
+}
+
+.cb-customer-basket-thumb {
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-basket-remove {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-customer-basket-edit {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-basket-empty {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-basket-empty-badge {
+  background: var(--cb-gold-soft);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-basket-pickup {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+.cb-customer-basket-pickup-pin {
+  background: var(--cb-gold-soft);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-basket-change {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-basket-sheet { transition: none; animation: none; }
+}
