@@ -399,15 +399,69 @@ check('money maths is defined once', (homeCode.match(/function totalsForLines|co
 check('ITEM_REMOVED blocks reorder', homeCode.includes("n.code === 'ITEM_REMOVED'"));
 check('ADD_ON_REMOVED blocks reorder', homeCode.includes("n.code === 'ADD_ON_REMOVED'"));
 check('a shortfall in restored lines also blocks', homeCode.includes('restored.lines.length !== myUsual.items.length'));
-check('the blocker message names the update need', home.includes('Your usual needs a quick update.'));
+check('the blocker message names the update need', home.includes('Your usual needs a quick update'));
 const blockedExpr = (homeCode.match(/const blocked = [^;]+;/) || [''])[0];
 check('a price change is a notice, not a blocker',
   home.includes('Price updated since your usual was saved.')
-  && blockedExpr.includes('removed.length')
+  && blockedExpr.includes('removedItems.length')
   && !blockedExpr.includes('priceChanged'));
-check('a store mismatch requires an explicit switch',
-  homeCode.includes("{ type: 'STORE_MISMATCH'") && home.includes('Switch to saved store'));
-check('the store is never switched silently', /STORE_MISMATCH[\s\S]{0,1200}handleStoreChange/.test(home));
+
+// ---------------------------------------------------------------------------
+// Store-agnostic: a usual belongs to the customer, not to the store it was saved
+// from. The store selected AT REORDER TIME is the only authority.
+// ---------------------------------------------------------------------------
+check('1/2. a different saved store never gates reorder',
+  !usualBlock.includes('preferredStoreId')
+  && !/preferredStoreId\s*!==\s*selectedStoreId/.test(homeCode));
+check('3. the saved-store mismatch dialog is gone',
+  !homeCode.includes('STORE_MISMATCH') && !home.includes('Switch to saved store')
+  && !home.includes('was saved for'));
+check('4. the card never displays a store as the usual\'s owner',
+  !card.includes('preferredStoreName')
+  && !/preferredStoreId/.test(card)
+  && card.includes('<h2 id="cb-my-usual-heading" className="sr-only">My Usual</h2>'));
+check('4. the screen passes no store name to the card',
+  !homeCode.includes('preferredStoreName=') && !homeCode.includes('myUsualStoreName'));
+check('5/6/7/8. revalidation binds to the CURRENT store, menu, add-ons and tax',
+  /restoreCustomerCheckoutDraft[\s\S]{0,220}selectedStoreId/.test(homeCode)
+  && /checkoutRestoreOptions\(\)/.test(homeCode)
+  && homeCode.includes('itemTaxRate(item, selectedStoreTaxRate)')
+  && homeCode.includes('activeAddOnGroupsForProduct'));
+check('5/6. the preview recomputes when the selected store changes',
+  /\}, \[myUsual, storeItems, loadedMenuStoreId, selectedStoreId, selectedStore, itemAvailability, addOnGroups, selectedStoreTaxRate/.test(homeCode));
+check('9. a valid cross-store usual loads the existing basket',
+  /applyMyUsualToBasket\(preview\.lines\)/.test(homeCode));
+check('10. an unavailable product blocks the whole usual',
+  homeCode.includes("{\n          type: 'UNAVAILABLE'") || homeCode.includes("type: 'UNAVAILABLE'"));
+check('10. unavailable products are named, not silently dropped',
+  homeCode.includes('unavailableItems') && home.includes('not available here')
+  && home.includes('Some items are not available at '));
+check('11. an unavailable add-on names the product and the add-on',
+  homeCode.includes('unavailableAddOns')
+  && home.includes('{entry.product} — {entry.addOn} is not available here')
+  && /removedAddOns\.map/.test(homeCode));
+check('11. a missing add-on still requires Edit My Usual',
+  /UNAVAILABLE'[\s\S]{0,1600}Edit My Usual/.test(home));
+check('12. no line is silently removed', homeCode.includes('restored.lines.length !== myUsual.items.length'));
+check('13. a closed store blocks with a choose-store action',
+  homeCode.includes("{ type: 'STORE_CLOSED'")
+  && homeCode.includes('!customerOrderingState.canAcceptOrders')
+  && /STORE_CLOSED'[\s\S]{0,900}Choose another store/.test(home));
+check('14. choosing another store uses the existing selector, then revalidates',
+  (home.match(/setStoreSelectorOpen\(true\)/g) || []).length >= 2);
+check('15. no automatic store switch remains on the My Usual path',
+  !usualBlock.includes('handleStoreChange')
+  && !/UNAVAILABLE'[\s\S]{0,1600}handleStoreChange/.test(home)
+  && !/STORE_CLOSED'[\s\S]{0,900}handleStoreChange/.test(home));
+check('16. an existing document carrying preferredStoreId still parses',
+  helper.parseCustomerMyUsual(serverShape).status === 'VALID'
+  && helper.parseCustomerMyUsual(serverShape).usual.preferredStoreId === 'GOLDEN_I');
+check('16. preferredStoreId stays in the stored schema as provenance only',
+  helperSrc.includes('preferredStoreId')
+  && backendSrc.includes('preferredStoreId'));
+check('23. no Function or Firestore-rule change was required',
+  backendSrc.includes('preferredStoreId: safeReference')
+  || /preferredStoreId = safeReference/.test(backendSrc));
 check('a non-empty basket requires replacement confirmation',
   homeCode.includes('cart.length > 0') && home.includes('Replace your current basket with My Usual?'));
 check('a valid usual loads the existing cart', /applyMyUsualToBasket[\s\S]{0,160}setCart\(lines\)/.test(homeCode));
@@ -421,9 +475,14 @@ check('the cart is replaced, never appended', !/setCart\(\[\s*\.\.\.cart/.test(u
 // --- Offline ---
 check('offline blocks reorder',
   usualBlock.includes('isOffline') && home.includes('Reconnect to check current prices and availability.'));
+// A blocker no longer disables the primary action: tapping it is what names the
+// unavailable items and offers Edit / Choose another store. Offline still disables
+// all three, and the screen still refuses the reorder itself.
+check('a blocked usual stays tappable so the customer can see why',
+  card.includes("blockerMessage ? 'Update My Usual' : 'Order My Usual'")
+  && !card.includes('Boolean(blockerMessage)'));
 check('offline disables every server action',
-  card.includes('disabled={busy || offline || Boolean(blockerMessage)}')
-  && (card.match(/disabled=\{busy \|\| offline\}/g) || []).length === 2
+  (card.match(/disabled=\{busy \|\| offline\}/g) || []).length === 3
   && /onClick=\{requestSaveMyUsual\}[\s\S]{0,200}disabled=\{myUsualBusy \|\| isOffline\}/.test(home)
   && /onClick=\{deleteMyUsual\}[\s\S]{0,200}disabled=\{myUsualBusy \|\| isOffline\}/.test(home));
 check('offline never queues a profile write silently',

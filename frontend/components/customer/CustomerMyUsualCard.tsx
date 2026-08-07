@@ -20,9 +20,8 @@ type Props = {
    */
   state: 'SIGNED_OUT' | 'EMPTY' | 'LOADING' | 'SAVED';
   lines: MyUsualPreviewLine[];
-  /** Formatted total recalculated from live prices, or null while unknown. */
+  /** Formatted total recalculated from live prices at the CURRENT store, or null. */
   totalLabel: string | null;
-  preferredStoreName: string;
   /** Hard blocker text — reorder is disabled while present. */
   blockerMessage?: string;
   /** Non-blocking notice, e.g. a price change. */
@@ -49,7 +48,6 @@ export default function CustomerMyUsualCard({
   state,
   lines,
   totalLabel,
-  preferredStoreName,
   blockerMessage,
   noticeMessage,
   busy = false,
@@ -121,9 +119,10 @@ export default function CustomerMyUsualCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="cb-customer-usual-eyebrow text-[11px] font-black uppercase">My Usual</p>
-          <h2 id="cb-my-usual-heading" className="truncate cb-customer-title text-base font-black">
-            {preferredStoreName}
-          </h2>
+          {/* A usual belongs to the customer's profile, not to a store. The store it
+              was first saved from is never surfaced as its owner — the total beside
+              this heading is always recalculated for the store selected right now. */}
+          <h2 id="cb-my-usual-heading" className="sr-only">My Usual</h2>
         </div>
         {totalLabel && (
           <p className="shrink-0 cb-customer-title text-base font-black" aria-label={`Current total ${totalLabel}`}>
@@ -175,12 +174,15 @@ export default function CustomerMyUsualCard({
         <button
           type="button"
           onClick={onOrder}
-          disabled={busy || offline || Boolean(blockerMessage)}
+          // A blocker must stay TAPPABLE: tapping is what names the unavailable items
+          // and offers Edit / Choose another store. Only offline and in-flight work
+          // disable it. The reorder itself is still refused by the screen.
+          disabled={busy || offline}
           data-requires-online="true"
           className="cb-customer-accent-button inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-black"
         >
           <RefreshCw size={16} aria-hidden="true" />
-          {busy ? 'Checking...' : 'Order My Usual'}
+          {busy ? 'Checking...' : blockerMessage ? 'Update My Usual' : 'Order My Usual'}
         </button>
         <button
           type="button"

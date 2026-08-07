@@ -109,8 +109,11 @@ type MyUsualDialog =
   | { type: 'SAVE_NEW' }
   | { type: 'REPLACE_USUAL' }
   | { type: 'REPLACE_BASKET'; lines: CartLine[]; intent: 'ORDER' | 'EDIT' }
-  | { type: 'STORE_MISMATCH'; intent: 'ORDER' | 'EDIT' }
-  | { type: 'BLOCKED'; message: string }
+  // A usual belongs to the customer, not to a store. When something in it cannot be
+  // rebuilt at the CURRENTLY selected store, the customer is told exactly what and
+  // offered a different store — never forced back to the store it was saved from.
+  | { type: 'UNAVAILABLE'; items: string[]; addOns: { product: string; addOn: string }[] }
+  | { type: 'STORE_CLOSED'; message: string }
   | { type: 'DELETE' };
 
 type ConfirmationState = {
@@ -978,6 +981,21 @@ export default function CustomerOrder() {
     };
   }, [myUsualUid]);
 
+  /** Live product name where this store sells it, otherwise a readable saved code. */
+  const productLabel = (productCode: string) => {
+    const item = storeItems.find(candidate => candidate.code === productCode);
+    if (item) return item.displayName || item.name;
+    return productCode.replace(/[_-]+/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  /** Live add-on option name where this store still offers it, otherwise its code. */
+  const addOnOptionLabel = (groupId: string, optionId: string) => {
+    const option = addOnGroups
+      .find(group => (group.id || '') === groupId)?.options
+      .find(candidate => candidate.id === optionId);
+    return option?.name || optionId.replace(/[_-]+/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  };
+
   /**
    * Revalidates the saved usual against the CURRENT menu using the same restore engine
    * as checkout-draft hydration. Nothing here mutates the cart — it is a pure preview.
@@ -1000,26 +1018,51 @@ export default function CustomerOrder() {
       lines: myUsual.items,
     } as CustomerCheckoutDraft, checkoutRestoreOptions());
 
-    const removed = restored.notices.filter(n => n.code === 'ITEM_REMOVED' || n.code === 'ADD_ON_REMOVED');
+    const removedItems = restored.notices.filter(n => n.code === 'ITEM_REMOVED');
+    const removedAddOns = restored.notices.filter(n => n.code === 'ADD_ON_REMOVED');
     const priceChanged = restored.notices.some(n => n.code === 'PRICE_CHANGED');
-    const blocked = removed.length > 0 || restored.lines.length !== myUsual.items.length;
+    const blocked = removedItems.length + removedAddOns.length > 0
+      || restored.lines.length !== myUsual.items.length;
+
+    // Name the affected products in the CURRENT store's language. A product missing
+    // from this store has no live name, so its saved code is humanised rather than
+    // shown raw.
+    const unavailableItems = [...new Set(removedItems.map(n => productLabel(n.productCode)))];
+
+    // The shared restore engine reports which product lost an add-on, not which
+    // option. Diffing the saved options against the ones this store still offers
+    // names the missing add-on without forking that engine.
+    const unavailableAddOns = removedAddOns.map(notice => {
+      const savedLine = myUsual.items.find(line => line.productCode === notice.productCode);
+      const item = storeItems.find(candidate => candidate.code === notice.productCode);
+      const activeOptionIds = new Set(
+        item
+          ? activeAddOnGroupsForProduct(item.addOnGroupIds, item.addOnOptionIdsByGroup, addOnGroups)
+            .flatMap(group => group.options.map(option => option.id))
+          : [],
+      );
+      const missing = (savedLine?.addOns || [])
+        .filter(addOn => !activeOptionIds.has(addOn.optionId))
+        .map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId));
+      return {
+        product: productLabel(notice.productCode),
+        addOn: missing.join(', ') || 'a saved add-on',
+      };
+    });
 
     return {
       state: 'SAVED' as const,
       lines: restored.lines,
       totals: totalsForLines(restored.lines),
+      unavailableItems,
+      unavailableAddOns,
       blockerMessage: blocked
-        ? `Your usual needs a quick update. ${removed.map(n => n.productCode).join(', ')} changed or is unavailable.`
+        ? `Some items are not available at ${selectedStore?.name || 'this store'}.`
         : undefined,
       noticeMessage: priceChanged ? 'Price updated since your usual was saved.' : undefined,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myUsual, storeItems, loadedMenuStoreId, selectedStoreId, itemAvailability, addOnGroups, selectedStoreTaxRate, paymentProvider]);
-
-  const myUsualStoreName = useMemo(
-    () => stores.find(store => store.id === myUsual?.preferredStoreId)?.name || 'Saved store',
-    [stores, myUsual],
-  );
+  }, [myUsual, storeItems, loadedMenuStoreId, selectedStoreId, selectedStore, itemAvailability, addOnGroups, selectedStoreTaxRate, paymentProvider]);
 
   /**
    * Basket entry point. A signed-out customer is sent through the EXISTING customer
@@ -1106,14 +1149,20 @@ export default function CustomerOrder() {
     }
     setMyUsualBusy(true);
     try {
-      if (myUsual.preferredStoreId !== selectedStoreId) {
-        setMyUsualDialog({ type: 'STORE_MISMATCH', intent });
+      // The usual belongs to the customer. The store selected RIGHT NOW is
+      // authoritative; where it happened to be saved is not consulted at all.
+      if (!customerOrderingState.canAcceptOrders) {
+        setMyUsualDialog({ type: 'STORE_CLOSED', message: customerOrderingState.message });
         return;
       }
       const preview = myUsualPreview;
       if (!preview || preview.state !== 'SAVED') return;
       if (preview.blockerMessage) {
-        setMyUsualDialog({ type: 'BLOCKED', message: preview.blockerMessage });
+        setMyUsualDialog({
+          type: 'UNAVAILABLE',
+          items: preview.unavailableItems,
+          addOns: preview.unavailableAddOns,
+        });
         return;
       }
       if (cart.length > 0) {
@@ -2129,7 +2178,6 @@ export default function CustomerOrder() {
               isFood: customerMenuCategory(line.item) === 'Food',
             }))}
             totalLabel={myUsualPreview?.state === 'SAVED' ? formatMoney(myUsualPreview.totals.grandTotal) : null}
-            preferredStoreName={myUsualStoreName}
             blockerMessage={
               isOffline
                 ? 'Reconnect to check current prices and availability.'
@@ -2418,33 +2466,52 @@ export default function CustomerOrder() {
                 </button>
               </>
             )}
-            {myUsualDialog.type === 'STORE_MISMATCH' && (
+            {myUsualDialog.type === 'STORE_CLOSED' && (
               <>
-                <h2 className="cb-customer-title text-lg font-black">Your usual was saved for {myUsualStoreName}.</h2>
-                <p className="cb-customer-muted mt-1 text-sm font-bold">Switch to that store to check current prices and availability.</p>
+                <h2 className="cb-customer-title text-lg font-black">
+                  {selectedStore?.name || 'This store'} is not accepting orders right now.
+                </h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">{myUsualDialog.message}</p>
+                {/* Never reaches for the store the usual was saved from — the customer
+                    picks, using the existing store selector. */}
                 <button
                   type="button"
-                  onClick={() => {
-                    if (myUsual) handleStoreChange(myUsual.preferredStoreId);
-                    setMyUsualDialog(null);
-                    setMyUsualNotice('Switched to your saved store. Checking current prices.');
-                  }}
+                  onClick={() => { setMyUsualDialog(null); setStoreSelectorOpen(true); }}
                   className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
                 >
-                  Switch to saved store
+                  Choose another store
                 </button>
               </>
             )}
-            {myUsualDialog.type === 'BLOCKED' && (
+            {myUsualDialog.type === 'UNAVAILABLE' && (
               <>
-                <h2 className="cb-customer-title text-lg font-black">Your usual needs a quick update.</h2>
-                <p className="cb-customer-muted mt-1 text-sm font-bold">{myUsualDialog.message}</p>
+                <h2 className="cb-customer-title text-lg font-black">Your usual needs a quick update</h2>
+                <p className="cb-customer-muted mt-1 text-sm font-bold">
+                  Some items are not available at {selectedStore?.name || 'this store'}.
+                </p>
+                {/* Every affected line is named. Nothing is silently dropped and a
+                    partial usual is never ordered. */}
+                <ul className="cb-customer-usual-blocker mt-3 space-y-1 px-3 py-2 text-[12px] font-bold">
+                  {myUsualDialog.items.map(item => (
+                    <li key={item}>{item} — not available here</li>
+                  ))}
+                  {myUsualDialog.addOns.map(entry => (
+                    <li key={`${entry.product}-${entry.addOn}`}>{entry.product} — {entry.addOn} is not available here</li>
+                  ))}
+                </ul>
                 <button
                   type="button"
                   onClick={() => { setMyUsualDialog(null); setBasketOpen(true); }}
                   className="cb-customer-accent-button mt-4 min-h-11 w-full rounded-2xl text-sm font-black"
                 >
                   Edit My Usual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMyUsualDialog(null); setStoreSelectorOpen(true); }}
+                  className="mt-2 min-h-11 w-full rounded-2xl bg-[#f5ede5] text-sm font-black text-[#3b241c]"
+                >
+                  Choose another store
                 </button>
               </>
             )}
