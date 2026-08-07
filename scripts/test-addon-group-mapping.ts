@@ -348,7 +348,15 @@ const posAuthorizationSource = fs.readFileSync('functions/posAddOnAuthorization.
 const posAuthorizationClientSource = fs.readFileSync('frontend/lib/posAddOnAuthorization.ts', 'utf8');
 const onlineConversionSource = fs.readFileSync('frontend/lib/onlineOrderConversion.ts', 'utf8');
 assert.ok(posSource.includes('<AddOnSelector') && posSource.includes('canonicalAddOnSelections'));
-assert.ok(customerSource.includes('mode="CUSTOMER"') && customerSource.includes('addOns: line.addOns.map'));
+// Stage 3 replaced the customer surface's shared AddOnSelector with its own
+// CustomerProductCustomizationSheet. POS still uses the shared selector (line above).
+// The contract is unchanged: the customer screen renders a customer add-on UI, still
+// canonicalises selections, and still carries add-ons on cart lines.
+assert.ok(
+  customerSource.includes('<CustomerProductCustomizationSheet')
+  && customerSource.includes('canonicalAddOnSelections')
+  && customerSource.includes('addOns: line.addOns.map'),
+);
 assert.ok(functionsSource.includes('canonicalAddOnsForItem') && functionsSource.includes('Add-on pricing is being refreshed'));
 assert.ok(functionsSource.includes('authorizePosAddOns'));
 assert.ok(posAuthorizationSource.includes("provider: PROVIDER") && posAuthorizationSource.includes("PROVIDER = 'SERVER_CANONICAL_ADD_ONS'"));

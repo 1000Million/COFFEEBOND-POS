@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import AddOnSelector from '../../components/add-ons/AddOnSelector';
+import CustomerProductCustomizationSheet from '../../components/customer/CustomerProductCustomizationSheet';
 import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import CustomerProductImage from '../../components/customer/CustomerProductImage';
@@ -385,6 +385,25 @@ function shortDescription(item: CustomerMenuItem): string {
   if (group === 'Food' || group === 'Baked by Bond') return 'Made fresh for your order.';
   if (group === 'Desserts') return 'A sweet finish from Coffee Bond.';
   return 'Add it to your pickup basket.';
+}
+
+/**
+ * Per-line quantity ceiling. Matches MAX_QUANTITY in functions/index.js so the
+ * customization sheet can never build a line the order backend would reject.
+ */
+const CUSTOMER_MAX_LINE_QUANTITY = 20;
+
+/**
+ * Authoritative product description, or undefined. Nothing is generated: if the
+ * catalogue has no description the sheet simply omits it.
+ */
+function cleanProductDescription(item: CustomerMenuItem): string | undefined {
+  const record = item as CustomerMenuItem & Record<string, unknown>;
+  for (const key of ['description', 'shortDescription', 'publicDescription']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
 }
 
 function getItemImage(item: CustomerMenuItem): string | null {
@@ -1410,7 +1429,14 @@ export default function CustomerOrder() {
     item: CustomerMenuItem,
     requestedAddOns: AddOnSelection[],
     editingLineId?: string,
+    // Stage 3 added a quantity control to the customization sheet. Defaults to 1 so
+    // every pre-existing caller — including the direct-add path — is unchanged.
+    requestedQuantity = 1,
   ) => {
+    const addQuantity = Math.min(
+      CUSTOMER_MAX_LINE_QUANTITY,
+      Math.max(1, Math.floor(toNumber(requestedQuantity)) || 1),
+    );
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     if (!availability.available) {
       setError(`${item.displayName || item.name} is currently unavailable: ${availability.reason}.`);
@@ -1432,20 +1458,25 @@ export default function CustomerOrder() {
     }
 
     setCart(prev => {
+      // Editing updates the SAME logical line in place — never a second line.
       if (editingLineId) {
-        return prev.map(line => line.id === editingLineId ? { ...line, addOns: canonicalAddOns } : line);
+        return prev.map(line => line.id === editingLineId
+          ? { ...line, addOns: canonicalAddOns, quantity: addQuantity }
+          : line);
       }
       const selectionKey = addOnSelectionKey(canonicalAddOns);
       const existing = prev.find(line => (
         line.item.code === item.code && addOnSelectionKey(line.addOns) === selectionKey
       ));
       if (existing) {
-        return prev.map(line => line.id === existing.id ? { ...line, quantity: line.quantity + 1 } : line);
+        return prev.map(line => line.id === existing.id
+          ? { ...line, quantity: Math.min(CUSTOMER_MAX_LINE_QUANTITY, line.quantity + addQuantity) }
+          : line);
       }
       return [...prev, {
         id: createClientIdempotencyKey(),
         item,
-        quantity: 1,
+        quantity: addQuantity,
         addOns: canonicalAddOns,
       }];
     });
@@ -2587,12 +2618,18 @@ export default function CustomerOrder() {
         </div>
       )}
 
+      {/* Stage 3 customer customization. The staff POS keeps using the shared
+          components/add-ons/AddOnSelector; only this customer surface was redesigned.
+          Every rule and price below still comes from the same authoritative helpers. */}
       {pendingAddOnItem && (
-        <AddOnSelector
-          mode="CUSTOMER"
+        <CustomerProductCustomizationSheet
           productName={pendingAddOnItem.displayName || pendingAddOnItem.name}
+          description={cleanProductDescription(pendingAddOnItem)}
+          categoryLabel={customerMenuCategory(pendingAddOnItem)}
           dietaryClassification={trustedDietaryClassification(pendingAddOnItem as unknown as Record<string, unknown>)}
           basePrice={toNumber(pendingAddOnItem.salePrice)}
+          imageUrl={getItemImage(pendingAddOnItem)}
+          fallbackIcon={visualMeta(pendingAddOnItem).icon}
           taxRate={itemTaxRate(pendingAddOnItem, selectedStoreTaxRate)}
           groups={activeAddOnGroupsForProduct(
             pendingAddOnItem.addOnGroupIds,
@@ -2600,12 +2637,16 @@ export default function CustomerOrder() {
             addOnGroups,
           )}
           initialSelections={editingAddOnLine?.addOns}
+          initialQuantity={editingAddOnLine?.quantity || 1}
+          isEditing={Boolean(editingAddOnLine)}
+          maxQuantity={CUSTOMER_MAX_LINE_QUANTITY}
+          formatMoney={formatMoney}
           onCancel={() => {
             setPendingAddOnItem(null);
             setEditingAddOnLine(null);
           }}
-          onConfirm={selections => {
-            commitCartItem(pendingAddOnItem, selections, editingAddOnLine?.id);
+          onConfirm={(selections, quantity) => {
+            commitCartItem(pendingAddOnItem, selections, editingAddOnLine?.id, quantity);
             setPendingAddOnItem(null);
             setEditingAddOnLine(null);
           }}

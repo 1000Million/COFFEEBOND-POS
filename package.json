@@ -67,6 +67,7 @@
     "deploy:preview:customer": "npm run build:customer && firebase hosting:channel:deploy customer-origin-pwa --only customer --project coffee-bond-pos --expires 7d",
     "test:customer-separate-origin": "node scripts/test-customer-separate-origin.mjs",
     "test:customer-home-ui": "node scripts/test-customer-home-ui.mjs",
+    "test:customer-customization-ui": "node scripts/test-customer-customization-ui.mjs",
     "test:customer-my-usual": "node scripts/test-customer-my-usual.mjs",
     "test:customer-my-usual-emulator": "node scripts/test-customer-my-usual-emulator-e2e.mjs"
   },
