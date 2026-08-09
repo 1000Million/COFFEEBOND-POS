@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import {
+  buildPosMenuPlacementPatch,
   classifyPosMenuItem,
   finishedGoodTaxonomyFields,
   POS_MENU_CATEGORIES,
+  posMenuCategorySelection,
   quickPicksInRankOrder,
   searchPosMenuItems,
+  shouldShowNeedsClassificationBadge,
   uniqueSortedPosMenuItems,
 } from '../frontend/lib/posMenuNavigation';
 import type { MenuItem } from '../frontend/types';
@@ -135,6 +138,97 @@ assert.equal(
   goldenILegacyFixtures.length,
   'runtime mapping must neither drop nor duplicate products',
 );
+
+const directPlacement = buildPosMenuPlacementPatch({
+  posCategoryCode: 'SMOOTHIES',
+  posSubcategoryCode: null,
+  sortOrder: '',
+});
+assert.equal(directPlacement.ok, true, 'a direct category must be editable without a subcategory');
+if (directPlacement.ok) {
+  assert.equal(directPlacement.patch.posSubcategoryCode, null);
+  assert.equal(directPlacement.patch.posSubcategoryName, null);
+  assert.equal(directPlacement.patch.subcategorySortOrder, null);
+  assert.equal(directPlacement.patch.sortOrder, null);
+}
+
+const nestedPlacement = buildPosMenuPlacementPatch({
+  posCategoryCode: 'ESPRESSO_BAR',
+  posSubcategoryCode: 'MILK_BASED',
+  sortOrder: 25,
+});
+assert.equal(nestedPlacement.ok, true, 'an approved parent/subcategory pair must be editable');
+if (nestedPlacement.ok) {
+  assert.deepEqual(nestedPlacement.patch, {
+    posCategoryCode: 'ESPRESSO_BAR',
+    posCategoryName: 'Espresso Bar',
+    categorySortOrder: 10,
+    posSubcategoryCode: 'MILK_BASED',
+    posSubcategoryName: 'Milk Based',
+    subcategorySortOrder: 20,
+    sortOrder: 25,
+  });
+}
+
+const invalidPlacement = buildPosMenuPlacementPatch({
+  posCategoryCode: 'ONLY_AT_BOND',
+  posSubcategoryCode: 'MILK_BASED',
+  sortOrder: 10,
+});
+assert.equal(invalidPlacement.ok, false, 'invalid parent/subcategory pairs must be rejected');
+if (!invalidPlacement.ok) assert.match(invalidPlacement.error, /not valid/);
+
+const changedCategory = posMenuCategorySelection('FRESH_JUICES');
+assert.equal(changedCategory?.posCategoryCode, 'FRESH_JUICES');
+assert.equal(changedCategory?.posSubcategoryCode, null, 'changing category must clear an old subcategory');
+assert.equal(changedCategory?.subcategorySortOrder, null);
+
+const invalidSortOrder = buildPosMenuPlacementPatch({
+  posCategoryCode: 'RETAIL',
+  posSubcategoryCode: null,
+  sortOrder: Number.NaN,
+});
+assert.equal(invalidSortOrder.ok, false, 'non-finite sort order must be rejected');
+if (!invalidSortOrder.ok) assert.match(invalidSortOrder.error, /finite number/);
+
+assert.equal(
+  shouldShowNeedsClassificationBadge(item('MIS_ITEM', 'Misc Item', 'MIS')),
+  true,
+  'unresolved metadata must show the Needs Classification badge',
+);
+assert.equal(
+  shouldShowNeedsClassificationBadge(item('SMOOTHIE_ITEM', 'Smoothie', 'SMOOTHIES')),
+  false,
+  'approved metadata must not show the Needs Classification badge',
+);
+
+if (nestedPlacement.ok) {
+  const originalOperationalFields = {
+    salePrice: 225,
+    taxRate: 5,
+    prepStation: 'BARISTA',
+    bom: [{ componentCode: 'COFFEE', quantity: 18 }],
+    itemType: 'MADE_TO_ORDER',
+  };
+  const updated = { ...originalOperationalFields, ...nestedPlacement.patch };
+  assert.equal(updated.salePrice, originalOperationalFields.salePrice);
+  assert.equal(updated.taxRate, originalOperationalFields.taxRate);
+  assert.equal(updated.prepStation, originalOperationalFields.prepStation);
+  assert.deepEqual(updated.bom, originalOperationalFields.bom);
+  assert.deepEqual(
+    Object.keys(nestedPlacement.patch).sort(),
+    [
+      'categorySortOrder',
+      'posCategoryCode',
+      'posCategoryName',
+      'posSubcategoryCode',
+      'posSubcategoryName',
+      'sortOrder',
+      'subcategorySortOrder',
+    ],
+    'taxonomy save payload must contain only the approved placement fields',
+  );
+}
 
 const compactTaxonomyCases = [
   ['ESP_MILK', 'ESP', 'MILK', 'ESPRESSO_BAR', 'MILK_BASED'],

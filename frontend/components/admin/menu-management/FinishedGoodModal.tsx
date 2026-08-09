@@ -20,6 +20,7 @@ import {
   collection,
   doc,
   setDoc,
+  updateDoc,
   getDocs,
   serverTimestamp,
   query,
@@ -37,6 +38,12 @@ import {
   prepareProductImageForUpload,
   validateProductImageFile,
 } from "../../../lib/productImages";
+import {
+  buildPosMenuPlacementPatch,
+  classifyPosMenuItem,
+  POS_MENU_CATEGORIES,
+  posMenuCategorySelection,
+} from "../../../lib/posMenuNavigation";
 
 interface Props {
   isOpen: boolean;
@@ -70,9 +77,38 @@ const DEFAULT_ITEM: Partial<FinishedGood> = {
   isActive: true,
 };
 
+type PlacementDraft = {
+  posCategoryCode: string;
+  posSubcategoryCode: string;
+  sortOrder: number | null;
+};
+
+function placementDraftFromItem(source: Partial<FinishedGood>): PlacementDraft {
+  const classification = classifyPosMenuItem(source);
+  const exactCategory = POS_MENU_CATEGORIES.find(
+    (category) => category.code === source.posCategoryCode,
+  );
+
+  return {
+    posCategoryCode: classification.isClassified
+      ? classification.category.code
+      : exactCategory?.code || "",
+    posSubcategoryCode: classification.isClassified
+      ? classification.subcategory?.code || ""
+      : "",
+    sortOrder: source.sortOrder ?? null,
+  };
+}
+
 export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
   const { staffProfile } = useAuth();
   const [formData, setFormData] = useState<Partial<FinishedGood>>(DEFAULT_ITEM);
+  const [placementDraft, setPlacementDraft] = useState<PlacementDraft>(
+    placementDraftFromItem(DEFAULT_ITEM),
+  );
+  const [placementSaving, setPlacementSaving] = useState(false);
+  const [placementError, setPlacementError] = useState("");
+  const [placementMessage, setPlacementMessage] = useState("");
   const [bom, setBom] = useState<BOMComponent[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -129,15 +165,20 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
   useEffect(() => {
     if (item) {
       setFormData(item);
+      setPlacementDraft(placementDraftFromItem(item));
       setBom(item.bom || []);
     } else {
       setFormData(DEFAULT_ITEM);
+      setPlacementDraft(placementDraftFromItem(DEFAULT_ITEM));
       setBom([]);
     }
     setError("");
     setImageUploading(false);
     setImageProgress(0);
     setImageUploadMessage("");
+    setPlacementSaving(false);
+    setPlacementError("");
+    setPlacementMessage("");
   }, [item, isOpen]);
 
   const buildFinalCode = (source: Partial<FinishedGood>) => {
@@ -316,6 +357,65 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
     formData.productionMode,
   ]);
 
+  const selectedPlacementCategory = useMemo(
+    () => POS_MENU_CATEGORIES.find(
+      (category) => category.code === placementDraft.posCategoryCode,
+    ) || null,
+    [placementDraft.posCategoryCode],
+  );
+  const currentPlacementClassification = useMemo(
+    () => item ? classifyPosMenuItem(item) : null,
+    [item],
+  );
+
+  const handlePlacementCategoryChange = (categoryCode: string) => {
+    const selection = posMenuCategorySelection(categoryCode);
+    setPlacementError("");
+    setPlacementMessage("");
+    setPlacementDraft((previous) => ({
+      posCategoryCode: selection?.posCategoryCode || "",
+      posSubcategoryCode: "",
+      sortOrder: previous.sortOrder,
+    }));
+  };
+
+  const handlePlacementSave = async () => {
+    setPlacementError("");
+    setPlacementMessage("");
+
+    if (!item) {
+      setPlacementError("Create the Finished Good before saving its POS placement separately.");
+      return;
+    }
+    if (!staffProfile || staffProfile.role !== "ADMIN" || staffProfile.isActive === false) {
+      setPlacementError("Only an active Admin can update POS menu placement.");
+      return;
+    }
+
+    const result = buildPosMenuPlacementPatch(placementDraft);
+    if (result.ok === false) {
+      setPlacementError(result.error);
+      return;
+    }
+
+    setPlacementSaving(true);
+    try {
+      await updateDoc(doc(db, "finishedGoods", item.id || item.code), result.patch);
+      setFormData((previous) => ({ ...previous, ...result.patch }));
+      setPlacementDraft({
+        posCategoryCode: result.patch.posCategoryCode,
+        posSubcategoryCode: result.patch.posSubcategoryCode || "",
+        sortOrder: result.patch.sortOrder,
+      });
+      setPlacementMessage("POS menu placement saved.");
+    } catch (saveError) {
+      console.error("POS menu placement update failed", saveError);
+      setPlacementError("POS menu placement could not be saved. Please try again.");
+    } finally {
+      setPlacementSaving(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleChange = (
@@ -428,8 +528,11 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
       return;
     }
 
-    if (!formData.posCategoryName) {
-      setError("POS Category Name is required.");
+    const newItemPlacement = !item
+      ? buildPosMenuPlacementPatch(placementDraft)
+      : null;
+    if (newItemPlacement && newItemPlacement.ok === false) {
+      setError(newItemPlacement.error);
       return;
     }
 
@@ -501,10 +604,6 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
         imageUpdatedBy: formData.imageUpdatedBy || null,
         previousImageUrl: formData.previousImageUrl || null,
         previousImageStoragePath: formData.previousImageStoragePath || null,
-        posCategoryCode:
-          formData.posCategoryCode ||
-          formData.posCategoryName.toUpperCase().replace(/\s+/g, "_"),
-        posCategoryName: formData.posCategoryName,
         salePrice: salePrice,
         productionMode: formData.productionMode || "MADE_TO_ORDER",
         itemType: formData.itemType || "MADE_TO_ORDER",
@@ -515,7 +614,6 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
         recipeCost,
         grossMargin,
         cogsPercent,
-        sortOrder: formData.sortOrder || 0,
         availableStoreIds: formData.availableStoreIds || [],
         isSellable: formData.isSellable ?? true,
         isAvailable: formData.isAvailable ?? true,
@@ -524,6 +622,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
       };
 
       if (!item) {
+        Object.assign(payload, newItemPlacement?.ok ? newItemPlacement.patch : {});
         payload.createdAt = serverTimestamp();
       }
 
@@ -616,20 +715,6 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
                     placeholder="e.g. Hot Latte"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-neutral-700 mb-2">
-                    POS Category Name <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    name="posCategoryName"
-                    value={formData.posCategoryName}
-                    onChange={handleChange}
-                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
-                    required
-                    placeholder="e.g. Hot Coffee"
-                  />
-                </div>
                 <div className="md:col-span-2">
                   <label className="block text-sm font-bold text-neutral-700 mb-2">
                     Description
@@ -642,6 +727,130 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
                     placeholder="Optional description..."
                   />
                 </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 sm:p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-black text-neutral-800">
+                    POS Menu Placement
+                  </h3>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    This action updates only category, subcategory, and POS sort metadata.
+                  </p>
+                </div>
+                {currentPlacementClassification && !currentPlacementClassification.isClassified && !placementMessage && (
+                  <span className="inline-flex rounded-md bg-amber-100 px-2.5 py-1 text-xs font-black uppercase text-amber-800">
+                    Needs Classification
+                  </span>
+                )}
+              </div>
+
+              {currentPlacementClassification && !currentPlacementClassification.isClassified && !placementMessage && (
+                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-bold">Current placement is not in the approved taxonomy.</p>
+                  <p className="mt-1 text-xs">
+                    {currentPlacementClassification.reason}. Current values: {item?.posCategoryCode || "not set"}
+                    {item?.posSubcategoryCode ? ` / ${item.posSubcategoryCode}` : ""}.
+                  </p>
+                </div>
+              )}
+
+              {placementError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                  {placementError}
+                </div>
+              )}
+              {placementMessage && (
+                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
+                  {placementMessage}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-neutral-700">
+                    POS Category <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={placementDraft.posCategoryCode}
+                    onChange={(event) => handlePlacementCategoryChange(event.target.value)}
+                    className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                  >
+                    <option value="">Choose category</option>
+                    {POS_MENU_CATEGORIES.map((category) => (
+                      <option key={category.code} value={category.code}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedPlacementCategory && selectedPlacementCategory.subcategories.length > 0 && (
+                  <div>
+                    <label className="mb-2 block text-sm font-bold text-neutral-700">
+                      POS Subcategory <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={placementDraft.posSubcategoryCode}
+                      onChange={(event) => {
+                        setPlacementError("");
+                        setPlacementMessage("");
+                        setPlacementDraft((previous) => ({
+                          ...previous,
+                          posSubcategoryCode: event.target.value,
+                        }));
+                      }}
+                      className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                    >
+                      <option value="">Choose subcategory</option>
+                      {selectedPlacementCategory.subcategories.map((subcategory) => (
+                        <option key={subcategory.code} value={subcategory.code}>
+                          {subcategory.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-neutral-700">
+                    POS Sort Order <span className="font-normal text-neutral-400">(Optional)</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={placementDraft.sortOrder ?? ""}
+                    onChange={(event) => {
+                      setPlacementError("");
+                      setPlacementMessage("");
+                      setPlacementDraft((previous) => ({
+                        ...previous,
+                        sortOrder: event.target.value === "" ? null : Number(event.target.value),
+                      }));
+                    }}
+                    className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                    placeholder="Default"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                {item ? (
+                  <button
+                    type="button"
+                    onClick={() => void handlePlacementSave()}
+                    disabled={placementSaving}
+                    className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#5c4033] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#3e2723] disabled:opacity-50"
+                  >
+                    {placementSaving ? <Loader2 size={17} className="animate-spin" /> : <Save size={17} />}
+                    Save POS Placement
+                  </button>
+                ) : (
+                  <p className="text-xs font-semibold text-neutral-500">
+                    Placement will be saved when the Finished Good is created.
+                  </p>
+                )}
               </div>
             </section>
 
@@ -805,18 +1014,6 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
                     onChange={handleChange}
                     min="0"
                     step="0.01"
-                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-neutral-700 mb-2">
-                    Sort Order
-                  </label>
-                  <input
-                    type="number"
-                    name="sortOrder"
-                    value={formData.sortOrder}
-                    onChange={handleChange}
                     className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
                   />
                 </div>

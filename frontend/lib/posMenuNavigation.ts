@@ -20,6 +20,26 @@ export type PosMenuClassification = {
   reason: string | null;
 };
 
+export type PosMenuPlacementInput = {
+  posCategoryCode?: unknown;
+  posSubcategoryCode?: unknown;
+  sortOrder?: unknown;
+};
+
+export type PosMenuPlacementPatch = {
+  posCategoryCode: string;
+  posCategoryName: string;
+  categorySortOrder: number;
+  posSubcategoryCode: string | null;
+  posSubcategoryName: string | null;
+  subcategorySortOrder: number | null;
+  sortOrder: number | null;
+};
+
+export type PosMenuPlacementResult =
+  | { ok: true; patch: PosMenuPlacementPatch }
+  | { ok: false; error: string };
+
 export const NEEDS_CLASSIFICATION_CATEGORY: PosMenuCategoryDefinition = {
   code: 'NEEDS_CLASSIFICATION',
   name: 'Needs Classification',
@@ -176,6 +196,81 @@ function firstTaxonomyValue(...values: unknown[]): string {
 
 function normalizedCode(value: unknown): string {
   return taxonomyReferenceValue(value).toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function optionalFiniteNumber(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function posMenuCategorySelection(
+  categoryCode: string,
+): Omit<PosMenuPlacementPatch, 'sortOrder'> | null {
+  const category = categoryByCode.get(normalizedCode(categoryCode));
+  if (!category) return null;
+
+  return {
+    posCategoryCode: category.code,
+    posCategoryName: category.name,
+    categorySortOrder: category.sortOrder,
+    posSubcategoryCode: null,
+    posSubcategoryName: null,
+    subcategorySortOrder: null,
+  };
+}
+
+export function buildPosMenuPlacementPatch(input: PosMenuPlacementInput): PosMenuPlacementResult {
+  const categoryCode = normalizedCode(input.posCategoryCode);
+  const category = categoryByCode.get(categoryCode);
+  if (!category) {
+    return { ok: false, error: 'Choose an approved POS category.' };
+  }
+
+  const subcategoryCode = normalizedCode(input.posSubcategoryCode);
+  let subcategory: PosMenuSubcategoryDefinition | null = null;
+
+  if (category.subcategories.length === 0) {
+    if (subcategoryCode) {
+      return {
+        ok: false,
+        error: `${subcategoryCode} is not valid under ${category.name}.`,
+      };
+    }
+  } else {
+    if (!subcategoryCode) {
+      return { ok: false, error: `Choose a POS subcategory for ${category.name}.` };
+    }
+    subcategory = category.subcategories.find((entry) => entry.code === subcategoryCode) || null;
+    if (!subcategory) {
+      return {
+        ok: false,
+        error: `${subcategoryCode} is not valid under ${category.name}.`,
+      };
+    }
+  }
+
+  const sortOrder = optionalFiniteNumber(input.sortOrder);
+  if (sortOrder === undefined) {
+    return { ok: false, error: 'POS sort order must be empty or a finite number.' };
+  }
+
+  return {
+    ok: true,
+    patch: {
+      posCategoryCode: category.code,
+      posCategoryName: category.name,
+      categorySortOrder: category.sortOrder,
+      posSubcategoryCode: subcategory?.code || null,
+      posSubcategoryName: subcategory?.name || null,
+      subcategorySortOrder: subcategory?.sortOrder ?? null,
+      sortOrder,
+    },
+  };
+}
+
+export function shouldShowNeedsClassificationBadge(item: Partial<MenuItem>): boolean {
+  return !classifyPosMenuItem(item).isClassified;
 }
 
 export function finishedGoodTaxonomyFields(data: Record<string, unknown>): Pick<
