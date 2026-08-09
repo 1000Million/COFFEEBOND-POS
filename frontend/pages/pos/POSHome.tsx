@@ -45,9 +45,18 @@ import {
   sendComplimentaryPhoneOtp,
   verifyComplimentaryPhoneOtp,
 } from '../../lib/complimentaryPhoneVerification';
-import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, X, Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, AlertTriangle, X, Copy, ExternalLink, RefreshCw, Zap, LayoutGrid } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import {
+  classifyPosMenuItem,
+  finishedGoodTaxonomyFields,
+  NEEDS_CLASSIFICATION_CATEGORY,
+  POS_MENU_CATEGORIES,
+  quickPicksInRankOrder,
+  searchPosMenuItems,
+  uniqueSortedPosMenuItems,
+} from '../../lib/posMenuNavigation';
 
 type CheckoutError = {
   message: string;
@@ -191,13 +200,6 @@ const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'RAZORPAY', 'SW
 const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS.filter(method => !['COMPLIMENTARY', 'RAZORPAY'].includes(method));
 const COMPLIMENTARY_OTP_RESEND_SECONDS = 30;
 const COMPLIMENTARY_RECAPTCHA_CONTAINER_ID = complimentaryRecaptchaContainerId();
-const POS_PRODUCT_FILTERS = [
-  { id: 'ALL', label: 'All' },
-  { id: 'FOOD', label: 'Food' },
-  { id: 'DRINKS', label: 'Drinks' },
-  { id: 'COFFEE', label: 'Coffee' },
-  { id: 'RETAIL', label: 'Retail' },
-] as const;
 const ORDER_TYPE_LABELS: Record<OrderType, string> = {
   DINE_IN: 'Dine In',
   TAKEAWAY: 'Takeaway',
@@ -435,152 +437,39 @@ function splitPaymentStatus(payments: ReceiptPaymentSnapshot[], totalDue: number
   return creditAmount >= totalDue - PAYMENT_TOLERANCE ? 'UNPAID' : 'PARTIAL';
 }
 
-function normalizePosCategoryGroupName(item: Partial<MenuItem> & Record<string, unknown>): string {
-  const raw = [
-    item.categoryName,
-    item.categoryId,
-    item.code,
-    item.name,
-    item.description,
-    item.subcategoryName,
-    item.subcategoryCode,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-  if (raw.includes('add on') || raw.includes('add-ons') || raw.includes('extra') || raw.includes('retail') || raw.includes('merch')) return 'Add Ons';
-  if (raw.includes('dessert') || raw.includes('baked') || raw.includes('ice cream') || raw.includes('brownie') || raw.includes('cookie')) return 'Desserts';
-  if (raw.includes('matcha') || raw.includes('tea') || raw.includes('manual brew') || raw.includes('herbal')) return 'Matcha & Tea';
-  if (raw.includes('cold brew') || raw.includes('iced') || raw.includes('frappe') || raw.includes('shake') || raw.includes('cold coffee')) return 'Cold Coffee';
-  if (raw.includes('coffee') || raw.includes('latte') || raw.includes('espresso') || raw.includes('cappuccino') || raw.includes('americano') || raw.includes('mocha') || raw.includes('brew') || raw.includes('black')) return 'Coffee';
-  return 'Food';
-}
-
-function normalizePosSubcategoryFilter(item: Partial<MenuItem> & Record<string, unknown>): string {
-  const raw = [
-    item.categoryName,
-    item.categoryId,
-    item.code,
-    item.name,
-    item.description,
-    item.subcategoryName,
-    item.subcategoryCode,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-  if (
-    raw.includes('retail')
-    || raw.includes('merch')
-    || raw.includes('merchandise')
-    || raw.includes('beans')
-    || raw.includes('packaged')
-    || raw.includes('ground coffee')
-  ) {
-    return 'RETAIL';
-  }
-
-  if (
-    raw.includes('dessert')
-    || raw.includes('baked')
-    || raw.includes('brownie')
-    || raw.includes('cookie')
-    || raw.includes('cake')
-    || raw.includes('sandwich')
-    || raw.includes('salad')
-    || raw.includes('pizza')
-    || raw.includes('bowl')
-    || raw.includes('bread')
-    || raw.includes('bakery')
-    || raw.includes('waffle')
-    || raw.includes('croissant')
-    || raw.includes('food')
-  ) {
-    return 'FOOD';
-  }
-
-  if (
-    raw.includes('smoothie')
-    || raw.includes('shake')
-    || raw.includes('juice')
-    || raw.includes('cooler')
-    || raw.includes('lemonade')
-    || raw.includes('fizz')
-    || raw.includes('soda')
-    || raw.includes('protein')
-    || raw.includes('chocolate')
-    || raw.includes('tea')
-    || raw.includes('non-coffee')
-  ) {
-    return 'DRINKS';
-  }
-
-  if (
-    raw.includes('coffee')
-    || raw.includes('latte')
-    || raw.includes('espresso')
-    || raw.includes('cappuccino')
-    || raw.includes('americano')
-    || raw.includes('mocha')
-    || raw.includes('macchiato')
-    || raw.includes('affogato')
-    || raw.includes('brew')
-    || raw.includes('matcha')
-    || raw.includes('flat white')
-    || raw.includes('ristretto')
-  ) {
-    return 'COFFEE';
-  }
-
-  return 'FOOD';
-}
-
-function posTabLabel(category: string): string {
-  if (category === 'ALL') return 'All';
-  if (category === 'FAVOURITES') return 'Favourites';
-  if (category === 'Cold Coffee') return 'Cold';
-  if (category === 'Matcha & Tea') return 'Matcha';
-  return category;
-}
-
-function menuTileTone(category: string): { badge: string; panel: string; icon: string } {
-  switch (category) {
-    case 'Coffee':
+function menuTileTone(categoryCode: string): { badge: string; icon: string } {
+  switch (categoryCode) {
+    case 'ESPRESSO_BAR':
       return {
         badge: 'bg-[#3e2723] text-white',
-        panel: 'bg-[#f4e6d8]',
         icon: 'text-[#5c4033]',
       };
-    case 'Cold Coffee':
+    case 'ICED_COFFEES':
+    case 'COLD_BREW_VIETNAMESE_STYLE':
+    case 'COLD_CRAFTED':
       return {
         badge: 'bg-[#e6f1f6] text-[#24526a]',
-        panel: 'bg-[#eef7fb]',
         icon: 'text-[#24526a]',
       };
-    case 'Matcha & Tea':
+    case 'MATCHA_MANUAL_BREWS':
+    case 'SMOOTHIES':
+    case 'FRESH_JUICES':
+    case 'HERBAL_TEA':
       return {
         badge: 'bg-[#edf6ec] text-[#3f6a4a]',
-        panel: 'bg-[#f5fbf3]',
         icon: 'text-[#3f6a4a]',
       };
-    case 'Desserts':
+    case 'ONLY_AT_BOND':
+    case 'JAFFLE_BITES_SALADS':
+    case 'PIZZA_PIDE':
+    case 'BAKED_BAKERY_ICE_CREAM':
       return {
         badge: 'bg-[#f8ece8] text-[#8a4f3b]',
-        panel: 'bg-[#fff7f3]',
         icon: 'text-[#8a4f3b]',
-      };
-    case 'Add Ons':
-      return {
-        badge: 'bg-[#f3efe9] text-[#6d584a]',
-        panel: 'bg-[#faf7f2]',
-        icon: 'text-[#6d584a]',
       };
     default:
       return {
         badge: 'bg-[#f3efe9] text-[#6d584a]',
-        panel: 'bg-[#fbf7f1]',
         icon: 'text-[#6d584a]',
       };
   }
@@ -917,6 +806,7 @@ export default function POSHome() {
 
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
+  const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const recallMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1101,14 +991,13 @@ export default function POSHome() {
            id: data.code,
            name: data.displayName || data.name,
            code: data.code,
-           categoryId: data.posCategoryCode || 'MISC',
-           categoryCode: data.posCategoryCode || 'MISC',
-           categoryName: data.posCategoryName || 'Misc',
-           categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : 999,
-           subcategoryCode: data.posSubcategoryCode || 'MISC',
-           subcategoryName: data.posSubcategoryName || '',
-           subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : 999,
-           sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 999,
+           ...finishedGoodTaxonomyFields(data),
+           categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : null,
+           subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : null,
+           sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : null,
+           aliases: Array.isArray(data.aliases) ? data.aliases : [],
+           searchAliases: Array.isArray(data.searchAliases) ? data.searchAliases : [],
+           sku: data.sku || '',
            description: data.description || '',
            price: data.salePrice || 0,
            taxRate: pickItemTaxRate(data),
@@ -1259,15 +1148,29 @@ export default function POSHome() {
   }, [stores, selectedStoreId, appGstConfig]);
 
   const availableMenuItems = useMemo(() => {
-    return menuItems
-      .filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId))
-      .sort((a: any, b: any) => {
-        const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : 999;
-        const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : 999;
-        if (orderA !== orderB) return orderA - orderB;
-        return (a.name || '').localeCompare(b.name || '');
-      });
+    return uniqueSortedPosMenuItems(
+      menuItems.filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId)),
+    );
   }, [menuItems, selectedStoreId]);
+
+  const classificationByItemId = useMemo(() => new Map(
+    availableMenuItems.map(item => [item.id, classifyPosMenuItem(item as MenuItem & Record<string, unknown>)]),
+  ), [availableMenuItems]);
+
+  const categoryItemCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    availableMenuItems.forEach(item => {
+      const categoryCode = classificationByItemId.get(item.id)?.category.code || NEEDS_CLASSIFICATION_CATEGORY.code;
+      counts.set(categoryCode, (counts.get(categoryCode) || 0) + 1);
+    });
+    return counts;
+  }, [availableMenuItems, classificationByItemId]);
+
+  const unclassifiedItemCount = categoryItemCounts.get(NEEDS_CLASSIFICATION_CATEGORY.code) || 0;
+  const navigationCategories = useMemo(() => [
+    ...POS_MENU_CATEGORIES,
+    ...(unclassifiedItemCount > 0 ? [NEEDS_CLASSIFICATION_CATEGORY] : []),
+  ], [unclassifiedItemCount]);
 
   const fastItems = useMemo(() => {
     return [...availableMenuItems]
@@ -1289,15 +1192,12 @@ export default function POSHome() {
   }, [availableMenuItems]);
 
   const topFeaturedItems = useMemo(() => {
-    const rankedItems = topSellerItemIds
-      .map(itemId => availableMenuItems.find(item => item.id === itemId))
-      .filter(Boolean) as MenuItem[];
-
-    if (isUsingTopSellerData && rankedItems.length > 0) {
-      return rankedItems.slice(0, 4);
-    }
-
-    return fastItems.slice(0, 4);
+    return quickPicksInRankOrder(
+      availableMenuItems,
+      isUsingTopSellerData ? topSellerItemIds : [],
+      fastItems,
+      4,
+    );
   }, [availableMenuItems, fastItems, isUsingTopSellerData, topSellerItemIds]);
 
   useEffect(() => {
@@ -1383,35 +1283,74 @@ export default function POSHome() {
     };
   }, [availableMenuItems, selectedStoreId]);
 
+  const selectedCategory = navigationCategories.find(category => category.code === selectedCategoryId) || null;
+
   useEffect(() => {
-    const isValid = POS_PRODUCT_FILTERS.some(filter => filter.id === selectedCategoryId);
-    if (!isValid) {
-      setSelectedCategoryId('ALL');
+    const isValid = selectedCategoryId === 'ALL'
+      || selectedCategoryId === 'QUICK_PICKS'
+      || navigationCategories.some(category => category.code === selectedCategoryId);
+    if (!isValid) setSelectedCategoryId('ALL');
+  }, [navigationCategories, selectedCategoryId]);
+
+  useEffect(() => {
+    if (!selectedCategory || selectedCategory.subcategories.length === 0) {
+      setSelectedSubcategoryId('ALL');
+      return;
     }
-  }, [selectedCategoryId]);
+    const isValid = selectedSubcategoryId === 'ALL'
+      || selectedCategory.subcategories.some(subcategory => subcategory.code === selectedSubcategoryId);
+    if (!isValid) setSelectedSubcategoryId('ALL');
+  }, [selectedCategory, selectedSubcategoryId]);
 
   const filteredMenuItems = useMemo(() => {
-    const scopedItems = availableMenuItems.filter(item => {
-      if (selectedCategoryId === 'ALL') return true;
-      return normalizePosSubcategoryFilter(item as any) === selectedCategoryId;
-    });
+    if (searchQuery.trim()) return searchPosMenuItems(availableMenuItems, searchQuery);
+    if (selectedCategoryId === 'QUICK_PICKS') return topFeaturedItems;
+    if (selectedCategoryId === 'ALL') return availableMenuItems;
 
-    return scopedItems.filter(item => {
-      if (!searchQuery.trim()) return true;
-      const queryLower = searchQuery.toLowerCase();
-      const haystack = [
-        item.name,
-        item.code,
-        (item as any).finishedGoodCode,
-        item.categoryName,
-        item.description,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(queryLower);
+    return availableMenuItems.filter(item => {
+      const classification = classificationByItemId.get(item.id);
+      if (classification?.category.code !== selectedCategoryId) return false;
+      return selectedSubcategoryId === 'ALL'
+        || classification.subcategory?.code === selectedSubcategoryId;
     });
-  }, [availableMenuItems, searchQuery, selectedCategoryId]);
+  }, [
+    availableMenuItems,
+    classificationByItemId,
+    searchQuery,
+    selectedCategoryId,
+    selectedSubcategoryId,
+    topFeaturedItems,
+  ]);
+
+  const menuSections = useMemo(() => {
+    if (
+      searchQuery.trim()
+      || selectedCategoryId === 'ALL'
+      || selectedCategoryId === 'QUICK_PICKS'
+      || !selectedCategory
+      || selectedCategory.subcategories.length === 0
+      || selectedSubcategoryId !== 'ALL'
+    ) {
+      return [{ id: 'ALL', label: null, items: filteredMenuItems }];
+    }
+
+    return selectedCategory.subcategories
+      .map(subcategory => ({
+        id: subcategory.code,
+        label: subcategory.name,
+        items: filteredMenuItems.filter(item => (
+          classificationByItemId.get(item.id)?.subcategory?.code === subcategory.code
+        )),
+      }))
+      .filter(section => section.items.length > 0);
+  }, [
+    classificationByItemId,
+    filteredMenuItems,
+    searchQuery,
+    selectedCategory,
+    selectedCategoryId,
+    selectedSubcategoryId,
+  ]);
 
   const rememberRecentItem = (itemId: string) => {
     if (!selectedStoreId || !itemId) return;
@@ -1734,15 +1673,34 @@ export default function POSHome() {
   const splitBalanceAmount = displayedCartTotals.grandTotal - splitAllocatedAmount;
   const splitPaymentBalanced = paymentRowsAreBalanced(displayedCartTotals.grandTotal, splitAllocatedAmount);
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const cartQuantityByItemId = useMemo(() => {
+    const quantities = new Map<string, number>();
+    cart.forEach(item => quantities.set(item.menuItemId, (quantities.get(item.menuItemId) || 0) + item.quantity));
+    return quantities;
+  }, [cart]);
   const selectedStore = stores.find(store => store.id === selectedStoreId);
   const isSetupTestSale = selectedStore?.internalPosTestEnabled === true && selectedStore?.isActive !== true;
   const hasActivePosLaunchException = activePosLaunchException(selectedStore);
   const setupPaymentMethods: PaymentMethod[] = isSetupTestSale ? ['CASH'] : PAYMENT_METHODS;
-  const selectedProductFilter = POS_PRODUCT_FILTERS.find(filter => filter.id === selectedCategoryId);
-  const featuredHeading = isUsingTopSellerData ? 'Top sellers last 7 days' : 'Top picks';
-  const featuredSubheading = isUsingTopSellerData
-    ? 'Based on completed sales for this store'
-    : 'Fast favourites for quick billing';
+  const selectedViewTitle = searchQuery.trim()
+    ? 'Search Results'
+    : selectedCategoryId === 'QUICK_PICKS'
+      ? 'Quick Picks'
+      : selectedCategoryId === 'ALL'
+        ? 'All Items'
+        : selectedCategory?.name || 'All Items';
+  const selectedViewDescription = selectedCategoryId === 'QUICK_PICKS'
+    ? isUsingTopSellerData
+      ? 'Top sellers from the last 7 days at this store'
+      : 'Fast favourites for quick billing'
+    : searchQuery.trim()
+      ? `Matches across the full ${selectedStore?.name || 'store'} menu`
+      : null;
+
+  const selectCategory = (categoryId: string) => {
+    setSelectedCategoryId(categoryId);
+    setSelectedSubcategoryId('ALL');
+  };
 
   useEffect(() => {
     if (!isSetupTestSale) return;
@@ -2860,75 +2818,155 @@ export default function POSHome() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
       {/* Menu Area */}
-      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-[#eadfd4] lg:border-b-0 lg:border-r">
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 custom-scrollbar sm:px-4 lg:px-5">
+      <div className="flex min-h-0 min-w-0 overflow-hidden border-b border-[#eadfd4] lg:border-b-0 lg:border-r">
+        <aside className="hidden w-[192px] shrink-0 flex-col border-r border-[#eadfd4] bg-[#f8f3ec] lg:flex">
+          <div className="border-b border-[#eadfd4] px-3 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#8a6a58]">Menu</p>
+          </div>
+          <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2 custom-scrollbar" aria-label="POS menu categories">
+            <button
+              type="button"
+              onClick={() => selectCategory('QUICK_PICKS')}
+              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-black transition ${selectedCategoryId === 'QUICK_PICKS' ? 'bg-[#3e2723] text-white shadow-sm' : 'text-neutral-700 hover:bg-white'}`}
+            >
+              <Zap size={15} className="shrink-0" />
+              <span className="min-w-0 flex-1">Quick Picks</span>
+              <span className="text-[10px] opacity-70">{topFeaturedItems.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => selectCategory('ALL')}
+              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-black transition ${selectedCategoryId === 'ALL' ? 'bg-[#3e2723] text-white shadow-sm' : 'text-neutral-700 hover:bg-white'}`}
+            >
+              <LayoutGrid size={15} className="shrink-0" />
+              <span className="min-w-0 flex-1">All Items</span>
+              <span className="text-[10px] opacity-70">{availableMenuItems.length}</span>
+            </button>
+            <div className="my-2 border-t border-[#e4d8cc]" />
+            {navigationCategories.map(category => (
+              <button
+                key={category.code}
+                type="button"
+                onClick={() => selectCategory(category.code)}
+                className={`flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-black leading-snug transition ${
+                  selectedCategoryId === category.code
+                    ? 'bg-[#3e2723] text-white shadow-sm'
+                    : category.code === NEEDS_CLASSIFICATION_CATEGORY.code
+                      ? 'text-amber-800 hover:bg-amber-50'
+                      : 'text-neutral-700 hover:bg-white'
+                }`}
+              >
+                <span className="min-w-0 flex-1">{category.name}</span>
+                <span className="mt-0.5 text-[10px] opacity-70">{categoryItemCounts.get(category.code) || 0}</span>
+              </button>
+            ))}
+          </nav>
+          {isAdmin && unclassifiedItemCount > 0 && (
+            <div className="border-t border-amber-200 bg-amber-50 p-3 text-[10px] font-bold leading-relaxed text-amber-800">
+              <span className="flex items-center gap-1.5 font-black"><AlertTriangle size={13} /> {unclassifiedItemCount} need classification</span>
+              <span className="mt-1 block">Items remain visible and billable.</span>
+            </div>
+          )}
+        </aside>
+
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 custom-scrollbar sm:px-4 lg:px-5">
           <div className="space-y-3 pb-32 lg:pb-6">
-            <div className="rounded-3xl border border-[#e8ddd2] bg-white p-3 shadow-[0_10px_24px_rgba(62,39,35,0.05)]">
-              <div className="relative min-w-0">
+            <div className="rounded-2xl border border-[#e8ddd2] bg-white p-3 shadow-[0_8px_20px_rgba(62,39,35,0.04)]">
+              <div className="grid grid-cols-1 gap-2 lg:hidden sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Category</span>
+                  <select
+                    value={selectedCategoryId}
+                    onChange={event => selectCategory(event.target.value)}
+                    className="min-h-11 w-full rounded-xl border border-[#eadfd4] bg-[#fcfaf7] px-3 text-sm font-black text-[#2d1c19] outline-none focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]/10"
+                  >
+                    <option value="QUICK_PICKS">Quick Picks ({topFeaturedItems.length})</option>
+                    <option value="ALL">All Items ({availableMenuItems.length})</option>
+                    {navigationCategories.map(category => (
+                      <option key={category.code} value={category.code}>
+                        {category.name} ({categoryItemCounts.get(category.code) || 0})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedCategory && selectedCategory.subcategories.length > 0 && (
+                  <label className="space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Subcategory</span>
+                    <select
+                      value={selectedSubcategoryId}
+                      onChange={event => setSelectedSubcategoryId(event.target.value)}
+                      className="min-h-11 w-full rounded-xl border border-[#eadfd4] bg-[#fcfaf7] px-3 text-sm font-black text-[#2d1c19] outline-none focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]/10"
+                    >
+                      <option value="ALL">All</option>
+                      {selectedCategory.subcategories.map(subcategory => (
+                        <option key={subcategory.code} value={subcategory.code}>{subcategory.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+
+              <div className="relative mt-2 min-w-0 lg:mt-0">
                 <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
                 <input
                   ref={searchInputRef}
-                  type="text"
-                  placeholder="Search coffee, food, desserts..."
+                  type="search"
+                  placeholder="Search products or codes..."
                   value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="min-h-[46px] w-full rounded-2xl border border-[#eadfd4] bg-[#fcfaf7] pl-11 pr-4 text-sm font-semibold text-neutral-800 outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
+                  onChange={event => setSearchQuery(event.target.value)}
+                  className="min-h-[42px] w-full rounded-xl border border-[#eadfd4] bg-[#fcfaf7] pl-11 pr-10 text-sm font-semibold text-neutral-800 outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    aria-label="Clear product search"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-neutral-400 hover:bg-white hover:text-[#3e2723]"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
               </div>
             </div>
 
-            {topFeaturedItems.length > 0 && (
-              <div className="rounded-3xl border border-[#e8ddd2] bg-white p-3 shadow-[0_10px_24px_rgba(62,39,35,0.05)]">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-black tracking-tight text-[#2d1c19]">{featuredHeading}</h2>
-                    <p className="truncate text-[11px] font-semibold text-neutral-500">{featuredSubheading}</p>
-                  </div>
-                  <span className="text-[11px] font-bold text-neutral-400">{topFeaturedItems.length}</span>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                  {topFeaturedItems.map((item: any) => {
-                    const categoryGroup = normalizePosCategoryGroupName(item);
-                    return (
-                      <button
-                        key={`top_${item.id}`}
-                        type="button"
-                        onClick={() => addToCart(item)}
-                        className="group rounded-3xl border border-[#eadfd4] bg-[#fcfaf7] p-3 text-left transition hover:border-[#5c4033]/25 hover:bg-[#fff8ed]"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={`rounded-full px-2 py-1 text-[9px] font-black ${menuTileTone(categoryGroup).badge}`}>
-                            {posTabLabel(categoryGroup)}
-                          </span>
-                          <Plus size={14} className="text-[#5c4033]" strokeWidth={2.8} />
-                        </div>
-                        <h3 className="mt-3 line-clamp-2 text-[13px] font-black leading-snug text-[#2d1c19]">{item.name}</h3>
-                        <p className="mt-2 font-mono text-sm font-black text-[#3e2723]">₹{item.price}</p>
-                      </button>
-                    );
-                  })}
-                </div>
+            <div className="flex flex-wrap items-end justify-between gap-2 px-1">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black tracking-tight text-[#2d1c19]">{selectedViewTitle}</h2>
+                {selectedViewDescription && <p className="text-[11px] font-semibold text-neutral-500">{selectedViewDescription}</p>}
               </div>
-            )}
+              <span className="rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-[11px] font-black text-neutral-500">
+                {filteredMenuItems.length} {filteredMenuItems.length === 1 ? 'item' : 'items'}
+              </span>
+            </div>
 
-            <div className="overflow-x-auto custom-scrollbar">
-              <div className="flex min-w-max gap-2 pb-1">
-                {POS_PRODUCT_FILTERS.map(filter => (
+            {selectedCategory && selectedCategory.subcategories.length > 0 && !searchQuery.trim() && (
+              <div className="hidden flex-wrap gap-2 lg:flex" aria-label={`${selectedCategory.name} subcategories`}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSubcategoryId('ALL')}
+                  className={`min-h-9 rounded-xl border px-3 text-xs font-black transition ${selectedSubcategoryId === 'ALL' ? 'border-[#3e2723] bg-[#3e2723] text-white' : 'border-[#eadfd4] bg-white text-neutral-600 hover:border-[#5c4033]/30'}`}
+                >
+                  All
+                </button>
+                {selectedCategory.subcategories.map(subcategory => (
                   <button
-                    key={filter.id}
+                    key={subcategory.code}
                     type="button"
-                    onClick={() => setSelectedCategoryId(filter.id)}
-                    className={`inline-flex min-h-[36px] items-center rounded-2xl border px-3 text-sm font-black transition-colors ${
-                      selectedCategoryId === filter.id
-                        ? 'border-[#3e2723] bg-[#3e2723] text-white'
-                        : 'border-[#eadfd4] bg-white text-neutral-600 hover:border-[#5c4033]/30 hover:text-[#3e2723]'
-                    }`}
+                    onClick={() => setSelectedSubcategoryId(subcategory.code)}
+                    className={`min-h-9 rounded-xl border px-3 text-xs font-black transition ${selectedSubcategoryId === subcategory.code ? 'border-[#3e2723] bg-[#3e2723] text-white' : 'border-[#eadfd4] bg-white text-neutral-600 hover:border-[#5c4033]/30'}`}
                   >
-                    {filter.label}
+                    {subcategory.name}
                   </button>
                 ))}
               </div>
-            </div>
+            )}
+
+            {isAdmin && unclassifiedItemCount > 0 && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800 lg:hidden">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                {unclassifiedItemCount} active {unclassifiedItemCount === 1 ? 'item needs' : 'items need'} classification. They remain visible under Needs Classification.
+              </div>
+            )}
 
             {menuItems.length === 0 ? (
               <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[28px] border border-dashed border-[#dccfc2] bg-white px-6 py-8 text-center text-neutral-500">
@@ -2943,45 +2981,77 @@ export default function POSHome() {
                 <Coffee size={42} className="mb-4 text-[#8a6a58]/70" />
                 <p className="text-lg font-black text-neutral-700">No items match this view</p>
                 <p className="mt-2 max-w-sm text-sm font-medium text-neutral-500">
-                  Try a different filter, clear the search, or review POS Readiness if this store should have more items.
+                  Try a different category, clear the search, or review POS Readiness if this store should have more items.
                 </p>
               </div>
             ) : (
-              <>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                  {filteredMenuItems.map((item: any) => {
-                    const categoryGroup = normalizePosCategoryGroupName(item);
-                    const tone = menuTileTone(categoryGroup);
-                    return (
-                      <motion.button
-                        key={item.id}
-                        whileHover={{ scale: 1.015, y: -2 }}
-                        whileTap={{ scale: 0.985 }}
-                        onClick={() => addToCart(item)}
-                        className="group flex min-h-[102px] min-w-0 flex-col justify-between rounded-3xl border border-[#eadfd4] bg-white p-3 text-left shadow-[0_6px_16px_rgba(62,39,35,0.05)] transition-all hover:border-[#5c4033]/25 hover:bg-[#fffaf4]"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={`rounded-full px-2 py-1 text-[9px] font-black ${tone.badge}`}>
-                            {posTabLabel(categoryGroup)}
-                          </span>
-                          <Plus size={14} className={tone.icon} strokeWidth={2.8} />
-                        </div>
-                        <div className="min-w-0 flex-1 pt-2">
-                          <h4 className="line-clamp-2 text-[13px] font-black leading-snug text-[#2d1c19]">{item.name}</h4>
-                        </div>
-                        <div className="flex items-end justify-between gap-2 pt-2">
-                          <p className="font-mono text-[15px] font-black text-[#3e2723]">₹{item.price}</p>
-                          {item.prepStation && item.prepStation !== 'NONE' && (
-                            <span className="rounded-full bg-neutral-100 px-2 py-1 text-[9px] font-black text-neutral-500">
-                              {prepStationLabel(item.prepStation)}
-                            </span>
-                          )}
-                        </div>
-                      </motion.button>
-                    );
-                  })}
-                </div>
-              </>
+              <div className="space-y-4">
+                {menuSections.map(section => (
+                  <section key={section.id} className="space-y-2">
+                    {section.label && (
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-sm font-black text-[#2d1c19]">{section.label}</h3>
+                        <div className="h-px flex-1 bg-[#e8ddd2]" />
+                        <span className="text-[10px] font-bold text-neutral-400">{section.items.length}</span>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+                      {section.items.map((item: MenuItem) => {
+                        const classification = classificationByItemId.get(item.id)
+                          || classifyPosMenuItem(item as MenuItem & Record<string, unknown>);
+                        const tone = menuTileTone(classification.category.code);
+                        const quantityInCart = cartQuantityByItemId.get(item.id) || 0;
+                        const showContext = Boolean(searchQuery.trim())
+                          || selectedCategoryId === 'ALL'
+                          || selectedCategoryId === 'QUICK_PICKS';
+                        const breadcrumb = [classification.category.name, classification.subcategory?.name]
+                          .filter(Boolean)
+                          .join(' / ');
+
+                        return (
+                          <motion.button
+                            key={item.id}
+                            whileHover={{ scale: 1.015, y: -2 }}
+                            whileTap={{ scale: 0.985 }}
+                            onClick={() => addToCart(item)}
+                            className="group flex min-h-[112px] min-w-0 flex-col justify-between rounded-2xl border border-[#eadfd4] bg-white p-3 text-left shadow-[0_6px_16px_rgba(62,39,35,0.05)] transition-all hover:border-[#5c4033]/25 hover:bg-[#fffaf4]"
+                          >
+                            <div className="flex min-w-0 items-start justify-between gap-2">
+                              {showContext ? (
+                                <span className={`min-w-0 truncate rounded-full px-2 py-1 text-[9px] font-black ${tone.badge}`} title={breadcrumb}>
+                                  {breadcrumb}
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-black uppercase tracking-[0.08em] text-neutral-400">
+                                  {classification.subcategory?.name || classification.category.name}
+                                </span>
+                              )}
+                              {quantityInCart > 0 ? (
+                                <span className="shrink-0 rounded-full bg-[#3e2723] px-2 py-1 text-[9px] font-black text-white">
+                                  {quantityInCart} in sale
+                                </span>
+                              ) : (
+                                <Plus size={15} className={`shrink-0 ${tone.icon}`} strokeWidth={2.8} />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1 pt-2">
+                              <h4 className="line-clamp-2 text-[13px] font-black leading-snug text-[#2d1c19]">{item.name}</h4>
+                            </div>
+                            <div className="flex items-end justify-between gap-2 pt-2">
+                              <p className="font-mono text-[15px] font-black text-[#3e2723]">₹{item.price}</p>
+                              {item.prepStation && item.prepStation !== 'NONE' && (
+                                <span className="rounded-full bg-neutral-100 px-2 py-1 text-[9px] font-black text-neutral-500">
+                                  {prepStationLabel(item.prepStation)}
+                                </span>
+                              )}
+                            </div>
+                          </motion.button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
             )}
           </div>
         </div>

@@ -47,6 +47,7 @@
     "test:customer-checkout-persistence": "esbuild scripts/test-customer-checkout-persistence.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-checkout-persistence-test.mjs && node /tmp/customer-checkout-persistence-test.mjs",
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs && npm run test:customer-checkout-persistence && npm run test:customer-account",
     "test:pos-menu-correctness": "node scripts/test-pos-menu-correctness.mjs",
+    "test:pos-menu-navigation": "esbuild scripts/test-pos-menu-navigation.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-menu-navigation-test.mjs && node /tmp/pos-menu-navigation-test.mjs",
     "test:hosting-headers": "node scripts/test-hosting-headers.mjs",
     "dry-run:pos-menu-correctness": "node scripts/pos-menu-correctness-plan.mjs",
     "verify:pos-menu-correctness": "node scripts/apply-pos-menu-correctness.mjs",
