@@ -6,6 +6,7 @@ import { Store, KotItem, KotStatus } from '../../types';
 import { Loader2, Clock, X, ChefHat, Coffee, Store as StoreIcon, Search, AlertTriangle } from 'lucide-react';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -73,30 +74,20 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     if (!staffProfile) return;
 
     let cancelled = false;
-    const assignedStoreIds = new Set([
-      ...(staffProfile.storeIds || []),
-      ...(staffProfile.assignedStoreIds || []),
-    ]);
     const isSetupTestStore = (store: Store) => store.internalPosTestEnabled === true && store.isActive !== true;
 
     const loadStores = async () => {
-      const activeStoreSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-      const activeStores = activeStoreSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
-      const setupStores = staffProfile.role === 'ADMIN'
-        ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store)).filter(isSetupTestStore)
-        : staffProfile.role === 'STORE_MANAGER'
-          ? (await Promise.all([...assignedStoreIds].map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null))))
-            .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
-            .map((snap) => ({ id: snap.id, ...snap.data() } as Store))
-            .filter(isSetupTestStore)
-          : [];
-      const fetched = [...activeStores, ...setupStores];
-      const accessible = fetched.filter((store, index, all) => {
-        if (all.findIndex((candidate) => candidate.id === store.id) !== index) return false;
-        if (staffProfile.role === 'ADMIN') return true;
-        if (staffProfile.role === 'STORE_MANAGER') return assignedStoreIds.has(store.id) && (store.isActive === true || isSetupTestStore(store));
-        return assignedStoreIds.has(store.id) && store.isActive === true;
-      });
+      const fetched = staffProfile.role === 'ADMIN'
+        ? (await getDocs(collection(db, 'stores'))).docs
+          .map(d => ({ id: d.id, ...d.data() } as Store))
+          .filter(store => store.isActive === true || isSetupTestStore(store))
+        : (await Promise.all(
+          assignedStoreIdentifiers(staffProfile)
+            .map(storeId => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+        ))
+          .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
+          .map(snap => ({ id: snap.id, ...snap.data() } as Store));
+      const accessible = accessiblePosStores(fetched, staffProfile);
 
       if (!cancelled) {
         setStores(accessible);
@@ -115,17 +106,13 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
   useEffect(() => {
     if (!staffProfile) return;
     
-    if (staffProfile.role !== 'ADMIN' && (!staffProfile.storeIds || staffProfile.storeIds.length === 0)) {
+    if (staffProfile.role !== 'ADMIN' && assignedStoreIdentifiers(staffProfile).length === 0) {
       setItems([]);
       setLoading(false);
       return;
     }
 
-    const storeIdsToQuery = staffProfile.role === 'ADMIN'
-      ? stores.map(store => store.id)
-      : stores
-          .filter(store => staffProfile.storeIds.includes(store.id))
-          .map(store => store.id);
+    const storeIdsToQuery = stores.map(store => store.id);
 
     if (storeIdsToQuery.length === 0) {
       setItems([]);
