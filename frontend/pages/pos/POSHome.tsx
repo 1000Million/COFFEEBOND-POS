@@ -2793,15 +2793,14 @@ export default function POSHome() {
 
   return (
     <div className="relative flex h-[calc(100dvh-72px)] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0">
-      <div className="shrink-0 border-b border-[#eadfd4] bg-white/95 px-3 py-2 shadow-sm backdrop-blur sm:px-4">
-        <div className="overflow-x-auto custom-scrollbar">
-          <div className="flex min-w-max items-center gap-2 whitespace-nowrap pb-1">
-            <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-1.5">
+      <div className="shrink-0 max-w-full overflow-x-hidden border-b border-[#eadfd4] bg-white/95 px-3 py-2 shadow-sm backdrop-blur sm:px-4">
+          <div className="flex min-w-0 flex-col gap-2 md:flex-row md:flex-wrap md:items-center">
+            <div className="flex w-full min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-1.5 md:w-auto md:max-w-full">
               <StoreIcon size={15} className="shrink-0 text-[#5c4033]" />
               <select
                 value={selectedStoreId}
                 onChange={handleStoreChange}
-                className="min-w-[180px] bg-transparent text-sm font-black text-[#2d1c19] outline-none lg:min-w-[190px]"
+                className="w-full min-w-0 max-w-full bg-transparent text-sm font-black text-[#2d1c19] outline-none md:w-auto md:min-w-[180px] lg:min-w-[190px]"
                 aria-label="Select POS store"
               >
                 {stores.map(s => (
@@ -2812,7 +2811,7 @@ export default function POSHome() {
               </select>
             </div>
 
-            <div className="flex items-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1">
+            <div className="grid w-full min-w-0 grid-cols-3 items-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1 md:flex md:w-auto">
               {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (
                 <button
                   key={type}
@@ -2821,7 +2820,7 @@ export default function POSHome() {
                     setOrderType(type);
                     if (type !== 'DINE_IN') setTableNumberError(null);
                   }}
-                  className={`min-h-[34px] whitespace-nowrap rounded-xl px-3 text-sm font-black transition-all ${
+                  className={`min-h-[34px] min-w-0 rounded-xl px-2 text-xs font-black transition-all sm:px-3 sm:text-sm ${
                     orderType === type
                       ? 'bg-[#3e2723] text-white shadow-sm'
                       : 'text-neutral-600 hover:bg-white hover:text-[#2d1c19]'
@@ -2842,23 +2841,24 @@ export default function POSHome() {
               </span>
             )}
 
-            <Link
-              to="/pos/running-orders"
-              className="inline-flex min-h-[36px] items-center justify-center rounded-2xl border border-[#3e2723]/15 bg-white px-3 text-sm font-black text-[#3e2723] transition hover:bg-[#fff8ed]"
-            >
-              Running Orders
-            </Link>
-            {isAdmin && (
+            <div className="flex w-full min-w-0 flex-wrap gap-2 md:w-auto">
               <Link
-                to="/admin/pos-readiness"
-                title={debugCounts ? `${debugCounts.mappedCount} menu items ready for POS checks` : 'Open POS readiness'}
-                className="inline-flex min-h-[36px] items-center justify-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 text-sm font-bold text-neutral-600 transition hover:bg-white hover:text-[#3e2723]"
+                to="/pos/running-orders"
+                className="inline-flex min-h-[36px] min-w-0 flex-1 items-center justify-center rounded-2xl border border-[#3e2723]/15 bg-white px-3 text-sm font-black text-[#3e2723] transition hover:bg-[#fff8ed] md:flex-none"
               >
-                POS Readiness
+                Running Orders
               </Link>
-            )}
+              {isAdmin && (
+                <Link
+                  to="/admin/pos-readiness"
+                  title={debugCounts ? `${debugCounts.mappedCount} menu items ready for POS checks` : 'Open POS readiness'}
+                  className="inline-flex min-h-[36px] min-w-0 flex-1 items-center justify-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 text-sm font-bold text-neutral-600 transition hover:bg-white hover:text-[#3e2723] md:flex-none"
+                >
+                  POS Readiness
+                </Link>
+              )}
+            </div>
           </div>
-        </div>
       </div>
 
       {hasActivePosLaunchException && (
@@ -2923,7 +2923,7 @@ export default function POSHome() {
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 custom-scrollbar sm:px-4 lg:px-5">
           <div className="space-y-3 pb-32 xl:pb-6">
             <div className="rounded-2xl border border-[#e8ddd2] bg-white p-3 shadow-[0_8px_20px_rgba(62,39,35,0.04)]">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:hidden">
+              <div className="grid w-full min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:hidden">
                 <label className="space-y-1">
                   <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Category</span>
                   <select
@@ -3046,7 +3046,7 @@ export default function POSHome() {
                         <span className="text-[10px] font-bold text-neutral-400">{section.items.length}</span>
                       </div>
                     )}
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                    <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                       {section.items.map((item: MenuItem) => {
                         const classification = classificationByItemId.get(item.id)
                           || classifyPosMenuItem(item as MenuItem & Record<string, unknown>);
@@ -3783,7 +3783,7 @@ export default function POSHome() {
               <div className="space-y-2">
                 <div className="space-y-1.5">
                   {splitPayments.map((payment, index) => (
-                    <div key={payment.id} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
+                    <div key={payment.id} className="grid min-w-0 grid-cols-1 gap-1.5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center">
                       <select
                         value={payment.method}
                         onChange={event => updateSplitPayment(payment.id, { method: event.target.value as PaymentMethod })}
