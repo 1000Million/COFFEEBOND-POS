@@ -43,6 +43,10 @@ import {
   isOrderVisibleInRunningOrders,
 } from '../../lib/runningOrdersVisibility';
 import {
+  accessiblePosStores as filterAccessiblePosStores,
+  assignedStoreIdentifiers,
+} from '../../lib/posStoreAccess';
+import {
   KotItem,
   KotStatus,
   Order,
@@ -160,10 +164,6 @@ function elapsedLabel(value: any, now: Date): string {
   const remaining = minutes % 60;
   if (hours < 24) return `${hours}h ${remaining}m ago`;
   return `${Math.floor(hours / 24)}d ago`;
-}
-
-function allowedStoreIds(staffProfile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
-  return staffProfile.assignedStoreIds?.length ? staffProfile.assignedStoreIds : staffProfile.storeIds || [];
 }
 
 function effectiveOrderStatus(order: Order): 'COMPLETED' | 'VOIDED' | 'CANCELLED' {
@@ -347,10 +347,7 @@ export default function RunningOrders() {
   const [now, setNow] = useState(new Date());
 
   const accessibleStores = useMemo(() => {
-    if (!staffProfile) return [];
-    if (staffProfile.role === 'ADMIN') return stores;
-    const allowedIds = allowedStoreIds(staffProfile);
-    return stores.filter(store => allowedIds.includes(store.id));
+    return filterAccessiblePosStores(stores, staffProfile);
   }, [staffProfile, stores]);
 
   const canSeeAllStores = staffProfile?.role === 'ADMIN';
@@ -371,8 +368,15 @@ export default function RunningOrders() {
     if (!staffProfile) return;
     const loadStores = async () => {
       try {
-        const snap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-        const loaded = snap.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+        const loaded = staffProfile.role === 'ADMIN'
+          ? (await getDocs(query(collection(db, 'stores'), where('isActive', '==', true))))
+            .docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
+          : (await Promise.all(
+            assignedStoreIdentifiers(staffProfile)
+              .map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+          ))
+            .filter((snap): snap is NonNullable<typeof snap> => !!snap && snap.exists())
+            .map((snap) => ({ id: snap.id, ...snap.data() } as Store));
         if (isActiveRunningOrdersAdmin(staffProfile)) {
           const setupStoreSnap = await getDoc(doc(db, 'stores', DRAFT_SETUP_TEST_STORE_ID));
           if (setupStoreSnap.exists()) {
@@ -384,7 +388,7 @@ export default function RunningOrders() {
         }
         loaded.sort((a, b) => a.name.localeCompare(b.name));
         setStores(loaded);
-        const accessible = staffProfile.role === 'ADMIN' ? loaded : loaded.filter(store => allowedStoreIds(staffProfile).includes(store.id));
+        const accessible = filterAccessiblePosStores(loaded, staffProfile);
         setSelectedStoreId(prev => prev || (staffProfile.role === 'ADMIN' ? 'ALL' : accessible[0]?.id || ''));
       } catch (err) {
         console.error('Failed to load stores', err);

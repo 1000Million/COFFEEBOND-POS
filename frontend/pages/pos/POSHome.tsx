@@ -50,6 +50,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 import {
+  canReadMissingCheckoutOrder,
+  canTreatCheckoutOrderReadAsMissing,
+  isCheckoutPermissionError,
+} from '../../lib/posCheckoutAccess';
+import {
   classifyPosMenuItem,
   finishedGoodTaxonomyFields,
   NEEDS_CLASSIFICATION_CATEGORY,
@@ -1984,6 +1989,12 @@ export default function POSHome() {
     setIsSaving(true);
     setCheckoutError(null);
     const checkoutWriteTrace: CheckoutWriteTrace[] = [];
+    let checkoutRecoveryContext: {
+      orderRef: ReturnType<typeof doc>;
+      attempt: CheckoutAttempt;
+      payloadHash: string;
+      store: Store;
+    } | null = null;
     const traceCheckoutWrite = (step: string, operation: CheckoutWriteTrace['operation'], path: string) => {
       const entry = { step, operation, path };
       checkoutWriteTrace.push(entry);
@@ -2171,12 +2182,25 @@ export default function POSHome() {
       checkoutAttempt = { ...checkoutAttempt, payloadHash: requestPayloadHash };
       checkoutAttemptRef.current = checkoutAttempt;
       writeCheckoutAttempt(checkoutAttempt);
+      checkoutRecoveryContext = {
+        orderRef: newOrderRef,
+        attempt: checkoutAttempt,
+        payloadHash: requestPayloadHash,
+        store: selectedStore,
+      };
 
-      const existingBeforeTransaction = await loadExistingCheckoutResult(
-        newOrderRef,
-        checkoutAttempt,
-        requestPayloadHash,
-      );
+      let existingBeforeTransaction: Awaited<ReturnType<typeof loadExistingCheckoutResult>> = null;
+      try {
+        existingBeforeTransaction = await loadExistingCheckoutResult(
+          newOrderRef,
+          checkoutAttempt,
+          requestPayloadHash,
+        );
+      } catch (existingOrderError) {
+        if (!canTreatCheckoutOrderReadAsMissing(existingOrderError, staffProfile.role)) {
+          throw existingOrderError;
+        }
+      }
       if (existingBeforeTransaction) {
         const receipt = buildReceiptSnapshot(
           existingBeforeTransaction.savedOrder,
@@ -2232,17 +2256,19 @@ export default function POSHome() {
 
       const transactionResult = await runTransaction<any>(db, async (transaction) => {
         // --- READ PHASE ONLY ---
-        if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get order ${newOrderRef.id}`);
-        const existingOrderSnap = await transaction.get(newOrderRef);
-        if (existingOrderSnap.exists()) {
-          const existingOrder = existingOrderSnap.data() as Record<string, unknown>;
-          if (
-            existingOrder.clientCheckoutIdempotencyKey !== checkoutAttempt.idempotencyKey
-            || existingOrder.checkoutPayloadHash !== requestPayloadHash
-          ) {
-            throw new Error('Checkout retry conflict: an existing order has a different checkout payload.');
+        if (canReadMissingCheckoutOrder(staffProfile.role)) {
+          if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get order ${newOrderRef.id}`);
+          const existingOrderSnap = await transaction.get(newOrderRef);
+          if (existingOrderSnap.exists()) {
+            const existingOrder = existingOrderSnap.data() as Record<string, unknown>;
+            if (
+              existingOrder.clientCheckoutIdempotencyKey !== checkoutAttempt.idempotencyKey
+              || existingOrder.checkoutPayloadHash !== requestPayloadHash
+            ) {
+              throw new Error('Checkout retry conflict: an existing order has a different checkout payload.');
+            }
+            return { existingOrderId: newOrderRef.id };
           }
-          return { existingOrderId: newOrderRef.id };
         }
 
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: get counter`);
@@ -2640,6 +2666,31 @@ export default function POSHome() {
       setReceiptView(receipt);
       clearCart(true); // pass true to skip confirmation on submit
     } catch (err: any) {
+      if (checkoutRecoveryContext && isCheckoutPermissionError(err)) {
+        try {
+          const recovered = await loadExistingCheckoutResult(
+            checkoutRecoveryContext.orderRef,
+            checkoutRecoveryContext.attempt,
+            checkoutRecoveryContext.payloadHash,
+          );
+          if (recovered) {
+            const receipt = buildReceiptSnapshot(
+              recovered.savedOrder,
+              recovered.savedItems,
+              recovered.savedPayments,
+              checkoutRecoveryContext.store,
+            );
+            setLastReceipt(receipt);
+            writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);
+            setReceiptViewTitle('Order Recovered');
+            setReceiptView(receipt);
+            clearCart(true);
+            return;
+          }
+        } catch (recoveryError) {
+          if (!isCheckoutPermissionError(recoveryError)) console.error(recoveryError);
+        }
+      }
       if (isExpectedCheckoutValidationError(err)) console.warn(err instanceof Error ? err.message : err);
       else console.error(err);
       if (String(err?.code || '').includes('permission') || String(err?.message || '').toLowerCase().includes('permission')) {
