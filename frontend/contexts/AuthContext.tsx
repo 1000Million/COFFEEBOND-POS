@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { assignedStoreIdentifiers } from '../lib/posStoreAccess';
 import { StaffProfile, AuthStatus } from '../types';
 
 interface AuthContextType {
@@ -65,11 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const data = docSnap.data();
-        const assignedStoreIds = Array.isArray(data.assignedStoreIds)
-          ? data.assignedStoreIds
-          : Array.isArray(data.storeIds)
-            ? data.storeIds
-            : [];
+        const assignedStoreIds = assignedStoreIdentifiers(data);
         const displayName = data.displayName || data.name || user.displayName || user.email || "Staff";
         const newProfile = {
           id: docSnap.id,

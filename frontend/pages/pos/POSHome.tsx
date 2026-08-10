@@ -48,6 +48,7 @@ import {
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, AlertTriangle, X, Copy, ExternalLink, RefreshCw, Zap, LayoutGrid } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 import {
   classifyPosMenuItem,
   finishedGoodTaxonomyFields,
@@ -862,10 +863,13 @@ export default function POSHome() {
   const [isRecallMenuOpen, setIsRecallMenuOpen] = useState(false);
 
   useEffect(() => {
-    fetchData();
     fetchMenuData();
     fetchTaxConfig();
   }, []);
+
+  useEffect(() => {
+    void fetchData();
+  }, [staffProfile]);
 
   useEffect(() => {
     checkoutAttemptRef.current = loadCheckoutAttempt();
@@ -1029,32 +1033,28 @@ export default function POSHome() {
 
   const fetchData = async () => {
     try {
-      const assignedStoreIds = new Set([
-        ...(staffProfile?.storeIds || []),
-        ...(staffProfile?.assignedStoreIds || []),
-      ]);
-      const activeStoresSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-      const activeStores = activeStoresSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
-      const setupStoreSnaps = !isAdmin && staffProfile?.role === 'STORE_MANAGER'
-        ? await Promise.all([...assignedStoreIds].map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)))
-        : [];
-      const setupStores = setupStoreSnaps
-        .filter((snap): snap is NonNullable<typeof snap> => !!snap && snap.exists())
-        .map((snap) => ({ id: snap.id, ...snap.data() } as Store));
+      if (!staffProfile) {
+        setStores([]);
+        setSelectedStoreId('');
+        return;
+      }
+
       const fetchedStores = isAdmin
         ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store))
-        : [...activeStores, ...setupStores].filter((store, index, list) => list.findIndex((entry) => entry.id === store.id) === index);
+        : (await Promise.all(
+          assignedStoreIdentifiers(staffProfile)
+            .map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+        ))
+          .filter((snap): snap is NonNullable<typeof snap> => !!snap && snap.exists())
+          .map((snap) => ({ id: snap.id, ...snap.data() } as Store));
 
-      const allowedStores = isAdmin
-        ? fetchedStores.filter(store => store.isActive || store.internalPosTestEnabled === true)
-        : fetchedStores.filter(store => (
-          store.isActive === true
-          || (staffProfile?.role === 'STORE_MANAGER' && store.internalPosTestEnabled === true)
-        ) && assignedStoreIds.has(store.id));
+      const allowedStores = accessiblePosStores(fetchedStores, staffProfile);
 
       setStores(allowedStores);
       if (allowedStores.length > 0) {
         setSelectedStoreId(allowedStores[0].id);
+      } else {
+        setSelectedStoreId('');
       }
     } catch (error: any) {
       if (error?.code !== 'permission-denied') {
@@ -2816,10 +2816,10 @@ export default function POSHome() {
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(0,1fr)_420px]">
       {/* Menu Area */}
-      <div className="flex min-h-0 min-w-0 overflow-hidden border-b border-[#eadfd4] lg:border-b-0 lg:border-r">
-        <aside className="hidden w-[192px] shrink-0 flex-col border-r border-[#eadfd4] bg-[#f8f3ec] lg:flex">
+      <div className="flex min-h-0 min-w-0 overflow-hidden border-b border-[#eadfd4] xl:border-b-0 xl:border-r">
+        <aside className="hidden w-[192px] shrink-0 flex-col border-r border-[#eadfd4] bg-[#f8f3ec] xl:flex">
           <div className="border-b border-[#eadfd4] px-3 py-3">
             <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#8a6a58]">Menu</p>
           </div>
@@ -2870,9 +2870,9 @@ export default function POSHome() {
         </aside>
 
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 custom-scrollbar sm:px-4 lg:px-5">
-          <div className="space-y-3 pb-32 lg:pb-6">
+          <div className="space-y-3 pb-32 xl:pb-6">
             <div className="rounded-2xl border border-[#e8ddd2] bg-white p-3 shadow-[0_8px_20px_rgba(62,39,35,0.04)]">
-              <div className="grid grid-cols-1 gap-2 lg:hidden sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:hidden">
                 <label className="space-y-1">
                   <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Category</span>
                   <select
@@ -2906,7 +2906,7 @@ export default function POSHome() {
                 )}
               </div>
 
-              <div className="relative mt-2 min-w-0 lg:mt-0">
+              <div className="relative mt-2 min-w-0 xl:mt-0">
                 <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
                 <input
                   ref={searchInputRef}
@@ -2940,7 +2940,7 @@ export default function POSHome() {
             </div>
 
             {selectedCategory && selectedCategory.subcategories.length > 0 && !searchQuery.trim() && (
-              <div className="hidden flex-wrap gap-2 lg:flex" aria-label={`${selectedCategory.name} subcategories`}>
+              <div className="hidden flex-wrap gap-2 xl:flex" aria-label={`${selectedCategory.name} subcategories`}>
                 <button
                   type="button"
                   onClick={() => setSelectedSubcategoryId('ALL')}
@@ -2962,7 +2962,7 @@ export default function POSHome() {
             )}
 
             {isAdmin && unclassifiedItemCount > 0 && (
-              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800 lg:hidden">
+              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800 xl:hidden">
                 <AlertTriangle size={15} className="mt-0.5 shrink-0" />
                 {unclassifiedItemCount} active {unclassifiedItemCount === 1 ? 'item needs' : 'items need'} classification. They remain visible under Needs Classification.
               </div>
@@ -2995,7 +2995,7 @@ export default function POSHome() {
                         <span className="text-[10px] font-bold text-neutral-400">{section.items.length}</span>
                       </div>
                     )}
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
                       {section.items.map((item: MenuItem) => {
                         const classification = classificationByItemId.get(item.id)
                           || classifyPosMenuItem(item as MenuItem & Record<string, unknown>);
@@ -3058,7 +3058,7 @@ export default function POSHome() {
       </div>
 
       {/* Right Area: Current Sale */}
-      <div className={`fixed inset-0 z-[100] flex h-[100dvh] w-full max-w-full shrink-0 transform flex-col overflow-hidden border-l border-[#eadfd4] bg-[#fcfaf7] shadow-2xl transition-transform duration-300 lg:static lg:z-20 lg:h-full lg:w-[380px] lg:translate-y-0 lg:shadow-none xl:w-[420px] ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}`}>
+      <div className={`fixed inset-0 z-[100] flex h-[100dvh] w-full max-w-full shrink-0 transform flex-col overflow-hidden border-l border-[#eadfd4] bg-[#fcfaf7] shadow-2xl transition-transform duration-300 xl:static xl:z-20 xl:h-full xl:w-[420px] xl:translate-y-0 xl:shadow-none ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full xl:translate-y-0'}`}>
         <div
           className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3 custom-scrollbar sm:px-4 lg:px-4"
           style={isMobileCartOpen ? { paddingBottom: 'calc(16px + env(safe-area-inset-bottom))' } : undefined}
@@ -3089,7 +3089,7 @@ export default function POSHome() {
                 )}
                 <button
                   onClick={() => setIsMobileCartOpen(false)}
-                  className="rounded-full bg-neutral-200 p-1.5 font-bold text-neutral-600 transition-colors hover:bg-neutral-300 lg:hidden"
+                  className="rounded-full bg-neutral-200 p-1.5 font-bold text-neutral-600 transition-colors hover:bg-neutral-300 xl:hidden"
                 >
                   <X size={20} />
                 </button>
@@ -3530,8 +3530,8 @@ export default function POSHome() {
 
             {!isSplitPayment ? (
               <>
-                <div className="overflow-x-auto custom-scrollbar">
-                  <div className="flex min-w-max gap-1.5 pb-0.5">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap gap-1.5">
                   {setupPaymentMethods.map(method => (
                     <button
                       key={method}
@@ -3998,7 +3998,7 @@ export default function POSHome() {
 
       {/* Sticky Mobile Cart Bar */}
       {!isMobileCartOpen && cart.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 lg:hidden">
+        <div className="fixed bottom-0 left-0 right-0 z-30 max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 xl:hidden">
            <button onClick={() => setIsMobileCartOpen(true)} className="flex w-full items-center justify-between gap-3 rounded-2xl bg-[#3e2723] px-4 py-3.5 font-black text-white shadow-sm transition-colors hover:bg-[#2d1c19] sm:px-5">
               <span className="flex min-w-0 items-center gap-2">
                 <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
