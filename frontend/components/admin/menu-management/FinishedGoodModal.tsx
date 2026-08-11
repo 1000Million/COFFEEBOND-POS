@@ -40,15 +40,16 @@ import {
 } from "../../../lib/productImages";
 import {
   buildPosMenuPlacementPatch,
-  classifyPosMenuItem,
-  POS_MENU_CATEGORIES,
+  classifyPosMenuItemWithCategories,
   posMenuCategorySelection,
+  type PosMenuCategoryDefinition,
 } from "../../../lib/posMenuNavigation";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   item: FinishedGood | null;
+  posMenuCategories: PosMenuCategoryDefinition[];
 }
 
 const DEFAULT_ITEM: Partial<FinishedGood> = {
@@ -83,9 +84,12 @@ type PlacementDraft = {
   sortOrder: number | null;
 };
 
-function placementDraftFromItem(source: Partial<FinishedGood>): PlacementDraft {
-  const classification = classifyPosMenuItem(source);
-  const exactCategory = POS_MENU_CATEGORIES.find(
+function placementDraftFromItem(
+  source: Partial<FinishedGood>,
+  categories: PosMenuCategoryDefinition[],
+): PlacementDraft {
+  const classification = classifyPosMenuItemWithCategories(source, categories);
+  const exactCategory = categories.find(
     (category) => category.code === source.posCategoryCode,
   );
 
@@ -100,11 +104,11 @@ function placementDraftFromItem(source: Partial<FinishedGood>): PlacementDraft {
   };
 }
 
-export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
+export default function FinishedGoodModal({ isOpen, onClose, item, posMenuCategories }: Props) {
   const { staffProfile } = useAuth();
   const [formData, setFormData] = useState<Partial<FinishedGood>>(DEFAULT_ITEM);
   const [placementDraft, setPlacementDraft] = useState<PlacementDraft>(
-    placementDraftFromItem(DEFAULT_ITEM),
+    placementDraftFromItem(DEFAULT_ITEM, posMenuCategories),
   );
   const [placementSaving, setPlacementSaving] = useState(false);
   const [placementError, setPlacementError] = useState("");
@@ -165,11 +169,11 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
   useEffect(() => {
     if (item) {
       setFormData(item);
-      setPlacementDraft(placementDraftFromItem(item));
+      setPlacementDraft(placementDraftFromItem(item, posMenuCategories));
       setBom(item.bom || []);
     } else {
       setFormData(DEFAULT_ITEM);
-      setPlacementDraft(placementDraftFromItem(DEFAULT_ITEM));
+      setPlacementDraft(placementDraftFromItem(DEFAULT_ITEM, posMenuCategories));
       setBom([]);
     }
     setError("");
@@ -179,7 +183,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
     setPlacementSaving(false);
     setPlacementError("");
     setPlacementMessage("");
-  }, [item, isOpen]);
+  }, [item, isOpen, posMenuCategories]);
 
   const buildFinalCode = (source: Partial<FinishedGood>) => {
     const base = source.code ? source.code : source.name || "";
@@ -358,18 +362,18 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
   ]);
 
   const selectedPlacementCategory = useMemo(
-    () => POS_MENU_CATEGORIES.find(
+    () => posMenuCategories.find(
       (category) => category.code === placementDraft.posCategoryCode,
     ) || null,
-    [placementDraft.posCategoryCode],
+    [placementDraft.posCategoryCode, posMenuCategories],
   );
   const currentPlacementClassification = useMemo(
-    () => item ? classifyPosMenuItem(item) : null,
-    [item],
+    () => item ? classifyPosMenuItemWithCategories(item, posMenuCategories) : null,
+    [item, posMenuCategories],
   );
 
   const handlePlacementCategoryChange = (categoryCode: string) => {
-    const selection = posMenuCategorySelection(categoryCode);
+    const selection = posMenuCategorySelection(categoryCode, posMenuCategories);
     setPlacementError("");
     setPlacementMessage("");
     setPlacementDraft((previous) => ({
@@ -392,7 +396,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
       return;
     }
 
-    const result = buildPosMenuPlacementPatch(placementDraft);
+    const result = buildPosMenuPlacementPatch(placementDraft, posMenuCategories);
     if (result.ok === false) {
       setPlacementError(result.error);
       return;
@@ -529,7 +533,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
     }
 
     const newItemPlacement = !item
-      ? buildPosMenuPlacementPatch(placementDraft)
+      ? buildPosMenuPlacementPatch(placementDraft, posMenuCategories)
       : null;
     if (newItemPlacement && newItemPlacement.ok === false) {
       setError(newItemPlacement.error);
@@ -779,7 +783,7 @@ export default function FinishedGoodModal({ isOpen, onClose, item }: Props) {
                     className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
                   >
                     <option value="">Choose category</option>
-                    {POS_MENU_CATEGORIES.map((category) => (
+                    {posMenuCategories.map((category) => (
                       <option key={category.code} value={category.code}>
                         {category.name}
                       </option>

@@ -22,6 +22,7 @@ import PosMenuSettingsTab from "../../components/admin/menu-management/PosMenuSe
 import OverviewTab from "../../components/admin/menu-management/OverviewTab";
 import AddOnsTab from "../../components/admin/menu-management/AddOnsTab";
 import PosCategoryManagerTab from "../../components/admin/menu-management/PosCategoryManagerTab";
+import { usePosMenuTaxonomy } from "../../lib/usePosMenuTaxonomy";
 
 type TabId =
   | "overview"
@@ -38,6 +39,7 @@ type TabId =
 export default function MenuManagementHub() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const posMenuTaxonomy = usePosMenuTaxonomy();
 
   const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
     { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -129,13 +131,19 @@ export default function MenuManagementHub() {
           ) : activeTab === "prep-production" ? (
             <PrepProductionTab />
           ) : activeTab === "finished" ? (
-            <FinishedGoodsTab />
+            <FinishedGoodsTab posMenuCategories={posMenuTaxonomy.categories} />
           ) : activeTab === "stock" ? (
             <StoreStockTab />
           ) : activeTab === "pos" ? (
             <PosMenuSettingsTab />
           ) : activeTab === "pos-categories" ? (
-            <PosCategoryManagerTab />
+            <PosCategoryManagerTab
+              effectiveTaxonomy={posMenuTaxonomy.taxonomy}
+              source={posMenuTaxonomy.source}
+              loading={posMenuTaxonomy.loading}
+              loadError={posMenuTaxonomy.error}
+              onTaxonomySaved={posMenuTaxonomy.setEffectiveTaxonomy}
+            />
           ) : activeTab === "add-ons" ? (
             <AddOnsTab />
           ) : activeTab === "costing" ? (

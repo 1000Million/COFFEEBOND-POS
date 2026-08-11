@@ -1,5 +1,6 @@
 import {
   classifyPosMenuItem,
+  classifyPosMenuItemWithCategories,
   POS_MENU_CATEGORIES,
   type PosMenuCategoryDefinition,
   type PosMenuSubcategoryDefinition,
@@ -31,6 +32,11 @@ export type PosMenuTaxonomyValidation =
 export type TaxonomyReferenceProtection = {
   canHardDelete: boolean;
   requiresDeactivationConfirmation: boolean;
+};
+
+export type ResolvedPosMenuTaxonomy = {
+  taxonomy: PosMenuTaxonomy;
+  source: 'firestore' | 'fallback';
 };
 
 function cloneFallbackCategories(): ManagedPosMenuCategory[] {
@@ -82,7 +88,7 @@ function parseCategory(value: unknown): ManagedPosMenuCategory | null {
   };
 }
 
-export function resolvePosMenuTaxonomy(value: unknown): { taxonomy: PosMenuTaxonomy; source: 'firestore' | 'fallback' } {
+export function resolvePosMenuTaxonomy(value: unknown): ResolvedPosMenuTaxonomy {
   if (!value || typeof value !== 'object') return { taxonomy: committedPosMenuTaxonomy(), source: 'fallback' };
   const data = value as Record<string, unknown>;
   if (!Array.isArray(data.categories) || data.categories.length === 0) {
@@ -105,6 +111,34 @@ export function resolvePosMenuTaxonomy(value: unknown): { taxonomy: PosMenuTaxon
     return { taxonomy: committedPosMenuTaxonomy(), source: 'fallback' };
   }
   return { taxonomy, source: 'firestore' };
+}
+
+export function activePosMenuCategories(taxonomy: PosMenuTaxonomy): PosMenuCategoryDefinition[] {
+  return taxonomy.categories
+    .filter((category) => category.isActive)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((category) => ({
+      code: category.code,
+      name: category.name,
+      sortOrder: category.sortOrder,
+      subcategories: category.subcategories
+        .filter((subcategory) => subcategory.isActive)
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map(({ code, name, sortOrder }) => ({ code, name, sortOrder })),
+    }));
+}
+
+export function allPosMenuCategories(taxonomy: PosMenuTaxonomy): PosMenuCategoryDefinition[] {
+  return [...taxonomy.categories]
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((category) => ({
+      code: category.code,
+      name: category.name,
+      sortOrder: category.sortOrder,
+      subcategories: [...category.subcategories]
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map(({ code, name, sortOrder }) => ({ code, name, sortOrder })),
+    }));
 }
 
 export function normalizeTaxonomyCode(value: string): string {
@@ -157,11 +191,17 @@ export function validatePosMenuTaxonomy(taxonomy: PosMenuTaxonomy): PosMenuTaxon
   return { ok: true };
 }
 
-export function taxonomyUsage(items: Array<Record<string, unknown>>): TaxonomyUsage {
+export function taxonomyUsage(
+  items: Array<Record<string, unknown>>,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): TaxonomyUsage {
   const usage: TaxonomyUsage = { categoryCounts: {}, subcategoryCounts: {} };
   for (const item of items) {
     if (item.isActive !== true || item.isSellable !== true) continue;
-    const classification = classifyPosMenuItem(item as Parameters<typeof classifyPosMenuItem>[0]);
+    const classification = classifyPosMenuItemWithCategories(
+      item as Parameters<typeof classifyPosMenuItem>[0],
+      categories,
+    );
     if (!classification.isClassified) continue;
     const category = classification.category.code;
     const subcategory = classification.subcategory?.code || '';

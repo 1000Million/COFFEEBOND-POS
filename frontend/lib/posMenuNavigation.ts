@@ -172,8 +172,11 @@ const COMPACT_SUBCATEGORY_MAPPINGS: Record<string, Record<string, LegacyCategory
   },
 };
 
-const categoryByCode = new Map(POS_MENU_CATEGORIES.map((category) => [category.code, category]));
 const nameCollator = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+
+function categoriesByCode(categories: PosMenuCategoryDefinition[]): Map<string, PosMenuCategoryDefinition> {
+  return new Map(categories.map((category) => [category.code, category]));
+}
 
 function taxonomyReferenceValue(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number') {
@@ -206,8 +209,9 @@ function optionalFiniteNumber(value: unknown): number | null | undefined {
 
 export function posMenuCategorySelection(
   categoryCode: string,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
 ): Omit<PosMenuPlacementPatch, 'sortOrder'> | null {
-  const category = categoryByCode.get(normalizedCode(categoryCode));
+  const category = categoriesByCode(categories).get(normalizedCode(categoryCode));
   if (!category) return null;
 
   return {
@@ -220,9 +224,12 @@ export function posMenuCategorySelection(
   };
 }
 
-export function buildPosMenuPlacementPatch(input: PosMenuPlacementInput): PosMenuPlacementResult {
+export function buildPosMenuPlacementPatch(
+  input: PosMenuPlacementInput,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): PosMenuPlacementResult {
   const categoryCode = normalizedCode(input.posCategoryCode);
-  const category = categoryByCode.get(categoryCode);
+  const category = categoriesByCode(categories).get(categoryCode);
   if (!category) {
     return { ok: false, error: 'Choose an approved POS category.' };
   }
@@ -269,8 +276,11 @@ export function buildPosMenuPlacementPatch(input: PosMenuPlacementInput): PosMen
   };
 }
 
-export function shouldShowNeedsClassificationBadge(item: Partial<MenuItem>): boolean {
-  return !classifyPosMenuItem(item).isClassified;
+export function shouldShowNeedsClassificationBadge(
+  item: Partial<MenuItem>,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): boolean {
+  return !classifyPosMenuItemWithCategories(item, categories).isClassified;
 }
 
 export function finishedGoodTaxonomyFields(data: Record<string, unknown>): Pick<
@@ -317,6 +327,13 @@ function needsClassification(reason: string): PosMenuClassification {
 }
 
 export function classifyPosMenuItem(item: Partial<MenuItem>): PosMenuClassification {
+  return classifyPosMenuItemWithCategories(item, POS_MENU_CATEGORIES);
+}
+
+export function classifyPosMenuItemWithCategories(
+  item: Partial<MenuItem>,
+  categories: PosMenuCategoryDefinition[],
+): PosMenuClassification {
   const rawCategoryCode = normalizedCode(
     item.posCategoryCode || item.categoryCode || item.categoryId || item.category,
   );
@@ -329,7 +346,7 @@ export function classifyPosMenuItem(item: Partial<MenuItem>): PosMenuClassificat
   const subcategoryCode = compactSubcategoryMapping
     ? compactSubcategoryMapping.subcategoryCode || ''
     : rawSubcategoryCode || legacyMapping?.subcategoryCode || '';
-  const category = categoryByCode.get(categoryCode);
+  const category = categoriesByCode(categories).get(categoryCode);
 
   if (!category) {
     return needsClassification(rawCategoryCode ? `Unknown category code: ${rawCategoryCode}` : 'Category metadata is missing');

@@ -4,11 +4,10 @@ import { ChevronDown, ChevronRight, Loader2, Plus, Save, Trash2 } from 'lucide-r
 import { useAuth } from '../../../contexts/AuthContext';
 import { db } from '../../../lib/firebase';
 import {
+  allPosMenuCategories,
   categoryReferenceCount,
-  committedPosMenuTaxonomy,
   normalizeTaxonomyCode,
   normalizeTaxonomyDisplayName,
-  resolvePosMenuTaxonomy,
   taxonomyReferenceProtection,
   taxonomyUsage,
   validatePosMenuTaxonomy,
@@ -18,37 +17,46 @@ import {
 
 const DOC_ID = 'posMenuTaxonomy';
 
-export default function PosCategoryManagerTab() {
+interface Props {
+  effectiveTaxonomy: PosMenuTaxonomy;
+  source: 'firestore' | 'fallback';
+  loading: boolean;
+  loadError: string;
+  onTaxonomySaved: (taxonomy: PosMenuTaxonomy) => void;
+}
+
+export default function PosCategoryManagerTab({
+  effectiveTaxonomy,
+  source,
+  loading,
+  loadError,
+  onTaxonomySaved,
+}: Props) {
   const { staffProfile } = useAuth();
   const isAdmin = staffProfile?.role === 'ADMIN' && staffProfile?.isActive !== false;
-  const [taxonomy, setTaxonomy] = useState<PosMenuTaxonomy>(committedPosMenuTaxonomy());
-  const [source, setSource] = useState<'firestore' | 'fallback'>('fallback');
+  const [taxonomy, setTaxonomy] = useState<PosMenuTaxonomy>(effectiveTaxonomy);
   const [finishedGoods, setFinishedGoods] = useState<Array<Record<string, unknown>>>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const unsubscribeTaxonomy = onSnapshot(doc(db, 'appSettings', DOC_ID), (snapshot) => {
-      const resolved = resolvePosMenuTaxonomy(snapshot.exists() ? snapshot.data() : null);
-      setTaxonomy(resolved.taxonomy);
-      setSource(resolved.source);
-      setLoading(false);
-    }, () => {
-      setTaxonomy(committedPosMenuTaxonomy());
-      setSource('fallback');
-      setLoading(false);
-      setError('The saved taxonomy could not be read. The committed fallback is shown.');
-    });
     const unsubscribeGoods = onSnapshot(collection(db, 'finishedGoods'), (snapshot) => {
       setFinishedGoods(snapshot.docs.map((entry) => entry.data()));
     });
-    return () => { unsubscribeTaxonomy(); unsubscribeGoods(); };
+    return unsubscribeGoods;
   }, []);
 
-  const usage = useMemo(() => taxonomyUsage(finishedGoods), [finishedGoods]);
+  useEffect(() => {
+    setTaxonomy(effectiveTaxonomy);
+  }, [effectiveTaxonomy]);
+
+  const referenceCategories = useMemo(() => allPosMenuCategories(taxonomy), [taxonomy]);
+  const usage = useMemo(
+    () => taxonomyUsage(finishedGoods, referenceCategories),
+    [finishedGoods, referenceCategories],
+  );
   const updateCategory = (index: number, patch: Partial<ManagedPosMenuCategory>) => {
     setTaxonomy((current) => ({
       ...current,
@@ -145,16 +153,22 @@ export default function PosCategoryManagerTab() {
         sortOrder: Number(subcategory.sortOrder),
       })),
     }));
+    const savedTaxonomy: PosMenuTaxonomy = {
+      schemaVersion: taxonomy.schemaVersion,
+      categories: normalized,
+    };
     setSaving(true);
     try {
       await setDoc(doc(db, 'appSettings', DOC_ID), {
-        schemaVersion: 1,
-        categories: normalized,
+        schemaVersion: savedTaxonomy.schemaVersion,
+        categories: savedTaxonomy.categories,
         updatedAt: serverTimestamp(),
         updatedByUserId: staffProfile?.uid || '',
         updatedByName: staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Admin',
         ...(source === 'fallback' ? { createdAt: serverTimestamp() } : {}),
       });
+      setTaxonomy(savedTaxonomy);
+      onTaxonomySaved(savedTaxonomy);
       setMessage('POS category taxonomy saved.');
     } catch (saveError) {
       console.error('POS taxonomy save failed', saveError);
@@ -170,7 +184,7 @@ export default function PosCategoryManagerTab() {
       <span className={`self-start rounded-full px-3 py-1 text-xs font-black ${source === 'firestore' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{source === 'firestore' ? 'Saved taxonomy' : 'Committed fallback'}</span>
     </div>
     {!isAdmin && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Read only. Only an active Admin can make changes.</div>}
-    {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">{error}</div>}
+    {(loadError || error) && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">{error || loadError}</div>}
     {message && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{message}</div>}
     <div className="space-y-3">
       {taxonomy.categories.map((category, index) => {

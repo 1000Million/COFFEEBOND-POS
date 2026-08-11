@@ -28,7 +28,10 @@ import {
 } from "lucide-react";
 import FinishedGoodModal from "./FinishedGoodModal";
 import { useAuth } from "../../../contexts/AuthContext";
-import { shouldShowNeedsClassificationBadge } from "../../../lib/posMenuNavigation";
+import {
+  shouldShowNeedsClassificationBadge,
+  type PosMenuCategoryDefinition,
+} from "../../../lib/posMenuNavigation";
 
 function parseCSV(text: string) {
   const rows = [];
@@ -71,7 +74,11 @@ function parseCSV(text: string) {
   return rows;
 }
 
-export default function FinishedGoodsTab() {
+interface Props {
+  posMenuCategories: PosMenuCategoryDefinition[];
+}
+
+export default function FinishedGoodsTab({ posMenuCategories }: Props) {
   const { staffProfile } = useAuth();
   const isAdmin = staffProfile?.role === "ADMIN" && staffProfile?.isActive !== false;
 
@@ -1281,7 +1288,7 @@ COLD_FOAM,Cold Foam,ADDON,Addon,50,NO_STOCK,BARISTA,0,TRUE,TRUE,PREP,COLD_FOAM_B
                   <p className="text-xs text-neutral-500 font-mono truncate mt-0.5">
                     {item.code}
                   </p>
-                  {shouldShowNeedsClassificationBadge(item) && (
+                  {shouldShowNeedsClassificationBadge(item, posMenuCategories) && (
                     <span className="mt-2 inline-flex rounded-md bg-amber-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-amber-800">
                       Needs Classification
                     </span>
@@ -1396,6 +1403,7 @@ COLD_FOAM,Cold Foam,ADDON,Addon,50,NO_STOCK,BARISTA,0,TRUE,TRUE,PREP,COLD_FOAM_B
           isOpen={isModalOpen}
           onClose={() => setIsModalOpen(false)}
           item={editingItem}
+          posMenuCategories={posMenuCategories}
         />
       )}
 
