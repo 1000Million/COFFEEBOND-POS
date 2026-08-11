@@ -2792,9 +2792,9 @@ export default function POSHome() {
   }
 
   return (
-    <div className="relative flex h-[calc(100dvh-72px)] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0">
-      <div className="shrink-0 max-w-full overflow-x-hidden border-b border-[#eadfd4] bg-white/95 px-3 py-2 shadow-sm backdrop-blur sm:px-4">
-          <div className="flex min-w-0 flex-col gap-2 md:flex-row md:flex-wrap md:items-center">
+    <div className="relative flex h-[100dvh] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0">
+      <div className="shrink-0 max-w-full overflow-x-hidden border-b border-[#eadfd4] bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2">
+          <div className="flex min-w-0 flex-col gap-1.5 md:flex-row md:flex-wrap md:items-center md:gap-2">
             <div className="flex w-full min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-1.5 md:w-auto md:max-w-full">
               <StoreIcon size={15} className="shrink-0 text-[#5c4033]" />
               <select
@@ -2920,9 +2920,9 @@ export default function POSHome() {
           )}
         </aside>
 
-        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 custom-scrollbar sm:px-4 lg:px-5">
-          <div className="space-y-3 pb-32 xl:pb-6">
-            <div className="rounded-2xl border border-[#e8ddd2] bg-white p-3 shadow-[0_8px_20px_rgba(62,39,35,0.04)]">
+        <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-2 custom-scrollbar sm:px-4 sm:pt-3 lg:px-5 ${cart.length > 0 ? 'pb-24' : 'pb-3'} xl:pb-6`}>
+          <div className={`space-y-2.5 ${cart.length > 0 ? 'pb-32' : 'pb-3'} xl:space-y-3 xl:pb-6`}>
+            <div className="rounded-2xl border border-[#e8ddd2] bg-white p-2.5 shadow-[0_8px_20px_rgba(62,39,35,0.04)] sm:p-3">
               <div className="grid w-full min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:hidden">
                 <label className="space-y-1">
                   <span className="text-[10px] font-black uppercase tracking-[0.12em] text-neutral-500">Category</span>
@@ -3065,7 +3065,7 @@ export default function POSHome() {
                             whileHover={{ scale: 1.015, y: -2 }}
                             whileTap={{ scale: 0.985 }}
                             onClick={() => addToCart(item)}
-                            className="group flex min-h-[112px] min-w-0 flex-col justify-between rounded-2xl border border-[#eadfd4] bg-white p-3 text-left shadow-[0_6px_16px_rgba(62,39,35,0.05)] transition-all hover:border-[#5c4033]/25 hover:bg-[#fffaf4]"
+                            className="group flex min-h-[108px] min-w-0 flex-col justify-between rounded-2xl border border-[#eadfd4] bg-white p-2.5 text-left shadow-[0_6px_16px_rgba(62,39,35,0.05)] transition-all hover:border-[#5c4033]/25 hover:bg-[#fffaf4] sm:min-h-[112px] sm:p-3"
                           >
                             <div className="flex min-w-0 items-start justify-between gap-2">
                               {showContext ? (
@@ -3085,10 +3085,10 @@ export default function POSHome() {
                                 <Plus size={15} className={`shrink-0 ${tone.icon}`} strokeWidth={2.8} />
                               )}
                             </div>
-                            <div className="min-w-0 flex-1 pt-2">
+                            <div className="min-w-0 flex-1 pt-1.5 sm:pt-2">
                               <h4 className="line-clamp-2 text-[13px] font-black leading-snug text-[#2d1c19]">{item.name}</h4>
                             </div>
-                            <div className="flex items-end justify-between gap-2 pt-2">
+                            <div className="flex items-end justify-between gap-2 pt-1.5 sm:pt-2">
                               <p className="font-mono text-[15px] font-black text-[#3e2723]">₹{item.price}</p>
                               {item.prepStation && item.prepStation !== 'NONE' && (
                                 <span className="rounded-full bg-neutral-100 px-2 py-1 text-[9px] font-black text-neutral-500">
@@ -4052,8 +4052,8 @@ export default function POSHome() {
         <div className="fixed bottom-0 left-0 right-0 z-30 max-w-full border-t border-[#eadfd4] bg-white p-3 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 xl:hidden">
            <button onClick={() => setIsMobileCartOpen(true)} className="flex w-full items-center justify-between gap-3 rounded-2xl bg-[#3e2723] px-4 py-3.5 font-black text-white shadow-sm transition-colors hover:bg-[#2d1c19] sm:px-5">
               <span className="flex min-w-0 items-center gap-2">
-                <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
                 <span className="truncate text-sm">View Order</span>
+                <span className="rounded-xl bg-white/20 px-2.5 py-1 text-xs">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>
               </span>
 	              <span className="min-w-0 truncate text-base sm:text-lg">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>
            </button>

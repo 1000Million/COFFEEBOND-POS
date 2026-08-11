@@ -16,6 +16,11 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
+  /h-\[100dvh\][^\n]+lg:h-\[calc\(100dvh-92px\)\]/,
+  'the mobile POS root must fill the viewport instead of leaving a blank bottom band',
+);
+assert.match(
+  source,
   /w-full min-w-0 max-w-full bg-transparent[^\n]+md:min-w-\[180px\]/,
   'the store selector must be fluid on mobile and retain its desktop minimum width',
 );
@@ -23,6 +28,11 @@ assert.match(
   source,
   /grid w-full min-w-0 grid-cols-3[^\n]+md:flex md:w-auto/,
   'service-mode controls must fit the mobile viewport and return to a desktop row',
+);
+assert.match(
+  source,
+  /flex min-w-0 flex-col gap-1\.5 md:flex-row md:flex-wrap md:items-center md:gap-2/,
+  'store, service, and secondary controls must use separate mobile rows',
 );
 assert.match(
   source,
@@ -53,6 +63,21 @@ assert.match(
   source,
   /sm:p-4 xl:hidden/,
   'the sticky cart summary must remain available below the desktop breakpoint',
+);
+assert.match(
+  source,
+  /cart\.length > 0 \? 'pb-24' : 'pb-3'/,
+  'the menu pane must not reserve a blank sticky-cart area when the cart is empty',
+);
+assert.match(
+  source,
+  /min-h-\[108px\][^\n]+sm:min-h-\[112px\]/,
+  'product cards must stay compact on phone widths while preserving desktop readability',
+);
+assert.match(
+  source,
+  /View Order<\/span>[\s\S]*cartItemCount/,
+  'the populated sticky cart action must show its label and item count',
 );
 
 console.log('POS responsive layout tests passed.');
