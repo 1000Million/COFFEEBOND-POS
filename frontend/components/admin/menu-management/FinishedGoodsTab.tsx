@@ -32,6 +32,18 @@ import {
   shouldShowNeedsClassificationBadge,
   type PosMenuCategoryDefinition,
 } from "../../../lib/posMenuNavigation";
+import {
+  assessPosClassificationRecovery,
+  assertPosVisibilityRepairPatch,
+  planPosVisibilityRepair,
+} from "../../../lib/posVisibilityRepair";
+
+function formatRepairValue(value: unknown): string {
+  if (value === undefined) return "Missing";
+  if (value === null) return "Null";
+  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "No stores";
+  return String(value);
+}
 
 function parseCSV(text: string) {
   const rows = [];
@@ -92,9 +104,70 @@ export default function FinishedGoodsTab({ posMenuCategories }: Props) {
   const [typeFilter, setTypeFilter] = useState("");
   const [productionModeFilter, setProductionModeFilter] = useState("");
   const [isSeeding, setIsSeeding] = useState(false);
+  const [repairInspectionItems, setRepairInspectionItems] = useState<
+    Array<Record<string, unknown>> | null
+  >(null);
+  const [includeExplicitActivation, setIncludeExplicitActivation] =
+    useState(false);
+  const [repairError, setRepairError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [stores, setStores] = useState<Store[]>([]);
+  const repairStoreIds = useMemo(
+    () =>
+      stores
+        .filter((store) => store.isActive !== false)
+        .map((store) => store.id),
+    [stores],
+  );
+
+  const repairPreviewPlans = useMemo(
+    () =>
+      (repairInspectionItems || []).map((item) =>
+        planPosVisibilityRepair(
+          item,
+          repairStoreIds,
+          posMenuCategories,
+          { includeExplicitActivation },
+        ),
+      ),
+    [
+      includeExplicitActivation,
+      posMenuCategories,
+      repairInspectionItems,
+      repairStoreIds,
+    ],
+  );
+
+  const visibilityIssuePlans = useMemo(
+    () =>
+      items
+        .map((item) =>
+          planPosVisibilityRepair(
+            item as unknown as Record<string, unknown>,
+            repairStoreIds,
+            posMenuCategories,
+          ),
+        )
+        .filter(
+          (plan) =>
+            plan.changes.length > 0 || plan.visibilityWarnings.length > 0,
+        ),
+    [items, posMenuCategories, repairStoreIds],
+  );
+
+  const classificationRecovery = useMemo(
+    () =>
+      items
+        .map((item) =>
+          assessPosClassificationRecovery(
+            item as unknown as Record<string, unknown>,
+            posMenuCategories,
+          ),
+        )
+        .filter((entry) => entry !== null),
+    [items, posMenuCategories],
+  );
 
   useEffect(() => {
     const fetchStores = async () => {
@@ -527,272 +600,79 @@ export default function FinishedGoodsTab({ posMenuCategories }: Props) {
   const handleRepair = async () => {
     if (!isAdmin) return;
     setIsSeeding(true);
+    setRepairError("");
     try {
       const fgSnap = await getDocs(query(collection(db, "finishedGoods")));
-      const fgs = fgSnap.docs.map((d) => ({ ...d.data(), id: d.id }) as any);
+      setRepairInspectionItems(
+        fgSnap.docs.map((snapshot) => ({
+          ...snapshot.data(),
+          id: snapshot.id,
+        })),
+      );
+      setIncludeExplicitActivation(false);
+    } catch (err: any) {
+      console.error("Visibility repair inspection failed", err);
+      setRepairError(`Inspection failed: ${err.message}`);
+    } finally {
+      setIsSeeding(false);
+    }
+  };
 
-      const allStoreIds = stores.map((s) => s.id);
+  const executeVisibilityRepair = async () => {
+    if (!isAdmin || !repairInspectionItems) return;
+    const plansWithChanges = repairPreviewPlans.filter(
+      (plan) => plan.changes.length > 0,
+    );
+    setRepairError("");
 
-      const chunks = [];
-      for (let i = 0; i < fgs.length; i += 300) {
-        chunks.push(fgs.slice(i, i + 300));
+    try {
+      // Validate every plan before constructing or committing any write batch.
+      for (const plan of plansWithChanges) {
+        if (!plan.documentId) {
+          throw new Error(`Missing document ID for ${plan.productCode || plan.productName}`);
+        }
+        assertPosVisibilityRepairPatch(plan.patch);
       }
+    } catch (err: any) {
+      console.error("Visibility repair protected-field guard blocked all writes", err);
+      setRepairError(err.message);
+      return;
+    }
 
-      let totalFixed = 0;
-      let warnings: string[] = [];
+    if (plansWithChanges.length === 0) {
+      setRepairError("No approved visibility changes are proposed.");
+      return;
+    }
 
-      for (const chunk of chunks) {
+    const includesActivation = plansWithChanges.some((plan) =>
+      plan.changes.some((change) => change.requiresExplicitActivation),
+    );
+    const confirmed = window.confirm(
+      `${includesActivation ? "This will explicitly activate visibility for selected disabled or unassigned items. " : ""}`
+        + `Apply ${plansWithChanges.length} visibility-only repair(s)? `
+        + "POS category and subcategory placement will not be changed.",
+    );
+    if (!confirmed) return;
+
+    setIsSeeding(true);
+    try {
+      for (let index = 0; index < plansWithChanges.length; index += 300) {
         const batch = writeBatch(db);
-        for (const item of chunk) {
-          let needsUpdate = false;
-          const updates: any = {};
-
-          // string booleans
-          if (typeof item.isSellable === "string") {
-            updates.isSellable = ["true", "yes", "1"].includes(
-              item.isSellable.toLowerCase(),
-            );
-            needsUpdate = true;
-          } else if (item.isSellable === undefined) {
-            updates.isSellable = true;
-            needsUpdate = true;
-          }
-
-          if (typeof item.isAvailable === "string") {
-            updates.isAvailable = ["true", "yes", "1"].includes(
-              item.isAvailable.toLowerCase(),
-            );
-            needsUpdate = true;
-          } else if (item.isAvailable === undefined) {
-            updates.isAvailable = true;
-            needsUpdate = true;
-          }
-
-          if (typeof item.isActive === "string") {
-            updates.isActive = ["true", "yes", "1"].includes(
-              item.isActive.toLowerCase(),
-            );
-            needsUpdate = true;
-          } else if (item.isActive === undefined) {
-            updates.isActive = true;
-            needsUpdate = true;
-          }
-
-          // store IDs
-          if (
-            !item.availableStoreIds ||
-            (Array.isArray(item.availableStoreIds) &&
-              item.availableStoreIds.length === 0)
-          ) {
-            updates.availableStoreIds = [...allStoreIds];
-            needsUpdate = true;
-          } else if (typeof item.availableStoreIds === "string") {
-            if (item.availableStoreIds.trim().toUpperCase() === "ALL") {
-              updates.availableStoreIds = [...allStoreIds];
-            } else {
-              updates.availableStoreIds = item.availableStoreIds
-                .split(",")
-                .map((s: string) => s.trim())
-                .filter(Boolean);
-            }
-            needsUpdate = true;
-          }
-
-          // missing name/category
-          if (!item.displayName && item.name) {
-            updates.displayName = item.name;
-            needsUpdate = true;
-          }
-
-          // === COFFEE BOND NEW STRUCTURE ===
-          const n = (item.displayName || item.name || "").toLowerCase();
-          let cName = "Misc",
-            cCode = "MISC",
-            cOrder = 999;
-          let sName = "",
-            sCode = "",
-            sOrder = 999;
-
-          if (
-            n.includes("espresso") ||
-            n.includes("long black") ||
-            n.includes("cortado") ||
-            n.includes("magik") ||
-            n.includes("flat white") ||
-            n.includes("cappuccino") ||
-            n.includes("latte") ||
-            n.includes("macchiato") ||
-            n.includes("cold coffee") ||
-            n.includes("mocha")
-          ) {
-            cName = "Espresso Bar";
-            cCode = "ESP";
-            cOrder = 1;
-            if (
-              n.includes("iced") ||
-              n.includes("cold") ||
-              n.includes("tonic")
-            ) {
-              sName = "ICED COFFEES";
-              sCode = "ICE";
-              sOrder = 3;
-            } else if (n.includes("espresso") || n.includes("long black")) {
-              sName = "BLACK COFFEE";
-              sCode = "BLK";
-              sOrder = 1;
-            } else {
-              sName = "MILK BASED";
-              sCode = "MILK";
-              sOrder = 2;
-            }
-          } else if (
-            n.includes("matcha") ||
-            n.includes("pour over") ||
-            n.includes("aeropress") ||
-            n.includes("v60")
-          ) {
-            cName = "Matcha & Manual Brews";
-            cCode = "MAT";
-            cOrder = 2;
-          } else if (n.includes("cold brew") || n.includes("vietnamese")) {
-            cName = "Cold Brew & Vietnamese";
-            cCode = "CBV";
-            cOrder = 3;
-          } else if (n.includes("smoothie")) {
-            cName = "Smoothies";
-            cCode = "SMO";
-            cOrder = 4;
-          } else if (n.includes("hot chocolate") || n.includes("specialty")) {
-            cName = "Specialty Drinks";
-            cCode = "SPC";
-            cOrder = 5;
-          } else if (n.includes("tea") && !n.includes("iced")) {
-            cName = "Herbal Tea";
-            cCode = "TEA";
-            cOrder = 6;
-          } else if (
-            n.includes("maison") ||
-            n.includes("iced tea") ||
-            n.includes("bitter") ||
-            n.includes("gunner") ||
-            n.includes("coco mango")
-          ) {
-            cName = "Cold Crafted";
-            cCode = "CCF";
-            cOrder = 7;
-          } else if (n.includes("juice")) {
-            cName = "Fresh Juices";
-            cCode = "JUI";
-            cOrder = 8;
-          } else if (
-            n.includes("zaffle") ||
-            n.includes("fries") ||
-            n.includes("hummus") ||
-            n.includes("pancakes") ||
-            n.includes("kimchi")
-          ) {
-            cName = "Zaffle & Bites";
-            cCode = "ZAF";
-            cOrder = 9;
-          } else if (n.includes("salad")) {
-            cName = "Salads";
-            cCode = "SAL";
-            cOrder = 10;
-          } else if (n.includes("add on") || n.includes("extra")) {
-            cName = "Add Ons";
-            cCode = "ADD";
-            cOrder = 11;
-          } else if (
-            n.includes("pizza") ||
-            n.includes("pide") ||
-            n.includes("margherita") ||
-            n.includes("mozzarella")
-          ) {
-            cName = "Pizza & Pide";
-            cCode = "PIZ";
-            cOrder = 12;
-          } else if (n.includes("pasta")) {
-            cName = "Signature Pasta";
-            cCode = "PAS";
-            cOrder = 13;
-          } else if (
-            n.includes("cookie") ||
-            n.includes("croissant") ||
-            n.includes("cake") ||
-            n.includes("bread")
-          ) {
-            cName = "Baked by Bond";
-            cCode = "BAK";
-            cOrder = 14;
-          } else if (n.includes("ice cream")) {
-            cName = "Housemade Dairy Ice Cream";
-            cCode = "ICE";
-            cOrder = 15;
-          } else {
-            cName = item.category || "Misc";
-            cCode = cName.substring(0, 3).toUpperCase();
-            cOrder = 99;
-          }
-
-          if (item.posCategoryName !== cName) {
-            updates.posCategoryName = cName;
-            needsUpdate = true;
-          }
-          if (item.posCategoryCode !== cCode) {
-            updates.posCategoryCode = cCode;
-            needsUpdate = true;
-          }
-          if (item.categorySortOrder !== cOrder) {
-            updates.categorySortOrder = cOrder;
-            needsUpdate = true;
-          }
-          if (item.posSubcategoryName !== sName) {
-            updates.posSubcategoryName = sName;
-            needsUpdate = true;
-          }
-          if (item.posSubcategoryCode !== sCode) {
-            updates.posSubcategoryCode = sCode;
-            needsUpdate = true;
-          }
-          if (item.subcategorySortOrder !== sOrder) {
-            updates.subcategorySortOrder = sOrder;
-            needsUpdate = true;
-          }
-
-          if (typeof item.sortOrder !== "number") {
-            updates.sortOrder = 99;
-            needsUpdate = true;
-          }
-
-          // price
-          if (
-            item.salePrice === undefined ||
-            item.salePrice === null ||
-            isNaN(Number(item.salePrice))
-          ) {
-            updates.salePrice = 0;
-            needsUpdate = true;
-            warnings.push(`Item ${item.code} had missing price, set to $0`);
-          }
-
-          if (needsUpdate) {
-            totalFixed++;
-            const ref = doc(db, "finishedGoods", item.id);
-            batch.update(ref, updates);
-          }
+        for (const plan of plansWithChanges.slice(index, index + 300)) {
+          assertPosVisibilityRepairPatch(plan.patch);
+          batch.update(
+            doc(db, "finishedGoods", plan.documentId),
+            plan.patch,
+          );
         }
         await batch.commit();
       }
-
-      const msg =
-        `Repaired ${totalFixed} items.\n\n` +
-        (warnings.length > 0
-          ? `Warnings:\n${warnings.slice(0, 10).join("\n")}${warnings.length > 10 ? "\n...and more." : ""}`
-          : "");
-      alert(msg);
+      alert(`Repaired visibility fields for ${plansWithChanges.length} item(s).`);
+      setRepairInspectionItems(null);
+      setIncludeExplicitActivation(false);
     } catch (err: any) {
-      console.error(err);
-      alert("Repair failed: " + err.message);
+      console.error("Visibility repair failed", err);
+      setRepairError(`Repair failed: ${err.message}`);
     } finally {
       setIsSeeding(false);
     }
@@ -1196,70 +1076,118 @@ COLD_FOAM,Cold Foam,ADDON,Addon,50,NO_STOCK,BARISTA,0,TRUE,TRUE,PREP,COLD_FOAM_B
         </div>
       </div>
 
-      {(() => {
-        const blockedItems = items
-          .map((item) => {
-            const reasons = [];
-            if (!item.isActive) reasons.push("Not active");
-            if (!item.isSellable) reasons.push("Not sellable");
-            if (!item.isAvailable) reasons.push("Not available");
-            if (!item.availableStoreIds || item.availableStoreIds.length === 0)
-              reasons.push("Not available for any store");
-            if (!item.salePrice || isNaN(Number(item.salePrice)))
-              reasons.push("Missing price");
-            if (!item.posCategoryName || !item.posCategoryCode)
-              reasons.push("Missing category");
-            if (!item.prepStation || item.prepStation === "NONE") {
-              if (item.itemType === "MADE_TO_ORDER")
-                reasons.push("Missing prep station for Made to Order");
-            }
-            return { item, reasons };
-          })
-          .filter((b) => b.reasons.length > 0);
+      {repairError && !repairInspectionItems && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">
+          {repairError}
+        </div>
+      )}
 
-        if (blockedItems.length === 0) return null;
-
-        return (
-          <div className="mb-6 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
-            <div className="p-4 bg-amber-100/50 border-b border-amber-200">
-              <h4 className="font-bold text-amber-900">
-                POS Visibility Issues
-              </h4>
-              <p className="text-sm text-amber-800">
-                These items will not display in the POS until the issues are
-                resolved. Click "Repair POS Visibility" to attempt an automatic
-                fix.
-              </p>
-            </div>
-            <div className="p-4 overflow-x-auto w-full">
-              <table className="w-full text-left text-sm min-w-[720px]">
-                <thead>
-                  <tr className="text-amber-800">
-                    <th className="pb-2 font-bold">Item Name</th>
-                    <th className="pb-2 font-bold">Code</th>
-                    <th className="pb-2 font-bold">Reasons Blocked</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-amber-200/50">
-                  {blockedItems.map((b, i) => (
-                    <tr key={i}>
-                      <td className="py-2 text-amber-900 font-medium">
-                        {b.item.name}
-                      </td>
-                      <td className="py-2 text-amber-800 font-mono text-xs">
-                        {b.item.code}
-                      </td>
-                      <td className="py-2 text-red-600 font-medium">
-                        {b.reasons.join(", ")}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      {visibilityIssuePlans.length > 0 && (
+        <div className="mb-6 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-blue-200 bg-blue-50">
+          <div className="border-b border-blue-200 bg-blue-100/50 p-4">
+            <h4 className="font-bold text-blue-900">VISIBILITY ISSUE</h4>
+            <p className="text-sm text-blue-800">
+              Review POS eligibility fields below. Repair first shows a preview;
+              disabled states are warnings unless an Admin explicitly includes
+              activation. POS category and subcategory placement will not be
+              changed.
+            </p>
           </div>
-        );
-      })()}
+          <div className="w-full overflow-x-auto p-4">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead>
+                <tr className="text-blue-800">
+                  <th className="pb-2 font-bold">Item Name</th>
+                  <th className="pb-2 font-bold">Code</th>
+                  <th className="pb-2 font-bold">Visibility Review</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-200/50">
+                {visibilityIssuePlans.map((plan) => (
+                  <tr key={plan.documentId || plan.productCode}>
+                    <td className="py-2 font-medium text-blue-900">
+                      {plan.productName}
+                    </td>
+                    <td className="py-2 font-mono text-xs text-blue-800">
+                      {plan.productCode}
+                    </td>
+                    <td className="py-2 font-medium text-blue-900">
+                      {[
+                        ...plan.changes.map((change) => change.reason),
+                        ...plan.visibilityWarnings,
+                      ].join(" ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {classificationRecovery.length > 0 && (
+        <div className="mb-6 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
+          <div className="border-b border-amber-200 bg-amber-100/50 p-4">
+            <h4 className="font-bold text-amber-900">
+              NEEDS CLASSIFICATION ({classificationRecovery.length})
+            </h4>
+            <p className="text-sm font-medium text-amber-800">
+              Assign a POS Category in the item editor. Visibility repair does
+              not classify products. Recovery suggestions below are read-only
+              and never use product-name inference.
+            </p>
+          </div>
+          <div className="w-full overflow-x-auto p-4">
+            <table className="w-full min-w-[1500px] text-left text-xs">
+              <thead>
+                <tr className="text-amber-800">
+                  <th className="pb-2 pr-4 font-bold">Document ID</th>
+                  <th className="pb-2 pr-4 font-bold">Code / Name</th>
+                  <th className="pb-2 pr-4 font-bold">Current POS Category</th>
+                  <th className="pb-2 pr-4 font-bold">Current POS Subcategory</th>
+                  <th className="pb-2 pr-4 font-bold">Legacy Category</th>
+                  <th className="pb-2 pr-4 font-bold">Proposed Recovery</th>
+                  <th className="pb-2 pr-4 font-bold">Confidence</th>
+                  <th className="pb-2 font-bold">Assessment</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-amber-200/50">
+                {classificationRecovery.map((entry) => (
+                  <tr key={entry.documentId || entry.productCode}>
+                    <td className="py-2 pr-4 font-mono text-amber-900">
+                      {entry.documentId || "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-amber-900">
+                      <span className="block font-mono font-bold">
+                        {entry.productCode || "—"}
+                      </span>
+                      <span>{entry.productName || "—"}</span>
+                    </td>
+                    <td className="py-2 pr-4 text-amber-900">
+                      {entry.currentPosCategoryCode || "—"} / {entry.currentPosCategoryName || "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-amber-900">
+                      {entry.currentPosSubcategoryCode || "—"} / {entry.currentPosSubcategoryName || "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-amber-900">
+                      {entry.legacyCategoryCode || "—"} / {entry.legacyCategory || "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-amber-900">
+                      {entry.proposedCategoryCode || "—"} / {entry.proposedCategoryName || "—"}
+                      <br />
+                      {entry.proposedSubcategoryCode || "—"} / {entry.proposedSubcategoryName || "—"}
+                    </td>
+                    <td className="py-2 pr-4 font-black text-amber-900">
+                      {entry.confidence}
+                    </td>
+                    <td className="py-2 text-amber-900">{entry.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {filteredItems.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-64 text-neutral-400 bg-neutral-50 border border-dashed border-neutral-300 rounded-2xl">
@@ -1395,6 +1323,206 @@ COLD_FOAM,Cold Foam,ADDON,Addon,50,NO_STOCK,BARISTA,0,TRUE,TRUE,PREP,COLD_FOAM_B
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {repairInspectionItems && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-xl font-black text-neutral-900">
+              POS Visibility Repair Preview
+            </h2>
+            <p className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-black text-emerald-900">
+              POS category and subcategory placement will not be changed.
+            </p>
+            <p className="mt-2 text-sm text-neutral-600">
+              This preview is inspection-only. No Firestore write occurs until
+              you press Confirm visibility repair and accept the final
+              confirmation.
+            </p>
+
+            <label className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <input
+                type="checkbox"
+                checked={includeExplicitActivation}
+                onChange={(event) =>
+                  setIncludeExplicitActivation(event.target.checked)
+                }
+                className="mt-1 h-4 w-4"
+              />
+              <span>
+                <span className="block font-bold text-amber-900">
+                  Explicitly include activation and missing store assignment
+                </span>
+                <span className="text-sm text-amber-800">
+                  Off by default. When enabled, inactive, non-sellable,
+                  unavailable, or unassigned items may be proposed as active and
+                  assigned to all active configured stores. Review every row
+                  before confirming.
+                </span>
+              </span>
+            </label>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                <div className="text-xs font-bold uppercase text-blue-700">
+                  Items with proposed changes
+                </div>
+                <div className="text-2xl font-black text-blue-900">
+                  {
+                    repairPreviewPlans.filter((plan) => plan.changes.length > 0)
+                      .length
+                  }
+                </div>
+              </div>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <div className="text-xs font-bold uppercase text-amber-700">
+                  Items requiring review
+                </div>
+                <div className="text-2xl font-black text-amber-900">
+                  {
+                    repairPreviewPlans.filter(
+                      (plan) => plan.visibilityWarnings.length > 0,
+                    ).length
+                  }
+                </div>
+              </div>
+              <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+                <div className="text-xs font-bold uppercase text-neutral-600">
+                  Needs Classification (not repaired)
+                </div>
+                <div className="text-2xl font-black text-neutral-900">
+                  {
+                    repairPreviewPlans.filter((plan) => plan.needsClassification)
+                      .length
+                  }
+                </div>
+              </div>
+            </div>
+
+            {repairError && (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">
+                {repairError}
+              </div>
+            )}
+
+            <div className="mt-5 w-full overflow-x-auto rounded-xl border border-neutral-200">
+              <table className="w-full min-w-[1050px] text-left text-sm">
+                <thead className="border-b border-neutral-200 bg-neutral-50 text-neutral-700">
+                  <tr>
+                    <th className="p-3 font-bold">Item Name</th>
+                    <th className="p-3 font-bold">Code</th>
+                    <th className="p-3 font-bold">Visibility Field</th>
+                    <th className="p-3 font-bold">Current</th>
+                    <th className="p-3 font-bold">Proposed</th>
+                    <th className="p-3 font-bold">Reason</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {repairPreviewPlans.flatMap((plan) =>
+                    plan.changes.map((change) => (
+                      <tr key={`${plan.documentId}-${change.field}`}>
+                        <td className="p-3 font-medium text-neutral-900">
+                          {plan.productName}
+                        </td>
+                        <td className="p-3 font-mono text-xs text-neutral-700">
+                          {plan.productCode}
+                        </td>
+                        <td className="p-3 font-mono text-xs font-bold text-blue-800">
+                          {change.field}
+                        </td>
+                        <td className="p-3 text-neutral-700">
+                          {formatRepairValue(change.currentValue)}
+                        </td>
+                        <td className="p-3 font-bold text-emerald-800">
+                          {formatRepairValue(change.proposedValue)}
+                        </td>
+                        <td className="p-3 text-neutral-700">
+                          {change.reason}
+                        </td>
+                      </tr>
+                    )),
+                  )}
+                  {repairPreviewPlans.every(
+                    (plan) => plan.changes.length === 0,
+                  ) && (
+                    <tr>
+                      <td colSpan={6} className="p-6 text-center text-neutral-500">
+                        No approved visibility changes are proposed.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {repairPreviewPlans.some(
+              (plan) => plan.visibilityWarnings.length > 0,
+            ) && (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <h3 className="font-black text-amber-900">
+                  Visibility warnings (not silently changed)
+                </h3>
+                <ul className="mt-2 max-h-48 list-disc space-y-1 overflow-y-auto pl-5 text-sm text-amber-900">
+                  {repairPreviewPlans.flatMap((plan) =>
+                    plan.visibilityWarnings.map((warning, index) => (
+                      <li key={`${plan.documentId}-warning-${index}`}>
+                        <strong>{plan.productCode || plan.productName}:</strong>{" "}
+                        {warning}
+                      </li>
+                    )),
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {repairPreviewPlans.some((plan) => plan.needsClassification) && (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <h3 className="font-black">NEEDS CLASSIFICATION</h3>
+                <p>
+                  These items remain outside classification repair. Assign a POS
+                  Category in the item editor.
+                </p>
+                <ul className="mt-2 max-h-40 list-disc space-y-1 overflow-y-auto pl-5">
+                  {repairPreviewPlans
+                    .filter((plan) => plan.needsClassification)
+                    .map((plan) => (
+                      <li key={`${plan.documentId}-classification`}>
+                        <strong>{plan.productCode || plan.productName}:</strong>{" "}
+                        {plan.classificationReason || "Invalid POS placement"}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col-reverse justify-end gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => {
+                  setRepairInspectionItems(null);
+                  setIncludeExplicitActivation(false);
+                  setRepairError("");
+                }}
+                disabled={isSeeding}
+                className="rounded-xl bg-neutral-100 px-6 py-2 font-bold text-neutral-700 hover:bg-neutral-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={executeVisibilityRepair}
+                disabled={
+                  isSeeding ||
+                  repairPreviewPlans.every((plan) => plan.changes.length === 0)
+                }
+                className="flex items-center justify-center gap-2 rounded-xl bg-blue-700 px-6 py-2 font-bold text-white hover:bg-blue-800 disabled:opacity-50"
+              >
+                {isSeeding ? <Loader2 size={16} className="animate-spin" /> : null}
+                Confirm visibility repair
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
