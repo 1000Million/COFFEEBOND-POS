@@ -79,5 +79,30 @@ assert.match(
   /View Order<\/span>[\s\S]*cartItemCount/,
   'the populated sticky cart action must show its label and item count',
 );
+assert.match(
+  source,
+  /const dismissMobileKeyboard = \(\) =>[\s\S]*document\.activeElement\.blur\(\)/,
+  'POS must provide a local keyboard dismissal helper',
+);
+assert.match(
+  source,
+  /isSearchInputFocused &&[\s\S]*Hide Keyboard/,
+  'focused mobile search must expose a Hide Keyboard action',
+);
+assert.match(
+  source,
+  /onKeyDown=\{blurInputOnEnter\}[\s\S]*enterKeyHint="search"/,
+  'search Enter must dismiss the focused field',
+);
+assert.match(
+  source,
+  /matchMedia\('\(max-width: 1279px\)'\)[\s\S]*event\.stopPropagation\(\)/,
+  'mobile Enter dismissal must preserve the existing desktop Enter-to-add shortcut',
+);
+assert.match(
+  source,
+  /inputMode="decimal"[\s\S]*enterKeyHint="done"[\s\S]*onKeyDown=\{blurInputOnEnter\}/,
+  'numeric POS inputs must use a done keyboard action',
+);
 
 console.log('POS responsive layout tests passed.');

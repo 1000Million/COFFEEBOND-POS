@@ -814,6 +814,7 @@ export default function POSHome() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchInputFocused, setIsSearchInputFocused] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const recallMenuRef = useRef<HTMLDivElement | null>(null);
   const checkoutAttemptRef = useRef<CheckoutAttempt | null>(loadCheckoutAttempt());
@@ -1702,7 +1703,25 @@ export default function POSHome() {
       ? `Matches across the full ${selectedStore?.name || 'store'} menu`
       : null;
 
+  const dismissMobileKeyboard = () => {
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    setIsSearchInputFocused(false);
+  };
+
+  const blurInputOnEnter = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const shouldDismissKeyboard = typeof window !== 'undefined'
+      && window.matchMedia('(max-width: 1279px)').matches;
+    if (event.key === 'Enter' && shouldDismissKeyboard) {
+      event.stopPropagation();
+      event.currentTarget.blur();
+      setIsSearchInputFocused(false);
+    }
+  };
+
   const selectCategory = (categoryId: string) => {
+    dismissMobileKeyboard();
     setSelectedCategoryId(categoryId);
     setSelectedSubcategoryId('ALL');
   };
@@ -2965,12 +2984,19 @@ export default function POSHome() {
                   placeholder="Search products or codes..."
                   value={searchQuery}
                   onChange={event => setSearchQuery(event.target.value)}
+                  onFocus={() => setIsSearchInputFocused(true)}
+                  onBlur={() => setIsSearchInputFocused(false)}
+                  onKeyDown={blurInputOnEnter}
+                  enterKeyHint="search"
                   className="min-h-[42px] w-full rounded-xl border border-[#eadfd4] bg-[#fcfaf7] pl-11 pr-10 text-sm font-semibold text-neutral-800 outline-none transition focus:border-[#5c4033] focus:ring-4 focus:ring-[#5c4033]/10"
                 />
                 {searchQuery && (
                   <button
                     type="button"
-                    onClick={() => setSearchQuery('')}
+                    onClick={() => {
+                      setSearchQuery('');
+                      dismissMobileKeyboard();
+                    }}
                     aria-label="Clear product search"
                     className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-neutral-400 hover:bg-white hover:text-[#3e2723]"
                   >
@@ -2978,6 +3004,18 @@ export default function POSHome() {
                   </button>
                 )}
               </div>
+              {isSearchInputFocused && (
+                <div className="mt-1.5 flex justify-end xl:hidden">
+                  <button
+                    type="button"
+                    onMouseDown={event => event.preventDefault()}
+                    onClick={dismissMobileKeyboard}
+                    className="rounded-lg border border-[#eadfd4] bg-white px-2.5 py-1 text-[10px] font-black text-[#5c4033] shadow-sm"
+                  >
+                    Hide Keyboard
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-end justify-between gap-2 px-1">
@@ -3064,7 +3102,10 @@ export default function POSHome() {
                             key={item.id}
                             whileHover={{ scale: 1.015, y: -2 }}
                             whileTap={{ scale: 0.985 }}
-                            onClick={() => addToCart(item)}
+                            onClick={() => {
+                              dismissMobileKeyboard();
+                              addToCart(item);
+                            }}
                             className="group flex min-h-[108px] min-w-0 flex-col justify-between rounded-2xl border border-[#eadfd4] bg-white p-2.5 text-left shadow-[0_6px_16px_rgba(62,39,35,0.05)] transition-all hover:border-[#5c4033]/25 hover:bg-[#fffaf4] sm:min-h-[112px] sm:p-3"
                           >
                             <div className="flex min-w-0 items-start justify-between gap-2">
@@ -3340,6 +3381,9 @@ export default function POSHome() {
                       type="text"
                       placeholder="Table number"
                       value={tableNumber}
+                      inputMode="numeric"
+                      enterKeyHint="done"
+                      onKeyDown={blurInputOnEnter}
                       onChange={e => {
                         setTableNumber(e.target.value);
                         if (e.target.value.trim()) setTableNumberError(null);
@@ -3524,6 +3568,9 @@ export default function POSHome() {
                   max="100"
                   step="0.1"
                   value={discountPercentStr}
+                  inputMode="decimal"
+                  enterKeyHint="done"
+                  onKeyDown={blurInputOnEnter}
                   onChange={e => setDiscountPercentStr(String(clampDiscountPercent(e.target.value)))}
                   disabled={razorpayPaymentLocked}
                   className="w-18 rounded-full border border-[#eadfd4] bg-white px-2.5 py-1 text-right font-mono text-[12px] outline-none focus:border-[#5c4033]"
@@ -3628,6 +3675,8 @@ export default function POSHome() {
                         <input
                           type="text"
                           value={customerName}
+                          enterKeyHint="done"
+                          onKeyDown={blurInputOnEnter}
                           onChange={event => setCustomerName(event.target.value)}
                           placeholder="Customer name"
                           className="h-10 w-full rounded-xl border border-[#eadfd4] bg-white px-3 text-sm outline-none transition focus:border-[#8a6a58] focus:ring-2 focus:ring-[#8a6a58]/10"
@@ -3638,6 +3687,8 @@ export default function POSHome() {
                         <input
                           type="tel"
                           inputMode="numeric"
+                          enterKeyHint="done"
+                          onKeyDown={blurInputOnEnter}
                           value={customerPhone}
                           onChange={event => handleComplimentaryPhoneChange(event.target.value)}
                           placeholder="10-digit mobile"
@@ -3689,6 +3740,8 @@ export default function POSHome() {
                             <input
                               type="text"
                               inputMode="numeric"
+                              enterKeyHint="done"
+                              onKeyDown={blurInputOnEnter}
                               autoComplete="one-time-code"
                               value={complimentaryOtpCode}
                               onChange={event => setComplimentaryOtpCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
@@ -3799,6 +3852,9 @@ export default function POSHome() {
                         min="0"
                         step="0.01"
                         value={payment.amountStr}
+                        inputMode="decimal"
+                        enterKeyHint="done"
+                        onKeyDown={blurInputOnEnter}
                         onChange={event => updateSplitPayment(payment.id, { amountStr: event.target.value })}
                         className="min-w-0 rounded-2xl border border-[#eadfd4] bg-white px-2.5 py-1.5 text-right text-[11px] font-mono font-bold text-neutral-700 outline-none focus:border-[#5c4033]"
                         placeholder="0.00"
