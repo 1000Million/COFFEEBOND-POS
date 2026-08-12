@@ -55,14 +55,15 @@ import {
   isCheckoutPermissionError,
 } from '../../lib/posCheckoutAccess';
 import {
-  classifyPosMenuItem,
+  classifyPosMenuItemWithCategories,
   finishedGoodTaxonomyFields,
   NEEDS_CLASSIFICATION_CATEGORY,
-  POS_MENU_CATEGORIES,
+  posMenuNavigationCategories,
   quickPicksInRankOrder,
   searchPosMenuItems,
   uniqueSortedPosMenuItems,
 } from '../../lib/posMenuNavigation';
+import { usePosMenuTaxonomy } from '../../lib/usePosMenuTaxonomy';
 
 type CheckoutError = {
   message: string;
@@ -798,6 +799,7 @@ function isExpectedCheckoutValidationError(error: unknown): boolean {
 
 export default function POSHome() {
   const { staffProfile } = useAuth();
+  const { categories: posMenuCategories } = usePosMenuTaxonomy();
   const isAdmin = staffProfile?.role === 'ADMIN';
   const canViewCheckoutDebug = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
 
@@ -1156,12 +1158,19 @@ export default function POSHome() {
   const availableMenuItems = useMemo(() => {
     return uniqueSortedPosMenuItems(
       menuItems.filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId)),
+      posMenuCategories,
     );
-  }, [menuItems, selectedStoreId]);
+  }, [menuItems, posMenuCategories, selectedStoreId]);
 
   const classificationByItemId = useMemo(() => new Map(
-    availableMenuItems.map(item => [item.id, classifyPosMenuItem(item as MenuItem & Record<string, unknown>)]),
-  ), [availableMenuItems]);
+    availableMenuItems.map(item => [
+      item.id,
+      classifyPosMenuItemWithCategories(
+        item as MenuItem & Record<string, unknown>,
+        posMenuCategories,
+      ),
+    ]),
+  ), [availableMenuItems, posMenuCategories]);
 
   const categoryItemCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1173,10 +1182,10 @@ export default function POSHome() {
   }, [availableMenuItems, classificationByItemId]);
 
   const unclassifiedItemCount = categoryItemCounts.get(NEEDS_CLASSIFICATION_CATEGORY.code) || 0;
-  const navigationCategories = useMemo(() => [
-    ...POS_MENU_CATEGORIES,
-    ...(unclassifiedItemCount > 0 ? [NEEDS_CLASSIFICATION_CATEGORY] : []),
-  ], [unclassifiedItemCount]);
+  const navigationCategories = useMemo(
+    () => posMenuNavigationCategories(posMenuCategories, unclassifiedItemCount),
+    [posMenuCategories, unclassifiedItemCount],
+  );
 
   const fastItems = useMemo(() => {
     return [...availableMenuItems]
@@ -1309,7 +1318,9 @@ export default function POSHome() {
   }, [selectedCategory, selectedSubcategoryId]);
 
   const filteredMenuItems = useMemo(() => {
-    if (searchQuery.trim()) return searchPosMenuItems(availableMenuItems, searchQuery);
+    if (searchQuery.trim()) {
+      return searchPosMenuItems(availableMenuItems, searchQuery, posMenuCategories);
+    }
     if (selectedCategoryId === 'QUICK_PICKS') return topFeaturedItems;
     if (selectedCategoryId === 'ALL') return availableMenuItems;
 
@@ -1322,6 +1333,7 @@ export default function POSHome() {
   }, [
     availableMenuItems,
     classificationByItemId,
+    posMenuCategories,
     searchQuery,
     selectedCategoryId,
     selectedSubcategoryId,
@@ -3087,7 +3099,10 @@ export default function POSHome() {
                     <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                       {section.items.map((item: MenuItem) => {
                         const classification = classificationByItemId.get(item.id)
-                          || classifyPosMenuItem(item as MenuItem & Record<string, unknown>);
+                          || classifyPosMenuItemWithCategories(
+                            item as MenuItem & Record<string, unknown>,
+                            posMenuCategories,
+                          );
                         const tone = menuTileTone(classification.category.code);
                         const quantityInCart = cartQuantityByItemId.get(item.id) || 0;
                         const showContext = Boolean(searchQuery.trim())

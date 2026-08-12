@@ -379,9 +379,13 @@ function productSortOrder(item: Partial<MenuItem>): number {
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
-export function comparePosMenuItems(left: MenuItem, right: MenuItem): number {
-  const leftClassification = classifyPosMenuItem(left);
-  const rightClassification = classifyPosMenuItem(right);
+export function comparePosMenuItems(
+  left: MenuItem,
+  right: MenuItem,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): number {
+  const leftClassification = classifyPosMenuItemWithCategories(left, categories);
+  const rightClassification = classifyPosMenuItemWithCategories(right, categories);
 
   return leftClassification.category.sortOrder - rightClassification.category.sortOrder
     || (leftClassification.subcategory?.sortOrder ?? Number.MAX_SAFE_INTEGER)
@@ -390,7 +394,10 @@ export function comparePosMenuItems(left: MenuItem, right: MenuItem): number {
     || nameCollator.compare(left.name || '', right.name || '');
 }
 
-export function uniqueSortedPosMenuItems(items: MenuItem[]): MenuItem[] {
+export function uniqueSortedPosMenuItems(
+  items: MenuItem[],
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): MenuItem[] {
   const seen = new Set<string>();
   return items
     .filter((item) => {
@@ -399,15 +406,19 @@ export function uniqueSortedPosMenuItems(items: MenuItem[]): MenuItem[] {
       seen.add(key);
       return true;
     })
-    .sort(comparePosMenuItems);
+    .sort((left, right) => comparePosMenuItems(left, right, categories));
 }
 
-export function searchPosMenuItems(items: MenuItem[], query: string): MenuItem[] {
+export function searchPosMenuItems(
+  items: MenuItem[],
+  query: string,
+  categories: PosMenuCategoryDefinition[] = POS_MENU_CATEGORIES,
+): MenuItem[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  if (!normalizedQuery) return uniqueSortedPosMenuItems([...items]);
+  if (!normalizedQuery) return uniqueSortedPosMenuItems([...items], categories);
 
   return uniqueSortedPosMenuItems(items.filter((item) => {
-    const classification = classifyPosMenuItem(item);
+    const classification = classifyPosMenuItemWithCategories(item, categories);
     const record = item as MenuItem & Record<string, unknown>;
     const aliases = [record.aliases, record.searchAliases, record.skus]
       .flatMap((value) => Array.isArray(value) ? value : [value])
@@ -427,7 +438,19 @@ export function searchPosMenuItems(items: MenuItem[], query: string): MenuItem[]
       .toLocaleLowerCase();
 
     return haystack.includes(normalizedQuery);
-  }));
+  }), categories);
+}
+
+export function posMenuNavigationCategories(
+  categories: PosMenuCategoryDefinition[],
+  unclassifiedItemCount: number,
+): PosMenuCategoryDefinition[] {
+  const effectiveCategories = categories.filter(
+    (category) => category.code !== NEEDS_CLASSIFICATION_CATEGORY.code,
+  );
+  return unclassifiedItemCount > 0
+    ? [...effectiveCategories, NEEDS_CLASSIFICATION_CATEGORY]
+    : effectiveCategories;
 }
 
 export function quickPicksInRankOrder(

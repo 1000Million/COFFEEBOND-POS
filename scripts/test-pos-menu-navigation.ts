@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   buildPosMenuPlacementPatch,
   classifyPosMenuItem,
+  classifyPosMenuItemWithCategories,
   finishedGoodTaxonomyFields,
   POS_MENU_CATEGORIES,
+  posMenuNavigationCategories,
   posMenuCategorySelection,
   quickPicksInRankOrder,
   searchPosMenuItems,
   shouldShowNeedsClassificationBadge,
   uniqueSortedPosMenuItems,
 } from '../frontend/lib/posMenuNavigation';
+import {
+  activePosMenuCategories,
+  committedPosMenuTaxonomy,
+  resolvePosMenuTaxonomy,
+} from '../frontend/lib/posMenuTaxonomy';
 import type { MenuItem } from '../frontend/types';
 
 function item(
@@ -303,6 +311,129 @@ assert.equal(
   uniqueSortedPosMenuItems(goldenICompactFixture).length,
   94,
   'compact classification must neither drop nor duplicate Golden I products',
+);
+
+const editableTaxonomy = committedPosMenuTaxonomy();
+editableTaxonomy.categories.push(
+  {
+    code: 'BRUNCH_CUSTOM',
+    name: 'Newly Saved Brunch',
+    sortOrder: 15,
+    isActive: true,
+    subcategories: [
+      {
+        code: 'HIDDEN_DISHES',
+        name: 'Hidden Dishes',
+        sortOrder: 10,
+        isActive: false,
+      },
+      {
+        code: 'NEW_DISHES',
+        name: 'New Dishes',
+        sortOrder: 20,
+        isActive: true,
+      },
+    ],
+  },
+  {
+    code: 'INACTIVE_CATEGORY',
+    name: 'Inactive Category',
+    sortOrder: 5,
+    isActive: false,
+    subcategories: [],
+  },
+);
+
+const editableResolved = resolvePosMenuTaxonomy(editableTaxonomy);
+assert.equal(editableResolved.source, 'firestore', 'valid editable taxonomy must be accepted');
+const editableCategories = activePosMenuCategories(editableResolved.taxonomy);
+assert.equal(editableCategories[0].code, 'ESPRESSO_BAR');
+assert.equal(editableCategories[1].code, 'BRUNCH_CUSTOM', 'active category ordering must be respected');
+assert.equal(
+  editableCategories.some((category) => category.code === 'INACTIVE_CATEGORY'),
+  false,
+  'inactive categories must not render',
+);
+assert.deepEqual(
+  editableCategories.find((category) => category.code === 'BRUNCH_CUSTOM')?.subcategories
+    .map((subcategory) => subcategory.code),
+  ['NEW_DISHES'],
+  'only active subcategories may render under their saved parent',
+);
+
+const editableProduct = {
+  ...item('NEW_BRUNCH_ITEM', 'New Brunch Item', ''),
+  posCategoryCode: 'BRUNCH_CUSTOM',
+  posCategoryName: 'Newly Saved Brunch',
+  posSubcategoryCode: 'NEW_DISHES',
+  posSubcategoryName: 'New Dishes',
+};
+const editableClassification = classifyPosMenuItemWithCategories(editableProduct, editableCategories);
+assert.equal(editableClassification.category.code, 'BRUNCH_CUSTOM');
+assert.equal(editableClassification.subcategory?.code, 'NEW_DISHES');
+assert.equal(editableClassification.isClassified, true, 'saved placement must not fall into Needs Classification');
+
+const editableSearch = searchPosMenuItems(
+  [editableProduct, item('ESPRESSO_CONTROL', 'Espresso Control', 'ESPRESSO_BAR', 'BLACK_COFFEE')],
+  'newly saved brunch',
+  editableCategories,
+);
+assert.deepEqual(
+  editableSearch.map((entry) => entry.id),
+  ['NEW_BRUNCH_ITEM'],
+  'search must use effective category and subcategory context',
+);
+
+const navigationWithFallback = posMenuNavigationCategories(
+  [...editableCategories, ...posMenuNavigationCategories([], 1)],
+  1,
+);
+assert.equal(
+  navigationWithFallback.filter((category) => category.code === 'NEEDS_CLASSIFICATION').length,
+  1,
+  'effective navigation must contain exactly one synthetic Needs Classification bucket',
+);
+assert.equal(
+  navigationWithFallback.some((category) => category.code === 'BRUNCH_CUSTOM'),
+  true,
+  'new editable categories must appear in POS navigation',
+);
+
+const invalidEditableTaxonomy = resolvePosMenuTaxonomy({
+  schemaVersion: 1,
+  categories: [
+    { code: 'DUPLICATE', name: 'First', sortOrder: 10, isActive: true, subcategories: [] },
+    { code: 'DUPLICATE', name: 'Second', sortOrder: 20, isActive: true, subcategories: [] },
+  ],
+});
+assert.equal(invalidEditableTaxonomy.source, 'fallback', 'invalid editable taxonomy must fall back safely');
+assert.deepEqual(
+  activePosMenuCategories(invalidEditableTaxonomy.taxonomy),
+  POS_MENU_CATEGORIES,
+  'invalid editable taxonomy must retain the committed runtime categories',
+);
+
+const editableEligibilityFixture = [
+  editableProduct,
+  item('ESPRESSO_CONTROL', 'Espresso Control', 'ESPRESSO_BAR', 'BLACK_COFFEE'),
+];
+assert.equal(
+  uniqueSortedPosMenuItems(editableEligibilityFixture, editableCategories).length,
+  editableEligibilityFixture.length,
+  'effective taxonomy sorting and filtering must not change product eligibility or count',
+);
+
+const posHomeSource = readFileSync('frontend/pages/pos/POSHome.tsx', 'utf8');
+assert.match(posHomeSource, /usePosMenuTaxonomy\(\)/, 'POSHome must consume the shared effective taxonomy hook');
+assert.doesNotMatch(
+  posHomeSource,
+  /\bPOS_MENU_CATEGORIES\b/,
+  'POSHome must not build its category rail from the static committed categories',
+);
+assert.match(
+  posHomeSource,
+  /searchPosMenuItems\(availableMenuItems, searchQuery, posMenuCategories\)/,
+  'POS search must receive the effective taxonomy',
 );
 
 console.log('POS menu navigation tests passed.');
