@@ -602,7 +602,8 @@ test('39. Internal POS test stays Draft and customer ordering disabled', () => {
 });
 
 test('40. POS setup-test stores are Admin or assigned-manager only and orders are labelled', () => {
-  assert.match(posSource, /staffProfile\?\.role === 'STORE_MANAGER' && store\.internalPosTestEnabled === true/);
+  assert.match(posSource, /import \{ accessiblePosStores, assignedStoreIdentifiers \} from '\.\.\/\.\.\/lib\/posStoreAccess'/);
+  assert.match(posSource, /const allowedStores = accessiblePosStores\(fetchedStores, staffProfile\)/);
   assert.match(posSource, /Setup test sale/);
   assert.match(posSource, /isSetupTest: isSetupTestSale/);
   assert.match(posSource, /setupTestLabel: isSetupTestSale \? 'SETUP TEST' : null/);

@@ -36,11 +36,23 @@ const inactiveStore: Store = {
   createdAt: null,
   updatedAt: null,
 };
+const setupTestStore: Store = {
+  ...inactiveStore,
+  id: 'SETUP_TEST_STORE',
+  code: 'SETUP_TEST_STORE',
+  name: 'Setup Test Store',
+  internalPosTestEnabled: true,
+};
 
 assert.deepEqual(
   accessiblePosStores([goldenI, noida51, inactiveStore], { role: 'ADMIN' }),
   [goldenI, noida51],
   'Admin must retain access to active stores',
+);
+assert.deepEqual(
+  accessiblePosStores([goldenI, setupTestStore], { role: 'ADMIN' }),
+  [goldenI, setupTestStore],
+  'Admin must retain access to internal POS setup-test stores',
 );
 assert.deepEqual(
   accessiblePosStores([goldenI, noida51], { role: 'CASHIER', assignedStoreId: 'GOLDEN_I' }),
@@ -76,6 +88,30 @@ assert.deepEqual(
   accessiblePosStores([goldenI, noida51], { role: 'STORE_MANAGER', storeIds: ['GOLDEN_I'] }),
   [goldenI],
   'a Store Manager must remain limited to explicitly assigned stores',
+);
+assert.deepEqual(
+  accessiblePosStores([goldenI, setupTestStore], {
+    role: 'STORE_MANAGER',
+    storeIds: ['SETUP_TEST_STORE'],
+  }),
+  [setupTestStore],
+  'an assigned Store Manager may access an internal POS setup-test store',
+);
+assert.deepEqual(
+  accessiblePosStores([goldenI, setupTestStore], {
+    role: 'STORE_MANAGER',
+    storeIds: ['GOLDEN_I'],
+  }),
+  [goldenI],
+  'an unrelated Store Manager must not gain setup-test access from the store flag alone',
+);
+assert.deepEqual(
+  accessiblePosStores([goldenI, setupTestStore], {
+    role: 'CASHIER',
+    storeIds: ['GOLDEN_I', 'SETUP_TEST_STORE'],
+  }),
+  [goldenI],
+  'a Cashier may use an assigned active store but not an assigned setup-test store',
 );
 assert.equal(
   storeMatchesAssignment(noida51, [' noida_51 ']),
