@@ -49,7 +49,7 @@ export default function CustomerPickupSummary({
         type="button"
         onClick={onChangeStore}
         aria-label={`Change pickup store, currently ${storeName}`}
-        className="cb-customer-basket-change shrink-0 rounded-full px-3 py-2 text-[12px] font-black"
+        className="cb-customer-basket-change flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full px-3 text-[12px] font-black"
       >
         Change
       </button>

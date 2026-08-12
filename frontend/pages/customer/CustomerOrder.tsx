@@ -27,6 +27,10 @@ import CustomerProductCustomizationSheet from '../../components/customer/Custome
 import CustomerBasketItemCard from '../../components/customer/CustomerBasketItemCard';
 import CustomerBasketEmptyState from '../../components/customer/CustomerBasketEmptyState';
 import CustomerPickupSummary from '../../components/customer/CustomerPickupSummary';
+import CustomerCheckoutTotalsPanel from '../../components/customer/CustomerCheckoutTotalsPanel';
+import CustomerPaymentSelector from '../../components/customer/CustomerPaymentSelector';
+import CustomerCheckoutNotice from '../../components/customer/CustomerCheckoutNotice';
+import CustomerCheckoutActionBar from '../../components/customer/CustomerCheckoutActionBar';
 import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
 import CustomerProductImage from '../../components/customer/CustomerProductImage';
@@ -952,6 +956,16 @@ export default function CustomerOrder() {
   const [myUsualDialog, setMyUsualDialog] = useState<MyUsualDialog>(null);
   /** Memory only. A save intent must never outlive the tab or reach storage. */
   const pendingMyUsualSaveRef = useRef(false);
+  /**
+   * The basket's "Save as My Usual" control. Focus is handed back to it explicitly
+   * rather than to whatever `document.activeElement` happened to be — a pointer tap
+   * does not always focus the button it activates.
+   */
+  const saveAsMyUsualButtonRef = useRef<HTMLButtonElement | null>(null);
+  const myUsualOpenerRef = useRef<HTMLElement | null>(null);
+  /** Read by the basket's Escape handler so only the topmost layer closes. */
+  const myUsualDialogOpenRef = useRef(false);
+  const myUsualDialogRef = useRef<HTMLDivElement | null>(null);
   /** The uid whose usual is currently on screen; guards late responses. */
   const myUsualUidRef = useRef('');
   const previousMyUsualUidRef = useRef('');
@@ -980,6 +994,9 @@ export default function CustomerOrder() {
     applyLock();
     mobile.addEventListener('change', applyLock);
     const onKeyDown = (event: KeyboardEvent) => {
+      // Escape closes the TOPMOST layer only: while My Usual is raised above the
+      // basket, its own handler owns the key and the basket must stay open.
+      if (myUsualDialogOpenRef.current) return;
       if (event.key === 'Escape' && mobile.matches) setBasketOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
@@ -989,6 +1006,50 @@ export default function CustomerOrder() {
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [basketOpen]);
+
+  /**
+   * My Usual is raised FROM the basket, so it must take focus while the basket stays
+   * open and inert beneath it. Focus returns to the control that opened it on close.
+   *
+   * The body scroll lock is deliberately NOT touched here: the basket effect above
+   * already owns it, and a second lock would unlock the page when this dialog closes
+   * while the basket is still open.
+   */
+  useEffect(() => {
+    myUsualDialogOpenRef.current = Boolean(myUsualDialog);
+    if (!myUsualDialog) return undefined;
+    myUsualOpenerRef.current = document.activeElement as HTMLElement | null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setMyUsualDialog(null);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    const focusable = myUsualDialogRef.current?.querySelector<HTMLElement>(
+      'button:not([disabled]), input, [href], [tabindex]:not([tabindex="-1"])',
+    );
+    focusable?.focus();
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      myUsualDialogOpenRef.current = false;
+      const opener = myUsualOpenerRef.current;
+      myUsualOpenerRef.current = null;
+      /*
+       * basketPanel is rendered twice — the mobile sheet and the desktop aside — so a
+       * single ref lands on whichever mounted last, which may be the `display:none`
+       * copy. Focusing a hidden element silently does nothing, so prefer a VISIBLE
+       * Save control, then the ref, then whatever opened the dialog.
+       */
+      const isVisible = (el: HTMLElement | null) => Boolean(el && el.offsetParent !== null);
+      const visibleSave = [...document.querySelectorAll<HTMLButtonElement>('button')]
+        .find(button => button.textContent?.trim() === 'Save as My Usual' && isVisible(button));
+      const target = visibleSave
+        || (isVisible(saveAsMyUsualButtonRef.current) ? saveAsMyUsualButtonRef.current : null)
+        || opener;
+      if (target && document.contains(target)) target.focus();
+    };
+  }, [myUsualDialog]);
 
   useEffect(() => {
     const previousUid = previousMyUsualUidRef.current;
@@ -1871,6 +1932,35 @@ export default function CustomerOrder() {
     );
   };
 
+  /**
+   * The checkout action's label, disabled state and the reason for it — derived
+   * ENTIRELY from state that already existed. These are the same conditions the
+   * previous button used; naming them lets the reason be announced instead of
+   * leaving a dead button unexplained. No new lifecycle status is introduced.
+   */
+  const checkoutAction = (() => {
+    const payLabel = paymentProvider === 'RAZORPAY'
+      ? `Pay online \u00b7 ${formatMoney(totals.grandTotal)}`
+      : `Send order request \u00b7 ${formatMoney(totals.grandTotal)}`;
+    if (saving) {
+      return {
+        label: paymentProvider === 'RAZORPAY' ? 'Creating secure checkout...' : 'Sending request...',
+        disabled: true,
+        reason: '',
+      };
+    }
+    if (loading) return { label: payLabel, disabled: true, reason: 'Loading the current menu.' };
+    if (cart.length === 0) return { label: payLabel, disabled: true, reason: 'Your basket is empty.' };
+    if (isOffline) return { label: payLabel, disabled: true, reason: OFFLINE_ACTION_MESSAGE };
+    if (!selectedStoreOnline) {
+      return { label: payLabel, disabled: true, reason: customerOrderingState.message };
+    }
+    if (paymentProvider === 'RAZORPAY' && !verifiedCustomer) {
+      return { label: 'Verify phone', disabled: true, reason: 'Verify your mobile number to pay online.' };
+    }
+    return { label: payLabel, disabled: false, reason: '' };
+  })();
+
   const basketPanel = (
     <div className="flex h-full min-h-0 flex-col">
       {/* Stage 4a header: title, count and one close action. */}
@@ -1943,18 +2033,20 @@ export default function CustomerOrder() {
             })}
           </ul>
 
-          <div className="mt-4 rounded-2xl bg-[#fbf5ee] p-4 text-sm">
-            <div className="flex justify-between"><span>Subtotal</span><span className="font-black">{formatMoney(totals.subtotal)}</span></div>
-            <div className="mt-2 flex justify-between"><span>GST</span><span className="font-black">{formatMoney(totals.gstTotal)}</span></div>
-            <div className="mt-3 border-t border-[#ead8c7] pt-3 text-lg font-black text-[#2d2019]">
-              <div className="flex justify-between"><span>Total</span><span>{formatMoney(totals.grandTotal)}</span></div>
-            </div>
-          </div>
+          {/* Stage 4b: presentation only. Every amount is the parent's authoritative
+              `totals`, unchanged \u2014 no fee, charge or tax is added here. */}
+          <CustomerCheckoutTotalsPanel
+            subtotalLabel={formatMoney(totals.subtotal)}
+            taxableAmountLabel={formatMoney(totals.taxableAmount)}
+            gstLabel={formatMoney(totals.gstTotal)}
+            payableLabel={formatMoney(totals.grandTotal)}
+          />
 
           {/* Save as My Usual — one small action, no basket redesign. Hidden while a
               submission or payment is in flight so it can never race checkout. */}
           {cart.length > 0 && selectedStoreId && !saving && !submittingRef.current && (
             <button
+              ref={saveAsMyUsualButtonRef}
               type="button"
               onClick={requestSaveMyUsual}
               data-requires-online="true"
@@ -1966,40 +2058,13 @@ export default function CustomerOrder() {
           )}
 
           <div className="mt-4 space-y-3">
-            <fieldset className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
-              <legend className="px-1 text-xs font-black uppercase tracking-wider text-neutral-500">Payment</legend>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPaymentProvider('PAY_AT_COUNTER');
-                  }}
-                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
-                    paymentProvider === 'PAY_AT_COUNTER'
-                      ? 'bg-[#3b261d] text-white'
-                      : 'bg-[#fbf5ee] text-[#5c4033]'
-                  }`}
-                >
-                  Pay at counter
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentProvider('RAZORPAY')}
-                  className={`min-h-12 rounded-xl px-3 py-2 text-sm font-black ${
-                    paymentProvider === 'RAZORPAY'
-                      ? 'bg-[#3b261d] text-white'
-                      : 'bg-[#fbf5ee] text-[#5c4033]'
-                  }`}
-                >
-                  Pay online
-                </button>
-              </div>
-              <p className="mt-2 text-xs font-medium text-neutral-500">
-                {paymentProvider === 'RAZORPAY'
-                  ? 'Verify your mobile, then pay securely. The paid order goes straight to the store for confirmation.'
-                  : 'Payment is collected at the store after acceptance.'}
-              </p>
-            </fieldset>
+            {/* Stage 4b: presentation only. Choosing a method sets exactly the same
+                state as before \u2014 it creates no order, session or payment. */}
+            <CustomerPaymentSelector
+              value={paymentProvider}
+              disabled={saving}
+              onChange={setPaymentProvider}
+            />
             {paymentProvider === 'RAZORPAY' && !customerAuthRestored ? (
               <div className="rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold text-neutral-500">
                 Restoring your verified mobile session...
@@ -2058,36 +2123,27 @@ export default function CustomerOrder() {
             )}
           </div>
 
-          {paymentNotice && (
-            <p role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
-              {paymentNotice}
-            </p>
+          {/* Existing state sources only \u2014 no lifecycle status is invented here. */}
+          {isOffline && (
+            <CustomerCheckoutNotice tone="offline" message={OFFLINE_ACTION_MESSAGE} />
           )}
+          {!isOffline && !selectedStoreOnline && (
+            <CustomerCheckoutNotice tone="warning" message={customerOrderingState.message} />
+          )}
+          {paymentNotice && <CustomerCheckoutNotice tone="warning" message={paymentNotice} />}
+          {error && <CustomerCheckoutNotice tone="error" message={error} />}
 
-          <button
-            onClick={submitOrder}
-            data-requires-online="true"
-            disabled={
-              saving
-              || isOffline
-              || loading
-              || cart.length === 0
-              || !selectedStoreOnline
-              || (paymentProvider === 'RAZORPAY' && !verifiedCustomer)
-            }
-            className="mt-4 w-full rounded-2xl bg-[#3b261d] px-4 py-4 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-300"
-          >
-            {saving
-              ? paymentProvider === 'RAZORPAY' ? 'Opening secure payment...' : 'Sending request...'
-              : paymentProvider === 'RAZORPAY'
-                ? `Pay ${formatMoney(totals.grandTotal)} Online`
-                : 'Send order request'}
-          </button>
-          <p className="mt-3 text-center text-xs font-medium text-neutral-500">
-            {paymentProvider === 'RAZORPAY'
+          {/* One action, the existing handler, the existing readiness conditions. */}
+          <CustomerCheckoutActionBar
+            label={checkoutAction.label}
+            disabled={checkoutAction.disabled}
+            disabledReason={checkoutAction.reason}
+            busy={saving}
+            footnote={paymentProvider === 'RAZORPAY'
               ? 'Your cart clears only after payment is verified and the order is created.'
               : 'The store will confirm your order shortly.'}
-          </p>
+            onSubmit={submitOrder}
+          />
         </>
       )}
     </div>
@@ -2324,9 +2380,12 @@ export default function CustomerOrder() {
               ref={searchInputRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              className="w-full bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
+              /* h-full so the input itself is the full 48px target, not a 22px strip
+                 inside it — tapping near the edge of the field must still focus it. */
+              className="h-full w-full bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
               placeholder="Search the menu"
               aria-label="Search the menu"
+              enterKeyHint="search"
             />
           </label>
 
@@ -2337,9 +2396,11 @@ export default function CustomerOrder() {
             </div>
           )}
 
-          {/* Two-area menu: sticky vertical rail on the left, one continuous vertical
-              content column on the right. No nested scroller, no horizontal movement. */}
-          <div className="flex min-w-0 items-start gap-2 sm:gap-3">
+          {/* Two-area menu. On phones the category filter is a full-width chip row
+              stacked above the grid, so the products get the whole screen width; from
+              640 px it becomes the vertical rail beside the content. Both orientations
+              are the same component and the same DOM — only CSS differs. */}
+          <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:gap-3">
             <CustomerCategoryRail
               categories={categories}
               selected={category}
@@ -2474,9 +2535,9 @@ export default function CustomerOrder() {
       {/* My Usual confirmations. Every consequence is stated before it happens, and
           none of these actions submits an order, OTP or payment. */}
       {myUsualDialog && (
-        <div className="cb-customer-sheet-scrim fixed inset-0 z-[70] flex items-end justify-center" role="dialog" aria-modal="true" aria-label="My Usual">
+        <div className="cb-customer-sheet-scrim cb-customer-layer-modal fixed inset-0 flex items-end justify-center" role="dialog" aria-modal="true" aria-label="My Usual">
           <button type="button" className="absolute inset-0 h-full w-full" aria-label="Dismiss" onClick={() => setMyUsualDialog(null)} />
-          <div className="cb-customer-sheet relative w-full max-w-md p-5">
+          <div ref={myUsualDialogRef} className="cb-customer-sheet relative w-full max-w-md p-5">
             {myUsualDialog.type === 'SIGN_IN' && (
               <>
                 <h2 className="cb-customer-title text-lg font-black">Sign in to save My Usual</h2>
@@ -2684,7 +2745,13 @@ export default function CustomerOrder() {
           region. The underlying page is scroll-locked and the bottom navigation sits
           behind the scrim, so there is only ever one basket control in reach. */}
       {basketOpen && (
-        <div className="cb-customer-sheet-scrim fixed inset-0 z-[75] lg:hidden">
+        <div
+          className="cb-customer-sheet-scrim cb-customer-layer-basket fixed inset-0 lg:hidden"
+          // The basket stays visible but must not be reachable while a dialog is
+          // raised above it. It is never unmounted, so nothing is lost.
+          aria-hidden={myUsualDialog ? true : undefined}
+          inert={myUsualDialog ? true : undefined}
+        >
           <button aria-label="Dismiss basket" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setBasketOpen(false)} />
           <div
             role="dialog"

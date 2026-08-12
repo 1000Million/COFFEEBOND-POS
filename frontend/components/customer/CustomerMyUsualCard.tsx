@@ -65,16 +65,18 @@ export default function CustomerMyUsualCard({
 }: Props) {
   if (state === 'SIGNED_OUT') {
     return (
-      <section className="cb-customer-usual-empty p-4" aria-labelledby="cb-my-usual-heading">
+      <section className="cb-customer-usual-empty p-3.5 sm:p-4" aria-labelledby="cb-my-usual-heading">
         <p className="cb-customer-usual-eyebrow text-[11px] font-black uppercase">My Usual</p>
-        <h2 id="cb-my-usual-heading" className="mt-1 cb-customer-title text-base font-black">
+        {/* Every word is kept; only the type scale tightens on phones, where this
+            prompt sits between the customer and the menu. */}
+        <h2 id="cb-my-usual-heading" className="mt-1 cb-customer-title text-[15px] font-black leading-snug sm:text-base">
           Sign in to save your regular coffee and food across your devices.
         </h2>
         <button
           type="button"
           onClick={onSignIn}
           data-requires-online="true"
-          className="cb-customer-accent-button mt-3 inline-flex min-h-11 items-center rounded-2xl px-4 text-sm font-black"
+          className="cb-customer-accent-button mt-2.5 inline-flex min-h-11 items-center rounded-2xl px-4 text-sm font-black"
         >
           Sign in to create My Usual
         </button>
@@ -84,15 +86,17 @@ export default function CustomerMyUsualCard({
 
   if (state === 'EMPTY') {
     return (
-      <section className="cb-customer-usual-empty p-4" aria-labelledby="cb-my-usual-heading">
+      <section className="cb-customer-usual-empty p-3.5 sm:p-4" aria-labelledby="cb-my-usual-heading">
         <p className="cb-customer-usual-eyebrow text-[11px] font-black uppercase">My Usual</p>
-        <h2 id="cb-my-usual-heading" className="mt-1 cb-customer-title text-base font-black">
+        {/* Every word is kept; only the type scale tightens on phones, where this
+            prompt sits between the customer and the menu. */}
+        <h2 id="cb-my-usual-heading" className="mt-1 cb-customer-title text-[15px] font-black leading-snug sm:text-base">
           Save your regular coffee and food to your Coffee Bond profile.
         </h2>
         <button
           type="button"
           onClick={onCreate}
-          className="cb-customer-accent-button mt-3 inline-flex min-h-11 items-center rounded-2xl px-4 text-sm font-black"
+          className="cb-customer-accent-button mt-2.5 inline-flex min-h-11 items-center rounded-2xl px-4 text-sm font-black"
         >
           Create My Usual
         </button>

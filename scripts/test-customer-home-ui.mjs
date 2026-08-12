@@ -101,15 +101,59 @@ check('rail is wired to the existing category state',
   home.includes('selected={category}') && home.includes('onSelectCategory={setCategory}'));
 // The rail's doc comment explains why these are absent, so measure the code only.
 const railCode = rail.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-check('rail performs no scrolling of any kind',
-  !/scrollIntoView|window\.scrollTo|IntersectionObserver|requestAnimationFrame/.test(railCode));
+// The rail may reveal the SELECTED chip inside its own row — selection decides the
+// view. It must never do the reverse, and it must never move the page: no observer, no
+// scroll reading, and no scrollIntoView (which is free to scroll ancestors).
+check('rail never moves the page and never observes scroll position',
+  !/scrollIntoView|window\.scrollTo|document\.documentElement\.scroll|IntersectionObserver|addEventListener\(\s*['"]scroll/.test(railCode));
+check('rail reveals the active chip through its own row only',
+  railCode.includes('row.scrollTo({') && railCode.includes('rowRef'));
+check('revealing the active chip cannot change the selection',
+  /useEffect\([\s\S]*?\}, \[selected\]\);/.test(railCode)
+  && !/onSelectCategory\(/.test(railCode.split('useEffect')[1]?.split('return (')[0] ?? ''));
 const homeCode = home.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 check('home has no scroll-spy machinery left',
   !/IntersectionObserver/.test(homeCode)
   && !/activeCategory/.test(homeCode)
   && !/scrollToCategory/.test(homeCode)
   && !/railScrollLock/.test(homeCode));
-check('rail owns no scroll container', !/overflow/.test(rail));
+
+// --- Responsive category filter ---------------------------------------------
+// One component and one DOM at every width; orientation is decided purely in CSS, so
+// there is no viewport state that could render differently on first paint.
+// matchMedia('(prefers-reduced-motion: reduce)') is allowed — that is a user
+// preference, not a width. Nothing may branch the MARKUP on viewport size.
+check('rail renders no viewport-conditional markup',
+  !/innerWidth|useState|clientWidth\s*[<>]/.test(railCode)
+  && !/matchMedia\(\s*['"`]\(?(min|max)-(width|height)/.test(railCode));
+check('phones get a horizontal chip row, 640px+ gets the vertical rail',
+  /\.cb-customer-rail\s*\{[^}]*flex-direction:\s*row/.test(tokens)
+  && /@media \(min-width: 640px\) \{\s*\.cb-customer-rail \{[^}]*flex-direction: column/.test(tokens));
+// The chip row is the only horizontal scroller in the app. If its overscroll ever
+// chains, a swipe past the last chip triggers the browser back gesture.
+check('the chip row contains its own horizontal overscroll',
+  /\.cb-customer-rail\s*\{[^}]*overscroll-behavior-x:\s*contain/.test(tokens));
+check('the chip row keeps its gutter when snapped',
+  /\.cb-customer-rail\s*\{[^}]*scroll-padding-inline:\s*var\(--cb-page-gutter\)/.test(tokens));
+check('the page reserves room for the raised basket button, not just the bar',
+  tokens.includes('--cb-fab-overhang')
+  && /--cb-content-bottom:\s*calc\(\s*var\(--cb-bottom-nav-h\) \+ var\(--cb-fab-overhang\)/.test(tokens));
+check('product card steppers meet the 44px touch target',
+  !/h-9 w-9/.test(card) && (card.match(/h-11 w-11/g) || []).length >= 3);
+check('the store status line wraps instead of clipping the pickup estimate',
+  store.includes('flex-wrap') && !/truncate text-\[11px\] font-bold">\{message\}/.test(store));
+// Landscape phones matched only the min-width rule, which reserved 200px of a 360px
+// screen for the hero and left a 56px window to choose options in.
+check('short viewports shrink the customization hero',
+  /@media \(max-height: 560px\)[\s\S]{0,400}\.cb-customer-customize-hero \{[\s\S]{0,160}max-height: 132px/.test(tokens));
+check('taps are immediate and get a press state that replaces the tap highlight',
+  tokens.includes('touch-action: manipulation')
+  && tokens.includes('-webkit-tap-highlight-color: transparent')
+  && /:active[\s\S]{0,600}transform: scale\(0\.97\)/.test(tokens));
+check('the press state degrades without motion',
+  /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,900}filter: brightness\(0\.95\)/.test(tokens));
+check('no customer text is smaller than 11px',
+  !/text-\[10px\]/.test([card, rail, store, nav, read('frontend/components/customer/CustomerMyUsualCard.tsx')].join('\n')));
 
 // Filter branches: All shows Popular + every grouped section; a specific category
 // shows exactly one grid built from the existing visibleItems filter.

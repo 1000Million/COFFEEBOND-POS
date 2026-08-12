@@ -74,9 +74,11 @@ function CustomerProductCard({
         priority={priority}
       />
 
-      <div className="flex flex-1 flex-col gap-0.5 px-2.5 pb-12 pt-2">
+      {/* pb-14 reserves the 44px control plus its 8px inset, so a long name can never
+          run underneath the stepper or the add button. */}
+      <div className="flex flex-1 flex-col gap-0.5 px-2.5 pb-14 pt-2">
         {metaLabel && (
-          <p className="cb-customer-meta truncate text-[10px] font-black uppercase tracking-wide">{metaLabel}</p>
+          <p className="cb-customer-meta truncate text-[11px] font-black uppercase tracking-wide">{metaLabel}</p>
         )}
         <div className="flex items-start gap-1">
           {dietary && <DietaryMarker value={dietary} compact />}
@@ -90,17 +92,20 @@ function CustomerProductCard({
       </div>
 
       {showStepper ? (
-        <div className="cb-customer-stepper absolute bottom-2 right-2 inline-flex h-10 items-center rounded-full p-0.5">
+        /* 44px per control, the touch-target floor. The stepper is the widest thing on
+           the card, so it sits flush to the left too: at 320 px the card is 138 px and
+           2x44 + a count column will not fit inside a right-anchored island. */
+        <div className="cb-customer-stepper absolute inset-x-2 bottom-2 flex h-11 items-center justify-between rounded-full">
           <button
             type="button"
             onClick={onDecrement}
             data-requires-online="true"
             aria-label={`Decrease ${name}`}
-            className="flex h-9 w-9 items-center justify-center rounded-full"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
           >
             <Minus size={16} aria-hidden="true" />
           </button>
-          <span className="min-w-6 text-center text-sm font-black" aria-live="polite" aria-label={`${name} quantity ${quantity}`}>
+          <span className="min-w-4 text-center text-sm font-black tabular-nums" aria-live="polite" aria-label={`${name} quantity ${quantity}`}>
             {quantity}
           </span>
           <button
@@ -108,7 +113,7 @@ function CustomerProductCard({
             onClick={onIncrement}
             data-requires-online="true"
             aria-label={`Increase ${name}`}
-            className="flex h-9 w-9 items-center justify-center rounded-full"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
           >
             <Plus size={16} aria-hidden="true" />
           </button>

@@ -58,10 +58,22 @@
   --cb-safe-left: env(safe-area-inset-left, 0px);
   --cb-safe-right: env(safe-area-inset-right, 0px);
   --cb-bottom-nav-h: 64px;
-  /* Where the sticky category rail parks: below the compact header. */
+  /* How far the raised basket button rises above the bar (its -mt-7). Content has to
+     clear the button, not just the bar — reserving only the bar left 2 px of gap. */
+  --cb-fab-overhang: 28px;
+  /* Horizontal page padding, so a full-bleed row can cancel it exactly. */
+  --cb-page-gutter: 16px;
+  /* Where the sticky category filter parks: below the compact header. */
   --cb-rail-top: calc(var(--cb-safe-top) + 68px);
-  /* Content padding that clears the bottom bar plus the home indicator. */
-  --cb-content-bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom) + 12px);
+  /* Content padding that clears the bottom bar, the raised basket button and the
+     home indicator. */
+  --cb-content-bottom: calc(
+    var(--cb-bottom-nav-h) + var(--cb-fab-overhang) + var(--cb-safe-bottom) + 12px
+  );
+}
+
+@media (min-width: 1024px) {
+  :root { --cb-page-gutter: 24px; }
 }
 
 /*
@@ -109,29 +121,122 @@
   color: var(--cb-text-on-espresso);
 }
 
-/* The rail sticks below the compact header. Declared here rather than as a Tailwind
-   arbitrary utility (top-[var(--cb-rail-top)]) because arbitrary utilities are emitted
-   into the shared stylesheet and would leak the customer variable into the staff build. */
+/* The category filter sticks below the compact header. Declared here rather than as a
+   Tailwind arbitrary utility (top-[var(--cb-rail-top)]) because arbitrary utilities are
+   emitted into the shared stylesheet and would leak the customer variable into the
+   staff build.
+
+   PHONE (default): a horizontal chip row above the grid. A phone cannot spare a
+   permanent 56 px column — at 320 px that left product cards 106 px wide. The row
+   bleeds to the page gutters so a chip scrolls off the true screen edge instead of
+   stopping short, which is what makes "there is more this way" legible.
+
+   This is the ONLY horizontally scrollable element in the customer app. It contains its
+   own overscroll, so swiping past the last chip can never chain to the page or trigger
+   the browser's back gesture, and the page itself still never moves sideways. */
 .cb-customer-rail {
   position: sticky;
   top: var(--cb-rail-top);
+  z-index: 20;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  /* stretch (not width:100%) so the negative margins actually widen the box to the
+     screen edges instead of just shifting a parent-width box left. */
+  width: auto;
+  align-self: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  /* Without this the snapport ignores the padding and the first chip parks flush
+     against the screen edge with its gutter scrolled away. */
+  scroll-padding-inline: var(--cb-page-gutter);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: var(--cb-bg);
+  margin-inline: calc(-1 * var(--cb-page-gutter));
+  padding-inline: var(--cb-page-gutter);
+  padding-block: 6px;
 }
 
-/* Sticky vertical category rail. The tab shape echoes the reference's curved active
-   tab: rounded on the menu-facing edge only, so it reads as attached to the content. */
+/* A scrollbar track inside a 44 px chip row would eat the touch target. */
+.cb-customer-rail::-webkit-scrollbar { display: none; }
+
+.cb-customer-rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  padding: 0 14px;
+  font-size: 13px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .cb-customer-rail-tab {
   color: var(--cb-text-muted);
-  background: transparent;
-  border-top-left-radius: var(--cb-radius-sm);
-  border-bottom-left-radius: var(--cb-radius-sm);
+  background: var(--cb-surface);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
 }
 
 .cb-customer-rail-tab-active {
   color: var(--cb-text-on-gold);
   background: var(--cb-gold);
-  border-top-right-radius: var(--cb-radius-sm);
-  border-bottom-right-radius: var(--cb-radius-sm);
   box-shadow: var(--cb-shadow-card);
+}
+
+/* >= 640 px: the vertical rail, where a 64 px column is affordable. The tab shape
+   echoes the reference's curved active tab — rounded on the menu-facing edge only, so
+   it reads as attached to the content. */
+@media (min-width: 640px) {
+  .cb-customer-rail {
+    flex-direction: column;
+    gap: 4px;
+    width: 64px;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    scroll-padding-inline: 0;
+    overflow: visible;
+    background: transparent;
+    margin-inline: 0;
+    padding-inline: 0;
+    padding-block: 0;
+  }
+
+  .cb-customer-rail-item {
+    width: 100%;
+    padding: 8px 2px;
+    /* 11 px with tight tracking keeps the longest authoritative label
+       ("Baked by Bond") inside the 64 px rail. */
+    font-size: 11px;
+    letter-spacing: -0.01em;
+    text-align: center;
+    white-space: normal;
+    border-radius: 0;
+    border-top-left-radius: var(--cb-radius-sm);
+    border-bottom-left-radius: var(--cb-radius-sm);
+  }
+
+  .cb-customer-rail-tab {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .cb-customer-rail-tab-active {
+    border-top-right-radius: var(--cb-radius-sm);
+    border-bottom-right-radius: var(--cb-radius-sm);
+  }
+
+  /* Two lines max in the rail; the chip row is single-line and needs no clamp. */
+  .cb-customer-rail-label {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }
 
 .cb-customer-chip {
@@ -253,6 +358,88 @@
   .cb-customer-page-bottom { padding-bottom: 2rem; }
 }
 
+/* ---------------------------------------------------------------------------
+ * Touch behaviour.
+ *
+ * Everything here is about how the app FEELS under a thumb; none of it changes what
+ * any control does.
+ * ------------------------------------------------------------------------- */
+
+.cb-app {
+  /* Rotating a phone must not resize the type. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* The grey flash lands ~300 ms late and on the wrong shape (it paints the element
+     box, not the rounded control). Replaced by the :active state below, which is
+     immediate and follows the border radius. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Removes the double-tap-to-zoom wait, so a tap registers immediately. Pinch zoom is
+   untouched — that is an accessibility affordance, not a gesture to suppress. */
+.cb-app button,
+.cb-app a,
+.cb-app [role="button"],
+.cb-app [role="radio"],
+.cb-app label {
+  touch-action: manipulation;
+}
+
+/* The replacement for the tap highlight: a real press state on the controls a customer
+   actually taps. Transform only, so it composites and cannot reflow the page. */
+.cb-customer-accent-button,
+.cb-customer-basket-button,
+.cb-customer-rail-item,
+.cb-customer-payment-card,
+.cb-customer-store-card,
+.cb-customer-icon-button,
+.cb-customer-basket-edit,
+.cb-customer-basket-remove {
+  transition: transform 120ms ease-out;
+}
+
+.cb-customer-accent-button:active:not(:disabled),
+.cb-customer-basket-button:active,
+.cb-customer-rail-item:active,
+.cb-customer-payment-card:active:not(:disabled),
+.cb-customer-store-card:active,
+.cb-customer-icon-button:active,
+.cb-customer-basket-edit:active,
+.cb-customer-basket-remove:active {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-accent-button,
+  .cb-customer-basket-button,
+  .cb-customer-rail-item,
+  .cb-customer-payment-card,
+  .cb-customer-store-card,
+  .cb-customer-icon-button,
+  .cb-customer-basket-edit,
+  .cb-customer-basket-remove {
+    transition: none;
+  }
+
+  /* Still give feedback, just not by moving anything. */
+  .cb-customer-accent-button:active:not(:disabled),
+  .cb-customer-basket-button:active,
+  .cb-customer-rail-item:active,
+  .cb-customer-payment-card:active:not(:disabled),
+  .cb-customer-store-card:active,
+  .cb-customer-icon-button:active,
+  .cb-customer-basket-edit:active,
+  .cb-customer-basket-remove:active {
+    transform: none;
+    filter: brightness(0.95);
+  }
+}
+
+/* In-page jumps (search focus, back to menu) glide instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
 /* Visible focus for keyboard users across every customer control. */
 .cb-focusable:focus-visible,
 .cb-app button:focus-visible,
@@ -333,6 +520,20 @@
   .cb-customer-customize-hero {
     height: 34dvh;
     max-height: 300px;
+  }
+}
+
+/* Short viewports — phone landscape, split-screen, a small window. The 200 px
+   min-height was written for portrait; at 740x360 it took 55.6% of the screen and left
+   a 56 px window to choose milk and size in. On a short screen the choices matter more
+   than the photograph, so the hero yields. */
+@media (max-height: 560px) {
+  /* Declared after the min-width block on purpose: equal specificity, so at
+     740x360 — which matches both — this one wins on source order. */
+  .cb-customer-customize-hero {
+    height: 26dvh;
+    min-height: 84px;
+    max-height: 132px;
   }
 }
 
@@ -496,3 +697,95 @@
 @media (prefers-reduced-motion: reduce) {
   .cb-customer-basket-sheet { transition: none; animation: none; }
 }
+
+/* ---------------------------------------------------------------------------
+ * Stage 4b — totals, payment selector, notices and checkout action.
+ *
+ * Customer-only. The totals panel uses the espresso surface from the brand palette
+ * with cream text (~12:1) and a gold payable line, so the amount reads as the
+ * strongest element on the checkout without meaning resting on colour.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-totals-panel {
+  background: var(--cb-espresso);
+  border-radius: var(--cb-radius-lg);
+  color: var(--cb-text-on-espresso);
+}
+
+.cb-customer-totals-label { color: rgba(251, 247, 241, 0.78); }
+.cb-customer-totals-value { color: var(--cb-text-on-espresso); }
+.cb-customer-totals-payable { color: var(--cb-gold); }
+
+.cb-customer-totals-divider {
+  border-top: 1px solid rgba(251, 247, 241, 0.22);
+}
+
+/* Payment methods stack vertically — never a horizontal carousel. */
+.cb-customer-payment-card {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+.cb-customer-payment-card.is-selected {
+  background: var(--cb-gold-soft);
+  box-shadow: inset 0 0 0 2px var(--cb-gold-strong);
+}
+
+.cb-customer-payment-card:disabled { opacity: 0.55; }
+
+.cb-customer-payment-icon {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-payment-card.is-selected .cb-customer-payment-icon {
+  background: var(--cb-surface);
+}
+
+.cb-customer-payment-tick {
+  box-shadow: inset 0 0 0 2px var(--cb-border);
+  color: var(--cb-text-on-gold);
+}
+
+.cb-customer-payment-tick.is-on {
+  background: var(--cb-gold);
+  box-shadow: inset 0 0 0 2px var(--cb-gold-strong);
+}
+
+/* Notices: icon + words + tone, so nothing depends on hue alone. */
+.cb-customer-checkout-notice { border-radius: var(--cb-radius-sm); }
+.cb-customer-checkout-notice.tone-info { background: var(--cb-surface-muted); color: var(--cb-text); }
+.cb-customer-checkout-notice.tone-warning { background: var(--cb-warning-soft); color: var(--cb-warning); }
+.cb-customer-checkout-notice.tone-error { background: var(--cb-danger-soft); color: var(--cb-danger); }
+.cb-customer-checkout-notice.tone-offline { background: var(--cb-surface-muted); color: var(--cb-text-muted); }
+
+/* The action bar sticks to the bottom of the basket's own scroll region. */
+.cb-customer-action-bar {
+  background: var(--cb-bg);
+  border-top: 1px solid var(--cb-border);
+}
+
+.min-h-13 { min-height: 3.25rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-action-bar { transition: none; animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Customer overlay layer scale.
+ *
+ * Every customer overlay is a POSITION:FIXED SIBLING under the same page root, with
+ * no transform/filter/opacity/isolation ancestor — so paint order is decided purely
+ * by these values. They are named rather than written inline so a new overlay cannot
+ * silently land beneath an existing one, which is exactly how the My Usual dialog
+ * (70) ended up behind the Stage 4a basket (75).
+ *
+ *   page content        auto
+ *   sheet               50   store selector, toast
+ *   basket              75   the basket surface
+ *   modal               85   dialogs raised FROM the basket (My Usual)
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-layer-basket { z-index: 75; }
+.cb-customer-layer-modal  { z-index: 85; }

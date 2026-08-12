@@ -156,7 +156,10 @@ test('29. payment.failed retains cart and creates no order', () => {
   assert.doesNotMatch(failed, /setCart|onlineOrders|submitCustomerOrder/);
 });
 test('30. Retry Pay Online remains available after dismissal', () => {
-  assert.match(order, /`Pay \$\{formatMoney\(totals\.grandTotal\)\} Online`/);
+  // Stage 4b moved the CTA label into the `checkoutAction` derivation. The contract is
+  // unchanged: the online action still shows the authoritative grand total, and
+  // dismissing a payment must not silently switch the customer's payment provider.
+  assert.match(order, /Pay online[\s\S]{0,40}formatMoney\(totals\.grandTotal\)/);
   assert.doesNotMatch(order.match(/setPaymentNotice\(message\)[\s\S]{0,120}/)?.[0] || '', /setPaymentProvider/);
 });
 test('31. Checkout sessions do not appear in My Orders before payment', () => {

@@ -45,11 +45,13 @@ export default function CustomerStoreCard({
       <div className="min-w-0 flex-1">
         <p className="cb-customer-muted text-[11px] font-bold leading-tight">{contextLabel}</p>
         <h2 className="cb-customer-title truncate text-base font-black leading-tight">{storeName}</h2>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-          <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-black ${TONE[tone]}`}>
+        {/* Wraps rather than truncates: at 320 px the pickup estimate was being clipped
+            to "Pickup available i…". A second line is cheaper than a lost fact. */}
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[11px] font-black ${TONE[tone]}`}>
             {statusLabel}
           </span>
-          {message && <span className="cb-customer-muted truncate text-[11px] font-bold">{message}</span>}
+          {message && <span className="cb-customer-muted min-w-0 text-[11px] font-bold">{message}</span>}
         </div>
       </div>
       <ChevronDown size={18} className="cb-customer-meta shrink-0" aria-hidden="true" />
