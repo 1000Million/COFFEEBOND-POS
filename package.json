@@ -75,6 +75,7 @@
     "test:customer-separate-origin": "node scripts/test-customer-separate-origin.mjs",
     "test:customer-home-ui": "node scripts/test-customer-home-ui.mjs",
     "test:customer-basket-checkout-ui": "node scripts/test-customer-basket-checkout-ui.mjs",
+    "test:customer-account-orders-ui": "node scripts/test-customer-account-orders-ui.mjs",
     "test:customer-customization-ui": "node scripts/test-customer-customization-ui.mjs",
     "test:customer-my-usual": "node scripts/test-customer-my-usual.mjs",
     "test:customer-my-usual-emulator": "node scripts/test-customer-my-usual-emulator-e2e.mjs"

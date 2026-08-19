@@ -1,5 +1,5 @@
 import { ComponentType } from 'react';
-import { Coffee, Pencil, RefreshCw, Trash2, UtensilsCrossed } from 'lucide-react';
+import { ChevronRight, Coffee, Pencil, RefreshCw, Trash2, UtensilsCrossed } from 'lucide-react';
 import CustomerProductImage from './CustomerProductImage';
 
 export type MyUsualPreviewLine = {
@@ -64,23 +64,32 @@ export default function CustomerMyUsualCard({
   onDelete,
 }: Props) {
   if (state === 'SIGNED_OUT') {
+    /*
+     * A signed-out customer has no usual to show, so this is a prompt — and a prompt
+     * that stands between someone and the menu should cost one row, not a 144 px gold
+     * panel with its own heading and its own button. It is the same single action as
+     * before (onSignIn), now the whole row.
+     *
+     * Only the signed-out prompt is a row. A saved My Usual is still the full card
+     * below, because there it is the content, not an advertisement for itself.
+     */
     return (
-      <section className="cb-customer-usual-empty p-3.5 sm:p-4" aria-labelledby="cb-my-usual-heading">
-        <p className="cb-customer-usual-eyebrow text-[11px] font-black uppercase">My Usual</p>
-        {/* Every word is kept; only the type scale tightens on phones, where this
-            prompt sits between the customer and the menu. */}
-        <h2 id="cb-my-usual-heading" className="mt-1 cb-customer-title text-[15px] font-black leading-snug sm:text-base">
-          Sign in to save your regular coffee and food across your devices.
-        </h2>
-        <button
-          type="button"
-          onClick={onSignIn}
-          data-requires-online="true"
-          className="cb-customer-accent-button mt-2.5 inline-flex min-h-11 items-center rounded-2xl px-4 text-sm font-black"
-        >
-          Sign in to create My Usual
-        </button>
-      </section>
+      <button
+        type="button"
+        onClick={onSignIn}
+        data-requires-online="true"
+        aria-labelledby="cb-my-usual-heading"
+        className="cb-customer-menu-row"
+      >
+        <Coffee size={19} className="cb-customer-row-icon" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span id="cb-my-usual-heading" className="cb-customer-menu-row-title block">My Usual</span>
+          <span className="cb-customer-menu-row-meta cb-customer-muted block truncate">
+            Sign in to save your regular order
+          </span>
+        </span>
+        <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
+      </button>
     );
   }
 

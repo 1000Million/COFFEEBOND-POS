@@ -1,7 +1,7 @@
-import { MapPin } from 'lucide-react';
+import { ChevronRight, MapPin } from 'lucide-react';
 
 type Props = {
-  /** Label the parent already derives, e.g. "Pickup from" / "Dining at". */
+  /** Label the parent already derives, e.g. "Pickup" / "Dine-in". */
   contextLabel: string;
   storeName: string;
   /** Authoritative store status label from deriveCustomerOrderingState. */
@@ -12,12 +12,25 @@ type Props = {
   onChangeStore: () => void;
 };
 
+const TONE: Record<Props['tone'], string> = {
+  green: 'cb-customer-tone-green',
+  amber: 'cb-customer-tone-amber',
+  red: 'cb-customer-tone-red',
+};
+
 /**
- * Compact pickup context inside the basket.
+ * Pickup context in the basket, as one compact row.
  *
- * Every value is passed in from the parent's existing store state — no hours, prep
- * time or status is invented here, and changing store still routes through the
- * parent's existing `handleStoreChange` confirmation.
+ * The basket answers "what am I buying", so where it is going costs one row: the whole
+ * row is the change-store control, in the same flat language as the menu's store row.
+ * It used to be a bordered card with a pin badge and a separate "Change" pill, 83 px
+ * tall, sitting above the first item.
+ *
+ * This is the one place in the app that still shows the prep window, so it stays here —
+ * it is the fact a customer wants at the moment they are deciding to order, and it is
+ * not repeated anywhere else. Every value is passed in from the parent's existing store
+ * state; no hours, prep time or status is invented here, and changing store still routes
+ * through the parent's existing handler.
  */
 export default function CustomerPickupSummary({
   contextLabel,
@@ -27,32 +40,24 @@ export default function CustomerPickupSummary({
   prepLabel,
   onChangeStore,
 }: Props) {
-  const toneClass = tone === 'green'
-    ? 'cb-customer-status-green'
-    : tone === 'amber' ? 'cb-customer-status-amber' : 'cb-customer-status-red';
-
   return (
-    <section className="cb-customer-basket-pickup flex items-center gap-3 p-3" aria-label="Pickup details">
-      <span className="cb-customer-basket-pickup-pin flex h-10 w-10 shrink-0 items-center justify-center rounded-full">
-        <MapPin size={17} aria-hidden="true" />
+    <button
+      type="button"
+      onClick={onChangeStore}
+      aria-label={`${contextLabel} ${storeName}. ${statusLabel}. Change store`}
+      className="cb-customer-menu-row is-first"
+    >
+      <MapPin size={19} className="cb-customer-row-icon" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="cb-customer-menu-row-title block truncate">
+          {contextLabel} · {storeName}
+        </span>
+        {/* Status is stated in words as well as colour. */}
+        <span className={`cb-customer-menu-row-meta block truncate ${TONE[tone]}`}>
+          {statusLabel}{prepLabel ? <span className="cb-customer-muted"> · {prepLabel}</span> : null}
+        </span>
       </span>
-      <div className="min-w-0 flex-1">
-        <p className="cb-customer-muted text-[11px] font-bold">{contextLabel}</p>
-        <p className="truncate cb-customer-title text-sm font-black">{storeName}</p>
-        <p className="mt-0.5 flex flex-wrap items-center gap-1.5">
-          {/* Status is stated in words as well as colour. */}
-          <span className={`${toneClass} rounded-full px-2 py-0.5 text-[11px] font-black`}>{statusLabel}</span>
-          {prepLabel && <span className="cb-customer-muted text-[11px] font-bold">{prepLabel}</span>}
-        </p>
-      </div>
-      <button
-        type="button"
-        onClick={onChangeStore}
-        aria-label={`Change pickup store, currently ${storeName}`}
-        className="cb-customer-basket-change flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full px-3 text-[12px] font-black"
-      >
-        Change
-      </button>
-    </section>
+      <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
+    </button>
   );
 }

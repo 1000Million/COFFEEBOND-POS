@@ -9,9 +9,18 @@ const source = path => readFileSync(resolve(root, path), 'utf8');
 const header = source('frontend/components/customer/CustomerHeader.tsx');
 const auth = source('frontend/lib/customerAuth.ts');
 const order = source('frontend/pages/customer/CustomerOrder.tsx');
-const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
-const status = source('frontend/pages/customer/CustomerOrderStatus.tsx');
+/* Each customer screen is a data container plus a presentational screen component.
+   These constants join the pair so every assertion below keeps testing the SCREEN,
+   not whichever of its two files a given line happens to live in. */
+const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx')
+  + source('frontend/components/customer/CustomerOrdersScreen.tsx');
+const status = source('frontend/pages/customer/CustomerOrderStatus.tsx')
+  + source('frontend/components/customer/CustomerTrackingScreen.tsx');
 const persistence = source('frontend/lib/customerOrderPersistence.ts');
+const accountSheet = source('frontend/components/customer/CustomerAccountSheet.tsx');
+// The sheet's doc comment names the rows Stage 5 removed, so absence must be measured
+// against executable code only.
+const accountSheetCode = accountSheet.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const backend = source('functions/razorpayPaymentFirst.js');
 const functionsIndex = source('functions/index.js');
 const paymentFirst = require(resolve(root, 'functions/razorpayPaymentFirst.js'));
@@ -34,9 +43,12 @@ test('1. Account access is available before OTP', () => {
   // staff origin (/order/my-orders) and the customer origin (/my-orders).
   assert.match(header, /to=\{CUSTOMER_MY_ORDERS_PATH\}/);
 });
-test('2. Before OTP My Orders asks the customer to verify', () => {
-  assert.match(myOrders, /Verify your mobile number to view your orders/);
-  assert.match(myOrders, /Verify on order page/);
+test('2. Before OTP Orders asks the customer to verify', () => {
+  assert.match(myOrders, /Verify your mobile number to see your orders/);
+  // Stage 5: the CTA is the shared Browse menu action, routed through the existing
+  // home path rather than a second "verify" destination.
+  assert.match(myOrders, /Browse menu/);
+  assert.match(myOrders, /CUSTOMER_HOME_PATH/);
 });
 test('3. Verified customer sees a profile account control', () => {
   assert.match(header, /aria-label="Open customer account"/);
@@ -44,33 +56,49 @@ test('3. Verified customer sees a profile account control', () => {
 });
 test('4. Verified customer sees a masked phone', () => {
   assert.match(header, /maskedPhone\(profile\.normalisedPhone\)/);
-  assert.match(header, /••••••/);
+  // Stage 5 moved the masking implementation into the account sheet, which is now the
+  // single place that renders identity. The header still calls it rather than
+  // formatting a phone number of its own.
+  assert.match(accountSheet, /export function maskedPhone/);
+  assert.match(accountSheet, /••••••/);
+  assert.match(accountSheet, /maskedPhone\(profile\.normalisedPhone\)/);
+  assert.doesNotMatch(header, /normalisedPhone\.slice|replace\(\/\\D\/g/);
 });
 test('5. Customer name appears when a profile exists', () => {
-  assert.match(header, /\{profile\.displayName \|\| 'My account'\}/);
+  assert.match(accountSheet, /\{profile\.displayName \|\| 'My account'\}/);
 });
-test('6. Account menu contains My Orders', () => {
-  assert.match(header, /<ClipboardList size=\{18\} \/> My Orders/);
+// Stage 5 inverted this contract. Account is an account surface, not a second copy of
+// the navigation: Orders is a permanent tab that surfaces the live order itself, so
+// neither "My Orders" nor "Current Order" may appear here.
+test('6. Account does NOT duplicate the Orders tab', () => {
+  assert.doesNotMatch(accountSheetCode, /My Orders|Current Order/);
+  assert.doesNotMatch(accountSheetCode, /CUSTOMER_MY_ORDERS_PATH|customerStatusPath/);
+  assert.doesNotMatch(header, /<ClipboardList[\s\S]{0,40}My Orders/);
+  // What it does own instead.
+  assert.match(accountSheet, /My Usual/);
+  assert.match(accountSheet, /Profile/);
 });
-test('7. Account menu contains Sign Out', () => {
-  assert.match(header, /<LogOut size=\{18\} \/> Sign Out/);
+test('7. Account contains Sign out', () => {
+  // Sign out is now a flat row rather than a filled block, so the icon and the label
+  // are separate elements inside one control.
+  assert.match(accountSheet, /<LogOut size=\{20\}[\s\S]{0,160}>Sign out<\/span>/);
 });
 test('8. Sign out targets only customer Auth', () => {
   assert.match(auth, /signOut\(customerAuth\)/);
-  assert.match(header, /await signOutCustomer\(\)/);
+  assert.match(accountSheet, /await signOutCustomer\(\)/);
 });
 test('9. Staff Auth is not imported into customer account code', () => {
   assert.doesNotMatch(auth + header, /import\s*\{[^}]*auth[^}]*\}\s*from '\.\/firebase'/);
   assert.match(auth, /CUSTOMER_APP_NAME = 'coffee-bond-customer-auth'/);
 });
 test('10. Customer profile mobile number is read only', () => {
-  assert.match(header, /value=\{maskedPhone\(profile\.normalisedPhone\)\}[\s\S]{0,120}readOnly/);
-  assert.match(header, /aria-readonly="true"/);
+  assert.match(accountSheet, /value=\{maskedPhone\(profile\.normalisedPhone\)\}[\s\S]{0,120}readOnly/);
+  assert.match(accountSheet, /aria-readonly="true"/);
 });
 test('11. Customer can update their display name and default order type', () => {
   assert.match(auth, /updateCustomerProfile/);
-  assert.match(header, /displayName: nextName/);
-  assert.match(header, /defaultOrderType/);
+  assert.match(accountSheet, /displayName: nextName/);
+  assert.match(accountSheet, /defaultOrderType/);
 });
 test('12. Profile update rejects disallowed fields', async () => {
   await assert.rejects(() => paymentFirst.updateCustomerProfileHandler({
@@ -100,10 +128,11 @@ test('15. Another UID cannot choose the query owner', () => {
   assert.doesNotMatch(myOrders, /customerUid\s*:/);
   assert.doesNotMatch(backend.match(/async function listMyOrders[\s\S]*?\n\}/)?.[0] || '', /request\.data.*customerUid/);
 });
-test('16. Empty My Orders state is clear', () => {
-  assert.match(myOrders, /No orders yet/);
-  assert.match(myOrders, /Your paid Coffee Bond orders will appear here/);
-  assert.match(myOrders, /Order Now/);
+test('16. Empty Orders state is clear', () => {
+  // Stage 5 wording, still one plain-language empty state with one way onward.
+  assert.match(myOrders, /No orders yet\./);
+  assert.match(myOrders, /Your next Coffee Bond is waiting\./);
+  assert.match(myOrders, /Browse menu/);
 });
 test('17. Paid pending acceptance is human readable', () => {
   assert.match(myOrders, /Paid — awaiting store confirmation/);
@@ -114,12 +143,21 @@ test('18. Refund pending is human readable', () => {
 test('19. Refunded status is human readable', () => {
   assert.match(myOrders, /Refunded/);
 });
-test('20. Current orders sort before completed orders', () => {
-  assert.match(myOrders, /activeDifference = Number\(isCurrentOrder\(right\)\) - Number\(isCurrentOrder\(left\)\)/);
+test('20. The live order is separated out and shown above history', () => {
+  // Stage 5 replaced the single sorted list with an explicit split: one active order
+  // above, everything else below. The decision still uses the canonical status helper.
+  assert.match(myOrders, /const activeOrder = useMemo\(/);
+  assert.match(myOrders, /\.filter\(isCurrentOrder\)/);
+  assert.match(myOrders, /order\.trackingToken !== activeOrder\?\.trackingToken/);
+  assert.match(myOrders, /Earlier/);
 });
-test('21. View Order uses the stable tracking route', () => {
-  // Origin-correct status path, with the tracking token passed through unchanged.
-  assert.match(myOrders, /to=\{customerStatusPath\(order\.trackingToken\)\}/);
+test('21. Order links use the stable tracking route helper', () => {
+  // Stage 5 moved the link into CustomerOrderCard, and the active order into
+  // CustomerActiveOrderCard. Both still resolve through the same route helper — no
+  // customer screen hardcodes a status path.
+  assert.match(myOrders, /viewPath: customerStatusPath\(order\.trackingToken\)/);
+  assert.match(myOrders, /trackPath: customerStatusPath\(activeOrder\.trackingToken\)/);
+  assert.doesNotMatch(myOrders, /to="\/(order\/)?status\//);
 });
 test('22. Razorpay dismissal creates no online order', () => {
   const dismissal = order.match(/modal:\s*\{[\s\S]{0,260}?\}/)?.[0] || '';
@@ -172,10 +210,15 @@ test('32. Successful verified order saves tracking before clearing cart', () => 
   const clearCart = order.indexOf('setCart([])', clearDraft);
   assert.ok(remember > 0 && clearDraft > remember && clearCart > clearDraft);
 });
-test('33. Current Order shortcut uses pending-order persistence', () => {
-  assert.match(header, /lastCustomerOrderTrackingToken\(\)/);
-  assert.match(header, /Current Order/);
+// Stage 5: the account panel no longer carries a Current Order shortcut — Orders shows
+// the live order at the top of the page. The persistence module it used is untouched
+// and still records the last order, which is what the tracking screen relies on.
+test('33. Current Order shortcut is gone from the account surface', () => {
+  assert.doesNotMatch(accountSheetCode, /lastCustomerOrderTrackingToken/);
+  assert.doesNotMatch(accountSheetCode, /Current Order/);
   assert.match(persistence, /coffeeBondLastOrderTrackingToken/);
+  // Orders decides the live order from the authenticated history, not from a device token.
+  assert.match(myOrders, /isCurrentOrder/);
 });
 test('34. Shared customer header is present on all customer pages', () => {
   assert.match(order, /<CustomerHeader/);

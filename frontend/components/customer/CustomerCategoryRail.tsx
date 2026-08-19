@@ -79,8 +79,10 @@ export default function CustomerCategoryRail({ categories, selected, onSelectCat
             aria-pressed={isActive}
             /* Sizing and shape live in CSS so one button can be a chip or a rail tab.
                min-h-[44px] is kept here because it is the touch-target floor in both. */
+            /* Weight lives in CSS, not here: with the pill borders gone, ten labels at
+               font-black read as a second toolbar. Only the selected one is heavy. */
             className={[
-              'cb-customer-rail-item min-h-[44px] font-black leading-tight',
+              'cb-customer-rail-item min-h-[44px] leading-tight',
               isActive ? 'cb-customer-rail-tab-active' : 'cb-customer-rail-tab',
             ].join(' ')}
           >

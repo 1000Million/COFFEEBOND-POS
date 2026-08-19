@@ -34,7 +34,10 @@ const METHODS: Array<{
   {
     value: 'RAZORPAY',
     title: 'Pay Online',
-    // Deliberately not "payment complete": the cafe still has to accept.
+    /* Deliberately not "payment complete": the cafe still has to accept, so the card
+       says so. Shortening this to "Pay securely online." removed the only place the
+       customer was told that before paying — the action bar's footnote is about the
+       cart, and the tracking screen only exists after the money has moved. */
     description: 'Pay securely online before the cafe accepts your order.',
     Icon: CreditCard,
   },
@@ -43,7 +46,7 @@ const METHODS: Array<{
 export default function CustomerPaymentSelector({ value, disabled = false, onChange }: Props) {
   return (
     <fieldset className="mt-4" disabled={disabled}>
-      <legend className="cb-customer-usual-eyebrow text-[11px] font-black uppercase">Payment</legend>
+      <legend className="cb-customer-eyebrow">Payment</legend>
       <div className="mt-2 space-y-2" role="radiogroup" aria-label="Payment method">
         {METHODS.map(({ value: methodValue, title, description, Icon }) => {
           const selected = value === methodValue;

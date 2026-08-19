@@ -3,7 +3,10 @@ import { httpsCallable } from 'firebase/functions';
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import {
   AlertCircle,
+  ArrowLeft,
+  BadgeCheck,
   CakeSlice,
+  ChevronRight,
   CheckCircle2,
   ChevronDown,
   Coffee,
@@ -13,6 +16,7 @@ import {
   MapPin,
   Minus,
   Navigation,
+  Pencil,
   Plus,
   Search,
   ShoppingBag,
@@ -22,7 +26,7 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import CustomerProductCustomizationSheet from '../../components/customer/CustomerProductCustomizationSheet';
 import CustomerBasketItemCard from '../../components/customer/CustomerBasketItemCard';
 import CustomerBasketEmptyState from '../../components/customer/CustomerBasketEmptyState';
@@ -78,6 +82,7 @@ import {
 import { CUSTOMER_HOME_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
 import CustomerProductCard from '../../components/customer/CustomerProductCard';
 import CustomerStoreCard from '../../components/customer/CustomerStoreCard';
+import { maskedPhone } from '../../components/customer/CustomerAccountSheet';
 import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
 import {
@@ -239,6 +244,18 @@ const verifyCustomerRazorpayPayment = httpsCallable<
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
+/**
+ * Stated BEFORE payment, in the sticky action bar.
+ *
+ * Online payment is captured before the store decides anything: the money moves, the
+ * order lands in PAID_PENDING_ACCEPTANCE, and only then does a human accept or reject
+ * it. So the two facts that change what the customer is agreeing to — acceptance is
+ * still pending, and a refund follows if the store cannot fulfil — have to be on screen
+ * at the moment they tap, not on the tracking screen they reach afterwards.
+ */
+const RAZORPAY_PRE_PAYMENT_CAVEAT =
+  'Paying does not confirm your order. The store must still accept it, and if it cannot, a full refund is initiated.';
+
 const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
@@ -561,11 +578,19 @@ function customerSubmitErrorMessage(err: unknown): string {
 
 export default function CustomerOrder() {
   const navigate = useNavigate();
+  const routerLocation = useLocation();
   const { isOffline, requireOnline } = useConnectivity();
   const [stores, setStores] = useState<Store[]>([]);
   const [items, setItems] = useState<CustomerMenuItem[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
   const [search, setSearch] = useState('');
+  /*
+   * Whether the SEARCH SURFACE is open, as opposed to whether a query exists. Focusing
+   * the field opens it; only Cancel closes it, so scrolling results or tapping a card
+   * cannot drop the customer back into the menu mid-search. Presentation only — the
+   * filter is still the existing `visibleItems` memo and no query is added.
+   */
+  const [searchActive, setSearchActive] = useState(false);
   const [category, setCategory] = useState('ALL');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerName, setCustomerName] = useState('');
@@ -581,6 +606,44 @@ export default function CustomerOrder() {
   const [editingAddOnLine, setEditingAddOnLine] = useState<CartLine | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [basketOpen, setBasketOpen] = useState(false);
+  /*
+   * Which half of the sheet is showing. This is PRESENTATION ONLY: there is still one
+   * cart, one totals calculation and one submit handler. The basket answers "what am I
+   * buying"; everything that asks how you are paying, who you are and what you want the
+   * store to know now waits behind Continue, instead of making a one-item basket 1157 px
+   * long.
+   */
+  const [basketStep, setBasketStep] = useState<'BASKET' | 'CHECKOUT'>('BASKET');
+  /* Checkout disclosures. Presentation only: neither changes what is submitted, and
+     the name field opens on its own whenever the value behind it is empty. */
+  const [editIdentity, setEditIdentity] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+
+  /* Opening the basket always lands on the basket, never on a checkout form the
+     customer left behind earlier. Emptying the cart does the same. */
+  useEffect(() => {
+    if (basketOpen) setBasketStep('BASKET');
+  }, [basketOpen]);
+
+  /*
+   * The Orders tab shows the same persistent bar as the menu, but the basket and the
+   * search field live on THIS screen. Its Basket and Search entries therefore navigate
+   * here carrying a one-shot intent in router state, which is consumed once and then
+   * cleared from history so a back-navigation cannot re-trigger it.
+   *
+   * This is routing integration only: it opens the existing basket sheet and focuses
+   * the existing search input. No cart, checkout or payment behaviour is involved.
+   */
+  useEffect(() => {
+    const intent = routerLocation.state as { openBasket?: boolean; focusSearch?: boolean } | null;
+    if (!intent?.openBasket && !intent?.focusSearch) return;
+    if (intent.openBasket) setBasketOpen(true);
+    if (intent.focusSearch) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+    navigate(routerLocation.pathname, { replace: true, state: null });
+  }, [routerLocation.state, routerLocation.pathname, navigate]);
   const [storeSelectorOpen, setStoreSelectorOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -962,6 +1025,8 @@ export default function CustomerOrder() {
    * does not always focus the button it activates.
    */
   const saveAsMyUsualButtonRef = useRef<HTMLButtonElement | null>(null);
+  /* Target for Account's "My Usual" row: it reveals the existing home card. */
+  const myUsualSectionRef = useRef<HTMLDivElement | null>(null);
   const myUsualOpenerRef = useRef<HTMLElement | null>(null);
   /** Read by the basket's Escape handler so only the topmost layer closes. */
   const myUsualDialogOpenRef = useRef(false);
@@ -1042,8 +1107,8 @@ export default function CustomerOrder() {
        * Save control, then the ref, then whatever opened the dialog.
        */
       const isVisible = (el: HTMLElement | null) => Boolean(el && el.offsetParent !== null);
-      const visibleSave = [...document.querySelectorAll<HTMLButtonElement>('button')]
-        .find(button => button.textContent?.trim() === 'Save as My Usual' && isVisible(button));
+      const visibleSave = [...document.querySelectorAll<HTMLButtonElement>('button[data-cb-save-usual]')]
+        .find(isVisible);
       const target = visibleSave
         || (isVisible(saveAsMyUsualButtonRef.current) ? saveAsMyUsualButtonRef.current : null)
         || opener;
@@ -1355,6 +1420,9 @@ export default function CustomerOrder() {
    * Grouping reuses the same authoritative category derivation as the rail.
    */
   const isSearching = search.trim().length > 0;
+  /* A typed query keeps the surface open even if focus was never registered, e.g. when
+     a query survives a re-render. */
+  const searchOpen = searchActive || isSearching;
   const menuSections = useMemo(() => {
     if (isSearching) return [];
     return categories
@@ -1918,7 +1986,6 @@ export default function CustomerOrder() {
         priceLabel={formatMoney(toNumber(item.salePrice))}
         imageUrl={getItemImage(item)}
         fallbackIcon={meta.icon}
-        metaLabel={meta.label}
         dietary={trustedDietaryClassification(item as unknown as Record<string, unknown>)}
         quantity={qty}
         canOrder={canOrder}
@@ -1963,18 +2030,28 @@ export default function CustomerOrder() {
 
   const basketPanel = (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Stage 4a header: title, count and one close action. */}
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 id="cb-basket-heading" className="cb-customer-title text-xl font-black">Your basket</h2>
-          <p className="cb-customer-muted text-sm font-bold">
-            {itemCount} item{itemCount === 1 ? '' : 's'} for {orderType === 'DINE_IN' ? 'dine in' : 'pickup'}
-          </p>
+      {/* Title and one close action. On the checkout step the same header carries the
+          way back, so the customer is never stranded in the form. */}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1">
+          {basketStep === 'CHECKOUT' && cart.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setBasketStep('BASKET')}
+              className="cb-customer-icon-button -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+              aria-label="Back to basket"
+            >
+              <ArrowLeft size={18} aria-hidden="true" />
+            </button>
+          )}
+          <h2 id="cb-basket-heading" className="cb-customer-title truncate text-xl font-black">
+            {basketStep === 'CHECKOUT' && cart.length > 0 ? 'Checkout' : 'Your basket'}
+          </h2>
         </div>
         <button
           type="button"
           onClick={() => setBasketOpen(false)}
-          className="cb-customer-icon-button flex h-11 w-11 items-center justify-center rounded-full lg:hidden"
+          className="cb-customer-icon-button flex h-11 w-11 shrink-0 items-center justify-center rounded-full lg:hidden"
           aria-label="Close basket"
         >
           <X size={18} aria-hidden="true" />
@@ -1988,11 +2065,13 @@ export default function CustomerOrder() {
             searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
           }}
         />
-      ) : (
+      ) : basketStep === 'BASKET' ? (
+        /* STEP 1 — what am I buying. Nothing here asks a question about payment or
+           identity; those live behind Continue on the existing checkout step. */
         <>
           {/* Pickup context, from the parent's existing store state. */}
           <CustomerPickupSummary
-            contextLabel={orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}
+            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
             storeName={selectedStore?.name || 'Choose store'}
             statusLabel={customerOrderingState.statusLabel}
             tone={customerOrderingState.tone}
@@ -2000,14 +2079,13 @@ export default function CustomerOrder() {
             onChangeStore={() => setStoreSelectorOpen(true)}
           />
 
-          <ul className="mt-3 space-y-3">
+          <ul>
             {cart.map(line => {
               const unitPrice = unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns);
               return (
                 <CustomerBasketItemCard
                   key={line.id}
                   productName={line.item.displayName || line.item.name}
-                  unitPriceLabel={formatMoney(unitPrice)}
                   lineTotalLabel={formatMoney(unitPrice * line.quantity)}
                   quantity={line.quantity}
                   maxQuantity={CUSTOMER_MAX_LINE_QUANTITY}
@@ -2033,43 +2111,107 @@ export default function CustomerOrder() {
             })}
           </ul>
 
-          {/* Stage 4b: presentation only. Every amount is the parent's authoritative
-              `totals`, unchanged \u2014 no fee, charge or tax is added here. */}
-          <CustomerCheckoutTotalsPanel
-            subtotalLabel={formatMoney(totals.subtotal)}
-            taxableAmountLabel={formatMoney(totals.taxableAmount)}
-            gstLabel={formatMoney(totals.gstTotal)}
-            payableLabel={formatMoney(totals.grandTotal)}
-          />
-
-          {/* Save as My Usual — one small action, no basket redesign. Hidden while a
-              submission or payment is in flight so it can never race checkout. */}
+          {/* Save as My Usual: secondary by construction. One row, below the items, in
+              the same flat language as the rest of the sheet. Hidden while a submission
+              or payment is in flight so it can never race checkout. The handler and its
+              sign-in branch are unchanged. */}
           {cart.length > 0 && selectedStoreId && !saving && !submittingRef.current && (
             <button
               ref={saveAsMyUsualButtonRef}
               type="button"
+              data-cb-save-usual="true"
               onClick={requestSaveMyUsual}
               data-requires-online="true"
               disabled={myUsualBusy || isOffline}
-              className="mt-3 min-h-11 w-full rounded-2xl bg-[#f5ede5] text-sm font-black text-[#3b241c] disabled:text-neutral-400"
+              className="cb-customer-menu-row disabled:opacity-55"
             >
-              Save as My Usual
+              <Coffee size={19} className="cb-customer-row-icon" aria-hidden="true" />
+              <span className="cb-customer-menu-row-title min-w-0 flex-1 truncate">
+                {verifiedCustomer ? 'Save as My Usual' : 'Sign in to save as My Usual'}
+              </span>
+              <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
             </button>
           )}
 
-          <div className="mt-4 space-y-3">
-            {/* Stage 4b: presentation only. Choosing a method sets exactly the same
-                state as before \u2014 it creates no order, session or payment. */}
-            <CustomerPaymentSelector
-              value={paymentProvider}
-              disabled={saving}
-              onChange={setPaymentProvider}
-            />
-            {paymentProvider === 'RAZORPAY' && !customerAuthRestored ? (
-              <div className="rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold text-neutral-500">
-                Restoring your verified mobile session...
+          {/* Presentation only. Every amount is the parent's authoritative `totals`,
+              unchanged: no fee, charge or tax is added here. */}
+          <CustomerCheckoutTotalsPanel
+            subtotalLabel={formatMoney(totals.subtotal)}
+            gstLabel={formatMoney(totals.gstTotal)}
+            payableLabel={formatMoney(totals.grandTotal)}
+          />
+
+          {/* The one action on this step. It moves the sheet to the existing checkout
+              step and does nothing else: no order, session or payment is created. */}
+          <div className="cb-customer-action-bar sticky bottom-0 z-10 -mx-4 mt-4 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:-mx-5 sm:px-5">
+            <button
+              type="button"
+              onClick={() => setBasketStep('CHECKOUT')}
+              className="cb-customer-accent-button inline-flex min-h-13 w-full items-center justify-center rounded-2xl px-4 py-4 text-sm font-black"
+            >
+              Continue · {formatMoney(totals.grandTotal)}
+            </button>
+          </div>
+        </>
+      ) : (
+        /* STEP 2: the existing checkout, unchanged. Reached only from Continue, and
+           still running the same single submit handler. */
+        <>
+          {/* WHERE. One row, and the only place the store appears on this step. */}
+          <CustomerPickupSummary
+            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
+            storeName={selectedStore?.name || 'Choose store'}
+            statusLabel={customerOrderingState.statusLabel}
+            tone={customerOrderingState.tone}
+            prepLabel={prepWindowLabel(selectedStore?.estimatedPrepMinutes)}
+            onChangeStore={() => setStoreSelectorOpen(true)}
+          />
+
+          {/* WHO. A verified customer's name and mobile are already authoritative, so
+              this states them instead of asking again. The name stays editable behind a
+              compact action — and opens by itself if the profile carried no name, so a
+              required field can never be hidden and empty. */}
+          {verifiedCustomer ? (
+            <>
+              <div className="cb-customer-menu-row">
+                <BadgeCheck size={19} className="cb-customer-row-icon" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="cb-customer-menu-row-title block truncate">
+                    {customerName.trim() || verifiedCustomer.displayName || 'Your account'}
+                  </span>
+                  <span className="cb-customer-identity-verified">
+                    Verified · {maskedPhone(verifiedCustomer.normalisedPhone)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setEditIdentity(current => !current)}
+                  aria-expanded={editIdentity}
+                  className="cb-customer-inline-action inline-flex h-11 shrink-0 items-center px-3.5"
+                >
+                  {editIdentity ? 'Done' : 'Edit'}
+                </button>
               </div>
-            ) : paymentProvider === 'RAZORPAY' ? (
+              {(editIdentity || !customerName.trim()) && (
+                <label className="mt-3 block">
+                  <span className="cb-customer-field-label">Name for the order</span>
+                  <input
+                    value={customerName}
+                    onChange={(event) => setCustomerName(event.target.value)}
+                    placeholder="Your name"
+                    autoComplete="name"
+                    className="cb-customer-field mt-2"
+                  />
+                </label>
+              )}
+            </>
+          ) : paymentProvider === 'RAZORPAY' && !customerAuthRestored ? (
+            <p className="cb-customer-checkout-notice tone-info mt-3 px-3 py-2.5 text-[12.5px] font-bold">
+              Restoring your verified mobile session...
+            </p>
+          ) : paymentProvider === 'RAZORPAY' ? (
+            /* The existing OTP surface, unchanged. No second OTP UI exists. */
+            <div className="mt-3">
               <CustomerOtpPanel
                 mobile={customerPhone}
                 verifiedPhone={verifiedCustomer?.normalisedPhone || null}
@@ -2085,43 +2227,106 @@ export default function CustomerOrder() {
                   setError(null);
                 }}
               />
-            ) : (
-              <input
-                value={customerPhone}
-                onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
-                placeholder="10-digit mobile number"
-                inputMode="numeric"
-                autoComplete="tel"
-                className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-              />
-            )}
-            {(paymentProvider === 'PAY_AT_COUNTER' || verifiedCustomer) && (
-              <>
-                <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Your name" className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]" />
-                <select value={orderType} onChange={(event) => handleOrderTypeChange(event.target.value as OnlineOrderType)} className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm font-bold outline-none focus:border-[#5c4033]">
-                  <option value="PICKUP">Takeaway / pickup</option>
-                  <option value="DINE_IN">Dine in</option>
-                </select>
-                {orderType === 'DINE_IN' && (
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2.5">
+              <label className="block">
+                <span className="cb-customer-field-label">Mobile number</span>
+                <input
+                  value={customerPhone}
+                  onChange={(event) => setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="10-digit mobile number"
+                  inputMode="numeric"
+                  autoComplete="tel"
+                  className="cb-customer-field mt-2"
+                />
+              </label>
+              <label className="block">
+                <span className="cb-customer-field-label">Name</span>
+                <input
+                  value={customerName}
+                  onChange={(event) => setCustomerName(event.target.value)}
+                  placeholder="Your name"
+                  autoComplete="name"
+                  className="cb-customer-field mt-2"
+                />
+              </label>
+            </div>
+          )}
+
+          {/* HOW. Presentation only: choosing a method sets exactly the same state as
+              before, and creates no order, session or payment. */}
+          <CustomerPaymentSelector
+            value={paymentProvider}
+            disabled={saving}
+            onChange={setPaymentProvider}
+          />
+
+          {/* ANYTHING ELSE. Order type is two chips rather than a full-width select,
+              and the note is an offer until it is wanted. */}
+          {(paymentProvider === 'PAY_AT_COUNTER' || verifiedCustomer) && (
+            <div className="mt-4">
+              <p className="cb-customer-eyebrow">Order</p>
+              <div className="cb-customer-choice-row mt-2" role="radiogroup" aria-label="Order type">
+                {(['PICKUP', 'DINE_IN'] as OnlineOrderType[]).map(type => (
+                  <button
+                    key={type}
+                    type="button"
+                    role="radio"
+                    aria-checked={orderType === type}
+                    onClick={() => handleOrderTypeChange(type)}
+                    className={`cb-customer-choice ${orderType === type ? 'is-on' : ''}`}
+                  >
+                    {type === 'PICKUP' ? 'Takeaway' : 'Dine in'}
+                  </button>
+                ))}
+              </div>
+
+              {orderType === 'DINE_IN' && (
+                <label className="mt-2.5 block">
+                  <span className="cb-customer-field-label">Table number</span>
                   <input
                     value={tableNumber}
                     onChange={(event) => setTableNumber(event.target.value.slice(0, 20))}
                     placeholder="Table number"
-                    className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
+                    className="cb-customer-field mt-2"
                   />
-                )}
-                <textarea
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
-                  placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
-                  rows={3}
-                  maxLength={MAX_NOTE_LENGTH}
-                  className="w-full rounded-2xl border border-[#e4d7c8] bg-white px-4 py-3 text-sm outline-none focus:border-[#5c4033]"
-                />
-                <p className="text-right text-[11px] font-bold text-neutral-400">{notes.length}/{MAX_NOTE_LENGTH}</p>
-              </>
-            )}
-          </div>
+                </label>
+              )}
+
+              {noteOpen || notes.trim() ? (
+                <div className="mt-2.5">
+                  <textarea
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value.slice(0, MAX_NOTE_LENGTH))}
+                    placeholder={orderType === 'DINE_IN' ? 'Add a note for the store' : 'Pickup note for the store'}
+                    rows={2}
+                    maxLength={MAX_NOTE_LENGTH}
+                    autoFocus={noteOpen}
+                    className="cb-customer-textarea"
+                  />
+                  <p className="cb-customer-muted mt-1 text-right text-[11px] font-bold">{notes.length}/{MAX_NOTE_LENGTH}</p>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setNoteOpen(true)}
+                  className="cb-customer-menu-row"
+                >
+                  <Pencil size={17} className="cb-customer-row-icon" aria-hidden="true" />
+                  <span className="cb-customer-menu-row-title min-w-0 flex-1 truncate">Add a note (optional)</span>
+                  <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* WHAT AM I PAYING. The same authoritative totals as the basket step. */}
+          <CustomerCheckoutTotalsPanel
+            subtotalLabel={formatMoney(totals.subtotal)}
+            gstLabel={formatMoney(totals.gstTotal)}
+            payableLabel={formatMoney(totals.grandTotal)}
+          />
 
           {/* Existing state sources only \u2014 no lifecycle status is invented here. */}
           {isOffline && (
@@ -2142,6 +2347,7 @@ export default function CustomerOrder() {
             footnote={paymentProvider === 'RAZORPAY'
               ? 'Your cart clears only after payment is verified and the order is created.'
               : 'The store will confirm your order shortly.'}
+            notice={paymentProvider === 'RAZORPAY' ? RAZORPAY_PRE_PAYMENT_CAVEAT : undefined}
             onSubmit={submitOrder}
           />
         </>
@@ -2279,6 +2485,12 @@ export default function CustomerOrder() {
           setCustomerPhone('');
         }}
         onSignedOutAccountPress={() => setBasketOpen(true)}
+        /* Account's "My Usual" row reveals the existing home card — Stage 2 is not
+           re-implemented or duplicated inside the account panel. */
+        onOpenMyUsual={() => {
+          myUsualSectionRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          myUsualSectionRef.current?.focus();
+        }}
         rightSlot={(
           /* Desktop-only basket entry. Below lg the raised basket in the bottom
              navigation is the single basket control, so the two never coexist. */
@@ -2297,18 +2509,23 @@ export default function CustomerOrder() {
         )}
       />
 
-      <main className="mx-auto grid w-full min-w-0 gap-5 px-4 py-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
-        <section className="min-w-0 space-y-4">
+      <main className="mx-auto grid w-full min-w-0 gap-5 px-4 pb-4 pt-2 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
+        <section className="min-w-0 space-y-3">
+          {/* Store and My Usual are one hairline-separated strip, so the two compact
+              rows read as a list rather than as two more cards. Hidden — not unmounted
+              from the app, just not rendered on the search surface — while searching. */}
+          {!searchOpen && (
+          <div className="cb-customer-menu-strip">
           <CustomerStoreCard
-            contextLabel={orderType === 'DINE_IN' ? 'Dining at' : 'Pickup from'}
+            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
             storeName={selectedStore?.name || 'Choose store'}
             statusLabel={customerOrderingState.statusLabel}
             tone={customerOrderingState.tone}
-            message={selectedStoreMessage}
             onOpenSelector={() => setStoreSelectorOpen(true)}
           />
 
           {/* My Usual sits between the store strip and search, per the approved order. */}
+          <div ref={myUsualSectionRef} tabIndex={-1}>
           <CustomerMyUsualCard
             state={
               !verifiedCustomer
@@ -2347,8 +2564,11 @@ export default function CustomerOrder() {
             onEdit={() => startMyUsualOrder('EDIT')}
             onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
           />
+          </div>
+          </div>
+          )}
 
-          {myUsualNotice && (
+          {!searchOpen && myUsualNotice && (
             <p role="status" aria-live="polite" className="cb-customer-usual-note px-3 py-2 text-sm font-bold">
               {myUsualNotice}
             </p>
@@ -2359,7 +2579,9 @@ export default function CustomerOrder() {
               {customerOrderingState.message}
             </div>
           )}
-          {availabilityLoading ? (
+          {/* The store-not-accepting warning above stays in every state — it is a safety
+              message. These two are informational and stand down while searching. */}
+          {!searchOpen && (availabilityLoading ? (
             <div className="rounded-2xl bg-[#f5ede5] px-4 py-3 text-sm font-bold text-[#71645d]">
               Checking menu availability...
             </div>
@@ -2367,27 +2589,57 @@ export default function CustomerOrder() {
             <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
               {availabilityNotice}
             </div>
-          ) : null}
-          {checkoutDraftNotice && (
+          ) : null)}
+          {!searchOpen && checkoutDraftNotice && (
             <div role="status" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-900">
               {checkoutDraftNotice}
             </div>
           )}
 
-          <label className="flex h-12 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
-            <Search size={18} className="shrink-0 text-[#8b5e42]" />
-            <input
-              ref={searchInputRef}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              /* h-full so the input itself is the full 48px target, not a 22px strip
-                 inside it — tapping near the edge of the field must still focus it. */
-              className="h-full w-full bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
-              placeholder="Search the menu"
-              aria-label="Search the menu"
-              enterKeyHint="search"
-            />
-          </label>
+          <div className={searchOpen ? 'cb-customer-search-row' : ''}>
+            <label className="flex h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
+              <Search size={18} className="shrink-0 text-[#8b5e42]" />
+              <input
+                ref={searchInputRef}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onFocus={() => setSearchActive(true)}
+                /* h-full so the input itself is the full 48px target, not a 22px strip
+                   inside it — tapping near the edge of the field must still focus it. */
+                className="h-full w-full min-w-0 bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
+                placeholder={searchOpen ? 'Search Coffee Bond...' : 'Search the menu'}
+                aria-label="Search the menu"
+                enterKeyHint="search"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+                  aria-label="Clear search"
+                  className="cb-customer-search-clear -mr-2 flex h-11 w-11 shrink-0 items-center justify-center"
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              )}
+            </label>
+            {searchOpen && (
+              <button
+                type="button"
+                /* Leaves search and hands the menu back exactly as it was. Category is
+                   deliberately untouched — that is existing menu state, not search
+                   state. */
+                onClick={() => {
+                  setSearch('');
+                  setSearchActive(false);
+                  searchInputRef.current?.blur();
+                }}
+                aria-label="Cancel search"
+                className="cb-customer-search-cancel flex min-h-11 shrink-0 items-center px-2"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
 
           {error && (
             <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
@@ -2401,41 +2653,44 @@ export default function CustomerOrder() {
               640 px it becomes the vertical rail beside the content. Both orientations
               are the same component and the same DOM — only CSS differs. */}
           <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:gap-3">
-            <CustomerCategoryRail
-              categories={categories}
-              selected={category}
-              onSelectCategory={setCategory}
-              labelFor={categoryLabel}
-            />
+            {!searchOpen && (
+              <CustomerCategoryRail
+                categories={categories}
+                selected={category}
+                onSelectCategory={setCategory}
+                labelFor={categoryLabel}
+              />
+            )}
 
             <div className="min-w-0 flex-1 space-y-6">
               {loading ? (
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                   {[1, 2, 3, 4].map(key => <div key={key} className="cb-customer-skeleton aspect-[4/5] animate-pulse rounded-[20px] motion-reduce:animate-none" />)}
                 </div>
-              ) : isSearching ? (
-                /* Search collapses the menu to one flat vertical result list. */
-                <section>
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h2 className="text-lg font-black text-[#271a16]">Search results</h2>
-                    <p className="text-xs font-bold text-[#71645d]">{visibleItems.length} items</p>
-                  </div>
-                  {visibleItems.length === 0 ? (
-                    <div className="rounded-3xl bg-white p-5 text-center ring-1 ring-[#e7ddd3]">
-                      <p className="font-black text-[#271a16]">Nothing found here</p>
-                      <p className="text-sm text-[#71645d]">Try another search.</p>
-                      <button
-                        type="button"
-                        onClick={() => { setSearch(''); setCategory('ALL'); }}
-                        className="mt-3 min-h-11 rounded-2xl bg-[#f5ede5] px-4 text-sm font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40"
-                      >
-                        Show full menu
-                      </button>
+              ) : searchOpen ? (
+                /* The search surface: the matches and a count, or one quiet line. The
+                   results are the SAME cards the menu renders, from the same filtered
+                   list — search adds no query and no second index. */
+                <section aria-label="Search results">
+                  {!isSearching ? (
+                    <div className="cb-customer-search-void">
+                      <p className="cb-customer-standfirst">Search Coffee Bond</p>
+                      <p className="cb-customer-lede mt-2">Coffee, food, smoothies and more.</p>
+                    </div>
+                  ) : visibleItems.length === 0 ? (
+                    <div className="cb-customer-search-void">
+                      <p className="cb-customer-standfirst">No matches found</p>
+                      <p className="cb-customer-lede mt-2">Try another search.</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                      {visibleItems.map((item, index) => renderMenuCard(item, index))}
-                    </div>
+                    <>
+                      <p className="cb-customer-eyebrow mb-3" role="status" aria-live="polite">
+                        {visibleItems.length} result{visibleItems.length === 1 ? '' : 's'}
+                      </p>
+                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                        {visibleItems.map((item, index) => renderMenuCard(item, index))}
+                      </div>
+                    </>
                   )}
                 </section>
               ) : category === 'ALL' ? (

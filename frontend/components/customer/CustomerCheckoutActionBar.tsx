@@ -9,6 +9,13 @@ type Props = {
   busy: boolean;
   /** Reassurance line the existing flow already showed beneath the action. */
   footnote: string;
+  /**
+   * Safety statement rendered inside this same sticky bar, immediately above the action.
+   * It lives here rather than further up the page because the bar is pinned: whatever is
+   * in it is on screen at the moment the customer taps, which is the only moment a
+   * pre-payment caveat is worth anything.
+   */
+  notice?: string;
   onSubmit: () => void;
 };
 
@@ -26,6 +33,7 @@ export default function CustomerCheckoutActionBar({
   disabled,
   busy,
   footnote,
+  notice,
   onSubmit,
 }: Props) {
   return (
@@ -34,6 +42,11 @@ export default function CustomerCheckoutActionBar({
       <p className="sr-only" role="status" aria-live="polite">
         {disabled && disabledReason ? disabledReason : label}
       </p>
+      {notice && (
+        <p className="cb-customer-checkout-notice tone-warning mb-2.5 px-3 py-2 text-[12px] font-bold">
+          {notice}
+        </p>
+      )}
       <button
         type="button"
         onClick={onSubmit}

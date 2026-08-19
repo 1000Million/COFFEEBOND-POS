@@ -86,16 +86,13 @@
  * emitted into customer.css, which nothing but customer-main.tsx imports.
  */
 
+/* The product card is a grid cell, not a panel. The photograph supplies the edge; a
+   white box with a shadow around it, 84 times on a cream page, was container doing work
+   the picture already does. */
 .cb-customer-card {
-  background: var(--cb-surface);
-  border-radius: var(--cb-radius);
-  box-shadow: var(--cb-shadow-card);
-}
-
-.cb-customer-store-card {
-  background: var(--cb-surface);
-  border-radius: var(--cb-radius-lg);
-  box-shadow: var(--cb-shadow-card);
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .cb-customer-accent-button {
@@ -158,7 +155,7 @@
   background: var(--cb-bg);
   margin-inline: calc(-1 * var(--cb-page-gutter));
   padding-inline: var(--cb-page-gutter);
-  padding-block: 6px;
+  padding-block: 4px;
 }
 
 /* A scrollbar track inside a 44 px chip row would eat the touch target. */
@@ -170,22 +167,34 @@
   justify-content: center;
   flex: 0 0 auto;
   scroll-snap-align: start;
-  padding: 0 14px;
+  padding: 0 12px;
+  /* Tightening the padding took the shortest label ("All") to 42 px wide. The floor is
+     a square 44, so it is stated rather than left to depend on the label. */
+  min-width: 44px;
   font-size: 13px;
   border-radius: 999px;
   white-space: nowrap;
 }
 
+/* Unselected categories are labels on the page, not objects on it. Nine white pills
+   with a ring each, above a grid of photographs, read as a second toolbar competing
+   with the products — which is the one thing this row must not do. The tap target is
+   unchanged at 44 px; only the paint is gone. */
 .cb-customer-rail-tab {
   color: var(--cb-text-muted);
-  background: var(--cb-surface);
-  box-shadow: inset 0 0 0 1px var(--cb-border);
+  background: transparent;
+  box-shadow: none;
+  font-weight: 600;
 }
 
+/* Exactly one filled object in the row, so "which filter am I on" is answered at a
+   glance. No shadow: the fill is the signal. Selection is also announced via
+   aria-pressed, so it never rests on colour alone. */
 .cb-customer-rail-tab-active {
   color: var(--cb-text-on-gold);
   background: var(--cb-gold);
-  box-shadow: var(--cb-shadow-card);
+  box-shadow: none;
+  font-weight: 800;
 }
 
 /* >= 640 px: the vertical rail, where a 64 px column is affordable. The tab shape
@@ -225,7 +234,11 @@
     box-shadow: none;
   }
 
+  /* The rail tab is a 64 px block, not a small chip, so the accent is softened to
+     match its area. Same colour family, same espresso text, less shouting. */
   .cb-customer-rail-tab-active {
+    background: var(--cb-gold-soft);
+    color: var(--cb-espresso);
     border-top-right-radius: var(--cb-radius-sm);
     border-bottom-right-radius: var(--cb-radius-sm);
   }
@@ -348,7 +361,9 @@
 }
 
 /* Unavailable products stay legible rather than being colour-dimmed only. */
-.cb-customer-unavailable { opacity: 0.72; }
+/* Dimming the whole card also dimmed the words that explain why it is unavailable.
+   The picture carries the state; the text keeps full contrast. */
+.cb-customer-unavailable .cb-customer-product-media { opacity: 0.45; }
 
 /* Reserves space so the fixed bottom navigation never covers page content.
    The bar is lg:hidden, so the reservation is dropped at the same breakpoint. */
@@ -645,12 +660,15 @@
   overscroll-behavior: contain;
 }
 
+/* A basket line is a row on the sheet, not a card floating on it. The sheet is
+   already a surface; a white card inside it was a card inside a card, and four of
+   them made a two-item basket scroll. */
 .cb-customer-basket-line {
-  background: var(--cb-surface);
-  border-radius: var(--cb-radius);
-  box-shadow: var(--cb-shadow-card);
   list-style: none;
+  border-top: 1px solid var(--cb-border-soft);
 }
+
+.cb-customer-basket-line:first-child { border-top: 0; }
 
 .cb-customer-basket-thumb {
   background: var(--cb-surface-muted);
@@ -678,22 +696,6 @@
   color: var(--cb-espresso);
 }
 
-.cb-customer-basket-pickup {
-  background: var(--cb-surface);
-  border-radius: var(--cb-radius);
-  box-shadow: inset 0 0 0 1px var(--cb-border);
-}
-
-.cb-customer-basket-pickup-pin {
-  background: var(--cb-gold-soft);
-  color: var(--cb-espresso);
-}
-
-.cb-customer-basket-change {
-  background: var(--cb-surface-muted);
-  color: var(--cb-espresso);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .cb-customer-basket-sheet { transition: none; animation: none; }
 }
@@ -705,20 +707,6 @@
  * with cream text (~12:1) and a gold payable line, so the amount reads as the
  * strongest element on the checkout without meaning resting on colour.
  * ------------------------------------------------------------------------- */
-
-.cb-customer-totals-panel {
-  background: var(--cb-espresso);
-  border-radius: var(--cb-radius-lg);
-  color: var(--cb-text-on-espresso);
-}
-
-.cb-customer-totals-label { color: rgba(251, 247, 241, 0.78); }
-.cb-customer-totals-value { color: var(--cb-text-on-espresso); }
-.cb-customer-totals-payable { color: var(--cb-gold); }
-
-.cb-customer-totals-divider {
-  border-top: 1px solid rgba(251, 247, 241, 0.22);
-}
 
 /* Payment methods stack vertically — never a horizontal carousel. */
 .cb-customer-payment-card {
@@ -789,3 +777,603 @@
 
 .cb-customer-layer-basket { z-index: 75; }
 .cb-customer-layer-modal  { z-index: 85; }
+
+/* ---------------------------------------------------------------------------
+ * Stage 5 — account, orders and order tracking.
+ *
+ * Customer-only (this file is imported solely by frontend/customer-main.tsx), so
+ * none of it can reach the staff POS bundle.
+ *
+ * The organising idea is that THE PAGE IS THE SURFACE. The previous pass gave every
+ * section its own white panel, border and radius, so a screen read as five boxes of
+ * equal weight with nothing leading. Here the cream page is the surface: sections sit
+ * directly on it, separated by whitespace and a hairline, and exactly ONE element per
+ * screen — the status hero — is filled. That single filled block is what the eye lands
+ * on, which is the whole point of the screen.
+ *
+ * Rules this section holds itself to:
+ *   - one filled surface per screen, and it is never nested inside another
+ *   - lists are rows with a single hairline between them, never stacks of cards
+ *   - gold is the only accent, and it marks exactly one action per screen
+ *   - hierarchy comes from type size and weight, not from borders
+ * ------------------------------------------------------------------------- */
+
+/* --- Shared type and rhythm ------------------------------------------------ */
+
+/* The one page heading per screen. */
+.cb-customer-screen-title {
+  color: var(--cb-text);
+  font-size: clamp(26px, 7.2vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+}
+
+/* Section markers. Deliberately quiet: they orient, they do not compete with the
+   page title or the hero. */
+.cb-customer-eyebrow {
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cb-customer-lede {
+  color: var(--cb-text-muted);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.cb-customer-standfirst {
+  color: var(--cb-text);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+/* --- Flat rows -------------------------------------------------------------
+ * A list of rows on the page surface with one hairline between them. This is what
+ * replaces a stack of individually bordered cards, in both Account and Orders.
+ */
+
+/* :where() keeps the list reset at zero specificity, so a spacing utility on the
+   element still wins. A plain `.cb-customer-rows { margin: 0 }` silently ate every
+   margin utility applied alongside it. */
+:where(.cb-customer-rows) { list-style: none; margin: 0; padding: 0; }
+.cb-customer-rows > * { border-top: 1px solid var(--cb-border-soft); }
+
+.cb-customer-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 60px;
+  padding: 13px 2px;
+  text-align: left;
+  color: var(--cb-text);
+}
+
+.cb-customer-row-title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.cb-customer-row-sub {
+  color: var(--cb-text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 3px;
+}
+/* Orders that ended badly read as ended — in words and in colour, not colour alone. */
+.cb-customer-row-sub.is-ended { color: var(--cb-danger); }
+
+.cb-customer-row-amount {
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-row-icon { color: var(--cb-espresso); flex: 0 0 auto; }
+.cb-customer-row-chevron { color: #b3a598; flex: 0 0 auto; }
+
+.cb-customer-rule { border: 0; border-top: 1px solid var(--cb-border-soft); }
+
+/* --- The single filled surface --------------------------------------------
+ * Used by the current order on Orders and by the status hero on tracking, so both
+ * screens speak with one voice. Tones set their own foreground values rather than
+ * relying on opacity, because a translucent cream that passes contrast on espresso
+ * fails it on a light warning background.
+ */
+
+.cb-customer-hero {
+  --hero-fg: var(--cb-text-on-espresso);
+  --hero-fg-soft: rgba(251, 247, 241, 0.88);
+  --hero-fg-meta: rgba(251, 247, 241, 0.74);
+  --hero-accent: var(--cb-gold);
+  background: var(--cb-espresso);
+  color: var(--hero-fg);
+  border-radius: var(--cb-radius-lg);
+}
+
+.cb-customer-hero.is-ready {
+  background: #14603a;
+  --hero-fg-meta: rgba(251, 247, 241, 0.84);
+  --hero-accent: #ffe6a8;
+}
+
+.cb-customer-hero.is-attention {
+  background: var(--cb-warning-soft);
+  --hero-fg: #7c5410;
+  --hero-fg-soft: #7c5410;
+  --hero-fg-meta: #8a6216;
+  --hero-accent: #7c5410;
+}
+
+.cb-customer-hero.is-ended {
+  background: var(--cb-surface-muted);
+  --hero-fg: var(--cb-text);
+  --hero-fg-soft: #4a3a33;
+  --hero-fg-meta: var(--cb-text-muted);
+  --hero-accent: var(--cb-text-muted);
+}
+
+.cb-customer-hero-eyebrow {
+  color: var(--hero-accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* The status is the largest thing on its screen, on purpose. */
+.cb-customer-hero-status {
+  color: var(--hero-fg);
+  font-size: clamp(28px, 8vw, 34px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+}
+
+.cb-customer-hero-line { color: var(--hero-fg-soft); font-size: 14.5px; font-weight: 600; line-height: 1.45; }
+.cb-customer-hero-meta { color: var(--hero-fg-meta); font-size: 13px; font-weight: 600; line-height: 1.4; }
+
+.cb-customer-hero-amount {
+  color: var(--hero-accent);
+  font-size: 17px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Order progress --------------------------------------------------------
+ * Three compact steps directly on the page. No panel: the strip is a caption to the
+ * hero above it, not a section competing with it.
+ */
+
+.cb-customer-steps { display: flex; align-items: flex-start; gap: 4px; }
+
+.cb-customer-step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-customer-step-track { display: flex; align-items: center; gap: 6px; width: 100%; }
+
+.cb-customer-step-rail { flex: 1 1 auto; height: 2px; border-radius: 2px; background: var(--cb-border); }
+.cb-customer-step-rail.is-filled { background: var(--cb-gold-strong); }
+.cb-customer-step-rail.is-hidden { background: transparent; }
+
+.cb-customer-step-dot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--cb-border);
+  color: var(--cb-text-on-gold);
+}
+
+.cb-customer-step-dot.is-done { background: var(--cb-gold-strong); }
+/* The current step carries the only ring on the strip, so the eye lands on it. */
+.cb-customer-step-dot.is-active {
+  background: var(--cb-espresso);
+  color: var(--cb-gold);
+  box-shadow: 0 0 0 4px var(--cb-gold-soft);
+}
+
+.cb-customer-step-label { color: var(--cb-text-muted); font-size: 11.5px; font-weight: 700; text-align: center; }
+.cb-customer-step-label.is-active { color: var(--cb-text); font-weight: 800; }
+
+/* --- Order summary ---------------------------------------------------------
+ * Flat. The items and the totals share the page surface; only a hairline separates
+ * them, so there is no card inside a card.
+ */
+
+.cb-customer-summary-item { display: flex; justify-content: space-between; gap: 14px; }
+.cb-customer-summary-name { color: var(--cb-text); font-size: 14.5px; font-weight: 700; line-height: 1.35; }
+.cb-customer-summary-addon { color: var(--cb-text-muted); font-size: 12.5px; font-weight: 600; line-height: 1.4; }
+.cb-customer-summary-amount {
+  color: var(--cb-text);
+  font-size: 14.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-totals { border-top: 1px solid var(--cb-border-soft); }
+.cb-customer-total-row { display: flex; justify-content: space-between; gap: 14px; }
+.cb-customer-total-label { color: var(--cb-text-muted); font-size: 14px; font-weight: 600; }
+.cb-customer-total-value {
+  color: var(--cb-text);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.cb-customer-total-row.is-grand .cb-customer-total-label,
+.cb-customer-total-row.is-grand .cb-customer-total-value { color: var(--cb-text); font-size: 17px; font-weight: 800; }
+
+.cb-customer-meta { color: var(--cb-text-muted); font-size: 12px; font-weight: 600; }
+
+/* --- Payment safety --------------------------------------------------------
+ * The wording inside these blocks tells the customer not to pay twice, so it is the
+ * one message on tracking allowed to be a filled block besides the hero. The accent
+ * edge is what makes it read as an instruction rather than a caption.
+ */
+
+/* White on the cream page with one accent edge. A tinted block was tried first and
+   vanished into the hero whenever the hero carried the same tint — which is exactly
+   when this message matters most. */
+.cb-customer-payment-notice {
+  background: var(--cb-surface);
+  color: var(--cb-text);
+  border-radius: var(--cb-radius-sm);
+  border-left: 4px solid var(--cb-gold-strong);
+}
+
+.cb-customer-payment-notice.tone-warning { border-left-color: var(--cb-warning); }
+
+/* --- Account ---------------------------------------------------------------
+ * A sheet, not a settings menu: a large name, quiet metadata, two rows, a hairline,
+ * and a sign out that is plainly secondary because it is below the line and unfilled.
+ */
+
+.cb-customer-account-sheet {
+  background: var(--cb-surface);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  box-shadow: var(--cb-shadow-raised);
+  padding: 10px 20px max(20px, var(--cb-safe-bottom));
+}
+
+@media (min-width: 640px) {
+  .cb-customer-account-sheet { border-radius: var(--cb-radius-lg); padding-top: 20px; }
+}
+
+.cb-customer-sheet-grabber {
+  display: block;
+  width: 40px;
+  height: 4px;
+  margin: 0 auto 12px;
+  border-radius: 999px;
+  background: var(--cb-border);
+}
+
+@media (min-width: 640px) {
+  .cb-customer-sheet-grabber { display: none; }
+}
+
+/* Air under the identity, so the name reads as the sheet's header and not as a fourth
+   list item. The phone number's box ended flush against the first row's hairline.
+
+   This is padding on the identity rather than `mt-6` on the row list, because that
+   margin utility could never win: `:where(.cb-customer-rows) { margin: 0 }` lives in
+   this file, which is UNLAYERED, while Tailwind's `.mt-6` sits in `@layer utilities` —
+   and unlayered declarations beat layered ones whatever their specificity. The
+   :where() only equalises specificity; it does nothing across layers. Padding also
+   cannot be collapsed away by a neighbouring margin. */
+.cb-customer-account-identity { padding-bottom: 22px; }
+
+.cb-customer-account-name {
+  color: var(--cb-text);
+  font-size: 27px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+/* Verified state is stated in words, never by colour alone. */
+.cb-customer-account-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cb-success);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.cb-customer-account-phone {
+  color: var(--cb-text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-account-note { color: var(--cb-text-muted); font-size: 12.5px; font-weight: 500; line-height: 1.5; }
+
+.cb-customer-signout { color: var(--cb-danger); }
+.cb-customer-signout .cb-customer-row-icon { color: var(--cb-danger); }
+
+/* Profile fields. Filled rather than outlined, so editing adds no new borders. */
+.cb-customer-field-label {
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cb-customer-field {
+  width: 100%;
+  height: 52px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-surface-muted);
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cb-customer-field:focus { outline: 2px solid var(--cb-gold-strong); outline-offset: 1px; }
+.cb-customer-field.is-readonly { color: var(--cb-text-muted); }
+
+.cb-customer-quiet-button {
+  color: var(--cb-text);
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+}
+
+/* An empty or signed-out Orders screen has nothing more to say, so it says it once,
+   directly under the heading, and stops. Centring the message in the remaining height
+   was tried and rejected: it left the page title stranded alone at the top with a
+   300 px hole beneath it, which reads as a rendering fault rather than as calm.
+   align-items is explicit because the default `stretch` pulled the "Browse menu"
+   button to the full page width and made two lines of text look like a form. */
+.cb-customer-orders-void {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 40px;
+}
+
+.cb-customer-back { color: var(--cb-text-muted); font-size: 14px; font-weight: 700; }
+
+/* ---------------------------------------------------------------------------
+ * Customer menu — the strip above the products.
+ *
+ * The store block and the My Usual prompt used to be two large cards, and together
+ * with search and the category chips they pushed the first product card to y=501 on a
+ * 390x844 phone: 59% of the screen spent before a single thing could be ordered.
+ *
+ * Both are now compact rows on the cream canvas, separated by a hairline, in the same
+ * flat-row language the account sheet already uses. Nothing below the first product
+ * row is affected — this section styles the strip only.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 0;
+  text-align: left;
+  color: var(--cb-text);
+  /* The divider belongs to the row, not to a wrapper, so a row that is replaced by a
+     full card (a saved My Usual) takes its rule away with it. */
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+.cb-customer-menu-row.is-first { border-top: 0; }
+
+.cb-customer-menu-row-title {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.cb-customer-menu-row-meta {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+
+/* Status as coloured text rather than a filled pill: at this size the pill was most of
+   the row's height. The label still states the status in words. */
+.cb-customer-tone-green { color: var(--cb-success); }
+.cb-customer-tone-amber { color: var(--cb-warning); }
+.cb-customer-tone-red { color: var(--cb-danger); }
+
+/* Compact rows sit flush against each other so the hairline reads as one list; a My
+   Usual that renders as a full card still gets air above it. */
+.cb-customer-menu-strip > * + * { margin-top: 0; }
+.cb-customer-menu-strip .cb-customer-usual,
+.cb-customer-menu-strip .cb-customer-usual-empty { margin-top: 12px; }
+
+/* ---------------------------------------------------------------------------
+ * Checkout step.
+ *
+ * The checkout answers five questions — where am I collecting, who is ordering, how am
+ * I paying, anything else, what am I paying — and it should read as a payment sheet
+ * rather than a form. Fields are filled rather than outlined, so answering a question
+ * adds no new border; the order type is a pair of chips instead of a full-width select;
+ * and the note stays a one-line offer until it is wanted.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-choice-row { display: flex; gap: 8px; }
+
+.cb-customer-choice {
+  flex: 1 1 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 800;
+  background: var(--cb-surface);
+  color: var(--cb-text-muted);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+/* Selection is carried by fill AND by aria-checked, never by colour alone. */
+.cb-customer-choice.is-on {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: none;
+}
+
+.cb-customer-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-surface-muted);
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  resize: none;
+}
+
+.cb-customer-textarea:focus { outline: 2px solid var(--cb-gold-strong); outline-offset: 1px; }
+
+/* The verified customer's own line. Their identity is already authoritative, so this
+   states it instead of asking for it again. */
+.cb-customer-identity-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cb-success);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-inline-action {
+  color: var(--cb-espresso);
+  background: var(--cb-surface-muted);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+/* The OTP surface sits inside the checkout sheet, which is already a surface. It keeps
+   a hairline to mark where verification begins, but not a second white card. Only the
+   container is styled here — the OTP controls, timer and flow are untouched. */
+.cb-customer-otp-panel {
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+/* The phone field's interactive control must fill the field it sits in. The input
+   carried no height, so inside a 48 px box it rendered as a 20 px strip with 14 px of
+   dead space above and below it: a tap near the top or bottom edge of the field landed
+   on the wrapper and focused nothing. Height lives on the control rather than in a
+   utility so the field and its input cannot drift apart again; min-height keeps the
+   44 px floor even if the wrapper is ever resized. */
+.cb-customer-otp-input {
+  height: 100%;
+  min-height: 44px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Search.
+ *
+ * Activating search used to leave the whole menu standing underneath it — store row,
+ * My Usual, the basket-restored banner, the category chips and ten category headings —
+ * so the first result sat 445 px down a screen that still read as the menu. While
+ * search is open the surface shows the field and the matches, and nothing else. Every
+ * hidden section is only hidden: the same state, the same components, restored on
+ * Cancel. The filter itself is the existing one.
+ * ------------------------------------------------------------------------- */
+
+/* The field and Cancel on one line. This was written as `position: sticky` first so the
+   field would stay pinned while results scroll; it does not work here and the rule was
+   removed rather than left in place looking like it does. The page shell (.cb-app)
+   carries `overflow-x: hidden`, which computes to `overflow: hidden auto` and makes
+   .cb-app the sticky containing block — and .cb-app never scrolls, the document does.
+   Pinning the field would mean changing that shell, which is the menu's, not search's.
+   The field starts at the top of the surface, so it is on screen when the keyboard
+   opens; it scrolls away with the results, exactly as the category rail already does. */
+.cb-customer-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-customer-search-cancel {
+  color: var(--cb-espresso);
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cb-customer-search-clear {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  border-radius: 999px;
+}
+
+/* Both quiet states — nothing typed yet, and nothing found — are two lines on the
+   page. Neither earns a card or an illustration. */
+.cb-customer-search-void { padding: 28px 0 8px; }
+
+/* --- Product card type and action ------------------------------------------
+ * Two text elements and one control. The category label that used to lead the card
+ * is gone: it repeated the section heading the card was already under.
+ */
+
+.cb-customer-product-name {
+  color: var(--cb-text);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  /* Long compound names such as "Cookie (Hazelnut/Chocolate)" must break rather than
+     force a horizontal overflow in a 138 px column. */
+  overflow-wrap: anywhere;
+}
+
+.cb-customer-product-price {
+  color: var(--cb-text);
+  font-size: 14.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-product-unavailable {
+  color: var(--cb-danger);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Quiet until the item is in the basket. Gold marks state — a filled accent on all 84
+   cards at once would mean nothing. */
+.cb-customer-add-button {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+.cb-customer-add-button:disabled { color: var(--cb-text-muted); }

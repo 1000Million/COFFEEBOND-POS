@@ -195,7 +195,11 @@ check('41. line controls carry product-specific accessible names',
   && stepper.includes('aria-label={`Add ${label}`}'));
 check('41. the close control is labelled', home.includes('aria-label="Close basket"'));
 check('41. store status is stated in words, not colour alone',
-  pickup.includes('{statusLabel}') && pickup.includes('aria-label={`Change pickup store'));
+  pickup.includes('{statusLabel}')
+  // The pickup row now shares its accessible-name shape with the menu's store row:
+  // "<context> <store>. <status>. Change store".
+  && /aria-label=\{`\$\{contextLabel\} \$\{storeName\}\. \$\{statusLabel\}\. Change store`\}/.test(pickup));
+
 check('41. touch targets are at least 44px',
   itemCard.includes('h-11 w-11') && itemCard.includes('h-11') && stepper.includes('h-11 w-11'));
 check('reduced motion is respected', tokens.includes('prefers-reduced-motion'));
@@ -203,7 +207,7 @@ check('reduced motion is respected', tokens.includes('prefers-reduced-motion'));
 // --- 42/43: isolation ------------------------------------------------------
 check('42. basket styles are semantic classes in customer.css',
   ['.cb-customer-basket-sheet', '.cb-customer-basket-line', '.cb-customer-basket-empty',
-   '.cb-customer-basket-pickup'].every(cls => tokens.includes(cls))
+   '.cb-customer-menu-row'].every(cls => tokens.includes(cls))
   && !read('frontend/index.css').includes('cb-customer-basket'));
 check('42. no Tailwind arbitrary CSS-variable utilities in the new components',
   !/\[color:var\(--cb-|bg-\[var\(--cb-|shadow-\[var\(--cb-/.test(itemCard + emptyState + pickup));
@@ -228,11 +232,16 @@ const strip = (x) => x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm,
 const stage4bCode = [totalsPanel, paymentSelector, notice, actionBar].map(strip).join('\n');
 
 // 2-7: totals are parent-authoritative
+// "Taxable amount" is no longer displayed: totals.taxableAmount IS totals.subtotal in
+// this app, so the row printed the same number twice. The totals OBJECT is unchanged —
+// only the row is gone — and the three amounts still come straight from the parent.
 check('4b-2/3/4/5. the totals panel is fed from the parent totals object',
   homeCode.includes('subtotalLabel={formatMoney(totals.subtotal)}')
-  && homeCode.includes('taxableAmountLabel={formatMoney(totals.taxableAmount)}')
   && homeCode.includes('gstLabel={formatMoney(totals.gstTotal)}')
   && homeCode.includes('payableLabel={formatMoney(totals.grandTotal)}'));
+check('4b-2a. the totals calculation itself was not touched',
+  homeCode.includes('taxableAmount: subtotal')
+  && homeCode.includes('grandTotal: subtotal + gstTotal'));
 check('4b. the totals panel performs no arithmetic of its own',
   !/gstTotal\s*=|subtotal\s*=|grandTotal\s*=|salePrice|taxRate/.test(stage4bCode));
 check('4b-6. a discount renders only when the parent supplies one',
@@ -256,12 +265,40 @@ check('4b-10. payment targets are at least 44px', paymentSelector.includes('h-11
 check('4b-11/12. changing payment creates no order, session or payment',
   homeCode.includes('onChange={setPaymentProvider}')
   && !/(submitOrder|createCustomerCheckoutSession|loadRazorpayCheckout|httpsCallable)/i.test(stage4bCode));
+// The descriptions were shortened so neither payment card runs to two lines. What they
+// must never do is imply money has already changed hands, or that paying is the end of
+// the story — those are asserted on meaning, not on an exact sentence.
 check('4b-13. Pay at Counter copy never implies the order is paid',
   paymentSelector.includes('Pay when you collect your order.')
   && !/already paid|payment complete|paid order/i.test(strip(paymentSelector)));
-check('4b-14. Pay Online copy is secure-before-acceptance, not success',
+check('4b-14. Pay Online copy states security AND pending acceptance, never success',
   paymentSelector.includes('Pay securely online before the cafe accepts your order.')
-  && !/payment successful|paid successfully/i.test(strip(paymentSelector)));
+  && !/payment successful|paid successfully|order confirmed/i.test(strip(paymentSelector)));
+
+/* 4b-14a-d. The pre-payment caveat.
+   Online payment is captured before the store decides, so the customer must be told
+   BEFORE tapping Pay that (1) acceptance is still pending and (2) a refund follows if
+   the store cannot fulfil. Everything here is asserted against `homeCode`, which has
+   comments stripped, so a caveat that survives only as a code comment fails.
+   These checks are deliberately about MEANING, not one exact sentence: substituting an
+   unrelated cart/payment reassurance keeps the string present but fails 14b/14c. */
+const caveatMatch = homeCode.match(/const RAZORPAY_PRE_PAYMENT_CAVEAT\s*=\s*\n?\s*'([^']+)'/);
+const caveat = caveatMatch ? caveatMatch[1] : '';
+check('4b-14a. a pre-payment caveat constant exists in rendered code, not in a comment',
+  caveat.length > 0);
+check('4b-14b. it states that paying does not confirm the order / acceptance is pending',
+  /does not confirm your order/i.test(caveat) && /must still accept/i.test(caveat));
+check('4b-14c. it states the refund path when the store cannot fulfil',
+  /full refund/i.test(caveat) && /cannot/i.test(caveat));
+check('4b-14d. it is wired to the sticky action bar for RAZORPAY only, above the CTA',
+  homeCode.includes("notice={paymentProvider === 'RAZORPAY' ? RAZORPAY_PRE_PAYMENT_CAVEAT : undefined}")
+  && actionBar.includes('{notice}')
+  && actionBar.indexOf('{notice}') < actionBar.indexOf('<button')
+  && actionBar.includes('{footnote}'));
+check('4b-14e. the post-payment surfaces still carry it too',
+  homeCode.includes('Your cart clears only after payment is verified and the order is created.')
+  && read('frontend/components/customer/CustomerTrackingScreen.tsx').includes("'Paid, awaiting store'")
+  && read('frontend/lib/publicOrderTracking.ts').includes('If the store cannot fulfil it, a full refund will be initiated.'));
 
 // 15-17: verification
 check('4b-15. the existing OTP panel is still the only OTP implementation',
@@ -323,9 +360,10 @@ check('4b-35. the action bar has an explicit accessible label and busy state',
 check('4b-35. the action bar respects the safe area',
   actionBar.includes('env(safe-area-inset-bottom)'));
 check('4b-36. Stage 4b styles live only in customer.css',
-  ['.cb-customer-totals-panel', '.cb-customer-payment-card', '.cb-customer-checkout-notice',
+  // The espresso totals panel is gone; totals now reuse the flat total-row treatment.
+  ['.cb-customer-total-row', '.cb-customer-payment-card', '.cb-customer-checkout-notice',
    '.cb-customer-action-bar'].every(cls => tokens.includes(cls))
-  && !read('frontend/index.css').includes('cb-customer-totals-panel'));
+  && !read('frontend/index.css').includes('cb-customer-total'));
 check('4b-36. no Tailwind arbitrary CSS-variable utilities in Stage 4b components',
   !/\[color:var\(--cb-|bg-\[var\(--cb-|shadow-\[var\(--cb-/.test(stage4bCode));
 check('4b-38. Stage 4b adds no backend or Firebase write path',
@@ -345,7 +383,11 @@ check('4b. totals use description-list semantics so screen readers pair them',
   totalsPanel.includes('<dl') && totalsPanel.includes('<dt') && totalsPanel.includes('<dd')
   && totalsPanel.includes('aria-label="Order totals"'));
 check('4b. the payable is distinguishable from GST, not just larger',
-  totalsPanel.includes('Total payable') && totalsPanel.includes('cb-customer-totals-divider'));
+  // A hairline above it and a size step, rather than a separate coloured panel.
+  totalsPanel.includes('is-grand')
+  && totalsPanel.includes('cb-customer-totals')
+  && /\.cb-customer-totals \{[^}]*border-top: 1px solid/.test(tokens)
+  && /\.cb-customer-total-row\.is-grand[^{]*\{[^}]*font-size: 17px/.test(tokens));
 check('4b. the OTP panel still sits inside the basket checkout flow',
   homeCode.indexOf('<CustomerOtpPanel') > homeCode.indexOf('const basketPanel')
   && homeCode.indexOf('<CustomerOtpPanel') < homeCode.indexOf('<CustomerCheckoutActionBar'));
@@ -381,9 +423,13 @@ check('layer-5. opening My Usual never closes the basket',
   !/setMyUsualDialog\(\{ type: '(SIGN_IN|SAVE_NEW|REPLACE_USUAL)' \}\)[\s\S]{0,120}setBasketOpen\(false\)/.test(homeCode));
 check('layer-6. closing My Usual never mutates the cart',
   !/setMyUsualDialog\(null\)[\s\S]{0,80}setCart\(/.test(homeCode));
+// The control is found by a data attribute, not by its text: the label now reads
+// "Sign in to save as My Usual" for a signed-out customer, so matching on the string
+// would have silently stopped finding it in exactly that case.
 check('layer-7. focus returns to the basket Save control',
   homeCode.includes('ref={saveAsMyUsualButtonRef}')
-  && homeCode.includes("button.textContent?.trim() === 'Save as My Usual' && isVisible(button)"));
+  && homeCode.includes('data-cb-save-usual="true"')
+  && homeCode.includes("querySelectorAll<HTMLButtonElement>('button[data-cb-save-usual]')"));
 // basketPanel renders twice (mobile sheet + desktop aside), so the ref can hold the
 // display:none copy. Focus must target a VISIBLE control or it silently no-ops.
 check('layer-7. focus restore prefers a visible control over a hidden duplicate',
@@ -431,6 +477,115 @@ if (existsSync(resolve(root, 'dist/assets')) && existsSync(resolve(root, 'dist-c
 // --- Touch targets inside the basket ----------------------------------------
 // "Change" was 70x34: reachable with a mouse, a miss with a thumb.
 check('43. the change-store control meets the 44px touch target',
-  /min-h-11 min-w-11/.test(pickup) && !/rounded-full px-3 py-2 text-\[12px\]/.test(pickup));
+  // The whole row is the control now, and the row class carries the height.
+  pickup.includes('cb-customer-menu-row')
+  && /\.cb-customer-menu-row \{[^}]*min-height: 56px/.test(tokens));
+
+
+// --- The basket step -----------------------------------------------------------
+// The basket answers one question: what am I buying. Everything that asks how you are
+// paying, who you are, or what the store should know waits behind Continue. This is a
+// PRESENTATION split — the assertions below also pin that no second cart, total or
+// submission was created to achieve it.
+/* The basket branch, from its ternary test up to the Continue label. Anchoring the end
+   on a wrapper class proved brittle — the class was later removed and the slice
+   silently swallowed the whole checkout branch, which would have let a payment field
+   leak into the basket step without failing anything. The Continue label is the last
+   thing in this branch and is itself asserted below, so it cannot vanish unnoticed. */
+const continueLabel = 'Continue · {formatMoney(totals.grandTotal)}';
+assert(homeCode.includes(continueLabel), 'the Continue label anchors the basket-step slice');
+const basketStepBlock = homeCode.slice(
+  homeCode.indexOf("basketStep === 'BASKET' ?"),
+  homeCode.indexOf(continueLabel),
+);
+check('45. the basket step is a presentation state, not a second checkout',
+  homeCode.includes("useState<'BASKET' | 'CHECKOUT'>('BASKET')")
+  && homeCode.includes("if (basketOpen) setBasketStep('BASKET');"));
+check('45a. Continue only advances the step — it creates no order or payment',
+  /onClick=\{\(\) => setBasketStep\('CHECKOUT'\)\}/.test(homeCode)
+  && (homeCode.match(/onSubmit=\{submitOrder\}/g) || []).length === 1
+  && !/setBasketStep\('CHECKOUT'\)[\s\S]{0,120}(submitOrder|createCustomerCheckoutSession|razorpay)/i.test(homeCode));
+check('45b. the basket step asks nothing about payment or identity',
+  !/CustomerPaymentSelector|CustomerOtpPanel|customerName|setNotes|handleOrderTypeChange|CustomerCheckoutActionBar/.test(basketStepBlock));
+check('45c. the checkout fields still exist, behind Continue',
+  homeCode.includes('<CustomerPaymentSelector')
+  && homeCode.includes('<CustomerOtpPanel')
+  && homeCode.includes('<CustomerCheckoutActionBar'));
+check('45d. the customer can always get back out of the checkout step',
+  homeCode.includes('aria-label="Back to basket"')
+  && /setBasketStep\('BASKET'\)/.test(homeCode));
+
+// --- One total, one CTA ---------------------------------------------------------
+// `totals.taxableAmount` IS `totals.subtotal` in this app, so printing both was a
+// duplicate rather than a disclosure.
+// Measured against CODE, not prose: the component's doc comment explains why the
+// duplicate row was removed, and naming it there must not fail the check.
+const totalsCode = strip(totalsPanel);
+check('46. totals show Subtotal, GST and Total once, with no duplicate of the subtotal',
+  totalsCode.includes('Subtotal') && totalsCode.includes('GST') && totalsCode.includes('Total')
+  && !/Taxable amount/.test(totalsCode)
+  && !/taxableAmountLabel/.test(totalsCode + homeCode));
+check('46a. the totals block is flat, not a second coloured panel',
+  !totalsCode.includes('cb-customer-totals-panel')
+  && !tokens.includes('.cb-customer-totals-panel')
+  && totalsCode.includes('cb-customer-total-row'));
+check('46b. the basket step carries exactly one primary action',
+  (basketStepBlock.match(/cb-customer-accent-button/g) || []).length === 1
+  && /Continue · \{formatMoney\(totals\.grandTotal\)\}/.test(homeCode));
+check('46c. Save as My Usual is a secondary row, not a panel or a filled button',
+  homeCode.includes('data-cb-save-usual="true"')
+  && /className="cb-customer-menu-row disabled:opacity-55"/.test(homeCode)
+  && homeCode.includes("verifiedCustomer ? 'Save as My Usual' : 'Sign in to save as My Usual'"));
+
+// --- Lines are rows -------------------------------------------------------------
+check('47. a basket line is a row on the sheet, not a card inside it',
+  /\.cb-customer-basket-line \{[^}]*border-top: 1px solid var\(--cb-border-soft\)/.test(tokens)
+  && !/\.cb-customer-basket-line \{[^}]*box-shadow/.test(tokens));
+check('47a. a line shows one price, not a unit price beside a line total',
+  itemCard.includes('lineTotalLabel')
+  && !itemCard.includes('unitPriceLabel')
+  && !/each/.test(itemCard));
+
+// --- The checkout step ----------------------------------------------------------
+// The checkout answers five questions and nothing else: where am I collecting, who is
+// ordering, how am I paying, anything else, what am I paying. These assertions pin the
+// SHAPE — every handler, total and lifecycle call underneath is the pre-existing one.
+const checkoutStepBlock = homeCode.slice(homeCode.indexOf(continueLabel));
+check('48. checkout names the collection point exactly once',
+  (checkoutStepBlock.match(/<CustomerPickupSummary/g) || []).length === 1
+  && (homeCode.match(/<CustomerPickupSummary/g) || []).length === 2); // basket step + checkout step
+check('48a. checkout does not repeat the basket contents',
+  !checkoutStepBlock.includes('<CustomerBasketItemCard')
+  && !checkoutStepBlock.includes('data-cb-save-usual'));
+check('48b. a verified customer is stated, not re-interviewed',
+  checkoutStepBlock.includes('maskedPhone(verifiedCustomer.normalisedPhone)')
+  && /verifiedCustomer \? \(/.test(checkoutStepBlock)
+  // The mobile input belongs to the unverified branch only.
+  && !/verifiedCustomer \? \([\s\S]{0,900}placeholder="10-digit mobile number"/.test(checkoutStepBlock));
+check('48c. the name stays reachable, and opens itself when it is empty',
+  checkoutStepBlock.includes('editIdentity || !customerName.trim()')
+  && checkoutStepBlock.includes('setEditIdentity'));
+check('48d. order type is the existing handler behind compact controls',
+  checkoutStepBlock.includes('handleOrderTypeChange(type)')
+  && checkoutStepBlock.includes('cb-customer-choice')
+  && checkoutStepBlock.includes('aria-checked={orderType === type}')
+  && !checkoutStepBlock.includes('<select'));
+check('48e. the note is an offer until it is wanted',
+  checkoutStepBlock.includes('noteOpen || notes.trim()')
+  && checkoutStepBlock.includes('Add a note (optional)')
+  && checkoutStepBlock.includes('MAX_NOTE_LENGTH'));
+check('48f. checkout shows one total block, fed by the same authoritative totals',
+  (checkoutStepBlock.match(/<CustomerCheckoutTotalsPanel/g) || []).length === 1
+  && checkoutStepBlock.includes('payableLabel={formatMoney(totals.grandTotal)}'));
+check('48g. the one action is still the existing submit handler',
+  (homeCode.match(/onSubmit=\{submitOrder\}/g) || []).length === 1
+  && checkoutStepBlock.includes('label={checkoutAction.label}')
+  && checkoutStepBlock.includes('disabled={checkoutAction.disabled}'));
+check('48h. choosing a payment method still only sets state',
+  homeCode.includes('onChange={setPaymentProvider}')
+  && !/setPaymentProvider\([\s\S]{0,140}(submitOrder|createCustomerCheckoutSession|openRazorpay)/i.test(homeCode));
+check('48i. the OTP surface is reused, not rebuilt, and is not auto-triggered',
+  (homeCode.match(/<CustomerOtpPanel/g) || []).length === 2 // checkout + My Usual sign-in
+  && !/basketStep === 'CHECKOUT'[\s\S]{0,200}sendCustomerOtp/.test(homeCode));
 
 console.log(`Customer basket/checkout UI tests passed (${passed.length} assertions).`);

@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
+import { onSnapshot } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { Clock, Loader2, ShoppingBag } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import CustomerHeader from '../../components/customer/CustomerHeader';
+import { useNavigate } from 'react-router-dom';
+import CustomerOrdersScreen, {
+  OrdersScreenState,
+  PastOrderView,
+} from '../../components/customer/CustomerOrdersScreen';
 import {
   CustomerProfile,
   customerAuth,
@@ -12,7 +15,9 @@ import {
   waitForCustomerAuthRestoration,
 } from '../../lib/customerAuth';
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
-import { PaymentStatus, PublicOrderStatus } from '../../types';
+import { readCustomerCheckoutDraft } from '../../lib/customerCheckoutPersistence';
+import { publicTrackingDocRef } from '../../lib/publicOrderTracking';
+import { PaymentStatus, PublicOrderStatus, PublicOrderTracking } from '../../types';
 import { CUSTOMER_HOME_PATH, customerStatusPath } from '../../lib/customerRoutes';
 
 type CustomerOrderSummary = {
@@ -26,6 +31,7 @@ type CustomerOrderSummary = {
   createdAt: string | null;
 };
 
+/* The one authenticated history source. Stage 5 adds no second orders query. */
 const listMyCustomerOrders = httpsCallable<void, { orders: CustomerOrderSummary[] }>(
   customerFunctions,
   'listMyCustomerOrders',
@@ -50,16 +56,10 @@ function operationalStatus(status: CustomerOrderSummary['status']): string {
   return status.replaceAll('_', ' ').toLowerCase().replace(/^\w/, value => value.toUpperCase());
 }
 
-function paymentLabel(status: PaymentStatus): string {
-  if (status === 'PAYMENT_PROCESSING') return 'Payment processing';
-  if (status === 'PAYMENT_REVIEW_REQUIRED') return 'Payment review required';
-  if (status === 'REFUND_PENDING') return 'Refund pending';
-  if (status === 'REFUNDED') return 'Refunded';
-  if (status === 'REFUND_FAILED') return 'Refund failed';
-  if (status === 'PAID') return 'Paid';
-  return status.replaceAll('_', ' ').toLowerCase().replace(/^\w/, value => value.toUpperCase());
-}
-
+/**
+ * The canonical "is this order still live" test. Unchanged from the previous screen and
+ * still driven by the order status, never by matching display strings.
+ */
 function isCurrentOrder(order: CustomerOrderSummary): boolean {
   return ![
     'SERVED',
@@ -72,13 +72,35 @@ function isCurrentOrder(order: CustomerOrderSummary): boolean {
   ].includes(order.status);
 }
 
+/** Orders that ended badly read as ended, not as a neutral archive entry. */
+function statusTone(status: CustomerOrderSummary['status']): 'settled' | 'ended' {
+  return ['CANCELLED', 'CANCELLED_REFUNDED', 'REFUNDED', 'REFUND_FAILED', 'REJECTED'].includes(status)
+    ? 'ended'
+    : 'settled';
+}
+
+/**
+ * Orders — data only.
+ *
+ * This module owns the queries, the auth gate and the live subscription; the layout
+ * lives in CustomerOrdersScreen. The split is deliberate: it lets the screen be
+ * rendered and measured at every viewport in every state without a backend, which is
+ * how the visual work on this page is actually verified.
+ *
+ * Data sources are unchanged. History is the existing authenticated
+ * listMyCustomerOrders callable. The live order's status and items come from the same
+ * public tracking document the tracking screen already subscribes to — the same
+ * onSnapshot, not a second implementation of order status.
+ */
 export default function CustomerMyOrders() {
+  const navigate = useNavigate();
   const [authRestored, setAuthRestored] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   const [orders, setOrders] = useState<CustomerOrderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [liveOrder, setLiveOrder] = useState<PublicOrderTracking | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -127,102 +149,114 @@ export default function CustomerMyOrders() {
     };
   }, []);
 
-  const sortedOrders = useMemo(() => (
-    [...orders].sort((left, right) => {
-      const activeDifference = Number(isCurrentOrder(right)) - Number(isCurrentOrder(left));
-      if (activeDifference !== 0) return activeDifference;
-      return String(right.createdAt || '').localeCompare(String(left.createdAt || ''));
-    })
+  const activeOrder = useMemo(() => (
+    [...orders]
+      .filter(isCurrentOrder)
+      .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
   ), [orders]);
 
-  return (
-    <main className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#f8efe6] text-neutral-900 pb-[max(1.5rem,env(safe-area-inset-bottom))] [padding-left:env(safe-area-inset-left)] [padding-right:env(safe-area-inset-right)]">
-      <CustomerHeader
-        title="My Orders"
-        profile={profile}
-        authRestored={authRestored}
-        onProfileUpdated={setProfile}
-        onSignedOut={() => {
-          setProfile(null);
-          setSignedIn(false);
-          setOrders([]);
-        }}
-      />
+  const pastOrders = useMemo(() => (
+    orders
+      .filter(order => order.trackingToken !== activeOrder?.trackingToken)
+      .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+  ), [orders, activeOrder]);
 
-      <div className="mx-auto max-w-2xl px-4 py-5">
-        {!authRestored || loading ? (
-          <div className="rounded-3xl bg-white p-8 text-center shadow-sm">
-            <Loader2 className="mx-auto animate-spin text-[#5c4033]" />
-            <p className="mt-3 text-sm font-bold text-neutral-500">Loading your orders...</p>
-          </div>
-        ) : error ? (
-          <p className="rounded-2xl bg-red-50 p-4 text-sm font-bold text-red-800">{error}</p>
-        ) : !signedIn ? (
-          <section className="rounded-3xl bg-white p-6 text-center shadow-sm ring-1 ring-[#eadfd2]">
-            <ShoppingBag className="mx-auto text-[#9a6a45]" size={32} />
-            <h2 className="mt-3 text-lg font-black">Verify your mobile number to view your orders</h2>
-            <p className="mt-2 text-sm text-neutral-500">Return to ordering and choose Pay Online to verify securely.</p>
-            <Link to={CUSTOMER_HOME_PATH} className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
-              Verify on order page
-            </Link>
-          </section>
-        ) : sortedOrders.length === 0 ? (
-          <section className="rounded-3xl bg-white p-6 text-center shadow-sm ring-1 ring-[#eadfd2]">
-            <ShoppingBag className="mx-auto text-[#9a6a45]" size={32} />
-            <h2 className="mt-3 text-lg font-black">No orders yet</h2>
-            <p className="mt-2 text-sm text-neutral-500">Your paid Coffee Bond orders will appear here.</p>
-            <Link to={CUSTOMER_HOME_PATH} className="mt-5 inline-block rounded-2xl bg-[#3b261d] px-5 py-3 text-sm font-black text-white">
-              Order Now
-            </Link>
-          </section>
-        ) : (
-          <div className="space-y-3">
-            {sortedOrders.map(order => (
-              <article key={order.trackingToken} className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-[#eadfd2]">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-black uppercase tracking-wider text-[#9a6a45]">{order.storeName}</p>
-                    <h2 className="mt-1 break-words font-black text-[#2d2019]">{order.publicOrderReference}</h2>
-                    <p className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-neutral-500">
-                      <Clock size={13} />
-                      {order.createdAt ? new Date(order.createdAt).toLocaleString() : 'Recently'}
-                    </p>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-xs font-bold text-neutral-500">Total paid</p>
-                    <p className="text-lg font-black text-[#2d2019]">{money(order.total)}</p>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
-                  <span className="rounded-full bg-[#fbf5ee] px-3 py-1.5">
-                    {order.orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
-                  </span>
-                  <span className={`rounded-full px-3 py-1.5 ${
-                    isCurrentOrder(order) ? 'bg-emerald-50 text-emerald-800' : 'bg-neutral-100 text-neutral-700'
-                  }`}>
-                    {operationalStatus(order.status)}
-                  </span>
-                  <span className={`rounded-full px-3 py-1.5 ${
-                    order.paymentStatus === 'PAID'
-                      ? 'bg-blue-50 text-blue-800'
-                      : order.paymentStatus === 'REFUNDED'
-                        ? 'bg-neutral-100 text-neutral-700'
-                        : 'bg-amber-50 text-amber-800'
-                  }`}>
-                    {paymentLabel(order.paymentStatus)}
-                  </span>
-                </div>
-                <Link
-                  to={customerStatusPath(order.trackingToken)}
-                  className="mt-4 block rounded-2xl bg-[#3b261d] px-4 py-3 text-center text-sm font-black text-white"
-                >
-                  View Order
-                </Link>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
-    </main>
+  /* Live status for the one active order, from the tracking document the tracking
+     screen already reads. Keyed on the token so switching orders never shows stale
+     items from the previous one. */
+  useEffect(() => {
+    if (!activeOrder) {
+      setLiveOrder(null);
+      return undefined;
+    }
+    setLiveOrder(null);
+    const unsubscribe = onSnapshot(
+      publicTrackingDocRef(activeOrder.trackingToken),
+      (snapshot) => {
+        setLiveOrder(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as PublicOrderTracking) : null);
+      },
+      () => {
+        // The summary below already carries an authoritative status; live detail is a bonus.
+        setLiveOrder(null);
+      },
+    );
+    return unsubscribe;
+  }, [activeOrder?.trackingToken]);
+
+  /* Basket count for the persistent bar, read from the existing saved draft. This page
+     owns no cart state and mutates nothing. */
+  const basketCount = useMemo(() => {
+    const draft = readCustomerCheckoutDraft(window.localStorage).draft;
+    return (draft?.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+  }, []);
+
+  const activeStatus = liveOrder?.publicStatus ?? (activeOrder?.status as PublicOrderStatus | undefined);
+  const activeItemSummary = (liveOrder?.items || [])
+    .map(item => (item.quantity > 1 ? `${item.quantity}× ${item.itemName}` : item.itemName))
+    .slice(0, 3)
+    .join(' · ');
+  const activeExtraItems = Math.max(0, (liveOrder?.items || []).length - 3);
+
+  const past: PastOrderView[] = pastOrders.map(order => ({
+    key: order.trackingToken,
+    storeName: order.storeName,
+    reference: order.publicOrderReference,
+    dateLabel: order.createdAt
+      ? new Date(order.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+      : null,
+    fulfilmentLabel: order.orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup',
+    statusLabel: operationalStatus(order.status),
+    statusTone: statusTone(order.status),
+    totalLabel: money(order.total),
+    viewPath: customerStatusPath(order.trackingToken),
+  }));
+
+  const state: OrdersScreenState = (!authRestored || loading)
+    ? { kind: 'loading' }
+    : error
+      ? { kind: 'error', message: error }
+      : !signedIn
+        ? { kind: 'signed-out' }
+        : orders.length === 0
+          ? { kind: 'empty' }
+          : {
+            kind: 'ready',
+            active: activeOrder && activeStatus
+              ? {
+                storeName: activeOrder.storeName,
+                statusLabel: operationalStatus(liveOrder?.publicStatus ?? activeOrder.status),
+                itemSummary: activeExtraItems > 0 ? `${activeItemSummary} +${activeExtraItems} more` : activeItemSummary,
+                totalLabel: money(liveOrder?.total ?? activeOrder.total),
+                trackPath: customerStatusPath(activeOrder.trackingToken),
+              }
+              : null,
+            past,
+          };
+
+  const goToMenu = () => navigate(CUSTOMER_HOME_PATH);
+
+  return (
+    <CustomerOrdersScreen
+      state={state}
+      profile={profile}
+      authRestored={authRestored}
+      basketCount={basketCount}
+      onProfileUpdated={setProfile}
+      onSignedOut={() => {
+        setProfile(null);
+        setSignedIn(false);
+        setOrders([]);
+      }}
+      onGoToMenu={goToMenu}
+      onOpenBasket={() => navigate(CUSTOMER_HOME_PATH, { state: { openBasket: true } })}
+      onFocusSearch={() => navigate(CUSTOMER_HOME_PATH, { state: { focusSearch: true } })}
+      onOpenAccount={() => {
+        const control = document.querySelector<HTMLElement>(
+          'header [aria-label="Open customer account"], header [aria-label="Customer account"]',
+        );
+        if (control) control.click();
+        else goToMenu();
+      }}
+    />
   );
 }

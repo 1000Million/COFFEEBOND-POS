@@ -275,8 +275,11 @@ const usualBlock = homeCode.slice(homeCode.indexOf('const startMyUsualOrder'), h
 // --- Signed out ---
 check('signed out renders its own state, not an empty one',
   card.includes("state === 'SIGNED_OUT'")
-  && card.includes('Sign in to save your regular coffee and food across your devices.')
-  && card.includes('Sign in to create My Usual'));
+  // The signed-out prompt is one compact row above the menu rather than a gold panel,
+  // but it is still a distinct state with a single sign-in action.
+  && card.includes('Sign in to save your regular order')
+  && card.includes('cb-customer-menu-row')
+  && /onClick=\{onSignIn\}/.test(card));
 check('signed out is chosen by the absence of a verified customer',
   /!verifiedCustomer\s*\?\s*'SIGNED_OUT'/.test(homeCode));
 check('signed out cannot permanently save',
@@ -550,9 +553,18 @@ check('the Golden I catalogue filter is untouched',
 check('Golden I remains 80 products', provisioning.GOLDEN_I_PUBLIC_MENU_ITEM_COUNT === 80);
 check('Pay at Counter is unchanged', homeCode.includes('paymentProvider'));
 check('the Razorpay path is unchanged', homeCode.includes('loadRazorpayCheckout'));
-check('My Orders and status screens are untouched',
-  !read('frontend/pages/customer/CustomerMyOrders.tsx').includes('MyUsual')
-  && !read('frontend/pages/customer/CustomerOrderStatus.tsx').includes('MyUsual'));
+// Stage 5 lets both screens RAISE onOpenMyUsual, which only navigates to the home
+// card. What must never appear here is My Usual logic itself: its callables, its
+// schema, its storage key or a second copy of the card.
+check('My Orders and status screens carry no My Usual logic', (() => {
+  const surfaces = [
+    read('frontend/pages/customer/CustomerMyOrders.tsx'),
+    read('frontend/pages/customer/CustomerOrderStatus.tsx'),
+  ].join('\n');
+  return !/getCustomerMyUsual|saveCustomerMyUsual|deleteCustomerMyUsual/.test(surfaces)
+    && !/CustomerMyUsualCard|buildMyUsualPayload|parseCustomerMyUsual/.test(surfaces)
+    && !/LEGACY_DEVICE_MY_USUAL_KEY|customerMyUsualApi/.test(surfaces);
+})());
 check('the customer Firebase app stays separate from the staff one',
   authSrc.includes("CUSTOMER_APP_NAME = 'coffee-bond-customer-auth'")
   && authSrc.includes('initializeApp(firebaseConfig, CUSTOMER_APP_NAME)'));

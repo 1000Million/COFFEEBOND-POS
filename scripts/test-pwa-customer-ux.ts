@@ -88,15 +88,23 @@ assert.match(
 
 // Customer links now resolve through the shared route helper so the same components
 // serve both the staff origin (/order/my-orders) and the customer origin (/my-orders).
-// Three source-level links, but only ever one visible at a time:
+// Two source-level links, but only ever one visible at a time:
 //   1. the lg-only link shown when the screen supplies onSignedOutAccountPress
 //      (the mobile bottom bar owns the destination below lg),
-//   2. the default link for screens without a bottom bar,
-//   3. the entry inside the signed-in account menu.
+//   2. the default link for screens without a bottom bar.
+// Stage 5 removed the third — the entry inside the account menu — because the Orders
+// tab is permanent and Orders now surfaces the live order itself.
 // Simultaneous visibility is what matters, and that is measured per breakpoint in
 // scripts/test-customer-home-ui.mjs.
 const headerMyOrderLinks = customerHeader.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || [];
-assert.equal(headerMyOrderLinks.length, 3, 'lg-only entry, default entry and account-menu entry are expected');
+assert.equal(headerMyOrderLinks.length, 2, 'exactly the lg-only entry and the default entry are expected');
+// Measured against executable code: the sheet's doc comment names the rows Stage 5
+// removed, and a comment explaining a removal must not read as the removal failing.
+const accountSheetCode = source('frontend/components/customer/CustomerAccountSheet.tsx')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+assert.doesNotMatch(accountSheetCode, /CUSTOMER_MY_ORDERS_PATH|My Orders|Current Order/,
+  'the account surface must not duplicate the Orders tab');
 assert.match(customerHeader, /onSignedOutAccountPress/, 'the header must be able to yield the destination to the bottom bar');
 assert.match(customerHeader, /from '\.\.\/\.\.\/lib\/customerRoutes'/, 'header links must come from the route helper');
 assert.doesNotMatch(customerHeader, /to="\/order/, 'no customer link may hardcode the staff-origin path');
@@ -147,8 +155,11 @@ const identity = source('frontend/lib/customerPwaIdentity.ts');
 const identitySync = source('frontend/components/PwaIdentitySync.tsx');
 const appRoot = source('frontend/App.tsx');
 const indexHtml = source('index.html');
-const orderStatus = source('frontend/pages/customer/CustomerOrderStatus.tsx');
-const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
+/* The page shell — safe-area padding, overflow guards, bottom-bar clearance — lives in
+   the presentational screen components; the page modules under pages/customer own only
+   the data and hand state to them. These assertions follow the markup. */
+const orderStatus = source('frontend/components/customer/CustomerTrackingScreen.tsx');
+const myOrders = source('frontend/components/customer/CustomerOrdersScreen.tsx');
 
 assert.equal(customerManifest.name, 'Coffee Bond');
 assert.equal(customerManifest.short_name, 'Coffee Bond');
@@ -223,8 +234,22 @@ assert.match(serviceWorker, /CACHE_VERSION = 'v2'/, 'the shell changed, so the c
 assert.doesNotMatch(serviceWorker, /idToken|phone|checkoutSession|authorization/i);
 
 // Safe-area coverage on the two customer screens that previously had none.
-for (const [label, screen] of [['CustomerOrderStatus', orderStatus], ['CustomerMyOrders', myOrders]] as const) {
-  assert.match(screen, /env\(safe-area-inset-bottom\)/, `${label} must pad for the home indicator`);
+//
+// A screen may reserve the home indicator either with a literal env() or by carrying
+// .cb-customer-page-bottom, whose token chain ends in the same inset. The chain itself
+// is verified below rather than trusted, so the class cannot silently stop covering it.
+const customerTokens = source('frontend/customer.css');
+const pageBottomCoversSafeArea =
+  /--cb-safe-bottom:\s*env\(safe-area-inset-bottom/.test(customerTokens)
+  && /--cb-content-bottom:[\s\S]{0,200}var\(--cb-safe-bottom\)/.test(customerTokens)
+  && /\.cb-customer-page-bottom\s*\{\s*padding-bottom:\s*var\(--cb-content-bottom\)/.test(customerTokens);
+assert.ok(pageBottomCoversSafeArea, 'the page-bottom token chain must end in the home-indicator inset');
+
+for (const [label, screen] of [['CustomerTrackingScreen', orderStatus], ['CustomerOrdersScreen', myOrders]] as const) {
+  assert.ok(
+    /env\(safe-area-inset-bottom\)/.test(screen) || /cb-customer-page-bottom/.test(screen),
+    `${label} must pad for the home indicator`,
+  );
   assert.match(screen, /padding-left:env\(safe-area-inset-left\)/, `${label} must pad for landscape notches`);
   assert.match(screen, /overflow-x-hidden/, `${label} must not overflow horizontally`);
 }

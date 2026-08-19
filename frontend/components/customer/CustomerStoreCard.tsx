@@ -1,25 +1,32 @@
-import { ChevronDown, MapPin } from 'lucide-react';
+import { ChevronRight, MapPin } from 'lucide-react';
 
 type Props = {
-  /** "Pickup from" / "Dining at" — decided by the screen, not here. */
+  /** "Pickup" / "Dine-in" — decided by the screen, not here. */
   contextLabel: string;
   storeName: string;
   /** Authoritative status label: Accepting orders / Busy / Closed / Opens at… / Menu unavailable. */
   statusLabel: string;
   tone: 'green' | 'amber' | 'red';
-  /** Pickup estimate or other store message. Never fabricated — passed through as-is. */
-  message?: string;
   onOpenSelector: () => void;
 };
 
 const TONE: Record<Props['tone'], string> = {
-  green: 'cb-customer-status-green',
-  amber: 'cb-customer-status-amber',
-  red: 'cb-customer-status-red',
+  green: 'cb-customer-tone-green',
+  amber: 'cb-customer-tone-amber',
+  red: 'cb-customer-tone-red',
 };
 
 /**
  * Selected-store control for the customer home screen.
+ *
+ * A compact row, not a card. This sits between the customer and the menu, so it earns
+ * two lines and nothing more: where the order is going, and whether the store is taking
+ * orders. The white panel, the status pill and the pickup-window sentence together made
+ * it a 76 px block at the very top of the screen.
+ *
+ * The pickup estimate is no longer shown here. It is not lost: the basket's pickup
+ * summary carries the same authoritative prep window, at the point where the customer
+ * is actually committing to a collection time.
  *
  * Every string is supplied by the caller from authoritative store and availability
  * data — this component derives no hours, no estimates and no status. Status is
@@ -30,7 +37,6 @@ export default function CustomerStoreCard({
   storeName,
   statusLabel,
   tone,
-  message,
   onOpenSelector,
 }: Props) {
   return (
@@ -38,23 +44,16 @@ export default function CustomerStoreCard({
       type="button"
       onClick={onOpenSelector}
       aria-label={`${contextLabel} ${storeName}. ${statusLabel}. Change store`}
-      /* Compact strip: two tight rows inside a 72–96 px band, no empty white panel. */
-      className="cb-customer-store-card flex min-h-[72px] w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+      className="cb-customer-menu-row is-first"
     >
-      <MapPin size={18} className="cb-customer-meta shrink-0" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <p className="cb-customer-muted text-[11px] font-bold leading-tight">{contextLabel}</p>
-        <h2 className="cb-customer-title truncate text-base font-black leading-tight">{storeName}</h2>
-        {/* Wraps rather than truncates: at 320 px the pickup estimate was being clipped
-            to "Pickup available i…". A second line is cheaper than a lost fact. */}
-        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[11px] font-black ${TONE[tone]}`}>
-            {statusLabel}
-          </span>
-          {message && <span className="cb-customer-muted min-w-0 text-[11px] font-bold">{message}</span>}
-        </div>
-      </div>
-      <ChevronDown size={18} className="cb-customer-meta shrink-0" aria-hidden="true" />
+      <MapPin size={19} className="cb-customer-row-icon" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="cb-customer-menu-row-title block truncate">
+          {contextLabel} · {storeName}
+        </span>
+        <span className={`cb-customer-menu-row-meta block truncate ${TONE[tone]}`}>{statusLabel}</span>
+      </span>
+      <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
     </button>
   );
 }

@@ -133,15 +133,92 @@ check('phones get a horizontal chip row, 640px+ gets the vertical rail',
 // chains, a swipe past the last chip triggers the browser back gesture.
 check('the chip row contains its own horizontal overscroll',
   /\.cb-customer-rail\s*\{[^}]*overscroll-behavior-x:\s*contain/.test(tokens));
+// --- Category navigation stays quieter than the products ------------------------
+// Nine white pills with a ring each, above a grid of photographs, read as a second
+// toolbar. Unselected categories are now labels on the page; exactly one filled object
+// answers "which filter am I on".
+check('unselected chips carry no fill and no border',
+  /\.cb-customer-rail-tab \{[^}]*background: transparent/.test(tokens)
+  && /\.cb-customer-rail-tab \{[^}]*box-shadow: none/.test(tokens));
+check('the selected chip is the only filled object, and casts no shadow',
+  /\.cb-customer-rail-tab-active \{[^}]*background: var\(--cb-gold\)/.test(tokens)
+  && /\.cb-customer-rail-tab-active \{[^}]*box-shadow: none/.test(tokens));
+check('weight separates selected from unselected, and lives in CSS',
+  /\.cb-customer-rail-tab \{[^}]*font-weight: 600/.test(tokens)
+  && /\.cb-customer-rail-tab-active \{[^}]*font-weight: 800/.test(tokens)
+  // railCode has comments stripped: the comment above the className explains why
+  // font-black was removed, and naming it there must not fail the check.
+  && !/font-black/.test(railCode));
+check('the 44px floor survives the tighter padding',
+  rail.includes('min-h-[44px]')
+  && /\.cb-customer-rail-item \{[^}]*min-width: 44px/.test(tokens));
+check('the tablet rail softens its accent for the larger block it fills',
+  /@media \(min-width: 640px\)[\s\S]*?\.cb-customer-rail-tab-active \{[^}]*background: var\(--cb-gold-soft\)/.test(tokens));
+
 check('the chip row keeps its gutter when snapped',
   /\.cb-customer-rail\s*\{[^}]*scroll-padding-inline:\s*var\(--cb-page-gutter\)/.test(tokens));
 check('the page reserves room for the raised basket button, not just the bar',
   tokens.includes('--cb-fab-overhang')
   && /--cb-content-bottom:\s*calc\(\s*var\(--cb-bottom-nav-h\) \+ var\(--cb-fab-overhang\)/.test(tokens));
-check('product card steppers meet the 44px touch target',
-  !/h-9 w-9/.test(card) && (card.match(/h-11 w-11/g) || []).length >= 3);
-check('the store status line wraps instead of clipping the pickup estimate',
-  store.includes('flex-wrap') && !/truncate text-\[11px\] font-bold">\{message\}/.test(store));
+check('product card controls meet the 44px touch target',
+  // The stepper's two buttons are 44x44; Add is 44 tall and full width, which is why
+  // this counts the height utility rather than the old 44x44 square three times.
+  !/h-9 w-9/.test(card)
+  && (card.match(/h-11 w-11/g) || []).length === 2
+  && /className="cb-customer-add-button flex h-11 w-full/.test(card)
+  && /cb-customer-stepper flex h-11 w-full/.test(card));
+
+// --- The product card -------------------------------------------------------------
+// Four things, in this order: picture, name, price, action. The assertions below pin
+// what was taken away, because that is where the clutter was.
+check('the card no longer repeats the category it is filed under',
+  !/metaLabel/.test(card)
+  && !/cb-customer-meta/.test(card)
+  && !/metaLabel=/.test(home));
+check('the card is a grid cell, not a floating panel',
+  /\.cb-customer-card \{[^}]*background: transparent/.test(tokens)
+  && /\.cb-customer-card \{[^}]*box-shadow: none/.test(tokens));
+check('the picture stays dominant and square',
+  card.includes('aspect-square w-full')
+  && card.includes('cb-customer-product-media'));
+check('one price, once',
+  // Rendered exactly once — the other two mentions are the prop type and its destructure.
+  (card.match(/\{priceLabel\}/g) || []).length === 1
+  && (card.match(/cb-customer-product-price/g) || []).length === 1);
+check('the authoritative dietary marker is kept and stays small',
+  card.includes('<DietaryMarker')
+  && card.includes('compact')
+  && !/VEGETARIAN|NON_VEG/.test(card.replace(/import[^;]+;/g, '')));
+check('both action states occupy the same 44px row, so a card never re-flows on add',
+  /cb-customer-stepper flex h-11 w-full/.test(card)
+  && /cb-customer-add-button flex h-11 w-full/.test(card)
+  && card.includes('mt-auto'));
+check('gold marks basket state, not every card',
+  // The stepper keeps the gold treatment; the resting Add is a quiet surface.
+  /\.cb-customer-add-button \{[^}]*background: var\(--cb-surface-muted\)/.test(tokens)
+  && /\.cb-customer-stepper \{[^}]*background: var\(--cb-gold-soft\)/.test(tokens));
+check('an unavailable item dims its picture, never the reason it gives',
+  card.includes('cb-customer-product-unavailable')
+  && /\.cb-customer-unavailable \.cb-customer-product-media \{[^}]*opacity: 0\.45/.test(tokens)
+  && !/^\.cb-customer-unavailable \{ opacity/m.test(tokens));
+check('long compound names break instead of forcing an overflow',
+  /\.cb-customer-product-name \{[^}]*overflow-wrap: anywhere/.test(tokens)
+  && card.includes('cb-clamp-2'));
+// The store block used to be a 76 px card whose third line was the pickup estimate,
+// and it sat directly between the customer and the menu. It is now a two-line row and
+// the estimate is gone from this surface — but NOT from the product: the basket's
+// pickup summary still shows the same authoritative prep window at the point where the
+// customer is choosing a collection time.
+check('the compact store row carries no pickup estimate and the basket still does',
+  !/\{message\}/.test(store)
+  && !store.includes('flex-wrap')
+  && read('frontend/components/customer/CustomerPickupSummary.tsx').includes('{prepLabel}'));
+check('the strip above the products is built from compact rows, not cards',
+  store.includes('cb-customer-menu-row')
+  && !store.includes('cb-customer-store-card')
+  && /\.cb-customer-menu-row \{[^}]*min-height: 56px/.test(tokens));
+check('store status is still stated in words, not by colour alone',
+  /statusLabel\}/.test(store) && /cb-customer-tone-(green|amber|red)/.test(store));
 // Landscape phones matched only the min-width rule, which reserved 200px of a 360px
 // screen for the hero and left a 56px window to choose options in.
 check('short viewports shrink the customization hero',
@@ -165,7 +242,43 @@ check('a specific category renders one filtered vertical grid',
 check('category filtering still uses the authoritative existing filter',
   home.includes("category === 'ALL' || customerMenuCategory(item) === category"));
 check('search renders one flat vertical result list with a no-results state',
-  home.includes('Search results') && home.includes('Nothing found here'));
+  home.includes('Search results') && home.includes('No matches found'));
+
+// --- The search surface ---------------------------------------------------------
+// Activating search used to leave the whole menu underneath it, so the first result sat
+// 445 px down a screen that still read as the menu. While search is open the surface
+// carries the field and the matches and nothing else. These assertions pin that the
+// hiding is presentational and that the filter itself was not touched.
+check('search is a surface state, opened by focusing the existing field',
+  home.includes("useState(false)")
+  && home.includes('onFocus={() => setSearchActive(true)}')
+  && home.includes('const searchOpen = searchActive || isSearching;'));
+check('the menu strip, its notices and the category rail stand down while searching',
+  home.includes('{!searchOpen && (\n          <div className="cb-customer-menu-strip">')
+  && home.includes('{!searchOpen && myUsualNotice &&')
+  && home.includes('{!searchOpen && checkoutDraftNotice &&')
+  && /\{!searchOpen && \(\s*<CustomerCategoryRail/.test(home));
+check('the store-not-accepting warning is NOT hidden by search',
+  /\{!customerOrderingState\.canAcceptOrders && !availabilityLoading && \(/.test(home));
+check('search offers Cancel and a clear, both real touch targets',
+  home.includes('aria-label="Cancel search"')
+  && home.includes('aria-label="Clear search"')
+  && home.includes('min-h-11')
+  && home.includes('h-11 w-11'));
+check('Cancel leaves search without disturbing the menu it returns to',
+  /onClick=\{\(\) => \{\s*setSearch\(''\);\s*setSearchActive\(false\);\s*searchInputRef\.current\?\.blur\(\);\s*\}\}/.test(home)
+  // Category is menu state, not search state, so Cancel must not reset it.
+  && !/setSearchActive\(false\);[\s\S]{0,80}setCategory/.test(home));
+check('both quiet search states are two lines, not cards',
+  home.includes('Search Coffee Bond')
+  && home.includes('Coffee, food, smoothies and more.')
+  && home.includes('Try another search.')
+  && home.includes('cb-customer-search-void')
+  && !/cb-customer-search-void[\s\S]{0,200}(ring-1|rounded-3xl|shadow)/.test(home));
+check('search adds no second query, index or filter',
+  (home.match(/const visibleItems = useMemo/g) || []).length === 1
+  && home.includes('!searchText || name.includes(searchText)')
+  && !/algolia|typesense|searchIndex|fuzzy/i.test(home));
 check('Menu action clears the filter and returns to the top',
   home.includes("setCategory('ALL');") && home.includes("setSearch('');"));
 
@@ -187,7 +300,7 @@ for (const [label, source] of [['card', card], ['rail', rail], ['store', store],
 }
 check('semantic customer classes are declared in customer.css',
   ['.cb-customer-card', '.cb-customer-accent-button', '.cb-customer-chip-active',
-   '.cb-customer-bottom-nav', '.cb-customer-store-card', '.cb-customer-stepper']
+   '.cb-customer-bottom-nav', '.cb-customer-menu-row', '.cb-customer-stepper']
     .every((cls) => tokens.includes(cls)));
 check('shared stylesheet was not modified for the customer app',
   !read('frontend/index.css').includes('cb-customer'));

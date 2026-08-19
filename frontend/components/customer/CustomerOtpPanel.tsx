@@ -108,7 +108,7 @@ export default function CustomerOtpPanel({
   }
 
   return (
-    <div className="rounded-2xl border border-[#e4d7c8] bg-white p-3">
+    <div className="cb-customer-otp-panel">
       <label className="text-xs font-black uppercase tracking-wider text-neutral-500">
         Mobile verification
         <span className="mt-2 flex h-12 items-center rounded-xl border border-[#e4d7c8] bg-[#fffdfb] px-3">
@@ -132,7 +132,7 @@ export default function CustomerOtpPanel({
             placeholder="10-digit mobile number"
             inputMode="numeric"
             autoComplete="tel"
-            className="min-w-0 flex-1 bg-transparent text-sm font-bold outline-none disabled:text-neutral-500"
+            className="cb-customer-otp-input min-w-0 flex-1 bg-transparent text-sm font-bold outline-none disabled:text-neutral-500"
           />
         </span>
       </label>

@@ -11,8 +11,6 @@ type Props = {
   imageUrl: string | null;
   /** Icon used for the branded fallback when no image exists or it fails. */
   fallbackIcon: ComponentType<{ size?: number; className?: string }>;
-  /** From visualMeta(item) — the caller's category/visual label. */
-  metaLabel?: string;
   /** Authoritative classification only; null when product data has none. */
   dietary: DietaryClassification | null;
   /** Units of this product currently in the cart. */
@@ -34,20 +32,30 @@ type Props = {
 /**
  * Image-led product card for the customer menu grid.
  *
- * Presentation only. Pricing, GST, availability, add-on resolution and every cart
- * mutation stay with the screen — this card just renders what it is given and calls
- * back. There is no second cart state here.
+ * Four things, in this order: picture, name, price, action. Nothing else competes.
  *
- * Card heights stay consistent across a two-column grid via a fixed image aspect
- * ratio plus a two-line name clamp, so a long name can never push the price or the
- * action control out of alignment.
+ * Three things were taken away to get there. The category label went first — it sat
+ * above the name in terracotta caps and repeated the section heading the card was
+ * already filed under, so the first thing the eye met on every card was a word the
+ * customer had just read. The white panel and its shadow went next: 84 floating boxes
+ * on a cream page is a lot of container for very little content, and the photograph is
+ * a better edge than a border. Finally the floating round "+" that overlapped the
+ * card's corner, along with the 56 px of padding reserved underneath it so long names
+ * could not run beneath it, became a plain full-width action row.
+ *
+ * Both action states occupy the same 44 px row, so a card does not change height when
+ * the item enters the basket and the grid never re-flows under the customer's thumb.
+ * Gold is reserved for the stepper — it marks "this is in your basket", which is the
+ * one thing on the card worth a colour.
+ *
+ * Presentation only. Pricing, GST, availability, add-on resolution and every cart
+ * mutation stay with the screen — this card renders what it is given and calls back.
  */
 function CustomerProductCard({
   name,
   priceLabel,
   imageUrl,
   fallbackIcon,
-  metaLabel,
   dietary,
   quantity,
   canOrder,
@@ -61,75 +69,83 @@ function CustomerProductCard({
   const showStepper = quantity > 0;
 
   return (
-    <article
-      className={`cb-customer-card relative flex flex-col overflow-hidden ${canOrder ? '' : 'cb-customer-unavailable'}`}
-    >
+    <article className={`cb-customer-card flex flex-col ${canOrder ? '' : 'cb-customer-unavailable'}`}>
       <CustomerProductImage
         src={imageUrl}
         alt={name}
         icon={fallbackIcon}
         iconClassName="text-[#b99b7d]"
-        /* 1:1 keeps the card image-led while holding total height near 220 px. */
-        className="aspect-square w-full rounded-none"
+        /* 1:1 keeps the picture dominant and every card in a row the same height. */
+        className="cb-customer-product-media aspect-square w-full"
         priority={priority}
       />
 
-      {/* pb-14 reserves the 44px control plus its 8px inset, so a long name can never
-          run underneath the stepper or the add button. */}
-      <div className="flex flex-1 flex-col gap-0.5 px-2.5 pb-14 pt-2">
-        {metaLabel && (
-          <p className="cb-customer-meta truncate text-[11px] font-black uppercase tracking-wide">{metaLabel}</p>
-        )}
-        <div className="flex items-start gap-1">
-          {dietary && <DietaryMarker value={dietary} compact />}
-          <h3 className="cb-clamp-2 cb-customer-title min-w-0 text-[13px] font-black leading-tight">{name}</h3>
-        </div>
-        <p className="cb-customer-price mt-auto text-sm font-black">{priceLabel}</p>
+      <div className="flex flex-1 flex-col px-0.5 pt-2.5">
+        {/* The marker rides inside the heading rather than beside it, so a two-line
+            name wraps under itself instead of into a narrower column. */}
+        <h3 className="cb-clamp-2 cb-customer-product-name">
+          {dietary && (
+            <span className="mr-1 inline-block align-[1px]"><DietaryMarker value={dietary} compact /></span>
+          )}
+          {name}
+        </h3>
+
         {/* Availability is stated in words, never by dimming alone. */}
         {!canOrder && unavailableReason && (
-          <p className="cb-customer-muted text-[11px] font-bold leading-snug">{unavailableReason}</p>
+          <p className="cb-customer-product-unavailable mt-1">{unavailableReason}</p>
         )}
-      </div>
 
-      {showStepper ? (
-        /* 44px per control, the touch-target floor. The stepper is the widest thing on
-           the card, so it sits flush to the left too: at 320 px the card is 138 px and
-           2x44 + a count column will not fit inside a right-anchored island. */
-        <div className="cb-customer-stepper absolute inset-x-2 bottom-2 flex h-11 items-center justify-between rounded-full">
-          <button
-            type="button"
-            onClick={onDecrement}
-            data-requires-online="true"
-            aria-label={`Decrease ${name}`}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-          >
-            <Minus size={16} aria-hidden="true" />
-          </button>
-          <span className="min-w-4 text-center text-sm font-black tabular-nums" aria-live="polite" aria-label={`${name} quantity ${quantity}`}>
-            {quantity}
-          </span>
-          <button
-            type="button"
-            onClick={onIncrement}
-            data-requires-online="true"
-            aria-label={`Increase ${name}`}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-          >
-            <Plus size={16} aria-hidden="true" />
-          </button>
+        <p className="cb-customer-product-price mt-1.5">{priceLabel}</p>
+
+        {/* mt-auto pins the action to the bottom of the stretched grid cell, so a
+            one-line name and a two-line name still line their buttons up. */}
+        <div className="mt-auto flex pt-2">
+          {showStepper ? (
+            /* 44 px per control, the touch-target floor. Full width because at 320 px
+               the card is 138 px and 2x44 plus a count column will not fit inside a
+               right-anchored island. */
+            <div className="cb-customer-stepper flex h-11 w-full items-center justify-between rounded-full">
+              <button
+                type="button"
+                onClick={onDecrement}
+                data-requires-online="true"
+                aria-label={`Decrease ${name}`}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+              >
+                <Minus size={16} aria-hidden="true" />
+              </button>
+              <span
+                className="min-w-4 text-center text-sm font-black tabular-nums"
+                aria-live="polite"
+                aria-label={`${name} quantity ${quantity}`}
+              >
+                {quantity}
+              </span>
+              <button
+                type="button"
+                onClick={onIncrement}
+                data-requires-online="true"
+                aria-label={`Increase ${name}`}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+              >
+                <Plus size={16} aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={!canOrder}
+              data-requires-online="true"
+              aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
+              className="cb-customer-add-button flex h-11 w-full items-center justify-center gap-1"
+            >
+              <Plus size={16} aria-hidden="true" />
+              Add
+            </button>
+          )}
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onAdd}
-          disabled={!canOrder}
-          data-requires-online="true"
-          aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
-          className="cb-customer-accent-button absolute bottom-3 right-3 flex h-11 w-11 items-center justify-center rounded-full"
-        >
-          <Plus size={20} aria-hidden="true" />
-        </button>
-      )}
+      </div>
     </article>
   );
 }
