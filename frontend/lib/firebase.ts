@@ -14,7 +14,10 @@ const requiredFirebaseEnv = [
 ] as const;
 
 const firebaseEnv = import.meta.env;
-const FIREBASE_STORAGE_BUCKET = "coffee-bond-pos.firebasestorage.app";
+const FIREBASE_STORAGE_BUCKET =
+  firebaseEnv.MODE === "customer-preview"
+    ? firebaseEnv.VITE_FIREBASE_STORAGE_BUCKET
+    : "coffee-bond-pos.firebasestorage.app";
 
 const missingFirebaseEnv = requiredFirebaseEnv.filter((key) => {
   const value = firebaseEnv[key];

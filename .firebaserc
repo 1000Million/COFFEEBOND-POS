@@ -1,5 +1,7 @@
 {
-  "projects": {},
+  "projects": {
+    "preview": "coffee-bond-pos-preview"
+  },
   "targets": {
     "coffee-bond-pos": {
       "hosting": {
@@ -8,6 +10,16 @@
         ],
         "customer": [
           "coffee-bond-order"
+        ]
+      }
+    },
+    "coffee-bond-pos-preview": {
+      "hosting": {
+        "customer": [
+          "coffee-bond-customer-preview"
+        ],
+        "staff": [
+          "coffee-bond-staff-preview"
         ]
       }
     }
