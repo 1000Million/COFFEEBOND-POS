@@ -498,6 +498,579 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * THE BOND owner preview.
+ *
+ * Customer-origin only. The preview selector is also gated in TypeScript by both
+ * the Vite mode and the preview Firebase project id, so these presentation styles
+ * can safely remain inert in a production customer build.
+ * ------------------------------------------------------------------------- */
+
+.cb-bond-page {
+  min-height: 100dvh;
+  min-width: 0;
+  overflow-x: hidden;
+  color: var(--cb-text);
+  background:
+    radial-gradient(circle at 90% 12%, rgba(232, 180, 76, 0.14), transparent 24rem),
+    linear-gradient(180deg, #f7f0e6 0%, #fbf8f3 42%, #f5ede3 100%);
+  padding-bottom: max(2rem, var(--cb-safe-bottom));
+  padding-left: var(--cb-safe-left);
+  padding-right: var(--cb-safe-right);
+}
+
+.cb-bond-shell {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  padding: 16px 16px 56px;
+}
+
+.cb-bond-back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  color: #5c4033;
+  font-size: 13px;
+  font-weight: 760;
+  text-decoration: none;
+}
+
+.cb-bond-demo {
+  display: grid;
+  gap: 10px;
+  margin: 6px 0 14px;
+  padding: 12px;
+  border: 1px solid rgba(82, 57, 42, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 253, 249, 0.84);
+  box-shadow: 0 8px 24px rgba(43, 33, 24, 0.05);
+  backdrop-filter: blur(10px);
+}
+
+.cb-bond-demo-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #5a4438;
+}
+
+.cb-bond-demo-heading span {
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cb-bond-demo-heading small {
+  color: #87776e;
+  font-size: 10px;
+  font-weight: 650;
+  text-align: right;
+}
+
+.cb-bond-demo-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.cb-bond-demo-options button {
+  min-height: 40px;
+  min-width: 0;
+  padding-inline: 10px;
+  border: 1px solid #e2d6cb;
+  border-radius: 12px;
+  color: #654d40;
+  background: #fffdf9;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.cb-bond-demo-options button.is-active {
+  border-color: #34231b;
+  color: #fffaf2;
+  background: #34231b;
+  box-shadow: 0 5px 14px rgba(43, 31, 24, 0.18);
+}
+
+.cb-bond-experience { display: grid; gap: 16px; }
+
+.cb-bond-hero {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  overflow: hidden;
+  padding: 25px 22px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 30px;
+  color: #fff9ef;
+  background:
+    radial-gradient(circle at 92% 15%, rgba(212, 161, 83, 0.33), transparent 15rem),
+    linear-gradient(145deg, #211711, #39261c 62%, #24170f);
+  box-shadow: 0 24px 50px rgba(49, 31, 21, 0.2);
+}
+
+.cb-bond-hero::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  right: -72px;
+  bottom: -112px;
+  width: 250px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(232, 180, 76, 0.21);
+  border-radius: 50%;
+  box-shadow: 0 0 0 34px rgba(232, 180, 76, 0.04), 0 0 0 70px rgba(232, 180, 76, 0.025);
+}
+
+.cb-bond-hero.is-club {
+  background:
+    radial-gradient(circle at 88% 10%, rgba(232, 180, 76, 0.48), transparent 15rem),
+    linear-gradient(145deg, #1c140f, #3a281c 58%, #21150e);
+}
+
+.cb-bond-hero-topline,
+.cb-bond-progress-meta,
+.cb-bond-section-heading,
+.cb-bond-club-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cb-bond-kicker {
+  margin: 0;
+  color: #a87332;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.cb-bond-hero .cb-bond-kicker { color: #d9b679; }
+
+.cb-bond-hero h1 {
+  margin: 5px 0 0;
+  font-size: clamp(19px, 6vw, 26px);
+  font-weight: 720;
+  letter-spacing: 0.16em;
+}
+
+.cb-bond-member-chip {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: #eadcc9;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.cb-bond-balance { margin-top: 36px; }
+
+.cb-bond-balance strong {
+  display: block;
+  font-size: clamp(56px, 17vw, 92px);
+  font-weight: 640;
+  letter-spacing: -0.065em;
+  line-height: 0.86;
+}
+
+.cb-bond-balance span {
+  display: block;
+  margin-top: 13px;
+  color: #d7c6b2;
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: 0.22em;
+}
+
+.cb-bond-progress-block {
+  margin-top: 36px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.cb-bond-progress-meta { align-items: baseline; }
+
+.cb-bond-progress-meta span {
+  color: #d8cbbd;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cb-bond-progress-meta strong {
+  font-size: 18px;
+  font-weight: 740;
+}
+
+.cb-bond-progress {
+  height: 6px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.cb-bond-progress span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b77d37, #f0c675);
+  box-shadow: 0 0 18px rgba(240, 198, 117, 0.4);
+}
+
+.cb-bond-progress-block > p {
+  margin: 11px 0 0;
+  color: #e3d6c8;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.cb-bond-club-active {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 36px;
+  padding: 16px;
+  border: 1px solid rgba(235, 194, 114, 0.38);
+  border-radius: 18px;
+  color: #f1c97a;
+  background: rgba(235, 194, 114, 0.08);
+}
+
+.cb-bond-club-active span {
+  color: #f8ead1;
+  font-size: 12px;
+  font-weight: 780;
+  letter-spacing: 0.12em;
+}
+
+.cb-bond-club-active strong {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.cb-bond-layout,
+.cb-bond-main-column,
+.cb-bond-side-column { display: grid; gap: 16px; min-width: 0; }
+
+.cb-bond-panel,
+.cb-bond-month {
+  min-width: 0;
+  padding: 21px;
+  border: 1px solid rgba(82, 57, 42, 0.1);
+  border-radius: 24px;
+  background: rgba(255, 253, 249, 0.9);
+  box-shadow: 0 12px 34px rgba(43, 33, 24, 0.06);
+}
+
+.cb-bond-section-heading { align-items: flex-end; }
+
+.cb-bond-section-heading h2,
+.cb-bond-passport h2,
+.cb-bond-next h2,
+.cb-bond-club-panel h2 {
+  margin: 6px 0 0;
+  color: #2a1d17;
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.cb-bond-section-heading > span {
+  color: #8b796e;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cb-bond-journey ol {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-bond-journey li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 48px;
+  color: #9b8e86;
+}
+
+.cb-bond-journey li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 34px;
+  bottom: -14px;
+  width: 1px;
+  background: #e7ddd3;
+}
+
+.cb-bond-journey-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid #ded1c6;
+  border-radius: 50%;
+  background: #fffdf9;
+}
+
+.cb-bond-journey li.is-complete { color: #574238; }
+.cb-bond-journey li.is-complete .cb-bond-journey-mark {
+  border-color: #9c6a30;
+  color: #fffaf1;
+  background: #9c6a30;
+}
+
+.cb-bond-journey li.is-current { color: #251913; }
+.cb-bond-journey li.is-current .cb-bond-journey-mark {
+  border: 2px solid #a66e2e;
+  box-shadow: 0 0 0 4px #f5e4c5;
+}
+.cb-bond-journey li.is-current .cb-bond-journey-mark span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a66e2e;
+}
+
+.cb-bond-journey li strong { font-size: 13px; font-weight: 720; }
+.cb-bond-journey li small { display: block; margin-top: 2px; color: #a66e2e; font-size: 10px; font-weight: 680; }
+.cb-bond-journey li > span:last-child { font-size: 10px; font-weight: 720; }
+
+.cb-bond-next {
+  position: relative;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid #dfbf80;
+  border-radius: 24px;
+  color: #34241b;
+  background: linear-gradient(145deg, #f8e7c5, #f1d49b);
+  box-shadow: 0 14px 34px rgba(116, 77, 35, 0.12);
+}
+
+.cb-bond-next-icon {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(74, 48, 27, 0.14);
+  border-radius: 50%;
+  color: #70461f;
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.cb-bond-next h2 { max-width: calc(100% - 44px); font-size: 23px; }
+.cb-bond-next > strong { display: block; margin-top: 9px; color: #744c25; font-size: 12px; font-weight: 760; }
+
+.cb-bond-month-grid { display: grid; gap: 10px; margin-top: 17px; }
+
+.cb-bond-month-grid article {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eee3d8;
+  border-radius: 18px;
+  color: #895b2c;
+  background: #faf5ee;
+}
+
+.cb-bond-month-grid article p {
+  margin: 10px 0 0;
+  color: #806b5f;
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cb-bond-month-grid article strong { display: block; margin-top: 4px; color: #2e2019; font-size: 15px; }
+.cb-bond-month-grid article > span { display: block; margin-top: 2px; color: #85766e; font-size: 11px; font-weight: 620; }
+
+.cb-bond-mini-progress { height: 4px; margin-top: 13px; overflow: hidden; border-radius: 9px; background: #e8ddd1; }
+.cb-bond-mini-progress i { display: block; height: 100%; border-radius: inherit; background: #a87332; }
+
+.cb-bond-passport ul,
+.cb-bond-club-panel ul {
+  margin: 17px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-bond-passport li {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #eee4db;
+  color: #554239;
+  font-size: 12px;
+  font-weight: 680;
+}
+.cb-bond-passport li svg { color: #a66e2e; }
+
+.cb-bond-club-panel {
+  padding: 22px;
+  border: 1px solid rgba(232, 180, 76, 0.2);
+  border-radius: 24px;
+  color: #f7ebdc;
+  background: #2a1d17;
+  box-shadow: 0 18px 38px rgba(43, 31, 24, 0.16);
+}
+
+.cb-bond-club-title { justify-content: flex-start; color: #e2b963; }
+.cb-bond-club-panel .cb-bond-kicker { color: #c99c4f; }
+.cb-bond-club-panel h2 { color: #fff8ed; font-size: 19px; letter-spacing: 0.05em; }
+.cb-bond-club-panel li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  margin-top: 10px;
+  color: #dccfc1;
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.45;
+}
+.cb-bond-club-panel li svg { margin-top: 1px; color: #d5a853; }
+
+.cb-bond-state-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 34px 24px;
+  border: 1px solid #eadfd2;
+  border-radius: 24px;
+  background: #fffdf9;
+  box-shadow: var(--cb-shadow-card);
+  text-align: center;
+}
+.cb-bond-state-card h2,
+.cb-bond-state-card p { margin: 0; }
+.cb-bond-state-card h2 { font-size: 18px; }
+.cb-bond-state-card p { max-width: 31rem; color: #74665e; font-size: 13px; line-height: 1.6; }
+.cb-bond-state-card.is-error { color: var(--cb-danger); background: var(--cb-danger-soft); }
+
+.cb-bond-order-card {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #e3d7ca;
+  border-radius: 18px;
+  color: #2d2019;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(232, 180, 76, 0.17), transparent 10rem),
+    #fffdf9;
+  box-shadow: 0 6px 18px rgba(43, 33, 24, 0.055);
+}
+
+.cb-bond-order-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cb-bond-order-card-topline > p {
+  margin: 0;
+  color: #8c5c2b;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.2em;
+}
+
+.cb-bond-order-card-link {
+  display: inline-flex;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 4px;
+  color: #5c4033;
+  font-size: 11px;
+  font-weight: 780;
+  text-decoration: none;
+}
+
+.cb-bond-order-card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 5px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.cb-bond-order-card-metrics strong { font-size: 16px; font-weight: 780; }
+
+.cb-bond-order-card-progress { margin-top: 10px; }
+.cb-bond-order-card-progress > div {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ede3d8;
+}
+.cb-bond-order-card-progress > div span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #9d682d, #d7aa56);
+}
+.cb-bond-order-card-progress p,
+.cb-bond-order-card-paused {
+  margin: 7px 0 0;
+  color: #76675f;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+@media (min-width: 640px) {
+  .cb-bond-shell { padding: 20px 24px 72px; }
+  .cb-bond-demo { grid-template-columns: auto minmax(0, 1fr); align-items: center; padding: 10px 12px 10px 16px; }
+  .cb-bond-demo-heading { display: grid; gap: 1px; justify-content: start; }
+  .cb-bond-demo-heading small { text-align: left; }
+  .cb-bond-demo-options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cb-bond-hero { padding: 34px 36px 30px; }
+  .cb-bond-month-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 880px) {
+  .cb-bond-shell { padding-top: 24px; }
+  .cb-bond-layout { grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr); align-items: start; }
+  .cb-bond-hero { min-height: 390px; }
+  .cb-bond-balance { margin-top: 52px; }
+  .cb-bond-progress-block,
+  .cb-bond-club-active { width: min(62%, 540px); margin-top: 48px; }
+  .cb-bond-side-column { align-content: start; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cb-bond-progress span,
+  .cb-bond-mini-progress i { transition: width 320ms ease-out; }
+  .cb-bond-demo-options button { transition: background 140ms ease-out, color 140ms ease-out, transform 140ms ease-out; }
+  .cb-bond-demo-options button:active { transform: scale(0.98); }
+}
+
+/* ---------------------------------------------------------------------------
  * Stage 3 — product customization sheet.
  *
  * Customer-only: this file is imported solely by frontend/customer-main.tsx, so
@@ -1377,3 +1950,81 @@
 }
 
 .cb-customer-add-button:disabled { color: var(--cb-text-muted); }
+
+/* ---------------------------------------------------------------------------
+ * Contextual basket bar.
+ *
+ * Replaces the permanently raised basket button that used to occupy a navigation slot.
+ * It sits directly above the bottom navigation — never overlapping it — and is absent
+ * entirely while the basket is empty.
+ *
+ * The offset is the navigation's own height plus the safe-area inset, so the bar clears
+ * both the bar and the home indicator on every device.
+ * ------------------------------------------------------------------------ */
+.cb-customer-basket-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom));
+  z-index: 39; /* below the nav (40) so the two can never fight */
+  padding: 0 12px 10px;
+  padding-left: max(12px, var(--cb-safe-left));
+  padding-right: max(12px, var(--cb-safe-right));
+  pointer-events: none;
+}
+.cb-customer-basket-bar-action {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  max-width: 32rem;
+  margin: 0 auto;
+  align-items: center;
+  gap: 10px;
+  border-radius: 999px;
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+  padding: 0 8px 0 16px;
+  font-size: 13.5px;
+  font-weight: 800;
+  box-shadow: var(--cb-shadow-raised);
+  pointer-events: auto;
+}
+.cb-customer-basket-bar-total {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cb-customer-basket-bar-cta {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+/* The page already reserves room for the navigation; a visible basket bar needs its own
+   clearance on top of that so the last product row is never trapped behind it. */
+.cb-customer-page-bottom.has-basket-bar { padding-bottom: calc(var(--cb-content-bottom) + 62px); }
+@media (min-width: 1024px) {
+  .cb-customer-page-bottom.has-basket-bar { padding-bottom: 2rem; }
+}
+
+/* /account renders the shared account panel inline instead of as a modal sheet. */
+.cb-customer-account-page-panel {
+  border-radius: var(--cb-radius-lg);
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  box-shadow: var(--cb-shadow-card);
+  padding: 18px;
+}
+
+/* Posted BOND points on a past order row. Shown only when the server ledger awarded
+   them; the customer app never estimates a balance. */
+.cb-customer-row-points {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--cb-success);
+}

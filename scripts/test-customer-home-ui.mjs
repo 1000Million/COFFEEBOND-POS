@@ -66,19 +66,100 @@ check('bottom nav uses the shared customer route helper',
 check('bottom nav hardcodes no customer path', !/["']\/order|["']\/my-orders/.test(nav));
 check('bottom nav basket opens the existing basket sheet',
   home.includes('onOpenBasket={() => setBasketOpen(true)}'));
-check('bottom nav search focuses the existing input, adding no second search',
-  home.includes('searchInputRef.current?.focus()')
-  && (home.match(/aria-label="Search the menu"/g) || []).length === 1);
-check('the old duplicate mobile basket bar is gone', !home.includes('View basket ·'));
-check('exactly one basket control remains',
-  (nav.match(/aria-label=\{basketLabel\}/g) || []).length === 1);
-// The Account entry raises a callback rather than navigating: the customer origin has
-// no standalone account route, so no destination is invented.
+/* Superseded by P0. Search left the bar entirely — the menu screen keeps its own single
+   search field, which this still pins. The basket is no longer a navigation control at
+   all: exactly one basket action remains, and it is the contextual bar. */
+check('the menu screen still owns exactly one search field',
+  (home.match(/aria-label="Search the menu"/g) || []).length === 1);
+check('exactly one basket control remains, and it is contextual',
+  (read('frontend/components/customer/CustomerBasketBar.tsx').match(/aria-label=\{label\}/g) || []).length === 1
+  && !/basketLabel/.test(nav)
+  && (home.match(/<CustomerBasketBar/g) || []).length === 1);
 const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-check('Account is a callback, not an invented route',
-  navCode.includes('onClick={onOpenAccount}') && !/to=\{[^}]*ACCOUNT/i.test(navCode));
-check('bottom nav basket is offline-guarded like other mutations',
-  nav.includes('data-requires-online="true"'));
+check('Account is a real route, not a sheet-only callback',
+  /to=\{CUSTOMER_ACCOUNT_PATH\}/.test(navCode) && !navCode.includes('onOpenAccount'));
+check('the contextual basket action is offline-guarded like other mutations',
+  read('frontend/components/customer/CustomerBasketBar.tsx').includes('data-requires-online="true"'));
+
+/* ===========================================================================
+ * P0 — three-destination navigation, contextual basket, real Account route.
+ *
+ * The bar previously carried five actions, two of which were not destinations: Search
+ * pointed back at the field already on this screen, and the raised Cart was a dead
+ * control whenever the basket was empty. Bond was removed entirely — this branch has no
+ * authoritative loyalty balance, so there is nothing honest for it to show.
+ * ======================================================================== */
+const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
+const tracking = read('frontend/components/customer/CustomerTrackingScreen.tsx');
+const customerApp = read('frontend/CustomerApp.tsx');
+const staffApp = read('frontend/App.tsx');
+const routes = read('frontend/lib/customerRoutes.ts');
+
+check('P0-1. bottom navigation is exactly Order, Orders, Bond, Account',
+  ['Order', 'Orders', 'Bond', 'Account'].every(l => new RegExp(`^\\s*${l}\\s*$`, 'm').test(navCode))
+  && (navCode.match(/<Link/g) || []).length === 4);
+check('P0-2. no Search and no permanent Cart in the bar',
+  !/Search/.test(navCode)
+  && !/ShoppingBag|basket|Cart/i.test(navCode));
+check('P0-3. Order is active at /',
+  navCode.includes('const onHome = pathname === CUSTOMER_HOME_PATH')
+  && /to=\{CUSTOMER_HOME_PATH\}[\s\S]{0,160}aria-current=\{onHome \? 'page' : undefined\}/.test(navCode));
+check('P0-4. Orders is active at /my-orders',
+  /pathname === CUSTOMER_MY_ORDERS_PATH/.test(navCode)
+  && /to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,160}aria-current=\{onMyOrders \? 'page' : undefined\}/.test(navCode));
+check('P0-5. Orders is active at /status/:id',
+  /onMyOrders = pathname === CUSTOMER_MY_ORDERS_PATH \|\| \/\(\^\|\\\/\)status\\\/\/\.test\(pathname\)/.test(navCode));
+check('P0-6. Account is active at /account',
+  /pathname === CUSTOMER_ACCOUNT_PATH/.test(navCode)
+  && /to=\{CUSTOMER_ACCOUNT_PATH\}[\s\S]{0,160}aria-current=\{onAccount \? 'page' : undefined\}/.test(navCode));
+check('P0-7. /account is a real customer route',
+  customerApp.includes('path="/account"')
+  && customerApp.includes("import('./pages/customer/CustomerAccount')")
+  && routes.includes('CUSTOMER_ACCOUNT_PATH'));
+/* Integration: /bond is now the REAL Codex BOND dashboard. What must stay absent is any
+   Claude Stage 6 placeholder — the fake points ring, the medallion and the
+   "balance unavailable" stand-in. */
+check('P0-8. /bond is the real Codex dashboard, not a placeholder',
+  customerApp.includes('path="/bond"')
+  && customerApp.includes("import('./pages/customer/CustomerBondDashboard')")
+  && routes.includes('CUSTOMER_BOND_PATH')
+  && !/CustomerBondCard|CustomerBondMedallion/.test(customerApp + routes + navCode + home));
+check('P0-8a. no fabricated balance ships in the customer source',
+  !/cb-customer-bond-ring|balance unavailable/i.test(home + navCode));
+check('P0-9. staff router mounts neither /order/account nor /order/bond',
+  !staffApp.includes('/order/account') && !staffApp.includes('/order/bond'));
+check('P0-10. tracking renders the bottom navigation',
+  tracking.includes('<CustomerBottomNav />')
+  && tracking.includes("import CustomerBottomNav from './CustomerBottomNav'"));
+check('P0-11. tracking payment-safety copy is unchanged',
+  tracking.includes('Payment confirmation is in progress. Please do not pay again.')
+  && tracking.includes('Payment was received. The store is reviewing fulfilment; no further payment is required.'));
+check('P0-12. the Order screen renders no duplicate Account shortcut',
+  home.includes('hideAccountAction')
+  && !home.includes("aria-label=\"Open customer account\"")
+  && !/identitySlot|Medallion/.test(home));
+check('P0-13. an empty basket creates no permanent Cart destination',
+  basketBar.includes('if (itemCount <= 0) return null;')
+  && !/ShoppingBag|basket/i.test(navCode));
+check('P0-14. a populated basket still renders a contextual basket action',
+  home.includes('<CustomerBasketBar')
+  && basketBar.includes('onOpenBasket')
+  && basketBar.includes('View basket'));
+check('P0-15. the basket survives navigation via the existing persisted draft',
+  // Cart is written to localStorage and rehydrated (revalidated) on mount, so leaving
+  // Order for Orders/Account and returning does not lose it. No new state layer added.
+  home.includes('writeCustomerCheckoutDraft(window.localStorage')
+  && home.includes('readCustomerCheckoutDraft(window.localStorage)')
+  && home.includes('applyRestoredDraft(draft, restored)')
+  && home.includes('setCart(restored.lines)'));
+check('P0-18. bottom-navigation controls meet the 44px minimum',
+  navCode.includes('min-h-[44px] min-w-[44px]'));
+check('P0-19. the product CTA meets the 44px minimum',
+  card.includes('cb-customer-add-button flex h-11 w-full'));
+check('P0-20. the basket bar clears the navigation and the safe area',
+  /\.cb-customer-basket-bar \{[^}]*bottom: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\)\)/.test(tokens)
+  && /\.cb-customer-basket-bar \{[^}]*z-index: 39/.test(tokens)
+  && /cb-customer-bottom-nav[\s\S]{0,400}z-40/.test(nav));
 
 // --- Accessibility ----------------------------------------------------------
 check('category selection is announced, not colour-only', rail.includes('aria-pressed={isActive}'));
@@ -87,6 +168,30 @@ check('quantity controls have accessible names',
   card.includes('aria-label={`Decrease ${name}`}') && card.includes('aria-label={`Increase ${name}`}'));
 check('add control names the product and its behaviour',
   card.includes('opensCustomization ? `Choose options for ${name}` : `Add ${name}`'));
+
+/* WCAG 2.5.3 Label in Name. A control's accessible name must contain its visible label,
+   so the visible text and the aria-label come from the SAME condition:
+     required options -> visible "Choose options", named "Choose options for {name}"
+     quick add        -> visible "Add",            named "Add {name}"
+   Previously the button always read "Add" while the accessible name could be
+   "Choose options for X". That fails 2.5.3 and breaks voice control, because saying
+   "tap Add" would not match the control the user can see. It also mis-sold the action:
+   a card that opens the customisation sheet adds nothing on its own. */
+const visibleCta = card.match(/\{opensCustomization \? '([^']+)' : '([^']+)'\}/);
+check('product CTA visible label is conditional, not a hardcoded Add',
+  !!visibleCta && visibleCta[1] === 'Choose options' && visibleCta[2] === 'Add');
+check('product CTA accessible name contains its visible label (WCAG 2.5.3)',
+  !!visibleCta
+  && card.includes('opensCustomization ? `Choose options for ${name}` : `Add ${name}`')
+  && 'Choose options for ${name}'.startsWith(visibleCta[1])
+  && 'Add ${name}'.startsWith(visibleCta[2]));
+check('the accessible name identifies the product in both states',
+  /`Choose options for \$\{name\}`/.test(card) && /`Add \$\{name\}`/.test(card));
+/* The plus is a direct-add affordance. Beside "Choose options" it promised an immediate
+   add that the control does not perform — the sheet opens instead. */
+check('the + icon appears for direct add only, never with Choose options',
+  card.includes('{!opensCustomization && <Plus size={16} aria-hidden="true" />}')
+  && !/<Plus size=\{16\} aria-hidden="true" \/>\n\s*\{opensCustomization/.test(card));
 check('touch targets are at least 44px', card.includes('h-11') && nav.includes('min-h-[44px]'));
 check('reduced motion is respected', tokens.includes('prefers-reduced-motion'));
 check('visible focus styling exists', tokens.includes(':focus-visible'));
@@ -178,9 +283,17 @@ check('the card no longer repeats the category it is filed under',
 check('the card is a grid cell, not a floating panel',
   /\.cb-customer-card \{[^}]*background: transparent/.test(tokens)
   && /\.cb-customer-card \{[^}]*box-shadow: none/.test(tokens));
-check('the picture stays dominant and square',
-  card.includes('aspect-square w-full')
+/* UI-6: the box is now 4:3 to match the intrinsic 400x300 assets, so `object-fit:
+   cover` no longer crops a quarter off the sides of every photograph. What matters for
+   layout is unchanged — a FIXED aspect box, so the grid reserves space and nothing
+   shifts when an image loads. */
+check('the picture stays dominant and its box is fixed at the asset ratio',
+  card.includes('aspect-[4/3] w-full')
+  && !card.includes('aspect-square')
   && card.includes('cb-customer-product-media'));
+check('UI-6. the media box matches the intrinsic asset dimensions',
+  read('frontend/components/customer/CustomerProductImage.tsx').includes('width="400"')
+  && read('frontend/components/customer/CustomerProductImage.tsx').includes('height="300"'));
 check('one price, once',
   // Rendered exactly once — the other two mentions are the prop type and its destructure.
   (card.match(/\{priceLabel\}/g) || []).length === 1
@@ -275,21 +388,40 @@ check('both quiet search states are two lines, not cards',
   && home.includes('Try another search.')
   && home.includes('cb-customer-search-void')
   && !/cb-customer-search-void[\s\S]{0,200}(ring-1|rounded-3xl|shadow)/.test(home));
+/* UI-3. Search matched inside words, so "latte" returned "Mediterranean Mezze Platter"
+   ("platter" contains "latte"). Matching is now word-PREFIX over normalised tokens. */
+const menuSearch = read('frontend/lib/customerMenuSearch.ts');
+check('UI-3. the substring matcher is gone from the screen',
+  !home.includes('name.includes(searchText)')
+  && home.includes('matchesCustomerSearch('));
+check('UI-3. search normalises case, diacritics and punctuation',
+  menuSearch.includes("normalize('NFD')")
+  && /\[\\u0300-\\u036f\]/.test(menuSearch)
+  && menuSearch.includes('toLowerCase()')
+  && /\[\^\\p\{L\}\\p\{N\}\]\+/.test(menuSearch));
+check('UI-3. every query word must match, by word prefix',
+  menuSearch.includes('queryWords.every(')
+  && menuSearch.includes('productWord.startsWith(queryWord)'));
+check('UI-3. search covers name, code and description only',
+  home.includes('[item.displayName || item.name, item.code, item.description]'));
+/* Intent unchanged: still ONE client-side filter over the already-loaded menu. UI-3
+   swapped the matcher itself from substring to word-prefix; it added no query, no
+   index and no service. */
 check('search adds no second query, index or filter',
   (home.match(/const visibleItems = useMemo/g) || []).length === 1
-  && home.includes('!searchText || name.includes(searchText)')
-  && !/algolia|typesense|searchIndex|fuzzy/i.test(home));
+  && home.includes('matchesCustomerSearch(')
+  && !/algolia|typesense|searchIndex|fuzzy/i.test(home)
+  && !/getDocs|onSnapshot|httpsCallable/.test(menuSearch));
 check('Menu action clears the filter and returns to the top',
   home.includes("setCategory('ALL');") && home.includes("setSearch('');"));
 
-// --- Five functional bottom-nav actions --------------------------------------
-check('bottom nav exposes exactly five actions',
-  ['Menu', 'Orders', 'Search', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
-  && nav.includes('aria-label={basketLabel}'));
-check('Account raises the existing account affordance, not a new route',
-  nav.includes('onOpenAccount') && !/to=\{[^}]*ACCOUNT/.test(nav));
-check('home wires Account to the existing header account control',
-  home.includes('onOpenAccount={') && home.includes('Open customer account'));
+// --- Three bottom-nav DESTINATIONS -------------------------------------------
+/* Superseded by P0: five actions became three destinations. Search and the permanent
+   Cart were not destinations at all, and Bond had no honest content on this branch.
+   Full coverage lives in the P0 block above; this keeps the section anchored. */
+check('bottom nav exposes exactly three destinations',
+  ['Order', 'Orders', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
+  && !nav.includes('basketLabel'));
 
 // --- Style isolation --------------------------------------------------------
 check('customer tokens are imported only by the customer entry',

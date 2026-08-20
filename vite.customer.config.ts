@@ -2,7 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 
 /**
  * Rollup emits the entry using its source filename. Firebase Hosting serves the
@@ -30,7 +30,12 @@ function emitCustomerIndexHtml(outDir: string): Plugin {
  *
  * The staff build (vite.config.ts -> dist/) is untouched by this file.
  */
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, 'VITE_');
+  const includeBondDemo = (
+    mode === 'customer-preview'
+    && env.VITE_FIREBASE_PROJECT_ID === 'coffee-bond-pos-preview'
+  );
   return {
     plugins: [react(), tailwindcss(), emitCustomerIndexHtml('dist-customer')],
     // Customer manifest, service worker, icons and offline page.
@@ -38,6 +43,12 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './frontend'),
+        '@bond-preview': path.resolve(
+          __dirname,
+          includeBondDemo
+            ? './frontend/lib/bondLoyaltyPreview.ts'
+            : './frontend/lib/bondLoyaltyPreviewDisabled.ts',
+        ),
       },
     },
     define: {

@@ -13,6 +13,15 @@ type Props = {
   onProfileUpdated?: (profile: CustomerProfile) => void;
   onSignedOut?: () => void;
   rightSlot?: ReactNode;
+  /**
+   * Suppresses the header's own account control.
+   *
+   * The Order screen sets this because Account now has its own bottom-navigation
+   * destination, and a top-right avatar was a second doorway to the same screen. Other
+   * screens (order status, which has no bottom bar in some contexts) keep it, so account
+   * access is never lost.
+   */
+  hideAccountAction?: boolean;
   sticky?: boolean;
   /**
    * Supplied by screens that already expose a My Orders destination in the bottom
@@ -38,6 +47,7 @@ export default function CustomerHeader({
   onProfileUpdated,
   onSignedOut,
   rightSlot,
+  hideAccountAction = false,
   sticky = false,
   onSignedOutAccountPress,
   onOpenMyUsual,
@@ -79,7 +89,7 @@ export default function CustomerHeader({
           </Link>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {!authRestored ? (
+            {hideAccountAction ? null : !authRestored ? (
               <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#8b5e42]" aria-label="Restoring customer session">
                 <Loader2 size={17} className="animate-spin" />
               </span>

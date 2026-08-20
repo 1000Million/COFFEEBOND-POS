@@ -16,6 +16,12 @@ type Props = {
   /** Formatted total. */
   totalLabel: string;
   viewPath: string;
+  /**
+   * BOND points posted by the server's immutable POINT_EARN ledger entry, or null.
+   * listMyOrders reads this from the ledger, so a number here means points were
+   * actually awarded — the customer app never estimates a balance.
+   */
+  pointsEarned?: number | null;
 };
 
 /**
@@ -45,6 +51,7 @@ export default function CustomerOrderCard({
   statusTone,
   totalLabel,
   viewPath,
+  pointsEarned = null,
 }: Props) {
   return (
     <li>
@@ -60,6 +67,14 @@ export default function CustomerOrderCard({
           <span className={`cb-customer-row-sub block truncate ${statusTone === 'ended' ? 'is-ended' : ''}`}>
             {statusLabel} · {fulfilmentLabel}
           </span>
+          {/* Posted BOND points only. `pointsEarned` arrives from listMyOrders, which
+              reads the immutable POINT_EARN ledger entry — so this line appears only
+              after the server actually awarded them. Nothing is estimated here. */}
+          {typeof pointsEarned === 'number' && pointsEarned > 0 && (
+            <span className="cb-customer-row-points block truncate">
+              You earned {pointsEarned} BOND Points
+            </span>
+          )}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           <span className="cb-customer-row-amount">{totalLabel}</span>

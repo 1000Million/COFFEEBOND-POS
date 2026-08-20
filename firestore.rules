@@ -774,6 +774,40 @@ service cloud.firestore {
       allow read, create, update, delete: if false;
     }
 
+    // BOND financial and qualification state is written only by post-commit Admin
+    // SDK workers. Verified customers may read only records bound to their Auth UID;
+    // Store Managers, Cashiers and other customers gain no network-wide access.
+    match /loyaltyAccounts/{customerId} {
+      allow get: if (isSignedIn() && request.auth.uid == customerId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /loyaltyPointLedger/{ledgerEntryId} {
+      allow get, list: if (isSignedIn() && resource.data.customerId == request.auth.uid) || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /clubMemberships/{membershipId} {
+      allow get, list: if (isSignedIn() && resource.data.customerId == request.auth.uid) || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /qualifyingVisitEvents/{eventId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /qualifyingVisitDays/{dayId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /loyaltyShadowLogs/{logId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
     match /posRazorpaySessions/{sessionId} {
       allow read, create, update, delete: if false;
     }

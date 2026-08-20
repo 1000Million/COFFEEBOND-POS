@@ -78,7 +78,9 @@
     "test:customer-account-orders-ui": "node scripts/test-customer-account-orders-ui.mjs",
     "test:customer-customization-ui": "node scripts/test-customer-customization-ui.mjs",
     "test:customer-my-usual": "node scripts/test-customer-my-usual.mjs",
-    "test:customer-my-usual-emulator": "node scripts/test-customer-my-usual-emulator-e2e.mjs"
+    "test:customer-my-usual-emulator": "node scripts/test-customer-my-usual-emulator-e2e.mjs",
+    "test:bond-loyalty": "node scripts/test-bond-loyalty.mjs",
+    "test:bond-loyalty-emulator": "node scripts/test-bond-loyalty-emulator-e2e.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

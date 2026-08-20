@@ -16,6 +16,9 @@
     "allowJs": true,
     "jsx": "react-jsx",
     "paths": {
+      "@bond-preview": [
+        "./frontend/lib/bondLoyaltyPreview.ts"
+      ],
       "@/*": [
         "./frontend/*"
       ]

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { onSnapshot } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import CustomerOrdersScreen, {
   OrdersScreenState,
   PastOrderView,
@@ -17,6 +17,7 @@ import {
 import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { readCustomerCheckoutDraft } from '../../lib/customerCheckoutPersistence';
 import { publicTrackingDocRef } from '../../lib/publicOrderTracking';
+import { explicitBondDemoKey } from '../../lib/bondLoyalty';
 import { PaymentStatus, PublicOrderStatus, PublicOrderTracking } from '../../types';
 import { CUSTOMER_HOME_PATH, customerStatusPath } from '../../lib/customerRoutes';
 
@@ -28,6 +29,8 @@ type CustomerOrderSummary = {
   total: number;
   status: PublicOrderStatus | 'COMPLETED';
   paymentStatus: PaymentStatus;
+  /** Points posted by the server's immutable POINT_EARN ledger entry. Never estimated. */
+  pointsEarned?: number | null;
   createdAt: string | null;
 };
 
@@ -93,7 +96,9 @@ function statusTone(status: CustomerOrderSummary['status']): 'settled' | 'ended'
  * onSnapshot, not a second implementation of order status.
  */
 export default function CustomerMyOrders() {
+  const location = useLocation();
   const navigate = useNavigate();
+  const demoRequested = Boolean(explicitBondDemoKey(location.search));
   const [authRestored, setAuthRestored] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
@@ -101,8 +106,28 @@ export default function CustomerMyOrders() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [liveOrder, setLiveOrder] = useState<PublicOrderTracking | null>(null);
+  const [previewOrder, setPreviewOrder] = useState<CustomerOrderSummary | null>(null);
 
   useEffect(() => {
+    if (!demoRequested) {
+      setPreviewOrder(null);
+      return undefined;
+    }
+    let active = true;
+    void import('@bond-preview').then(module => {
+      if (active) setPreviewOrder(module.BOND_PREVIEW_ORDER as CustomerOrderSummary | null);
+    });
+    return () => { active = false; };
+  }, [demoRequested]);
+
+  useEffect(() => {
+    if (demoRequested) {
+      setAuthRestored(true);
+      setSignedIn(true);
+      setLoading(false);
+      setError(null);
+      return undefined;
+    }
     let active = true;
     let unsubscribe = () => {};
 
@@ -147,25 +172,29 @@ export default function CustomerMyOrders() {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [demoRequested]);
 
+  const displayedOrders = useMemo(
+    () => (demoRequested && previewOrder ? [previewOrder] : orders),
+    [demoRequested, orders, previewOrder],
+  );
   const activeOrder = useMemo(() => (
-    [...orders]
+    [...displayedOrders]
       .filter(isCurrentOrder)
       .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
-  ), [orders]);
+  ), [displayedOrders]);
 
   const pastOrders = useMemo(() => (
-    orders
+    displayedOrders
       .filter(order => order.trackingToken !== activeOrder?.trackingToken)
       .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-  ), [orders, activeOrder]);
+  ), [activeOrder, displayedOrders]);
 
   /* Live status for the one active order, from the tracking document the tracking
      screen already reads. Keyed on the token so switching orders never shows stale
      items from the previous one. */
   useEffect(() => {
-    if (!activeOrder) {
+    if (demoRequested || !activeOrder) {
       setLiveOrder(null);
       return undefined;
     }
@@ -181,7 +210,7 @@ export default function CustomerMyOrders() {
       },
     );
     return unsubscribe;
-  }, [activeOrder?.trackingToken]);
+  }, [activeOrder?.trackingToken, demoRequested]);
 
   /* Basket count for the persistent bar, read from the existing saved draft. This page
      owns no cart state and mutates nothing. */
@@ -206,18 +235,21 @@ export default function CustomerMyOrders() {
       : null,
     fulfilmentLabel: order.orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup',
     statusLabel: operationalStatus(order.status),
+    /* Server-posted only: listMyOrders reads this from the loyalty ledger, so a value
+       here means a POINT_EARN event exists. The client never estimates it. */
+    pointsEarned: typeof order.pointsEarned === 'number' ? order.pointsEarned : null,
     statusTone: statusTone(order.status),
     totalLabel: money(order.total),
     viewPath: customerStatusPath(order.trackingToken),
   }));
 
-  const state: OrdersScreenState = (!authRestored || loading)
+  const state: OrdersScreenState = (!authRestored || loading || (demoRequested && !previewOrder))
     ? { kind: 'loading' }
-    : error
+    : !demoRequested && error
       ? { kind: 'error', message: error }
-      : !signedIn
+      : !demoRequested && !signedIn
         ? { kind: 'signed-out' }
-        : orders.length === 0
+        : displayedOrders.length === 0
           ? { kind: 'empty' }
           : {
             kind: 'ready',

@@ -19,6 +19,12 @@ export const IS_CUSTOMER_ORIGIN_BUILD = import.meta.env.VITE_CUSTOMER_ORIGIN_BUI
 
 export const CUSTOMER_HOME_PATH = IS_CUSTOMER_ORIGIN_BUILD ? '/' : '/order';
 export const CUSTOMER_MY_ORDERS_PATH = IS_CUSTOMER_ORIGIN_BUILD ? '/my-orders' : '/order/my-orders';
+export const CUSTOMER_BOND_PATH = IS_CUSTOMER_ORIGIN_BUILD ? '/bond' : '/order/bond';
+
+/* Account is a real route, not a sheet-only state, so a refresh or a shared link lands
+   on the account screen instead of the menu. It follows the same dual-origin shape as
+   everything else here; the staff origin's alias is not mounted in this phase. */
+export const CUSTOMER_ACCOUNT_PATH = IS_CUSTOMER_ORIGIN_BUILD ? '/account' : '/order/account';
 
 /** Canonical in-app path for an order status screen. Tokens are passed through verbatim. */
 export function customerStatusPath(trackingToken: string): string {

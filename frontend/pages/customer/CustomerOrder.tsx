@@ -48,7 +48,7 @@ import {
   canonicalAddOnSelections,
   unitPriceWithAddOns,
 } from '../../lib/addOns';
-import { db, functions } from '../../lib/firebase';
+import { db } from '../../lib/firebase';
 import { CustomerProfile, customerFunctions, restoreCustomerProfile } from '../../lib/customerAuth';
 import {
   CheckoutHydrationState,
@@ -85,6 +85,14 @@ import CustomerStoreCard from '../../components/customer/CustomerStoreCard';
 import { maskedPhone } from '../../components/customer/CustomerAccountSheet';
 import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
+import CustomerBasketBar from '../../components/customer/CustomerBasketBar';
+import CustomerBondSummaryCard from '../../components/customer/CustomerBondSummaryCard';
+import {
+  BondSummary,
+  estimateBondPoints,
+  explicitBondDemoKey,
+  getCustomerBondSummary,
+} from '../../lib/bondLoyalty';
 import {
   loadRazorpayCheckout,
   RazorpayCheckoutSuccess,
@@ -96,6 +104,7 @@ import {
   prepWindowLabel,
   storeOnlineMessage,
 } from '../../lib/customerOrderingState';
+import { matchesCustomerSearch } from '../../lib/customerMenuSearch';
 import { isGoldenISetupWarningOnly } from '../../lib/publicMenuAvailability';
 import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
@@ -224,7 +233,7 @@ type SubmitCustomerOrderResponse = {
 };
 
 const submitCustomerOrderCallable = httpsCallable<SubmitCustomerOrderRequest, SubmitCustomerOrderResponse>(
-  functions,
+  customerFunctions,
   'submitCustomerOrder',
 );
 const createCustomerCheckoutSession = httpsCallable<
@@ -598,6 +607,7 @@ export default function CustomerOrder() {
   const [orderType, setOrderType] = useState<OnlineOrderType>('PICKUP');
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('PAY_AT_COUNTER');
   const [verifiedCustomer, setVerifiedCustomer] = useState<CustomerProfile | null>(null);
+  const [bondSummary, setBondSummary] = useState<BondSummary | null>(null);
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -659,6 +669,10 @@ export default function CustomerOrder() {
   const [customerAuthRestored, setCustomerAuthRestored] = useState(false);
   const [basketAnnouncement, setBasketAnnouncement] = useState('');
   const [basketBumpKey, setBasketBumpKey] = useState(0);
+  const [previewBondSummary, setPreviewBondSummary] = useState<BondSummary | null>(null);
+  const requestedDemoKey = explicitBondDemoKey(routerLocation.search);
+  const demoRequested = Boolean(requestedDemoKey);
+  const displayedBondSummary = demoRequested ? previewBondSummary : bondSummary;
   // Lets the bottom-navigation Search action focus the existing menu search input
   // rather than introducing a second search control.
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -667,6 +681,18 @@ export default function CustomerOrder() {
   const triedAutoLocationRef = useRef(false);
   const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
   const hydrationAppliedRef = useRef(false);
+
+  useEffect(() => {
+    if (!demoRequested) {
+      setPreviewBondSummary(null);
+      return undefined;
+    }
+    let active = true;
+    void import('@bond-preview').then(module => {
+      if (active) setPreviewBondSummary(module.bondDemoStateFromSearch(routerLocation.search)?.summary || null);
+    });
+    return () => { active = false; };
+  }, [demoRequested, routerLocation.search]);
 
   useEffect(() => {
     if (!storePreferenceMessage) return undefined;
@@ -690,6 +716,22 @@ export default function CustomerOrder() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (demoRequested) {
+      setBondSummary(null);
+      return () => { active = false; };
+    }
+    if (!verifiedCustomer?.customerUid || isOffline) {
+      setBondSummary(null);
+      return () => { active = false; };
+    }
+    getCustomerBondSummary()
+      .then(summary => { if (active) setBondSummary(summary); })
+      .catch(() => { if (active) setBondSummary(null); });
+    return () => { active = false; };
+  }, [verifiedCustomer?.customerUid, isOffline, demoRequested]);
 
   useEffect(() => {
     let active = true;
@@ -1438,11 +1480,15 @@ export default function CustomerOrder() {
   }, [categories, storeItems, isSearching]);
 
   const visibleItems = useMemo(() => {
-    const searchText = search.trim().toLowerCase();
     return storeItems.filter(item => {
       const matchesCategory = category === 'ALL' || customerMenuCategory(item) === category;
-      const name = `${item.displayName || item.name} ${item.code} ${item.description || ''}`.toLowerCase();
-      return matchesCategory && (!searchText || name.includes(searchText));
+      /* UI-3: word-prefix matching over normalised tokens. The previous `includes()`
+         over one joined string matched inside words, so "latte" returned "Mediterranean
+         Mezze Platter". See frontend/lib/customerMenuSearch.ts. */
+      return matchesCategory && matchesCustomerSearch(
+        [item.displayName || item.name, item.code, item.description],
+        search,
+      );
     });
   }, [storeItems, category, search]);
 
@@ -2141,6 +2187,22 @@ export default function CustomerOrder() {
             payableLabel={formatMoney(totals.grandTotal)}
           />
 
+          {/* BOND earn ESTIMATE — never authoritative. The server posts the immutable
+              POINT_EARN event after an eligible order completes; this is a forecast and
+              says so. Stage 5 removed `taxableAmountLabel` from the totals panel as a
+              literal duplicate of subtotal, so BOND's own copy of that panel is dropped
+              here and only the estimate is grafted on. */}
+          {displayedBondSummary?.enabled && displayedBondSummary.earnEnabled && (demoRequested || verifiedCustomer) && (
+            <div className="mt-3 rounded-2xl border border-[#e4d7c8] bg-[#fffaf4] px-4 py-3 text-sm text-[#5c4033]">
+              <p className="font-black">You’ll earn approximately {demoRequested ? 18 : estimateBondPoints(totals.taxableAmount)} BOND Points.</p>
+              <p className="mt-1 text-xs font-semibold leading-relaxed text-neutral-500">
+                {demoRequested
+                  ? 'Visual preview only. No points are issued from this example.'
+                  : 'Final points are confirmed by the server only after an eligible customer order completes and payment is settled.'}
+              </p>
+            </div>
+          )}
+
           {/* The one action on this step. It moves the sheet to the existing checkout
               step and does nothing else: no order, session or payment is created. */}
           <div className="cb-customer-action-bar sticky bottom-0 z-10 -mx-4 mt-4 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:-mx-5 sm:px-5">
@@ -2469,10 +2531,13 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className="cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]">
+    <div className={`cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]${itemCount > 0 ? ' has-basket-bar' : ''}`}>
       <CustomerHeader
         sticky
         title="Order ahead"
+        /* Account owns a bottom-navigation destination, so the header must not offer a
+           second doorway to the same screen. */
+        hideAccountAction
         profile={verifiedCustomer}
         authRestored={customerAuthRestored}
         onProfileUpdated={(profile) => {
@@ -2483,6 +2548,7 @@ export default function CustomerOrder() {
         onSignedOut={() => {
           setVerifiedCustomer(null);
           setCustomerPhone('');
+          setBondSummary(null);
         }}
         onSignedOutAccountPress={() => setBasketOpen(true)}
         /* Account's "My Usual" row reveals the existing home card — Stage 2 is not
@@ -2565,6 +2631,15 @@ export default function CustomerOrder() {
             onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
           />
           </div>
+
+          {/* UI-2: BOND sits BELOW My Usual, matching the approved Order hierarchy
+              (store, search, My Usual, BOND strip, menu). It previously rendered above
+              My Usual, which put a loyalty summary ahead of the customer's own saved
+              order. Presentation only — the summary, its flags and its data are the
+              Codex component's, unchanged. */}
+          {displayedBondSummary?.enabled && (
+            <CustomerBondSummaryCard summary={displayedBondSummary} demoStateKey={requestedDemoKey} />
+          )}
           </div>
           )}
 
@@ -2754,36 +2829,19 @@ export default function CustomerOrder() {
         </aside>
       </main>
 
-      {/* Replaces the old mobile-only "View basket" bar. Every behaviour it had is
-          retained by the bottom navigation: it opens the same basket sheet, shows the
-          same item count, announces the same total, and bumps on a successful add.
-          Unlike the old bar it is always present, so the basket is reachable even
-          when the cart is empty. */}
-      <CustomerBottomNav
+      {/* Basket access is contextual again. The permanently raised button in the
+          navigation was a dead control with an empty basket and cost a slot a real
+          destination could use, so the basket returns to a bar that appears only when
+          there is something in it. */}
+      {/* Contextual basket access: absent at zero, above the navigation once there is
+          something to check out. It opens the same basket sheet the raised button did. */}
+      <CustomerBasketBar
         itemCount={itemCount}
         totalLabel={formatMoney(totals.grandTotal)}
         onOpenBasket={() => setBasketOpen(true)}
-        onFocusSearch={() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        }}
-        onGoToMenu={() => {
-          // Menu returns to the unfiltered menu at the top.
-          setCategory('ALL');
-          setSearch('');
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
-        onOpenAccount={() => {
-          // Reuse the header's existing account control rather than adding a second
-          // account implementation. Signed in, it opens the account menu; signed out,
-          // it raises the same verification entry the header uses.
-          const headerAccount = document.querySelector<HTMLElement>(
-            'header [aria-label="Open customer account"], header [aria-label="Customer account"]',
-          );
-          if (headerAccount) headerAccount.click();
-          else setBasketOpen(true);
-        }}
       />
+
+      <CustomerBottomNav />
 
       <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
 

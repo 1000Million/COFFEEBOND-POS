@@ -307,6 +307,25 @@ test('28. Repeated restoration is deterministic and does not duplicate lines', (
   assert.deepEqual(second.lines, first.lines);
 });
 
+test('29. Persistence initialization completes before OTP send', () => {
+  const start = customerAuthSource.indexOf('export async function sendCustomerOtp');
+  const end = customerAuthSource.indexOf('export async function verifyCustomerOtp', start);
+  const source = customerAuthSource.slice(start, end);
+  const persistence = source.indexOf('await customerAuthPersistenceReady');
+  const verifier = source.indexOf('new RecaptchaVerifier');
+  const send = source.indexOf('signInWithPhoneNumber');
+  assert.ok(persistence > 0 && verifier > persistence && send > verifier);
+});
+
+test('30. Persistence initialization completes before OTP verification', () => {
+  const start = customerAuthSource.indexOf('export async function verifyCustomerOtp');
+  const end = customerAuthSource.indexOf('export async function invalidateCustomerVerification', start);
+  const source = customerAuthSource.slice(start, end);
+  const persistence = source.indexOf('await customerAuthPersistenceReady');
+  const confirm = source.indexOf('confirmation.confirm(code)');
+  assert.ok(persistence > 0 && confirm > persistence);
+});
+
 let passed = 0;
 for (const entry of tests) {
   entry.run();
@@ -314,5 +333,5 @@ for (const entry of tests) {
   console.log(`PASS ${entry.name}`);
 }
 
-assert.equal(tests.length, 28);
+assert.equal(tests.length, 30);
 console.log(`Customer checkout persistence tests passed: ${passed}/${tests.length}. No Firebase or Razorpay calls were performed.`);

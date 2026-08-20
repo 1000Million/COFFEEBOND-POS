@@ -9,6 +9,7 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './frontend'),
+        '@bond-preview': path.resolve(__dirname, './frontend/lib/bondLoyaltyPreviewDisabled.ts'),
       },
     },
     server: {

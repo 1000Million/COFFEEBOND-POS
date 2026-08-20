@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Download, RefreshCw, Share2, X } from 'lucide-react';
 import { useConnectivity } from '../contexts/ConnectivityContext';
+import { useTransactionalOverlayOpen } from '../lib/customerOverlayPresence';
 import { PWA_UPDATE_AVAILABLE_EVENT, activateWaitingServiceWorker } from '../lib/pwa';
 
 /**
@@ -55,6 +56,10 @@ function isIosOrIpadOs(): boolean {
 
 export default function CustomerPwaStatusUI() {
   const { criticalOperationActive } = useConnectivity();
+  /* UI-9: stand down while the customer is mid-transaction. criticalOperationActive
+     covers only an IN-FLIGHT submission; this also covers a sheet or the sticky
+     checkout CTA merely being on screen, which is when the banner covered the CTA. */
+  const overlayOpen = useTransactionalOverlayOpen();
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [waitingRegistration, setWaitingRegistration] = useState<ServiceWorkerRegistration | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -91,11 +96,13 @@ export default function CustomerPwaStatusUI() {
   const visiblePrompt = useMemo(() => {
     // Never interrupt an in-flight checkout, payment or order submission.
     if (criticalOperationActive) return null;
+    // ...nor cover a customisation sheet, basket, account panel or checkout CTA.
+    if (overlayOpen) return null;
     if (waitingRegistration) return 'UPDATE';
     if (canInvite && installPrompt && !recentlyDismissed(INSTALL_DISMISSED_AT_KEY)) return 'INSTALL';
     if (canInvite && isIosOrIpadOs() && !recentlyDismissed(IOS_INSTALL_DISMISSED_AT_KEY)) return 'IOS';
     return null;
-  }, [canInvite, criticalOperationActive, installPrompt, waitingRegistration]);
+  }, [canInvite, criticalOperationActive, overlayOpen, installPrompt, waitingRegistration]);
 
   if (!visiblePrompt) return null;
 

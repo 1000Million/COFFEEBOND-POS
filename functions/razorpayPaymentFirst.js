@@ -2,6 +2,10 @@
 
 const { randomBytes } = require('node:crypto');
 const Razorpay = require('razorpay');
+const {
+  FieldValue: ModularFieldValue,
+  Timestamp: ModularTimestamp,
+} = require('firebase-admin/firestore');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { defineString } = require('firebase-functions/params');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
@@ -30,6 +34,7 @@ const {
   razorpayClient,
   resolveWebhookPaymentId,
 } = require('./razorpayCheckout');
+const { createBondLoyaltyService } = require('./bondLoyalty');
 
 const CUSTOMER_PROFILE_COLLECTION = 'customerProfiles';
 const CHECKOUT_SESSION_COLLECTION = 'customerCheckoutSessions';
@@ -1044,12 +1049,15 @@ async function cancelAndRefund({
   return { alreadyRequested: false, status: 'REFUND_PENDING', refundId: providerRefund.id };
 }
 
-async function listMyOrders({ request, db }) {
+async function listMyOrders({ request, db, getLoyaltyEarnings = async () => new Map() }) {
   const identity = verifiedCustomerIdentity(request);
-  const snapshot = await db.collection('onlineOrders')
-    .where('customerUid', '==', identity.uid)
-    .limit(50)
-    .get();
+  const [snapshot, loyaltyEarnings] = await Promise.all([
+    db.collection('onlineOrders')
+      .where('customerUid', '==', identity.uid)
+      .limit(50)
+      .get(),
+    getLoyaltyEarnings(identity.uid),
+  ]);
   return {
     orders: snapshot.docs.map(document => {
       const order = document.data();
@@ -1061,6 +1069,7 @@ async function listMyOrders({ request, db }) {
         total: order.grandTotal,
         status: order.status,
         paymentStatus: order.paymentStatus,
+        pointsEarned: loyaltyEarnings.get(document.id) ?? null,
         createdAt: order.createdAt?.toDate?.().toISOString?.() || null,
       };
     }).sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || ''))),
@@ -1115,7 +1124,21 @@ function createRazorpayPaymentFirstFunctions({
   keySecretParameter = RAZORPAY_KEY_SECRET,
   webhookSecretParameter = RAZORPAY_WEBHOOK_SECRET,
   magicCheckoutParameter = MAGIC_CHECKOUT_ENABLED,
+  getLoyaltyEarnings = null,
 }) {
+  const sourceAdmin = admin;
+  const compatibleFirestore = (...args) => sourceAdmin.firestore(...args);
+  compatibleFirestore.FieldValue = sourceAdmin.firestore?.FieldValue || ModularFieldValue;
+  compatibleFirestore.Timestamp = sourceAdmin.firestore?.Timestamp || ModularTimestamp;
+  admin = new Proxy(sourceAdmin, {
+    get(target, property, receiver) {
+      return property === 'firestore'
+        ? compatibleFirestore
+        : Reflect.get(target, property, receiver);
+    },
+  });
+  const loyaltyEarningsProvider = getLoyaltyEarnings
+    || (customerId => createBondLoyaltyService({ admin, db }).getCustomerOrderEarnings(customerId));
   const resolveCustomerProfile = onCall({ region }, request => (
     resolveCustomerProfileHandler({ request, db, admin })
   ));
@@ -1173,7 +1196,11 @@ function createRazorpayPaymentFirstFunctions({
     RazorpayClass,
   }));
 
-  const listMyCustomerOrders = onCall({ region }, request => listMyOrders({ request, db }));
+  const listMyCustomerOrders = onCall({ region }, request => listMyOrders({
+    request,
+    db,
+    getLoyaltyEarnings: loyaltyEarningsProvider,
+  }));
 
   const razorpayWebhook = onRequest({
     region,

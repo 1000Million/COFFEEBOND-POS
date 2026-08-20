@@ -111,8 +111,12 @@ const forbiddenImports = [
 for (const forbidden of forbiddenImports) {
   check(`6. customer router does not import ${forbidden}`, !customerApp.includes(forbidden));
 }
-check('6. customer router mounts only the three customer screens',
-  (customerApp.match(/lazy\(\(\) => import\(/g) || []).length === 3);
+/* Integration: five customer screens now — Order, Orders, Tracking, Account (P0) and
+   the Codex BOND dashboard. The point is not the number but that EVERY lazily-mounted
+   screen is a customer screen. */
+check('6. customer router mounts only customer screens',
+  (customerApp.match(/lazy\(\(\) => import\(/g) || []).length === 5
+  && (customerApp.match(/lazy\(\(\) => import\('\.\/pages\/customer\//g) || []).length === 5);
 check('6. customer route fallback is customer-branded, not the staff loader',
   !customerApp.includes("from './components/AppLoading'")
   && customerApp.includes('Loading Coffee Bond...'));
@@ -121,7 +125,13 @@ check('6. customer route fallback is customer-branded, not the staff loader',
 check('7. canonical customer routes are mounted',
   customerApp.includes('path="/"')
   && customerApp.includes('path="/my-orders"')
-  && customerApp.includes('path="/status/:onlineOrderId"'));
+  && customerApp.includes('path="/status/:onlineOrderId"')
+  && customerApp.includes('path="/account"')
+  && customerApp.includes('path="/bond"'));
+check('7a. the Bond route resolves to the Codex BOND dashboard, not a placeholder',
+  customerApp.includes("import('./pages/customer/CustomerBondDashboard')")
+  && !customerApp.includes('CustomerBondCard')
+  && !customerApp.includes('CustomerBondMedallion'));
 check('8. /order compatibility aliases are mounted',
   customerApp.includes('path="/order"')
   && customerApp.includes('path="/order/my-orders"')

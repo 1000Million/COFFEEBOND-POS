@@ -59,13 +59,20 @@ const statusCode = trackScreenCode + trackPageCode;
 // comparison are not extra entry points.
 check('1. Orders appears exactly once in the bottom navigation',
   (nav.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 1);
+/* P0: Account became a route, so it is counted by its navigation target rather than by
+   an aria-label on a button. Still exactly one entry point. */
 check('2. Account appears exactly once in the bottom navigation',
-  (nav.match(/aria-label="Customer account"/g) || []).length === 1);
-check('3. Basket appears exactly once in the bottom navigation',
-  (nav.match(/aria-label=\{basketLabel\}/g) || []).length === 1);
-check('3a. the bar still exposes exactly five entries',
-  ['Menu', 'Orders', 'Search', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
-  && nav.includes('aria-label={basketLabel}'));
+  (nav.match(/to=\{CUSTOMER_ACCOUNT_PATH\}/g) || []).length === 1);
+/* P0: the basket left the navigation entirely. It is contextual now — one action, in
+   CustomerBasketBar, rendered only when the basket has something in it. */
+check('3. Basket is contextual, not a navigation destination',
+  !/basketLabel|ShoppingBag/.test(nav)
+  && (read('frontend/components/customer/CustomerBasketBar.tsx').match(/aria-label=\{label\}/g) || []).length === 1);
+/* Integration: four destinations now — BOND joins as a real Codex-backed screen.
+   Search and the permanent Cart stay out; the basket remains contextual. */
+check('3a. the bar exposes exactly four destinations',
+  ['Order', 'Orders', 'Bond', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
+  && !/Search/.test(nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')));
 
 // --- 4-5. The duplicated account destinations are gone ------------------------
 check('4. My Orders is removed from the account surface',
@@ -244,10 +251,13 @@ check('26. Stage 3 customization is unchanged',
   && tokens.includes('cb-customer-customize-hero'));
 
 // --- 27-29. One bar, one heading, real touch targets --------------------------
+/* P0 reverses the tracking exclusion: a live order used to be a dead end with no way
+   back into the app but the browser's back button. Tracking now carries the same bar,
+   with Orders lit. Still exactly one bar per screen. */
 check('27. the bottom navigation is mounted once per screen',
   (ordersScreenCode.match(/<CustomerBottomNav/g) || []).length === 1
   && (code(home).match(/<CustomerBottomNav/g) || []).length === 1
-  && !statusCode.includes('<CustomerBottomNav'));
+  && (code(trackScreen).match(/<CustomerBottomNav/g) || []).length === 1);
 check('27a. exactly one h1 per customer screen',
   (ordersScreen.match(/<h1/g) || []).length === 1
   && (trackScreen.match(/<h1/g) || []).length === 1

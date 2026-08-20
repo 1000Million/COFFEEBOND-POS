@@ -107,6 +107,7 @@ export async function sendCustomerOtp(
   mobile: string,
   container: HTMLElement,
 ): Promise<{ confirmation: ConfirmationResult; verifier: RecaptchaVerifier }> {
+  await customerAuthPersistenceReady;
   const phoneNumber = normalizedIndianE164(mobile);
   if (!phoneNumber) throw new Error('Enter a valid 10-digit Indian mobile number.');
   const verifier = new RecaptchaVerifier(customerAuth, container, {
@@ -132,6 +133,7 @@ export async function verifyCustomerOtp(
   confirmation: ConfirmationResult,
   code: string,
 ): Promise<CustomerProfile> {
+  await customerAuthPersistenceReady;
   if (!/^[0-9]{6}$/.test(code)) throw new Error('Enter the 6-digit SMS code.');
   await confirmation.confirm(code);
   const result = await resolveCustomerProfile({});

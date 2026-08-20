@@ -1,7 +1,7 @@
 /**
  * Customer-only application router for the dedicated customer origin.
  *
- * This entry mounts ONLY the three customer ordering screens. No POS, admin,
+ * This entry mounts ONLY the four customer ordering/account screens. No POS, admin,
  * reports, inventory, KOT, franchise or staff authentication route is imported or
  * mounted here, so the staff router is never bundled into the customer site and a
  * private path cannot render a staff screen on order.coffeebond.in.
@@ -20,6 +20,8 @@ import CustomerPwaStatusUI from './components/CustomerPwaStatusUI';
 const CustomerOrder = lazy(() => import('./pages/customer/CustomerOrder'));
 const CustomerOrderStatus = lazy(() => import('./pages/customer/CustomerOrderStatus'));
 const CustomerMyOrders = lazy(() => import('./pages/customer/CustomerMyOrders'));
+const CustomerAccount = lazy(() => import('./pages/customer/CustomerAccount'));
+const CustomerBondDashboard = lazy(() => import('./pages/customer/CustomerBondDashboard'));
 
 /**
  * Customer-branded route fallback. The shared AppLoading component renders
@@ -64,12 +66,17 @@ export default function CustomerApp() {
               {/* Canonical customer-origin routes. */}
               <Route path="/" element={<CustomerOrder />} />
               <Route path="/my-orders" element={<CustomerMyOrders />} />
+              <Route path="/bond" element={<CustomerBondDashboard />} />
               <Route path="/status/:onlineOrderId" element={<CustomerOrderStatus />} />
+              {/* Account is a real route so a refresh or a shared link lands on the
+                  account screen; the bottom bar links straight to it. */}
+              <Route path="/account" element={<CustomerAccount />} />
 
               {/* Compatibility aliases so links and server-supplied tracking paths
                   minted on the staff origin keep resolving here. */}
               <Route path="/order" element={<Navigate to="/" replace />} />
               <Route path="/order/my-orders" element={<Navigate to="/my-orders" replace />} />
+              <Route path="/order/bond" element={<Navigate to="/bond" replace />} />
               <Route path="/order/status/:onlineOrderId" element={<CustomerOrderStatus />} />
 
               <Route path="*" element={<CustomerNotFound />} />

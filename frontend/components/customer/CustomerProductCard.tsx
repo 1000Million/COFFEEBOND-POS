@@ -75,8 +75,10 @@ function CustomerProductCard({
         alt={name}
         icon={fallbackIcon}
         iconClassName="text-[#b99b7d]"
-        /* 1:1 keeps the picture dominant and every card in a row the same height. */
-        className="cb-customer-product-media aspect-square w-full"
+        /* UI-6: 4:3, matching the intrinsic 400x300 product assets. A 1:1 box cropped
+           a quarter off the sides of every photograph — survivable for a centred cup,
+           destructive for a wide plate. The box is still fixed, so nothing shifts. */
+        className="cb-customer-product-media aspect-[4/3] w-full"
         priority={priority}
       />
 
@@ -137,11 +139,17 @@ function CustomerProductCard({
               onClick={onAdd}
               disabled={!canOrder}
               data-requires-online="true"
+              /* WCAG 2.5.3 Label in Name: the accessible name must contain the visible
+                 label, so both are driven by the same flag. A card that opens the
+                 customisation sheet must not read "Add" either — it adds nothing on its
+                 own, and voice control ("tap Add") would target the wrong control. */
               aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
               className="cb-customer-add-button flex h-11 w-full items-center justify-center gap-1"
             >
-              <Plus size={16} aria-hidden="true" />
-              Add
+              {/* The plus belongs to a direct add only. Beside "Choose options" it
+                  promised an immediate add that this control does not perform. */}
+              {!opensCustomization && <Plus size={16} aria-hidden="true" />}
+              {opensCustomization ? 'Choose options' : 'Add'}
             </button>
           )}
         </div>

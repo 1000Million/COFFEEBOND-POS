@@ -25,6 +25,8 @@ export type PastOrderView = {
   statusTone: 'settled' | 'ended';
   totalLabel: string;
   viewPath: string;
+  /** Server-posted BOND points for this order, or null when none were posted. */
+  pointsEarned?: number | null;
 };
 
 /**
@@ -179,6 +181,7 @@ export default function CustomerOrdersScreen({
                       statusTone={order.statusTone}
                       totalLabel={order.totalLabel}
                       viewPath={order.viewPath}
+                      pointsEarned={order.pointsEarned ?? null}
                     />
                   ))}
                 </ul>
@@ -190,13 +193,7 @@ export default function CustomerOrdersScreen({
 
       {/* The same persistent bar as the menu, so Orders is a tab rather than a
           separate little app the customer has to find their way back out of. */}
-      <CustomerBottomNav
-        itemCount={basketCount}
-        onOpenBasket={onOpenBasket}
-        onFocusSearch={onFocusSearch}
-        onGoToMenu={onGoToMenu}
-        onOpenAccount={onOpenAccount}
-      />
+      <CustomerBottomNav />
     </div>
   );
 }

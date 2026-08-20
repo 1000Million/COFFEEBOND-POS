@@ -20,6 +20,8 @@ const connectivity = source('frontend/lib/connectivity.ts');
 const pwaUi = source('frontend/components/PwaStatusUI.tsx');
 const pwaRegistration = source('frontend/lib/pwa.ts');
 const appEntry = source('frontend/main.tsx');
+const customerPwaUi = source('frontend/components/CustomerPwaStatusUI.tsx');
+const customerOverlayPresence = source('frontend/lib/customerOverlayPresence.ts');
 const protectedStaffActions = [
   'frontend/pages/pos/POSHome.tsx',
   'frontend/pages/pos/IncomingOnlineOrders.tsx',
@@ -253,5 +255,35 @@ for (const [label, screen] of [['CustomerTrackingScreen', orderStatus], ['Custom
   assert.match(screen, /padding-left:env\(safe-area-inset-left\)/, `${label} must pad for landscape notches`);
   assert.match(screen, /overflow-x-hidden/, `${label} must not overflow horizontally`);
 }
+
+/* UI-9. The install prompt renders at z-95 while the app's modal layer sits at z-85, so
+   it out-ranks every sheet and is bottom-anchored — exactly where a customisation or
+   checkout CTA lives. Suppression is presence-based rather than a z-index race, so a
+   future overlay cannot silently regress it by forgetting to out-rank the banner. */
+assert.match(
+  customerPwaUi,
+  /useTransactionalOverlayOpen/,
+  'customer install prompt must observe transactional overlay presence',
+);
+assert.match(
+  customerPwaUi,
+  /if \(overlayOpen\) return null;/,
+  'customer install prompt must render nothing while an overlay is open',
+);
+for (const selector of ['[aria-modal="true"]', '.cb-customer-layer-modal', '.cb-customer-sheet', '.cb-customer-action-bar']) {
+  assert.ok(
+    customerOverlayPresence.includes(selector),
+    `overlay presence must cover ${selector}`,
+  );
+}
+assert.match(
+  customerOverlayPresence,
+  /MutationObserver/,
+  'overlay presence must be observed, not polled',
+);
+assert.ok(
+  !customerOverlayPresence.includes('z-['),
+  'overlay suppression must not rely on escalating z-index',
+);
 
 console.log('PWA safety and customer ordering UX tests passed.');

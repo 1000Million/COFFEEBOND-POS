@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle, ArrowLeft, Check, Copy } from 'lucide-react';
 import CustomerHeader from './CustomerHeader';
+import CustomerBottomNav from './CustomerBottomNav';
 import { CustomerProfile } from '../../lib/customerAuth';
 import { PublicOrderStatus, PublicOrderTracking } from '../../types';
 import { publicStatusMessage } from '../../lib/publicOrderTracking';
@@ -129,7 +130,7 @@ export default function CustomerTrackingScreen({
   const tone = heroTone(order);
 
   return (
-    <div className="cb-app min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] pb-[max(1.5rem,env(safe-area-inset-bottom))] [padding-left:env(safe-area-inset-left)] [padding-right:env(safe-area-inset-right)]">
+    <div className="cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16] [padding-left:env(safe-area-inset-left)] [padding-right:env(safe-area-inset-right)]">
       <CustomerHeader
         title="Track order"
         profile={profile}
@@ -302,6 +303,12 @@ export default function CustomerTrackingScreen({
           </>
         ) : null}
       </main>
+
+      {/* Tracking is reached from Orders, so the customer keeps the same bar and Orders
+          stays lit. Without it, a live order was a dead end with no way back into the
+          app except the browser's own back button. Presentational only — no tracking,
+          subscription or payment behaviour is touched. */}
+      <CustomerBottomNav />
     </div>
   );
 }

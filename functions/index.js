@@ -2,6 +2,7 @@
 
 const { randomBytes, createHash } = require('node:crypto');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const admin = require('firebase-admin');
 const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
@@ -12,6 +13,7 @@ const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst'
 const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
+const { createBondLoyaltyService } = require('./bondLoyalty');
 
 admin.initializeApp();
 
@@ -59,6 +61,39 @@ exports.getPosRazorpayStatus = posRazorpayFunctions.getPosRazorpayStatus;
 exports.cancelPosRazorpaySession = posRazorpayFunctions.cancelPosRazorpaySession;
 exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund;
 exports.posRazorpayWebhook = posRazorpayFunctions.posRazorpayWebhook;
+
+const bondLoyaltyService = createBondLoyaltyService({ admin, db });
+
+// Loyalty observes authoritative records only after the order/KOT transactions have
+// committed. Trigger failure therefore cannot roll back payment, KOT, stock or reports.
+exports.processBondOrderLoyalty = onDocumentWritten({
+  document: 'orders/{orderId}',
+  region: REGION,
+  retry: true,
+}, event => bondLoyaltyService.handleOrderWrite({
+  orderId: event.params.orderId,
+  before: event.data?.before?.exists ? event.data.before.data() : null,
+  after: event.data?.after?.exists ? event.data.after.data() : null,
+}));
+
+exports.processBondPickupLoyalty = onDocumentUpdated({
+  document: 'kotItems/{kotId}',
+  region: REGION,
+  retry: true,
+}, event => bondLoyaltyService.processKotFulfillment({
+  kotId: event.params.kotId,
+  before: event.data.before.data(),
+  after: event.data.after.data(),
+}));
+
+exports.getCustomerBondSummary = onCall({ region: REGION }, async request => {
+  try {
+    return await bondLoyaltyService.getCustomerLoyaltySummaryHandler(request);
+  } catch (error) {
+    if (error?.code === 'unauthenticated') throw new HttpsError('unauthenticated', error.message);
+    throw error;
+  }
+});
 
 const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, db, region: REGION });
 exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
@@ -124,6 +159,13 @@ function normalizePhone(value) {
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
   return digits;
+}
+
+function verifiedCustomerUidForPhone(request, customerPhone) {
+  const uid = cleanText(request.auth?.uid, 128);
+  const provider = cleanText(request.auth?.token?.firebase?.sign_in_provider, 80);
+  const verifiedPhone = normalizePhone(request.auth?.token?.phone_number);
+  return uid && provider === 'phone' && verifiedPhone === normalizePhone(customerPhone) ? uid : null;
 }
 
 function cleanText(value, maxLength) {
@@ -365,6 +407,8 @@ function buildOnlineOrderPayload(args) {
     trackingToken,
     publicOrderReference,
     paymentProvider,
+    customerUid,
+    customerOrderSubmissionId,
   } = args;
 
   return {
@@ -382,6 +426,8 @@ function buildOnlineOrderPayload(args) {
     grandTotal: totals.grandTotal,
     status: 'PENDING',
     source: 'CUSTOMER_WEB',
+    ...(customerUid ? { customerUid } : {}),
+    customerOrderSubmissionId,
     paymentProvider,
     paymentMethod: paymentProvider === 'RAZORPAY' ? 'ONLINE' : 'PAY_AT_COUNTER',
     paymentStatus: 'NOT_STARTED',
@@ -454,6 +500,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     fail('failed-precondition', 'Pay Online must use verified mobile checkout.');
   }
   const paymentProvider = 'PAY_AT_COUNTER';
+  const customerUid = verifiedCustomerUidForPhone(request, customerPhone);
   const requestedItems = sanitizeItemRequest(data.items);
 
   if (!storeCode) fail('invalid-argument', 'Please select a store.');
@@ -587,6 +634,8 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       trackingToken,
       publicOrderReference,
       paymentProvider,
+      customerUid,
+      customerOrderSubmissionId: submissionId,
     });
     const publicTracking = buildPublicTrackingPayload({
       onlineOrder,
@@ -606,6 +655,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       storeCode,
       storeId: store.id,
       onlineOrderId: onlineOrderRef.id,
+      ...(customerUid ? { customerUid } : {}),
       trackingToken,
       publicOrderReference,
       response,

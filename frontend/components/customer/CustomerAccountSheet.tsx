@@ -20,6 +20,12 @@ type Props = {
    * reachable through a click.
    */
   initialEditing?: boolean;
+  /**
+   * 'sheet' is the modal raised over the menu. 'page' renders the same panel inline as
+   * the body of the /account route, so a refresh or a shared link lands on a real
+   * screen. Both use this one implementation — the account body is never written twice.
+   */
+  presentation?: 'sheet' | 'page';
 };
 
 export function maskedPhone(phone: string): string {
@@ -60,6 +66,7 @@ export default function CustomerAccountSheet({
   onSignedOut,
   onOpenMyUsual,
   initialEditing = false,
+  presentation = 'sheet',
 }: Props) {
   const [editing, setEditing] = useState(initialEditing);
   const [displayName, setDisplayName] = useState(profile.displayName || '');
@@ -135,22 +142,19 @@ export default function CustomerAccountSheet({
     }
   };
 
-  return (
-    <div className="cb-customer-layer-modal fixed inset-0 flex items-end justify-center sm:items-center sm:p-4">
-      <button
-        type="button"
-        aria-label="Close customer account"
-        onClick={onClose}
-        className="cb-customer-sheet-scrim absolute inset-0"
-      />
+  const isPage = presentation === 'page';
+
+  const panel = (
       <section
         ref={panelRef}
-        role="dialog"
-        aria-modal="true"
+        role={isPage ? undefined : 'dialog'}
+        aria-modal={isPage ? undefined : true}
         aria-labelledby="customer-account-title"
-        className="cb-customer-account-sheet relative z-10 max-h-[90dvh] w-full overflow-y-auto sm:w-[380px]"
+        className={isPage
+          ? 'cb-customer-account-page-panel w-full'
+          : 'cb-customer-account-sheet relative z-10 max-h-[90dvh] w-full overflow-y-auto sm:w-[380px]'}
       >
-        <span className="cb-customer-sheet-grabber" aria-hidden="true" />
+        {!isPage && <span className="cb-customer-sheet-grabber" aria-hidden="true" />}
 
         {/* Identity. Name first and large; everything else about the account is
             metadata and is styled as such. */}
@@ -277,6 +281,19 @@ export default function CustomerAccountSheet({
           </>
         )}
       </section>
+  );
+
+  if (isPage) return panel;
+
+  return (
+    <div className="cb-customer-layer-modal fixed inset-0 flex items-end justify-center sm:items-center sm:p-4">
+      <button
+        type="button"
+        aria-label="Close customer account"
+        onClick={onClose}
+        className="cb-customer-sheet-scrim absolute inset-0"
+      />
+      {panel}
     </div>
   );
 }
