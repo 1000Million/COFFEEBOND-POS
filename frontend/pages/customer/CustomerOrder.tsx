@@ -17,7 +17,6 @@ import {
   Minus,
   Navigation,
   Pencil,
-  Plus,
   Search,
   ShoppingBag,
   Sparkles,
@@ -37,8 +36,6 @@ import CustomerCheckoutNotice from '../../components/customer/CustomerCheckoutNo
 import CustomerCheckoutActionBar from '../../components/customer/CustomerCheckoutActionBar';
 import CustomerHeader from '../../components/customer/CustomerHeader';
 import CustomerOtpPanel from '../../components/customer/CustomerOtpPanel';
-import CustomerProductImage from '../../components/customer/CustomerProductImage';
-import DietaryMarker from '../../components/customer/DietaryMarker';
 import { useConnectivity } from '../../contexts/ConnectivityContext';
 import {
   activeAddOnGroupsForProduct,
@@ -79,14 +76,14 @@ import {
   customerMenuCategory,
   trustedDietaryClassification,
 } from '../../lib/customerMenuPresentation';
-import { CUSTOMER_HOME_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
+import { CUSTOMER_ACCOUNT_PATH, CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
 import CustomerProductCard from '../../components/customer/CustomerProductCard';
 import CustomerStoreCard from '../../components/customer/CustomerStoreCard';
 import { maskedPhone } from '../../components/customer/CustomerAccountSheet';
 import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
-import CustomerBasketBar from '../../components/customer/CustomerBasketBar';
 import CustomerBondSummaryCard from '../../components/customer/CustomerBondSummaryCard';
+import HorizontalScroller from '../../components/customer/HorizontalScroller';
 import {
   BondSummary,
   estimateBondPoints,
@@ -608,6 +605,7 @@ export default function CustomerOrder() {
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('PAY_AT_COUNTER');
   const [verifiedCustomer, setVerifiedCustomer] = useState<CustomerProfile | null>(null);
   const [bondSummary, setBondSummary] = useState<BondSummary | null>(null);
+  const [bondSummaryLoading, setBondSummaryLoading] = useState(false);
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -676,6 +674,7 @@ export default function CustomerOrder() {
   // Lets the bottom-navigation Search action focus the existing menu search input
   // rather than introducing a second search control.
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const fullMenuRef = useRef<HTMLDivElement | null>(null);
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
@@ -721,15 +720,19 @@ export default function CustomerOrder() {
     let active = true;
     if (demoRequested) {
       setBondSummary(null);
+      setBondSummaryLoading(false);
       return () => { active = false; };
     }
     if (!verifiedCustomer?.customerUid || isOffline) {
       setBondSummary(null);
+      setBondSummaryLoading(false);
       return () => { active = false; };
     }
+    setBondSummaryLoading(true);
     getCustomerBondSummary()
       .then(summary => { if (active) setBondSummary(summary); })
-      .catch(() => { if (active) setBondSummary(null); });
+      .catch(() => { if (active) setBondSummary(null); })
+      .finally(() => { if (active) setBondSummaryLoading(false); });
     return () => { active = false; };
   }, [verifiedCustomer?.customerUid, isOffline, demoRequested]);
 
@@ -1507,6 +1510,7 @@ export default function CustomerOrder() {
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name))
       .slice(0, 6);
   }, [orderableItems]);
+  const discoveryProduct = popularItems.find(item => Boolean(getItemImage(item))) || null;
 
   const customerOrderingState = useMemo(() => deriveCustomerOrderingState({
     store: selectedStore,
@@ -1966,51 +1970,7 @@ export default function CustomerOrder() {
     }
   };
 
-  const renderItemThumb = (item: CustomerMenuItem, sizeClass = 'h-20 w-20', priority = false) => {
-    const meta = visualMeta(item);
-    const Icon = meta.icon;
-    const imageUrl = getItemImage(item);
-
-    return <CustomerProductImage
-      src={imageUrl}
-      alt={item.displayName || item.name}
-      icon={Icon}
-      iconClassName={meta.iconColor}
-      className={`${sizeClass} ${meta.gradient}`}
-      priority={priority}
-    />;
-  };
-
-  const renderPopularCard = (item: CustomerMenuItem, index: number) => {
-    const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
-    const canOrder = customerOrderingState.canAcceptOrders && availability.available;
-
-    return (
-      <article key={`popular-${item.code}`} className="min-w-[158px] max-w-[158px] rounded-[20px] bg-white p-2.5 shadow-sm ring-1 ring-[#e7ddd3]">
-        {renderItemThumb(item, 'aspect-[4/3] w-full', index < 3)}
-        <div className="mt-2 min-h-[76px]">
-          <div className="mb-1 inline-flex rounded-full bg-[#ecf8ef] px-2 py-0.5 text-[10px] font-bold text-emerald-700">Popular</div>
-          <h3 className="line-clamp-2 text-sm font-black leading-tight text-[#271a16]">{item.displayName || item.name}</h3>
-          {trustedDietaryClassification(item as unknown as Record<string, unknown>) && (
-            <div className="mt-1">
-              <DietaryMarker value={trustedDietaryClassification(item as unknown as Record<string, unknown>)!} compact />
-            </div>
-          )}
-          <p className="mt-1 text-xs font-bold text-[#8b5e42]">{formatMoney(toNumber(item.salePrice))}</p>
-        </div>
-        <button
-          onClick={() => addItem(item)}
-          disabled={!canOrder}
-          className="mt-2 flex h-11 w-full items-center justify-center gap-1 rounded-2xl bg-[#3b241c] text-xs font-black text-white disabled:bg-neutral-300"
-        >
-          <Plus size={14} />
-          Add
-        </button>
-      </article>
-    );
-  };
-
-  const renderMenuCard = (item: CustomerMenuItem, index = 0) => {
+  const renderMenuCard = (item: CustomerMenuItem, index = 0, variant: 'menu' | 'featured' = 'menu') => {
     // Every value below comes from the existing helpers. The card is presentation
     // only: no pricing, availability, add-on or cart logic moved into it.
     const itemLines = cart.filter(line => line.item.code === item.code);
@@ -2036,7 +1996,8 @@ export default function CustomerOrder() {
         quantity={qty}
         canOrder={canOrder}
         unavailableReason={availability.reason}
-        priority={index < 2}
+        priority={variant === 'featured' ? index < 3 : index < 2}
+        variant={variant}
         opensCustomization={opensCustomization}
         onAdd={() => addItem(item)}
         onIncrement={() => addItem(item)}
@@ -2531,15 +2492,13 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className={`cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]${itemCount > 0 ? ' has-basket-bar' : ''}`}>
+    <div className="cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]">
       <CustomerHeader
         sticky
         title="Order ahead"
-        /* Account owns a bottom-navigation destination, so the header must not offer a
-           second doorway to the same screen. */
-        hideAccountAction
         profile={verifiedCustomer}
         authRestored={customerAuthRestored}
+        pointsBalance={displayedBondSummary?.enabled ? Number(displayedBondSummary.pointsBalance || 0) : null}
         onProfileUpdated={(profile) => {
           setVerifiedCustomer(profile);
           setCustomerName(profile.displayName);
@@ -2550,7 +2509,7 @@ export default function CustomerOrder() {
           setCustomerPhone('');
           setBondSummary(null);
         }}
-        onSignedOutAccountPress={() => setBasketOpen(true)}
+        onSignedOutAccountPress={() => navigate(CUSTOMER_ACCOUNT_PATH)}
         /* Account's "My Usual" row reveals the existing home card — Stage 2 is not
            re-implemented or duplicated inside the account panel. */
         onOpenMyUsual={() => {
@@ -2558,89 +2517,106 @@ export default function CustomerOrder() {
           myUsualSectionRef.current?.focus();
         }}
         rightSlot={(
-          /* Desktop-only basket entry. Below lg the raised basket in the bottom
-             navigation is the single basket control, so the two never coexist. */
-          <button
-            onClick={() => setBasketOpen(true)}
-            className="relative hidden h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40 lg:inline-flex"
-            aria-label={`Open basket with ${itemCount} item${itemCount === 1 ? '' : 's'}`}
-          >
-            <ShoppingBag size={15} />
-            {itemCount > 0 && (
-              <span key={basketBumpKey} className="absolute -right-1 -top-1 flex h-5 min-w-5 animate-[basket-bump_180ms_ease-out] items-center justify-center rounded-full bg-[#07855b] px-1 text-[10px] text-white motion-reduce:animate-none">
-                {itemCount}
-              </span>
-            )}
-          </button>
+          /* The mobile bar owns Orders and Cart below lg. Desktop keeps one route link
+             and the existing basket opener so neither destination disappears. */
+          <>
+            <Link
+              to={CUSTOMER_MY_ORDERS_PATH}
+              className="hidden h-11 items-center rounded-2xl px-3 text-xs font-black text-[#3b241c] focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40 lg:inline-flex"
+            >
+              Orders
+            </Link>
+            <button
+              onClick={() => setBasketOpen(true)}
+              className="relative hidden h-11 min-w-11 items-center justify-center rounded-2xl bg-[#3b241c] px-3 text-xs font-black text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40 lg:inline-flex"
+              aria-label={`Open basket with ${itemCount} item${itemCount === 1 ? '' : 's'}`}
+              aria-haspopup="dialog"
+            >
+              <ShoppingBag size={15} />
+              {itemCount > 0 && (
+                <span key={basketBumpKey} className="absolute -right-1 -top-1 flex h-5 min-w-5 animate-[basket-bump_180ms_ease-out] items-center justify-center rounded-full bg-[#07855b] px-1 text-[10px] text-white motion-reduce:animate-none">
+                  {itemCount}
+                </span>
+              )}
+            </button>
+          </>
         )}
       />
 
-      <main className="mx-auto grid w-full min-w-0 gap-5 px-4 pb-4 pt-2 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
-        <section className="min-w-0 space-y-3">
-          {/* Store and My Usual are one hairline-separated strip, so the two compact
-              rows read as a list rather than as two more cards. Hidden — not unmounted
-              from the app, just not rendered on the search surface — while searching. */}
+      <main className="cb-customer-home-main mx-auto grid w-full min-w-0 px-4 pb-4 lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-6">
+        <section className="cb-customer-home-flow min-w-0">
+          {/* The compact reference composition stands down as one unit while search is
+              active. Its state remains mounted in React and returns unchanged. */}
           {!searchOpen && (
-          <div className="cb-customer-menu-strip">
-          <CustomerStoreCard
-            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
-            storeName={selectedStore?.name || 'Choose store'}
-            statusLabel={customerOrderingState.statusLabel}
-            tone={customerOrderingState.tone}
-            onOpenSelector={() => setStoreSelectorOpen(true)}
-          />
+            <div className="cb-customer-home-overview">
+              <CustomerStoreCard
+                contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
+                storeName={selectedStore?.name || 'Choose store'}
+                statusLabel={customerOrderingState.statusLabel}
+                tone={customerOrderingState.tone}
+                onOpenSelector={() => setStoreSelectorOpen(true)}
+              />
 
-          {/* My Usual sits between the store strip and search, per the approved order. */}
-          <div ref={myUsualSectionRef} tabIndex={-1}>
-          <CustomerMyUsualCard
-            state={
-              !verifiedCustomer
-                ? 'SIGNED_OUT'
-                : myUsualLoading
-                  ? 'LOADING'
-                  : !myUsual
-                    ? 'EMPTY'
-                    : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
-            }
-            // Every saved line, including any this store cannot fulfil. A blocked
-            // usual has no complete total, so none is offered.
-            lines={myUsualPreview?.state === 'SAVED' ? myUsualPreview.displayLines : []}
-            totalLabel={
-              myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
-                ? formatMoney(myUsualPreview.totals.grandTotal)
-                : null
-            }
-            blockerMessage={
-              isOffline
-                ? 'Reconnect to check current prices and availability.'
-                : myUsualPreview?.state === 'SAVED' ? myUsualPreview.blockerMessage : undefined
-            }
-            noticeMessage={myUsualPreview?.state === 'SAVED' ? myUsualPreview.noticeMessage : undefined}
-            busy={myUsualBusy}
-            offline={isOffline}
-            onSignIn={() => {
-              pendingMyUsualSaveRef.current = false;
-              setMyUsualDialog({ type: 'SIGN_IN' });
-            }}
-            onCreate={() => {
-              searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-              setMyUsualNotice('Add your regular items to the basket, then choose Save as My Usual.');
-            }}
-            onOrder={() => startMyUsualOrder('ORDER')}
-            onEdit={() => startMyUsualOrder('EDIT')}
-            onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
-          />
-          </div>
+              <div ref={myUsualSectionRef} tabIndex={-1}>
+                <CustomerMyUsualCard
+                  state={
+                    !customerAuthRestored
+                      ? 'LOADING'
+                      : !verifiedCustomer
+                        ? 'SIGNED_OUT'
+                        : myUsualLoading
+                        ? 'LOADING'
+                        : !myUsual
+                          ? 'EMPTY'
+                          : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
+                  }
+                  lines={myUsualPreview?.state === 'SAVED' ? myUsualPreview.displayLines : []}
+                  discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}
+                  discoveryImageName={discoveryProduct?.displayName || discoveryProduct?.name || 'Coffee Bond menu'}
+                  discoveryImageIsFood={Boolean(discoveryProduct && ![
+                    'Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea',
+                  ].includes(customerMenuCategory(discoveryProduct)))}
+                  totalLabel={
+                    myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
+                      ? formatMoney(myUsualPreview.totals.grandTotal)
+                      : null
+                  }
+                  blockerMessage={
+                    isOffline
+                      ? 'Reconnect to check current prices and availability.'
+                      : myUsualPreview?.state === 'SAVED' ? myUsualPreview.blockerMessage : undefined
+                  }
+                  noticeMessage={myUsualPreview?.state === 'SAVED' ? myUsualPreview.noticeMessage : undefined}
+                  busy={myUsualBusy}
+                  offline={isOffline}
+                  onSignIn={() => {
+                    pendingMyUsualSaveRef.current = false;
+                    setMyUsualDialog({ type: 'SIGN_IN' });
+                  }}
+                  onCreate={() => {
+                    searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                    setMyUsualNotice('Add your regular items to the basket, then choose Save as My Usual.');
+                  }}
+                  onOrder={() => startMyUsualOrder('ORDER')}
+                  onEdit={() => startMyUsualOrder('EDIT')}
+                  onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
+                />
+              </div>
 
-          {/* UI-2: BOND sits BELOW My Usual, matching the approved Order hierarchy
-              (store, search, My Usual, BOND strip, menu). It previously rendered above
-              My Usual, which put a loyalty summary ahead of the customer's own saved
-              order. Presentation only — the summary, its flags and its data are the
-              Codex component's, unchanged. */}
-          {displayedBondSummary?.enabled && (
-            <CustomerBondSummaryCard summary={displayedBondSummary} demoStateKey={requestedDemoKey} />
-          )}
-          </div>
+              <CustomerBondSummaryCard
+                summary={displayedBondSummary}
+                demoStateKey={requestedDemoKey}
+                state={
+                  !customerAuthRestored
+                    ? 'LOADING'
+                    : !verifiedCustomer && !demoRequested
+                      ? 'SIGNED_OUT'
+                      : bondSummaryLoading || (demoRequested && !displayedBondSummary)
+                        ? 'LOADING'
+                        : displayedBondSummary?.enabled ? 'READY' : 'HIDDEN'
+                }
+              />
+            </div>
           )}
 
           {!searchOpen && myUsualNotice && (
@@ -2672,7 +2648,7 @@ export default function CustomerOrder() {
           )}
 
           <div className={searchOpen ? 'cb-customer-search-row' : ''}>
-            <label className="flex h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#e7ddd3] focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
+            <label className="cb-customer-home-search flex h-12 min-w-0 flex-1 items-center gap-3 px-4 focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
               <Search size={18} className="shrink-0 text-[#8b5e42]" />
               <input
                 ref={searchInputRef}
@@ -2682,7 +2658,7 @@ export default function CustomerOrder() {
                 /* h-full so the input itself is the full 48px target, not a 22px strip
                    inside it — tapping near the edge of the field must still focus it. */
                 className="h-full w-full min-w-0 bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
-                placeholder={searchOpen ? 'Search Coffee Bond...' : 'Search the menu'}
+                placeholder={searchOpen ? 'Search Coffee Bond...' : 'Search menu, drinks, or flavours...'}
                 aria-label="Search the menu"
                 enterKeyHint="search"
               />
@@ -2723,11 +2699,7 @@ export default function CustomerOrder() {
             </div>
           )}
 
-          {/* Two-area menu. On phones the category filter is a full-width chip row
-              stacked above the grid, so the products get the whole screen width; from
-              640 px it becomes the vertical rail beside the content. Both orientations
-              are the same component and the same DOM — only CSS differs. */}
-          <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:gap-3">
+          <div className="cb-customer-menu-content min-w-0">
             {!searchOpen && (
               <CustomerCategoryRail
                 categories={categories}
@@ -2737,7 +2709,7 @@ export default function CustomerOrder() {
               />
             )}
 
-            <div className="min-w-0 flex-1 space-y-6">
+            <div className="min-w-0 flex-1">
               {loading ? (
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                   {[1, 2, 3, 4].map(key => <div key={key} className="cb-customer-skeleton aspect-[4/5] animate-pulse rounded-[20px] motion-reduce:animate-none" />)}
@@ -2769,30 +2741,48 @@ export default function CustomerOrder() {
                   )}
                 </section>
               ) : category === 'ALL' ? (
-                /* All: Popular first, then the whole menu grouped by category heading,
-                   in one continuous vertical flow. */
+                /* The compact rail is a curated view of the same live products and
+                   callbacks. The complete menu continues below it. */
                 <>
                   {popularItems.length > 0 && (
-                    <section>
-                      <h2 className="mb-3 text-lg font-black text-[#271a16]">Popular today</h2>
-                      {/* Fixed 2×2 grid — never a carousel, and never a clipped fifth card. */}
-                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                        {popularItems.slice(0, 4).map((item, index) => renderMenuCard(item, index))}
+                    <section className="cb-customer-featured-section" aria-labelledby="cb-featured-heading">
+                      <div className="cb-customer-featured-heading">
+                        <h2 id="cb-featured-heading">Coffee Bond favourites</h2>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCategory('ALL');
+                            fullMenuRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                          }}
+                        >
+                          See all <ChevronRight size={17} aria-hidden="true" />
+                        </button>
                       </div>
+                      <HorizontalScroller
+                        ariaLabel="Coffee Bond favourites"
+                        className="cb-customer-featured-rail"
+                        contentClassName="cb-customer-featured-track"
+                        itemGapClassName="gap-2.5"
+                      >
+                        {popularItems.map((item, index) => renderMenuCard(item, index, 'featured'))}
+                      </HorizontalScroller>
                     </section>
                   )}
 
-                  {menuSections.map(section => (
-                    <section key={section.id} data-customer-category={section.id}>
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <h2 className="text-lg font-black text-[#271a16]">{categoryLabel(section.category)}</h2>
-                        <p className="text-xs font-bold text-[#71645d]">{section.items.length} items</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                        {section.items.map((item, index) => renderMenuCard(item, index))}
-                      </div>
-                    </section>
-                  ))}
+                  <div ref={fullMenuRef} id="cb-full-menu" className="cb-customer-full-menu space-y-6">
+                    <h2 className="cb-customer-full-menu-heading">Full menu</h2>
+                    {menuSections.map(section => (
+                      <section key={section.id} data-customer-category={section.id}>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <h3 className="cb-customer-menu-section-title">{categoryLabel(section.category)}</h3>
+                          <p className="text-xs font-bold text-[#71645d]">{section.items.length} items</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                          {section.items.map((item, index) => renderMenuCard(item, index))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
                 </>
               ) : (
                 /* A specific category: one compact vertical grid of just that category. */
@@ -2829,19 +2819,11 @@ export default function CustomerOrder() {
         </aside>
       </main>
 
-      {/* Basket access is contextual again. The permanently raised button in the
-          navigation was a dead control with an empty basket and cost a slot a real
-          destination could use, so the basket returns to a bar that appears only when
-          there is something in it. */}
-      {/* Contextual basket access: absent at zero, above the navigation once there is
-          something to check out. It opens the same basket sheet the raised button did. */}
-      <CustomerBasketBar
+      <CustomerBottomNav
         itemCount={itemCount}
-        totalLabel={formatMoney(totals.grandTotal)}
         onOpenBasket={() => setBasketOpen(true)}
+        basketOpen={basketOpen}
       />
-
-      <CustomerBottomNav />
 
       <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
 

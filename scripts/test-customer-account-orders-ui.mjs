@@ -45,6 +45,7 @@ const app = read('frontend/CustomerApp.tsx');
 /** Strips comments so a doc comment naming a removed concept cannot pass for code. */
 const code = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const accountCode = code(account);
+const navCode = code(nav);
 const trackScreenCode = code(trackScreen);
 const trackPageCode = code(trackPage);
 const ordersScreenCode = code(ordersScreen);
@@ -63,16 +64,23 @@ check('1. Orders appears exactly once in the bottom navigation',
    an aria-label on a button. Still exactly one entry point. */
 check('2. Account appears exactly once in the bottom navigation',
   (nav.match(/to=\{CUSTOMER_ACCOUNT_PATH\}/g) || []).length === 1);
-/* P0: the basket left the navigation entirely. It is contextual now — one action, in
-   CustomerBasketBar, rendered only when the basket has something in it. */
-check('3. Basket is contextual, not a navigation destination',
-  !/basketLabel|ShoppingBag/.test(nav)
-  && (read('frontend/components/customer/CustomerBasketBar.tsx').match(/aria-label=\{label\}/g) || []).length === 1);
-/* Integration: four destinations now — BOND joins as a real Codex-backed screen.
-   Search and the permanent Cart stay out; the basket remains contextual. */
-check('3a. the bar exposes exactly four destinations',
-  ['Order', 'Orders', 'Bond', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
-  && !/Search/.test(nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')));
+/* The approved composition restores Cart as the raised centre entry. It is still only a
+   doorway: home raises the existing basket sheet callback, while other routes hand the
+   intent back through router state. The navigation owns no cart state or mutation. */
+check('3. Cart hands off to the existing basket instead of creating another cart',
+  navCode.includes('onClick={onOpenBasket}')
+  && navCode.includes('state={{ openBasket: true }}')
+  && !/setCart|commitCartItem|setLineQuantity|useState/.test(navCode));
+check('3a. the bar exposes exactly Menu, Orders, Cart, Bond and Account at runtime',
+  ['Menu', 'Orders', 'Cart', 'Bond', 'Account']
+    .every(label => new RegExp(`>\\s*${label}\\s*<`).test(navCode))
+  && navCode.includes('onHome && onOpenBasket ? (')
+  && !/Search/.test(navCode));
+check('3b. the centre Cart exposes the real count and an accessible 44px-plus target',
+  navCode.includes('Open cart with ${itemCount} item')
+  && navCode.includes("typeof itemCount === 'number' && itemCount > 0")
+  && navCode.includes("'Open cart'")
+  && navCode.includes('min-h-[64px] min-w-[58px]'));
 
 // --- 4-5. The duplicated account destinations are gone ------------------------
 check('4. My Orders is removed from the account surface',
@@ -324,11 +332,12 @@ check('35. the order summary on tracking is flat, with no panel around it',
   && !/cb-customer-card|cb-customer-track-panel/.test(trackScreenCode));
 
 // --- Duplication audit ---------------------------------------------------------
-// The header's two My Orders links are mutually exclusive branches of one ternary —
-// the lg-only variant when the caller owns an account control, and the fallback when it
-// does not. Never both at once, so a customer never sees two.
+// A screen that supplies the mobile account callback now routes the desktop avatar to
+// the real Account page. Only screens without that callback retain the My Orders
+// fallback, so the header can never duplicate the permanent Orders tab.
 check('audit: the header exposes at most one My Orders link at a time',
-  (headerCode.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 2
+  (headerCode.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 1
+  && (headerCode.match(/to=\{CUSTOMER_ACCOUNT_PATH\}/g) || []).length === 1
   && headerCode.includes('onSignedOutAccountPress ? (')
   && headerCode.includes('lg:hidden'));
 check('audit: the Orders page does not link to itself from its header',

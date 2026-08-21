@@ -275,11 +275,14 @@ const usualBlock = homeCode.slice(homeCode.indexOf('const startMyUsualOrder'), h
 // --- Signed out ---
 check('signed out renders its own state, not an empty one',
   card.includes("state === 'SIGNED_OUT'")
-  // The signed-out prompt is one compact row above the menu rather than a gold panel,
-  // but it is still a distinct state with a single sign-in action.
-  && card.includes('Sign in to save your regular order')
-  && card.includes('cb-customer-menu-row')
+  && card.includes('cb-customer-usual-hero is-signed-out')
+  && card.includes('Sign in to save it once and order it again in a tap.')
   && /onClick=\{onSignIn\}/.test(card));
+const signedOutBlock = card.slice(card.indexOf("if (state === 'SIGNED_OUT')"), card.indexOf("if (state === 'EMPTY')"));
+check('the signed-out hero is honest and never presents a saved usual',
+  signedOutBlock.includes('{discoveryVisual}')
+  && !/lead\?|totalLabel|Order My Usual|Saved to your Coffee Bond profile/.test(signedOutBlock)
+  && homeCode.includes('discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}'));
 check('signed out is chosen by the absence of a verified customer',
   /!verifiedCustomer\s*\?\s*'SIGNED_OUT'/.test(homeCode));
 check('signed out cannot permanently save',
@@ -341,7 +344,8 @@ check('the schema helper still imports no Firebase or payment code',
 // --- Profile, not device ---
 check('the UI says profile, not device',
   card.includes('Saved to your Coffee Bond profile')
-  && card.includes('Save your regular coffee and food to your Coffee Bond profile.'));
+  && !card.includes('Saved on this device')
+  && home.includes('will be saved to your Coffee Bond profile'));
 check('save and delete copy names the profile, not the device',
   home.includes('will be saved to your Coffee Bond profile')
   && home.includes('overwritten in your Coffee Bond profile')
@@ -422,7 +426,7 @@ check('3. the saved-store mismatch dialog is gone',
 check('4. the card never displays a store as the usual\'s owner',
   !card.includes('preferredStoreName')
   && !/preferredStoreId/.test(card)
-  && card.includes('<h2 id="cb-my-usual-heading" className="sr-only">My Usual</h2>'));
+  && card.includes('id="cb-my-usual-heading"'));
 check('4. the screen passes no store name to the card',
   !homeCode.includes('preferredStoreName=') && !homeCode.includes('myUsualStoreName'));
 check('5/6/7/8. revalidation binds to the CURRENT store, menu, add-ons and tax',
@@ -453,16 +457,22 @@ check('11. a missing add-on still offers Edit My Usual',
 check('every saved line is rendered, blocked ones included',
   /const displayLines = myUsual\.items\.map/.test(homeCode)
   && homeCode.includes('myUsualPreview.displayLines')
-  && card.includes('{lines.map(line => (')
-  && !card.includes('lines.slice(0, 3).map(line => (\n            <li'));
-check('the card no longer truncates the saved line list',
+  && card.includes('const lead = lines[0];')
+  && card.includes('{lead?.name')
+  && card.includes('{lines.slice(1).map(line => (')
+  && !/lines\.slice\(1\)[\s\S]{0,80}\.filter\(/.test(card));
+check('the lead and every extra line expose their own blocker text',
+  card.includes('{lead?.unavailableReason && <small>{lead.unavailableReason}</small>}')
+  && card.includes('{line.unavailableReason && <small>{line.unavailableReason}</small>}'));
+check('the card never drops saved lines behind a fixed three-item truncation',
   !card.includes('+{lines.length - 3} more'));
 check('a blocked line is labelled with the current store',
   homeCode.includes('`Unavailable at ${storeName}`')
   && homeCode.includes('is unavailable at ${storeName}`')
   && card.includes('{line.unavailableReason}'));
 check('a blocked line is struck through as well as labelled',
-  card.includes("line.unavailableReason ? 'line-through opacity-70' : undefined"));
+  card.includes("line.unavailableReason ? 'is-unavailable' : undefined")
+  && /\.cb-customer-usual-lines li\.is-unavailable \{[^}]*text-decoration: line-through/.test(tokens));
 check('a blocked line is never dropped from the list',
   /displayLines = myUsual\.items\.map[\s\S]{0,1400}unavailableReason/.test(homeCode)
   && !/displayLines[\s\S]{0,600}\.filter\(/.test(homeCode));
@@ -490,12 +500,14 @@ check('a compatible store keeps the full total and Order My Usual',
   /myUsualPreview\?\.state === 'SAVED' && !myUsualPreview\.blocked/.test(homeCode)
   && card.includes("'Order My Usual'"));
 check('the thumbnail fallback is legible, not beige-on-beige',
-  card.includes('iconClassName="text-[#5c4033]"') && !card.includes('text-[#b99b7d]'));
+  card.includes('iconClassName="text-[#9a6a2e]"') && !card.includes('text-[#b99b7d]'));
 check('the fallback icon renders whenever no image resolves',
   read('frontend/components/customer/CustomerProductImage.tsx').includes('image unavailable')
-  && homeCode.includes('imageUrl: item ? getItemImage(item) : null'));
+  && homeCode.includes('imageUrl: item ? getItemImage(item) : null')
+  && card.includes('src={lead?.imageUrl || null}'));
 check('the per-line unavailable style is a semantic class in customer.css',
-  tokens.includes('.cb-customer-usual-unavailable'));
+  tokens.includes('.cb-customer-usual-lines li.is-unavailable')
+  && tokens.includes('.cb-customer-usual-lead-detail small'));
 check('12. no line is silently removed', homeCode.includes('restored.lines.length !== myUsual.items.length'));
 check('13. a closed store blocks with a choose-store action',
   homeCode.includes("{ type: 'STORE_CLOSED'")
@@ -533,8 +545,8 @@ check('offline blocks reorder',
 // unavailable items and offers Edit / Choose another store. Offline still disables
 // all three, and the screen still refuses the reorder itself.
 check('a blocked usual stays tappable so the customer can see why',
-  card.includes("blockerMessage ? 'Review My Usual' : 'Order My Usual'")
-  && !card.includes('Boolean(blockerMessage)'));
+  card.includes("aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}")
+  && !/disabled=\{[^}]*blockerMessage/.test(card));
 check('offline disables every server action',
   (card.match(/disabled=\{busy \|\| offline\}/g) || []).length === 3
   && /onClick=\{requestSaveMyUsual\}[\s\S]{0,200}disabled=\{myUsualBusy \|\| isOffline\}/.test(home)
@@ -579,13 +591,20 @@ check('emulator wiring is opt-in and never affects production builds',
 
 // --- Accessibility + style isolation ---
 check('the card has an accessible heading', card.includes('aria-labelledby="cb-my-usual-heading"'));
-check('controls meet 44px', card.includes('min-h-11') && card.includes('h-11 w-11'));
+check('controls meet 44px',
+  /\.cb-customer-usual-primary \{[^}]*min-height: 44px/.test(tokens)
+  && /\.cb-customer-usual-icon-button \{[^}]*width: 44px[^}]*height: 44px/.test(tokens)
+  && /\.cb-customer-usual-more summary \{[^}]*min-height: 44px/.test(tokens));
+check('the visible and accessible saved-usual CTA labels agree',
+  card.includes("aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}")
+  && /<span>\{busy \? 'Checking\.\.\.' : blockerMessage \? 'Review My Usual' : 'Order My Usual'\}<\/span>/.test(card));
 check('validation messages use a live region', card.includes('role="status" aria-live="polite"'));
 check('dialogs are modal and labelled', home.includes('role="dialog" aria-modal="true"'));
 check('no Tailwind arbitrary CSS-variable utilities in the My Usual UI',
   !/\[color:var\(--cb-|bg-\[var\(--cb-|shadow-\[var\(--cb-/.test(card));
 check('My Usual styles are semantic classes in customer.css',
-  ['.cb-customer-usual', '.cb-customer-usual-empty', '.cb-customer-sheet', '.cb-customer-icon-button']
+  ['.cb-customer-usual-hero', '.cb-customer-usual-primary', '.cb-customer-usual-icon-button',
+   '.cb-customer-usual-lines', '.cb-customer-sheet']
     .every(cls => tokens.includes(cls)));
 
 check('the unit test script is registered', pkg.scripts['test:customer-my-usual'] === 'node scripts/test-customer-my-usual.mjs');

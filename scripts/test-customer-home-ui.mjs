@@ -21,7 +21,12 @@ const card = read('frontend/components/customer/CustomerProductCard.tsx');
 const rail = read('frontend/components/customer/CustomerCategoryRail.tsx');
 const store = read('frontend/components/customer/CustomerStoreCard.tsx');
 const nav = read('frontend/components/customer/CustomerBottomNav.tsx');
+const header = read('frontend/components/customer/CustomerHeader.tsx');
+const usual = read('frontend/components/customer/CustomerMyUsualCard.tsx');
+const bondCard = read('frontend/components/customer/CustomerBondSummaryCard.tsx');
+const horizontalScroller = read('frontend/components/customer/HorizontalScroller.tsx');
 const tokens = read('frontend/customer.css');
+const homeRedesignCss = tokens.slice(tokens.indexOf('Customer home — reference-led composition.'));
 const customerMain = read('frontend/customer-main.tsx');
 
 // --- Wiring -----------------------------------------------------------------
@@ -29,11 +34,30 @@ check('home renders the new store card', home.includes('<CustomerStoreCard'));
 check('home renders the new category rail', home.includes('<CustomerCategoryRail'));
 check('home renders the new product card', home.includes('<CustomerProductCard'));
 check('home renders the persistent bottom navigation', home.includes('<CustomerBottomNav'));
-check('menu grid is two-column on phones', home.includes('grid grid-cols-2 gap-3'));
+check('the complete menu remains two-column below the featured rail on phones',
+  home.includes('cb-customer-full-menu') && home.includes('grid grid-cols-2 gap-3'));
 check('grid passes an index so only the first cards load eagerly',
   home.includes('renderMenuCard(item, index)') && card.includes('priority'));
 check('page reserves space for the fixed bottom navigation',
   home.includes('cb-customer-page-bottom') && tokens.includes('--cb-content-bottom'));
+const composition = [
+  '<CustomerHeader', '<CustomerStoreCard', '<CustomerMyUsualCard',
+  '<CustomerBondSummaryCard', 'aria-label="Search the menu"', '<CustomerCategoryRail',
+  'Coffee Bond favourites', '<HorizontalScroller', '<CustomerBottomNav',
+].map(anchor => home.indexOf(anchor));
+check('the home composition follows the approved reference order',
+  composition.every((position, index) => position >= 0 && (index === 0 || position > composition[index - 1])));
+check('the compact header uses the botanical wordmark and real profile-derived avatar',
+  header.includes('<Wheat')
+  && header.includes('cb-customer-wordmark')
+  && header.includes('profile?.displayName')
+  && header.includes('pointsBalance')
+  && !header.includes('coffee-bond-logo.png'));
+check('every My Usual state keeps the same hero family and real menu-image wiring',
+  ['is-signed-out', 'is-empty', 'is-loading', 'is-saved'].every(state => usual.includes(state))
+  && home.includes('lines={myUsualPreview?.state === \'SAVED\' ? myUsualPreview.displayLines : []}')
+  && home.includes('discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}')
+  && !/https?:\/\//.test(usual));
 
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));
@@ -66,42 +90,41 @@ check('bottom nav uses the shared customer route helper',
 check('bottom nav hardcodes no customer path', !/["']\/order|["']\/my-orders/.test(nav));
 check('bottom nav basket opens the existing basket sheet',
   home.includes('onOpenBasket={() => setBasketOpen(true)}'));
-/* Superseded by P0. Search left the bar entirely — the menu screen keeps its own single
-   search field, which this still pins. The basket is no longer a navigation control at
-   all: exactly one basket action remains, and it is the contextual bar. */
+/* Search remains in the page, while the raised Cart is now the sole mobile basket
+   doorway. The desktop header button is mutually exclusive at the lg breakpoint. */
 check('the menu screen still owns exactly one search field',
   (home.match(/aria-label="Search the menu"/g) || []).length === 1);
-check('exactly one basket control remains, and it is contextual',
-  (read('frontend/components/customer/CustomerBasketBar.tsx').match(/aria-label=\{label\}/g) || []).length === 1
-  && !/basketLabel/.test(nav)
-  && (home.match(/<CustomerBasketBar/g) || []).length === 1);
+check('the raised Cart replaces the contextual mobile basket bar',
+  (home.match(/<CustomerBasketBar/g) || []).length === 0
+  && nav.includes('cb-customer-nav-cart')
+  && nav.includes('aria-label={cartLabel}'));
 const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 check('Account is a real route, not a sheet-only callback',
   /to=\{CUSTOMER_ACCOUNT_PATH\}/.test(navCode) && !navCode.includes('onOpenAccount'));
-check('the contextual basket action is offline-guarded like other mutations',
-  read('frontend/components/customer/CustomerBasketBar.tsx').includes('data-requires-online="true"'));
+check('the Cart tab is only a doorway to the existing basket state',
+  navCode.includes('onClick={onOpenBasket}')
+  && !/setCart|commitCartItem|setLineQuantity|useState/.test(navCode));
 
 /* ===========================================================================
- * P0 — three-destination navigation, contextual basket, real Account route.
+ * Reference navigation — Menu, Orders, raised Cart, real BOND, real Account.
  *
- * The bar previously carried five actions, two of which were not destinations: Search
- * pointed back at the field already on this screen, and the raised Cart was a dead
- * control whenever the basket was empty. Bond was removed entirely — this branch has no
- * authoritative loyalty balance, so there is nothing honest for it to show.
+ * Search remains a single field on Menu. Cart is always reachable and delegates to the
+ * existing basket sheet; BOND and Account remain route-backed destinations.
  * ======================================================================== */
-const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
 const tracking = read('frontend/components/customer/CustomerTrackingScreen.tsx');
 const customerApp = read('frontend/CustomerApp.tsx');
 const staffApp = read('frontend/App.tsx');
 const routes = read('frontend/lib/customerRoutes.ts');
 
-check('P0-1. bottom navigation is exactly Order, Orders, Bond, Account',
-  ['Order', 'Orders', 'Bond', 'Account'].every(l => new RegExp(`^\\s*${l}\\s*$`, 'm').test(navCode))
-  && (navCode.match(/<Link/g) || []).length === 4);
-check('P0-2. no Search and no permanent Cart in the bar',
+check('P0-1. bottom navigation is exactly Menu, Orders, Cart, Bond, Account at runtime',
+  ['Menu', 'Orders', 'Cart', 'Bond', 'Account'].every(l => new RegExp(`>\\s*${l}\\s*<`).test(navCode))
+  && navCode.includes('onHome && onOpenBasket ? (')
+  && (navCode.match(/<button/g) || []).length === 1);
+check('P0-2. Search stays in the page and permanent Cart is centred in the bar',
   !/Search/.test(navCode)
-  && !/ShoppingBag|basket|Cart/i.test(navCode));
-check('P0-3. Order is active at /',
+  && /ShoppingBag|Cart/.test(navCode)
+  && navCode.includes('cb-customer-nav-cart-disc'));
+check('P0-3. Menu is active at /',
   navCode.includes('const onHome = pathname === CUSTOMER_HOME_PATH')
   && /to=\{CUSTOMER_HOME_PATH\}[\s\S]{0,160}aria-current=\{onHome \? 'page' : undefined\}/.test(navCode));
 check('P0-4. Orders is active at /my-orders',
@@ -126,6 +149,13 @@ check('P0-8. /bond is the real Codex dashboard, not a placeholder',
   && !/CustomerBondCard|CustomerBondMedallion/.test(customerApp + routes + navCode + home));
 check('P0-8a. no fabricated balance ships in the customer source',
   !/cb-customer-bond-ring|balance unavailable/i.test(home + navCode));
+check('P0-8b. the compact BOND strip renders only server-summary balance and visit state',
+  bondCard.includes('Number(summary.pointsBalance || 0)')
+  && bondCard.includes('Number(summary.qualifyingVisitCount || 0)')
+  && bondCard.includes("state === 'SIGNED_OUT'")
+  && bondCard.includes("state === 'LOADING'")
+  && home.includes('summary={displayedBondSummary}')
+  && !/points\s*=\s*[1-9][0-9]*/.test(bondCard));
 check('P0-9. staff router mounts neither /order/account nor /order/bond',
   !staffApp.includes('/order/account') && !staffApp.includes('/order/bond'));
 check('P0-10. tracking renders the bottom navigation',
@@ -134,17 +164,18 @@ check('P0-10. tracking renders the bottom navigation',
 check('P0-11. tracking payment-safety copy is unchanged',
   tracking.includes('Payment confirmation is in progress. Please do not pay again.')
   && tracking.includes('Payment was received. The store is reviewing fulfilment; no further payment is required.'));
-check('P0-12. the Order screen renders no duplicate Account shortcut',
-  home.includes('hideAccountAction')
-  && !home.includes("aria-label=\"Open customer account\"")
-  && !/identitySlot|Medallion/.test(home));
-check('P0-13. an empty basket creates no permanent Cart destination',
-  basketBar.includes('if (itemCount <= 0) return null;')
-  && !/ShoppingBag|basket/i.test(navCode));
-check('P0-14. a populated basket still renders a contextual basket action',
-  home.includes('<CustomerBasketBar')
-  && basketBar.includes('onOpenBasket')
-  && basketBar.includes('View basket'));
+check('P0-12. the Order screen keeps the approved real account avatar',
+  !home.includes('hideAccountAction')
+  && home.includes('pointsBalance={displayedBondSummary?.enabled')
+  && header.includes('aria-label={`Open customer account'));
+check('P0-13. Cart remains a destination at zero while its badge stays honest',
+  navCode.includes("typeof itemCount === 'number' && itemCount > 0")
+  && navCode.includes("typeof itemCount === 'number'")
+  && navCode.includes('Open cart with ${itemCount} item')
+  && navCode.includes("'Open cart'"));
+check('P0-14. Cart receives the real basket count and opens the existing sheet',
+  /<CustomerBottomNav[\s\S]{0,180}itemCount=\{itemCount\}[\s\S]{0,180}onOpenBasket=\{\(\) => setBasketOpen\(true\)\}/.test(home)
+  && navCode.includes('onClick={onOpenBasket}'));
 check('P0-15. the basket survives navigation via the existing persisted draft',
   // Cart is written to localStorage and rehydrated (revalidated) on mount, so leaving
   // Order for Orders/Account and returning does not lose it. No new state layer added.
@@ -153,13 +184,15 @@ check('P0-15. the basket survives navigation via the existing persisted draft',
   && home.includes('applyRestoredDraft(draft, restored)')
   && home.includes('setCart(restored.lines)'));
 check('P0-18. bottom-navigation controls meet the 44px minimum',
-  navCode.includes('min-h-[44px] min-w-[44px]'));
+  navCode.includes('min-h-[44px] min-w-[44px]')
+  && navCode.includes('min-h-[64px] min-w-[58px]'));
 check('P0-19. the product CTA meets the 44px minimum',
   card.includes('cb-customer-add-button flex h-11 w-full'));
-check('P0-20. the basket bar clears the navigation and the safe area',
-  /\.cb-customer-basket-bar \{[^}]*bottom: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\)\)/.test(tokens)
-  && /\.cb-customer-basket-bar \{[^}]*z-index: 39/.test(tokens)
-  && /cb-customer-bottom-nav[\s\S]{0,400}z-40/.test(nav));
+check('P0-20. the raised Cart and bar clear the safe area without a second basket bar',
+  /\.cb-customer-bottom-nav \{[^}]*min-height: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\)\)/.test(homeRedesignCss)
+  && /\.cb-customer-nav-cart-disc \{[^}]*margin-top: -17px/.test(homeRedesignCss)
+  && tokens.includes('--cb-fab-overhang')
+  && !home.includes('<CustomerBasketBar'));
 
 // --- Accessibility ----------------------------------------------------------
 check('category selection is announced, not colour-only', rail.includes('aria-pressed={isActive}'));
@@ -191,6 +224,7 @@ check('the accessible name identifies the product in both states',
    add that the control does not perform — the sheet opens instead. */
 check('the + icon appears for direct add only, never with Choose options',
   card.includes('{!opensCustomization && <Plus size={16} aria-hidden="true" />}')
+  && card.includes('? <SlidersHorizontal size={17} aria-hidden="true" />')
   && !/<Plus size=\{16\} aria-hidden="true" \/>\n\s*\{opensCustomization/.test(card));
 check('touch targets are at least 44px', card.includes('h-11') && nav.includes('min-h-[44px]'));
 check('reduced motion is respected', tokens.includes('prefers-reduced-motion'));
@@ -231,34 +265,34 @@ check('home has no scroll-spy machinery left',
 check('rail renders no viewport-conditional markup',
   !/innerWidth|useState|clientWidth\s*[<>]/.test(railCode)
   && !/matchMedia\(\s*['"`]\(?(min|max)-(width|height)/.test(railCode));
-check('phones get a horizontal chip row, 640px+ gets the vertical rail',
-  /\.cb-customer-rail\s*\{[^}]*flex-direction:\s*row/.test(tokens)
-  && /@media \(min-width: 640px\) \{\s*\.cb-customer-rail \{[^}]*flex-direction: column/.test(tokens));
-// The chip row is the only horizontal scroller in the app. If its overscroll ever
-// chains, a swipe past the last chip triggers the browser back gesture.
+check('the approved category chips stay horizontal at every width',
+  /\.cb-customer-rail\s*\{[^}]*flex-direction:\s*row/.test(homeRedesignCss)
+  && !/@media \(min-width: 640px\)[\s\S]*?\.cb-customer-rail \{[^}]*flex-direction: column/.test(homeRedesignCss));
+// The chip row contains its own overscroll. If it chains, a swipe past the final chip can
+// trigger the browser back gesture.
 check('the chip row contains its own horizontal overscroll',
   /\.cb-customer-rail\s*\{[^}]*overscroll-behavior-x:\s*contain/.test(tokens));
 // --- Category navigation stays quieter than the products ------------------------
-// Nine white pills with a ring each, above a grid of photographs, read as a second
-// toolbar. Unselected categories are now labels on the page; exactly one filled object
+// Quiet outlines keep the categories legible as controls; exactly one gold-filled object
 // answers "which filter am I on".
-check('unselected chips carry no fill and no border',
-  /\.cb-customer-rail-tab \{[^}]*background: transparent/.test(tokens)
-  && /\.cb-customer-rail-tab \{[^}]*box-shadow: none/.test(tokens));
-check('the selected chip is the only filled object, and casts no shadow',
-  /\.cb-customer-rail-tab-active \{[^}]*background: var\(--cb-gold\)/.test(tokens)
-  && /\.cb-customer-rail-tab-active \{[^}]*box-shadow: none/.test(tokens));
+check('unselected category chips use the approved quiet outline',
+  /\.cb-customer-rail-tab \{[^}]*border: 1px solid #dfd1c1/.test(homeRedesignCss)
+  && /\.cb-customer-rail-tab \{[^}]*background: rgba\(255, 253, 249, 0\.72\)/.test(homeRedesignCss)
+  && /\.cb-customer-rail-tab \{[^}]*box-shadow: none/.test(homeRedesignCss));
+check('the selected chip is the only gold-filled object, and casts no shadow',
+  /\.cb-customer-rail-tab-active \{[^}]*background: #c88c2c/.test(homeRedesignCss)
+  && /\.cb-customer-rail-tab-active \{[^}]*box-shadow: none/.test(homeRedesignCss));
 check('weight separates selected from unselected, and lives in CSS',
-  /\.cb-customer-rail-tab \{[^}]*font-weight: 600/.test(tokens)
-  && /\.cb-customer-rail-tab-active \{[^}]*font-weight: 800/.test(tokens)
+  /\.cb-customer-rail-tab \{[^}]*font-weight: 620/.test(homeRedesignCss)
+  && /\.cb-customer-rail-tab-active \{[^}]*font-weight: 760/.test(homeRedesignCss)
   // railCode has comments stripped: the comment above the className explains why
   // font-black was removed, and naming it there must not fail the check.
   && !/font-black/.test(railCode));
 check('the 44px floor survives the tighter padding',
   rail.includes('min-h-[44px]')
   && /\.cb-customer-rail-item \{[^}]*min-width: 44px/.test(tokens));
-check('the tablet rail softens its accent for the larger block it fills',
-  /@media \(min-width: 640px\)[\s\S]*?\.cb-customer-rail-tab-active \{[^}]*background: var\(--cb-gold-soft\)/.test(tokens));
+check('the gold selected-chip treatment is retained beyond phone width',
+  !/@media \(min-width: 640px\)[\s\S]*?\.cb-customer-rail-tab-active \{[^}]*background: var\(--cb-gold-soft\)/.test(homeRedesignCss));
 
 check('the chip row keeps its gutter when snapped',
   /\.cb-customer-rail\s*\{[^}]*scroll-padding-inline:\s*var\(--cb-page-gutter\)/.test(tokens));
@@ -266,11 +300,12 @@ check('the page reserves room for the raised basket button, not just the bar',
   tokens.includes('--cb-fab-overhang')
   && /--cb-content-bottom:\s*calc\(\s*var\(--cb-bottom-nav-h\) \+ var\(--cb-fab-overhang\)/.test(tokens));
 check('product card controls meet the 44px touch target',
-  // The stepper's two buttons are 44x44; Add is 44 tall and full width, which is why
-  // this counts the height utility rather than the old 44x44 square three times.
+  // The stepper's two controls and the featured circular action are 44x44; the full
+  // menu action remains 44px tall and full width.
   !/h-9 w-9/.test(card)
-  && (card.match(/h-11 w-11/g) || []).length === 2
+  && (card.match(/h-11 w-11/g) || []).length >= 3
   && /className="cb-customer-add-button flex h-11 w-full/.test(card)
+  && /className="cb-customer-featured-add flex h-11 w-11/.test(card)
   && /cb-customer-stepper flex h-11 w-full/.test(card));
 
 // --- The product card -------------------------------------------------------------
@@ -294,10 +329,9 @@ check('the picture stays dominant and its box is fixed at the asset ratio',
 check('UI-6. the media box matches the intrinsic asset dimensions',
   read('frontend/components/customer/CustomerProductImage.tsx').includes('width="400"')
   && read('frontend/components/customer/CustomerProductImage.tsx').includes('height="300"'));
-check('one price, once',
-  // Rendered exactly once — the other two mentions are the prop type and its destructure.
+check('one price is visible at runtime in menu, empty-featured and populated-featured states',
   (card.match(/\{priceLabel\}/g) || []).length === 1
-  && (card.match(/cb-customer-product-price/g) || []).length === 1);
+  && card.includes('<p className="cb-customer-product-price mt-1.5">{priceLabel}</p>'));
 check('the authoritative dietary marker is kept and stays small',
   card.includes('<DietaryMarker')
   && card.includes('compact')
@@ -306,10 +340,11 @@ check('both action states occupy the same 44px row, so a card never re-flows on 
   /cb-customer-stepper flex h-11 w-full/.test(card)
   && /cb-customer-add-button flex h-11 w-full/.test(card)
   && card.includes('mt-auto'));
-check('gold marks basket state, not every card',
-  // The stepper keeps the gold treatment; the resting Add is a quiet surface.
+check('gold marks basket state and the compact featured action, not full-menu Add',
+  // The stepper and compact rail action keep gold; the resting full-menu Add is quiet.
   /\.cb-customer-add-button \{[^}]*background: var\(--cb-surface-muted\)/.test(tokens)
-  && /\.cb-customer-stepper \{[^}]*background: var\(--cb-gold-soft\)/.test(tokens));
+  && /\.cb-customer-stepper \{[^}]*background: var\(--cb-gold-soft\)/.test(tokens)
+  && /\.cb-customer-featured-add \{[^}]*background: #c78b2a/.test(homeRedesignCss));
 check('an unavailable item dims its picture, never the reason it gives',
   card.includes('cb-customer-product-unavailable')
   && /\.cb-customer-unavailable \.cb-customer-product-media \{[^}]*opacity: 0\.45/.test(tokens)
@@ -326,10 +361,13 @@ check('the compact store row carries no pickup estimate and the basket still doe
   !/\{message\}/.test(store)
   && !store.includes('flex-wrap')
   && read('frontend/components/customer/CustomerPickupSummary.tsx').includes('{prepLabel}'));
-check('the strip above the products is built from compact rows, not cards',
-  store.includes('cb-customer-menu-row')
-  && !store.includes('cb-customer-store-card')
-  && /\.cb-customer-menu-row \{[^}]*min-height: 56px/.test(tokens));
+const storeCode = store.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+check('the pickup block is one compact rounded card, not a tall panel',
+  store.includes('cb-customer-store-card')
+  && /\.cb-customer-store-card \{[^}]*min-height: 66px/.test(homeRedesignCss)
+  && (store.match(/<ChevronRight/g) || []).length === 1);
+check('the pickup card never fabricates live capacity',
+  !/capacity/i.test(storeCode) && !/capacity/i.test(homeCode));
 check('store status is still stated in words, not by colour alone',
   /statusLabel\}/.test(store) && /cb-customer-tone-(green|amber|red)/.test(store));
 // Landscape phones matched only the min-width rule, which reserved 200px of a 360px
@@ -345,10 +383,26 @@ check('the press state degrades without motion',
 check('no customer text is smaller than 11px',
   !/text-\[10px\]/.test([card, rail, store, nav, read('frontend/components/customer/CustomerMyUsualCard.tsx')].join('\n')));
 
-// Filter branches: All shows Popular + every grouped section; a specific category
+// Filter branches: All shows honest favourites + every grouped section; a category
 // shows exactly one grid built from the existing visibleItems filter.
-check('All renders Popular then the grouped full menu',
-  home.includes("category === 'ALL' ?") && home.includes('menuSections.map(section =>'));
+check('All renders honest favourites in a compact rail, then the grouped full menu',
+  home.includes("category === 'ALL' ?")
+  && home.includes('Coffee Bond favourites')
+  && !home.includes('Popular today')
+  && home.includes("renderMenuCard(item, index, 'featured')")
+  && home.includes('menuSections.map(section =>'));
+check('the favourites rail uses the same product callbacks and real live values',
+  /const renderMenuCard = \(item:[\s\S]{0,1800}variant=\{variant\}[\s\S]{0,800}onAdd=\{\(\) => addItem\(item\)\}/.test(home)
+  && home.includes('priceLabel={formatMoney(toNumber(item.salePrice))}')
+  && home.includes('imageUrl={getItemImage(item)}')
+  && card.includes("variant?: 'menu' | 'featured'"));
+check('the favourites rail shows roughly three compact cards and contains horizontal overscroll',
+  /\.cb-customer-card\.is-featured \{[^}]*width: 132px[^}]*min-width: 132px[^}]*flex: 0 0 132px/.test(homeRedesignCss)
+  && /\.cb-customer-featured-track \{[^}]*overscroll-behavior-x: contain/.test(homeRedesignCss)
+  && horizontalScroller.includes('overflow-x-auto'));
+check('a populated featured card keeps equal height while preserving 44px quantity controls',
+  /\.cb-customer-featured-footer\.has-stepper \{[^}]*position: absolute[^}]*min-height: 44px/.test(homeRedesignCss)
+  && /\.cb-customer-featured-footer\.has-stepper \.cb-customer-stepper \{/.test(homeRedesignCss));
 check('a specific category renders one filtered vertical grid',
   home.includes('<section data-customer-category={category}>')
   && home.includes('{visibleItems.map((item, index) => renderMenuCard(item, index))}'));
@@ -366,8 +420,8 @@ check('search is a surface state, opened by focusing the existing field',
   home.includes("useState(false)")
   && home.includes('onFocus={() => setSearchActive(true)}')
   && home.includes('const searchOpen = searchActive || isSearching;'));
-check('the menu strip, its notices and the category rail stand down while searching',
-  home.includes('{!searchOpen && (\n          <div className="cb-customer-menu-strip">')
+check('the compact home overview, its notices and category rail stand down while searching',
+  home.includes('{!searchOpen && (\n            <div className="cb-customer-home-overview">')
   && home.includes('{!searchOpen && myUsualNotice &&')
   && home.includes('{!searchOpen && checkoutDraftNotice &&')
   && /\{!searchOpen && \(\s*<CustomerCategoryRail/.test(home));
@@ -415,13 +469,13 @@ check('search adds no second query, index or filter',
 check('Menu action clears the filter and returns to the top',
   home.includes("setCategory('ALL');") && home.includes("setSearch('');"));
 
-// --- Three bottom-nav DESTINATIONS -------------------------------------------
-/* Superseded by P0: five actions became three destinations. Search and the permanent
-   Cart were not destinations at all, and Bond had no honest content on this branch.
-   Full coverage lives in the P0 block above; this keeps the section anchored. */
-check('bottom nav exposes exactly three destinations',
-  ['Order', 'Orders', 'Account'].every(label => new RegExp(`^\\s*${label}\\s*$`, 'm').test(nav))
-  && !nav.includes('basketLabel'));
+// --- Five bottom-nav entries -------------------------------------------------
+// Four entries are routes; the raised centre Cart is an action on home and a route-state
+// handoff elsewhere. In either branch the customer sees the same five labels.
+check('bottom nav exposes Menu, Orders, Cart, Bond and Account exactly once at runtime',
+  ['Menu', 'Orders', 'Cart', 'Bond', 'Account']
+    .every(label => new RegExp(`>\\s*${label}\\s*<`).test(navCode))
+  && (navCode.match(/<span className="cb-customer-nav-cart-label">Cart<\/span>/g) || []).length === 1);
 
 // --- Style isolation --------------------------------------------------------
 check('customer tokens are imported only by the customer entry',
@@ -432,7 +486,8 @@ for (const [label, source] of [['card', card], ['rail', rail], ['store', store],
 }
 check('semantic customer classes are declared in customer.css',
   ['.cb-customer-card', '.cb-customer-accent-button', '.cb-customer-chip-active',
-   '.cb-customer-bottom-nav', '.cb-customer-menu-row', '.cb-customer-stepper']
+   '.cb-customer-bottom-nav', '.cb-customer-store-card', '.cb-customer-usual-hero',
+   '.cb-customer-featured-track', '.cb-customer-nav-cart', '.cb-customer-stepper']
     .every((cls) => tokens.includes(cls)));
 check('shared stylesheet was not modified for the customer app',
   !read('frontend/index.css').includes('cb-customer'));
@@ -441,27 +496,30 @@ check('shared stylesheet was not modified for the customer app',
 // The bottom navigation owns the My Orders link on screens that show it. The header
 // must not present a second adjacent one, but must keep it where there is no bottom
 // navigation, so account access is never lost.
-const header = read('frontend/components/customer/CustomerHeader.tsx');
 check('bottom navigation renders exactly one My Orders link',
   (nav.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 1);
 check('header exposes an opt-out for its My Orders link',
   header.includes('onSignedOutAccountPress'));
 check('signed-out header control is a button when the opt-out is supplied',
   /onSignedOutAccountPress \?[\s\S]{0,400}<button/.test(header));
-check('home screen passes the opt-out so no second My Orders link renders',
-  home.includes('onSignedOutAccountPress={() => setBasketOpen(true)}'));
+check('home screen routes the header avatar to Account without duplicating My Orders',
+  home.includes('onSignedOutAccountPress={() => navigate(CUSTOMER_ACCOUNT_PATH)}')
+  && !home.includes('hideAccountAction'));
 check('mobile header no longer shows "Sign in / My Orders" wording',
   !header.includes('Sign in or view My Orders') && !header.includes('>Sign in<'));
 check('header keeps a compact accessible account control',
   header.includes('aria-label="Customer account"') && header.includes('h-11 w-11'));
 check('My Orders remains reachable from screens without the bottom navigation',
   header.includes('to={CUSTOMER_MY_ORDERS_PATH}'));
-// The bottom bar is lg:hidden, so the header must take the link back at lg — otherwise
-// a signed-out desktop visitor would have no My Orders entry at all.
-check('desktop keeps a My Orders entry when the bottom bar is hidden',
-  /lg:hidden[\s\S]{0,600}to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,300}lg:inline-flex/.test(header));
-check('signed-in account menu still contains My Orders',
-  /accountOpen[\s\S]*to=\{CUSTOMER_MY_ORDERS_PATH\}/.test(header));
+// The mobile bar is lg:hidden. Desktop home therefore carries one explicit Orders link,
+// while the signed-out avatar remains the Account destination rather than masquerading
+// as Orders.
+check('desktop keeps Orders when the mobile bottom bar is hidden',
+  /rightSlot=\{\([\s\S]{0,450}to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,200}lg:inline-flex/.test(home));
+check('signed-out desktop header routes honestly to Account',
+  /onSignedOutAccountPress \?[\s\S]{0,700}to=\{CUSTOMER_ACCOUNT_PATH\}[\s\S]{0,220}lg:inline-flex/.test(header));
+check('screens without the bottom bar retain the My Orders fallback',
+  header.includes('to={CUSTOMER_MY_ORDERS_PATH}'));
 check('sign-out behaviour is untouched', header.includes('onSignedOut'));
 
 // --- Exactly one basket control per breakpoint ------------------------------

@@ -1,4 +1,4 @@
-import { ComponentType, useEffect, useState } from 'react';
+import { ComponentType, useCallback, useState } from 'react';
 
 type Props = {
   src: string | null;
@@ -9,6 +9,13 @@ type Props = {
   priority?: boolean;
 };
 
+type ImageStatus = 'loading' | 'loaded' | 'failed';
+
+type ImageState = {
+  src: string;
+  status: ImageStatus;
+};
+
 export default function CustomerProductImage({
   src,
   alt,
@@ -17,20 +24,35 @@ export default function CustomerProductImage({
   className = '',
   priority = false,
 }: Props) {
-  const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [imageState, setImageState] = useState<ImageState | null>(null);
 
-  useEffect(() => {
-    setLoaded(false);
-    setFailed(false);
+  const setStatus = useCallback((status: ImageStatus) => {
+    if (!src) return;
+    setImageState((current) => (
+      current?.src === src && current.status === status
+        ? current
+        : { src, status }
+    ));
   }, [src]);
 
+  const captureImage = useCallback((image: HTMLImageElement | null) => {
+    if (!image?.complete) return;
+    setStatus(image.naturalWidth > 0 ? 'loaded' : 'failed');
+  }, [setStatus]);
+
+  const status: ImageStatus = Boolean(src) && imageState?.src === src
+    ? imageState.status
+    : 'loading';
+  const loaded = Boolean(src) && status === 'loaded';
+  const failed = Boolean(src) && status === 'failed';
   const showImage = Boolean(src) && !failed;
 
   return (
     <div className={`relative shrink-0 overflow-hidden rounded-2xl bg-[#f1e8df] ${className}`}>
       {showImage && (
         <img
+          key={src}
+          ref={captureImage}
           src={src || ''}
           alt={alt}
           loading={priority ? 'eager' : 'lazy'}
@@ -38,8 +60,8 @@ export default function CustomerProductImage({
           decoding="async"
           width="400"
           height="300"
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onLoad={() => setStatus('loaded')}
+          onError={() => setStatus('failed')}
           className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 motion-reduce:transition-none ${loaded ? 'opacity-100' : 'opacity-0'}`}
         />
       )}

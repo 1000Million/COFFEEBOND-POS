@@ -1,5 +1,5 @@
 import { ComponentType, memo } from 'react';
-import { Minus, Plus } from 'lucide-react';
+import { Minus, Plus, SlidersHorizontal } from 'lucide-react';
 import CustomerProductImage from './CustomerProductImage';
 import DietaryMarker from './DietaryMarker';
 import { DietaryClassification } from '../../lib/customerMenuPresentation';
@@ -27,6 +27,8 @@ type Props = {
   onDecrement: () => void;
   /** True when the product has add-on groups, so Add opens customization. */
   opensCustomization: boolean;
+  /** Compact horizontal-rail treatment. Ordering callbacks remain identical. */
+  variant?: 'menu' | 'featured';
 };
 
 /**
@@ -65,11 +67,13 @@ function CustomerProductCard({
   onIncrement,
   onDecrement,
   opensCustomization,
+  variant = 'menu',
 }: Props) {
   const showStepper = quantity > 0;
+  const featured = variant === 'featured';
 
   return (
-    <article className={`cb-customer-card flex flex-col ${canOrder ? '' : 'cb-customer-unavailable'}`}>
+    <article className={`cb-customer-card flex flex-col ${featured ? 'is-featured ' : ''}${canOrder ? '' : 'cb-customer-unavailable'}`}>
       <CustomerProductImage
         src={imageUrl}
         alt={name}
@@ -82,7 +86,7 @@ function CustomerProductCard({
         priority={priority}
       />
 
-      <div className="flex flex-1 flex-col px-0.5 pt-2.5">
+      <div className={`flex flex-1 flex-col ${featured ? 'cb-customer-featured-body' : 'px-0.5 pt-2.5'}`}>
         {/* The marker rides inside the heading rather than beside it, so a two-line
             name wraps under itself instead of into a narrower column. */}
         <h3 className="cb-clamp-2 cb-customer-product-name">
@@ -99,9 +103,7 @@ function CustomerProductCard({
 
         <p className="cb-customer-product-price mt-1.5">{priceLabel}</p>
 
-        {/* mt-auto pins the action to the bottom of the stretched grid cell, so a
-            one-line name and a two-line name still line their buttons up. */}
-        <div className="mt-auto flex pt-2">
+        <div className={featured ? `cb-customer-featured-footer${showStepper ? ' has-stepper' : ''}` : 'mt-auto flex pt-2'}>
           {showStepper ? (
             /* 44 px per control, the touch-target floor. Full width because at 320 px
                the card is 138 px and 2x44 plus a count column will not fit inside a
@@ -133,6 +135,19 @@ function CustomerProductCard({
                 <Plus size={16} aria-hidden="true" />
               </button>
             </div>
+          ) : featured ? (
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={!canOrder}
+              data-requires-online="true"
+              aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
+              className="cb-customer-featured-add flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+            >
+              {opensCustomization
+                ? <SlidersHorizontal size={17} aria-hidden="true" />
+                : <Plus size={19} aria-hidden="true" />}
+            </button>
           ) : (
             <button
               type="button"

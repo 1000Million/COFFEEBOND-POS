@@ -90,16 +90,17 @@ assert.match(
 
 // Customer links now resolve through the shared route helper so the same components
 // serve both the staff origin (/order/my-orders) and the customer origin (/my-orders).
-// Two source-level links, but only ever one visible at a time:
-//   1. the lg-only link shown when the screen supplies onSignedOutAccountPress
-//      (the mobile bottom bar owns the destination below lg),
-//   2. the default link for screens without a bottom bar.
+// The header keeps one default My Orders link for screens that do not supply a
+// navigation handoff. The home owns its lg-only Orders link in `rightSlot`, while its
+// mobile bottom bar owns the same route below lg.
 // Stage 5 removed the third — the entry inside the account menu — because the Orders
 // tab is permanent and Orders now surfaces the live order itself.
 // Simultaneous visibility is what matters, and that is measured per breakpoint in
 // scripts/test-customer-home-ui.mjs.
 const headerMyOrderLinks = customerHeader.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || [];
-assert.equal(headerMyOrderLinks.length, 2, 'exactly the lg-only entry and the default entry are expected');
+assert.equal(headerMyOrderLinks.length, 1, 'exactly the default header entry is expected');
+assert.match(customerOrder, /to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,180}lg:inline-flex/,
+  'home must restore Orders when its mobile bottom bar is hidden');
 // Measured against executable code: the sheet's doc comment names the rows Stage 5
 // removed, and a comment explaining a removal must not read as the removal failing.
 const accountSheetCode = source('frontend/components/customer/CustomerAccountSheet.tsx')
@@ -112,7 +113,9 @@ assert.match(customerHeader, /from '\.\.\/\.\.\/lib\/customerRoutes'/, 'header l
 assert.doesNotMatch(customerHeader, /to="\/order/, 'no customer link may hardcode the staff-origin path');
 assert.doesNotMatch(customerHeader, /Order[\s\S]{0,80}My Orders[\s\S]{0,80}Sign in \/ My Orders/);
 assert.match(customerHeader, /h-11 w-11/);
-assert.match(customerHeader, /hidden[\s\S]{0,30}sm:block/);
+assert.match(customerHeader, /const initials = profile\?\.displayName/);
+assert.match(customerHeader, /cb-customer-avatar/);
+assert.doesNotMatch(customerHeader, /profile\.normalisedPhone|maskedPhone/);
 
 assert.match(customerImage, /width="400"/);
 assert.match(customerImage, /height="300"/);

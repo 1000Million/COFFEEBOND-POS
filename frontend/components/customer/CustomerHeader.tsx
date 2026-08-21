@@ -1,10 +1,9 @@
 import React, { ReactNode, useEffect, useRef, useState } from 'react';
-import { Loader2, UserCircle2 } from 'lucide-react';
+import { Loader2, UserRound, Wheat } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import coffeeBondLogo from '../../assets/coffee-bond-logo.png';
 import { CustomerProfile } from '../../lib/customerAuth';
-import CustomerAccountSheet, { maskedPhone } from './CustomerAccountSheet';
-import { CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH } from '../../lib/customerRoutes';
+import CustomerAccountSheet from './CustomerAccountSheet';
+import { CUSTOMER_ACCOUNT_PATH, CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH } from '../../lib/customerRoutes';
 
 type Props = {
   title: string;
@@ -13,13 +12,14 @@ type Props = {
   onProfileUpdated?: (profile: CustomerProfile) => void;
   onSignedOut?: () => void;
   rightSlot?: ReactNode;
+  /** Real balance from getCustomerBondSummary. Omitted when the summary is unavailable. */
+  pointsBalance?: number | null;
   /**
    * Suppresses the header's own account control.
    *
-   * The Order screen sets this because Account now has its own bottom-navigation
-   * destination, and a top-right avatar was a second doorway to the same screen. Other
-   * screens (order status, which has no bottom bar in some contexts) keep it, so account
-   * access is never lost.
+   * Screens may use this only when they deliberately supply an equivalent account
+   * control elsewhere. The Order home keeps the compact avatar because it is part of
+   * the approved composition; the mobile Account tab remains the route-level doorway.
    */
   hideAccountAction?: boolean;
   sticky?: boolean;
@@ -47,6 +47,7 @@ export default function CustomerHeader({
   onProfileUpdated,
   onSignedOut,
   rightSlot,
+  pointsBalance = null,
   hideAccountAction = false,
   sticky = false,
   onSignedOutAccountPress,
@@ -73,19 +74,30 @@ export default function CustomerHeader({
    * where the trigger is otherwise wide enough to show them.
    */
   const identityOnTrigger = !accountOpen;
+  const initials = profile?.displayName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0]?.toUpperCase())
+    .join('') || '';
+  const showPointsBadge = Number.isFinite(pointsBalance);
+  const compactPoints = showPointsBadge
+    ? new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(pointsBalance))
+    : '';
 
   return (
     <>
-      <header className={`${sticky ? 'sticky top-0 z-30' : ''} border-b border-[#eadfd3]/80 bg-[#fbf7f1]/95 px-4 pt-[max(env(safe-area-inset-top),0px)] backdrop-blur`}>
-        <div className="mx-auto flex min-h-[60px] w-full min-w-0 items-center justify-between gap-2 py-1.5 lg:max-w-6xl">
-          <Link to={CUSTOMER_HOME_PATH} className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60">
-            <img src={coffeeBondLogo} alt="" className="h-9 w-9 shrink-0 rounded-xl bg-white object-contain p-1 shadow-sm" />
-            <div className="min-w-0">
-              <p className="whitespace-nowrap text-sm font-black uppercase text-[#271a16]">Coffee Bond</p>
-              {/* A brand subtitle, not the page heading. Each screen owns its own
-                  h1, so promoting this one would give every page two. */}
-              <p className="hidden truncate text-[11px] font-bold leading-tight text-[#8b5e42] sm:block">{title}</p>
-            </div>
+      <header className={`${sticky ? 'sticky top-0 z-30' : ''} cb-customer-header`}>
+        <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-2 px-4 lg:max-w-6xl lg:px-6">
+          <Link to={CUSTOMER_HOME_PATH} className="cb-customer-brand flex min-h-11 min-w-0 items-center gap-2 focus:outline-none">
+            <span className="cb-customer-brand-mark" aria-hidden="true">
+              <Wheat size={29} strokeWidth={1.6} />
+            </span>
+            <span className="cb-customer-wordmark whitespace-nowrap">
+              Coffee <em>Bond</em>
+            </span>
+            <span className="sr-only">{title}</span>
           </Link>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -104,47 +116,47 @@ export default function CustomerHeader({
                 inert={accountOpen}
                 aria-haspopup="dialog"
                 aria-expanded={accountOpen}
-                className={`inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-left shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60${
-                  identityOnTrigger ? ' sm:w-auto sm:max-w-[148px] sm:justify-start sm:gap-2 sm:px-2.5' : ''
-                }`}
-                aria-label="Open customer account"
+                className="cb-customer-avatar-button relative inline-flex h-11 w-11 items-center justify-center rounded-full text-left focus:outline-none"
+                aria-label={`Open customer account${showPointsBadge ? `, ${Number(pointsBalance).toLocaleString('en-IN')} BOND points` : ''}`}
               >
-                <UserCircle2 size={20} className="shrink-0 text-[#8b5e42]" />
-                <span className={identityOnTrigger ? 'hidden min-w-0 sm:block' : 'hidden'}>
-                  <span className="block truncate text-xs font-black text-[#2d2019]">{profile.displayName || 'My account'}</span>
-                  <span className="block truncate text-[11px] font-bold text-emerald-700">{maskedPhone(profile.normalisedPhone)}</span>
+                <span className="cb-customer-avatar" aria-hidden="true">
+                  {initials ? <span>{initials}</span> : <UserRound size={20} />}
                 </span>
+                {showPointsBadge && identityOnTrigger && (
+                  <span className="cb-customer-avatar-points" aria-hidden="true">
+                    {compactPoints}
+                  </span>
+                )}
               </button>
             ) : onSignedOutAccountPress ? (
-              /* The bottom navigation owns the My Orders destination, but it is
-                 mobile-only (lg:hidden). So below lg the header is a plain account
-                 control, and from lg — where the bar is gone — it becomes the My
-                 Orders link again. Exactly one visible entry at every breakpoint. */
+              /* Below lg the route bar owns navigation and this stays a compact account
+                 control. On desktop the account route is explicit; the home screen
+                 supplies its separate Orders link alongside the basket. */
               <>
                 <button
                   type="button"
                   onClick={onSignedOutAccountPress}
-                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 lg:hidden"
+                  className="cb-customer-avatar-button inline-flex h-11 w-11 items-center justify-center rounded-full focus:outline-none lg:hidden"
                   aria-label="Customer account"
                 >
-                  <UserCircle2 size={17} />
+                  <UserRound size={19} />
                 </button>
                 <Link
-                  to={CUSTOMER_MY_ORDERS_PATH}
-                  className="hidden h-11 items-center gap-1.5 rounded-full bg-white px-3 text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 lg:inline-flex"
-                  aria-label="Customer account and My Orders"
+                  to={CUSTOMER_ACCOUNT_PATH}
+                  className="cb-customer-avatar-button hidden h-11 items-center gap-1.5 rounded-full px-3 text-xs font-bold focus:outline-none lg:inline-flex"
+                  aria-label="Customer account"
                 >
-                  <UserCircle2 size={17} />
+                  <UserRound size={17} />
                   <span>Account</span>
                 </Link>
               </>
             ) : (
               <Link
                 to={CUSTOMER_MY_ORDERS_PATH}
-                className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-xs font-black text-[#5c4033] shadow-sm ring-1 ring-[#e7ddd3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5e42]/60 sm:w-auto sm:gap-1.5 sm:px-3"
+                className="cb-customer-avatar-button inline-flex h-11 w-11 items-center justify-center rounded-full text-xs font-bold focus:outline-none sm:w-auto sm:gap-1.5 sm:px-3"
                 aria-label="Customer account and My Orders"
               >
-                <UserCircle2 size={17} />
+                <UserRound size={17} />
                 <span className="hidden sm:inline">Account</span>
               </Link>
             )}

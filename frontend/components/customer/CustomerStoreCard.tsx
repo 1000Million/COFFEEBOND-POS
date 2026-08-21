@@ -44,16 +44,21 @@ export default function CustomerStoreCard({
       type="button"
       onClick={onOpenSelector}
       aria-label={`${contextLabel} ${storeName}. ${statusLabel}. Change store`}
-      className="cb-customer-menu-row is-first"
+      className="cb-customer-store-card"
     >
-      <MapPin size={19} className="cb-customer-row-icon" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="cb-customer-menu-row-title block truncate">
-          {contextLabel} · {storeName}
-        </span>
-        <span className={`cb-customer-menu-row-meta block truncate ${TONE[tone]}`}>{statusLabel}</span>
+      <span className="cb-customer-store-pin" aria-hidden="true">
+        <MapPin size={21} strokeWidth={2.2} />
       </span>
-      <ChevronRight size={18} className="cb-customer-row-chevron" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="cb-customer-store-title block truncate">
+          {contextLabel === 'Dine-in' ? 'Dine in at' : 'Pickup from'} {storeName}
+        </span>
+        <span className="cb-customer-store-status block truncate">
+          <span className={`cb-customer-store-status-dot ${TONE[tone]}`} aria-hidden="true" />
+          <span>{statusLabel}</span>
+        </span>
+      </span>
+      <ChevronRight size={20} className="cb-customer-store-chevron" aria-hidden="true" />
     </button>
   );
 }

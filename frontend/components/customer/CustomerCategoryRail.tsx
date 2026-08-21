@@ -17,16 +17,11 @@ type Props = {
  * no IntersectionObserver and no scroll calculation, so the active state can never
  * oscillate or disagree with what is on screen.
  *
- * ONE component, two orientations, decided entirely in CSS (.cb-customer-rail) so the
- * React tree is identical at every width — no viewport state, no matchMedia, nothing
- * that could render a different DOM on the server than on the client:
- *
- *   < 640 px   a horizontal chip row above the grid. A phone cannot spare a permanent
- *              56 px column: at 320 px that left the product cards 106 px wide. The row
- *              is the only horizontally scrollable element in the app and it contains
- *              its own overscroll, so it can never chain to the page or the browser's
- *              back gesture.
- *   >= 640 px  the vertical rail beside the grid, where 64 px is affordable.
+ * ONE horizontal component at every width, decided entirely in CSS
+ * (.cb-customer-rail), so the React tree is identical across breakpoints — no viewport
+ * state, no matchMedia, nothing that could render a different DOM on first paint. The
+ * row contains its own overscroll, so it cannot chain to the page or the browser's back
+ * gesture.
  *
  * Labels are stacked upright rather than rotated, because rotated text in a 64 px rail
  * is hard to read. Selection is announced via aria-pressed, never by colour alone.
@@ -53,7 +48,7 @@ export default function CustomerCategoryRail({ categories, selected, onSelectCat
   useEffect(() => {
     const row = rowRef.current;
     const chip = activeRef.current;
-    // Vertical rail (>= 640px) has no overflow, so there is nothing to reveal.
+    // A rail whose contents already fit needs no reveal movement.
     if (!row || !chip || row.scrollWidth <= row.clientWidth) return;
 
     const gutter = 16;

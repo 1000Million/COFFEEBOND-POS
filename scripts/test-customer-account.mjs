@@ -51,14 +51,15 @@ test('2. Before OTP Orders asks the customer to verify', () => {
   assert.match(myOrders, /CUSTOMER_HOME_PATH/);
 });
 test('3. Verified customer sees a profile account control', () => {
-  assert.match(header, /aria-label="Open customer account"/);
-  assert.match(header, /profile\.displayName \|\| 'My account'/);
+  assert.match(header, /aria-label=\{`Open customer account/);
+  assert.match(header, /profile\?\.displayName/);
+  assert.match(header, /const initials =/);
+  assert.match(header, /aria-haspopup="dialog"/);
 });
 test('4. Verified customer sees a masked phone', () => {
-  assert.match(header, /maskedPhone\(profile\.normalisedPhone\)/);
-  // Stage 5 moved the masking implementation into the account sheet, which is now the
-  // single place that renders identity. The header still calls it rather than
-  // formatting a phone number of its own.
+  // The compact reference header shows initials only. The account sheet remains the
+  // single place that renders the masked identity; the header never exposes the phone.
+  assert.doesNotMatch(header, /maskedPhone|normalisedPhone/);
   assert.match(accountSheet, /export function maskedPhone/);
   assert.match(accountSheet, /••••••/);
   assert.match(accountSheet, /maskedPhone\(profile\.normalisedPhone\)/);
