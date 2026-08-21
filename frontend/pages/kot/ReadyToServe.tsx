@@ -7,6 +7,7 @@ import { Loader2, CheckCircle, Clock, Store as StoreIcon, AlertCircle, RefreshCw
 import { motion, AnimatePresence } from 'motion/react';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 import { beginCriticalOperation, requireOnlineAction } from '../../lib/connectivity';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -84,30 +85,20 @@ export default function ReadyToServe() {
     if (!staffProfile) return;
 
     let cancelled = false;
-    const assignedStoreIds = new Set([
-      ...(staffProfile.storeIds || []),
-      ...(staffProfile.assignedStoreIds || []),
-    ]);
     const isSetupTestStore = (store: Store) => store.internalPosTestEnabled === true && store.isActive !== true;
 
     const loadStores = async () => {
-      const activeStoreSnap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-      const activeStores = activeStoreSnap.docs.map(d => ({ id: d.id, ...d.data() } as Store));
-      const setupStores = staffProfile.role === 'ADMIN'
-        ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store)).filter(isSetupTestStore)
-        : staffProfile.role === 'STORE_MANAGER'
-          ? (await Promise.all([...assignedStoreIds].map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null))))
-            .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
-            .map((snap) => ({ id: snap.id, ...snap.data() } as Store))
-            .filter(isSetupTestStore)
-          : [];
-      const fetched = [...activeStores, ...setupStores];
-      const accessible = fetched.filter((store, index, all) => {
-        if (all.findIndex((candidate) => candidate.id === store.id) !== index) return false;
-        if (staffProfile.role === 'ADMIN') return true;
-        if (staffProfile.role === 'STORE_MANAGER') return assignedStoreIds.has(store.id) && (store.isActive === true || isSetupTestStore(store));
-        return assignedStoreIds.has(store.id) && store.isActive === true;
-      });
+      const fetched = staffProfile.role === 'ADMIN'
+        ? (await getDocs(collection(db, 'stores'))).docs
+          .map(d => ({ id: d.id, ...d.data() } as Store))
+          .filter(store => store.isActive === true || isSetupTestStore(store))
+        : (await Promise.all(
+          assignedStoreIdentifiers(staffProfile)
+            .map(storeId => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+        ))
+          .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
+          .map(snap => ({ id: snap.id, ...snap.data() } as Store));
+      const accessible = accessiblePosStores(fetched, staffProfile);
 
       if (!cancelled) {
         setStores(accessible);
@@ -126,7 +117,7 @@ export default function ReadyToServe() {
   useEffect(() => {
     if (!staffProfile) return;
     
-    if (staffProfile.role !== 'ADMIN' && (!staffProfile.storeIds || staffProfile.storeIds.length === 0)) {
+    if (staffProfile.role !== 'ADMIN' && assignedStoreIdentifiers(staffProfile).length === 0) {
       setItems([]);
       setLoading(false);
       return;
@@ -136,11 +127,7 @@ export default function ReadyToServe() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const storeIdsToQuery = staffProfile.role === 'ADMIN'
-      ? stores.map(store => store.id)
-      : stores
-          .filter(store => staffProfile.storeIds.includes(store.id))
-          .map(store => store.id);
+    const storeIdsToQuery = stores.map(store => store.id);
 
     if (storeIdsToQuery.length === 0) {
       setItems([]);
@@ -252,7 +239,11 @@ export default function ReadyToServe() {
       await updateDoc(oItemRef, { status: 'SERVED' });
 
       if (item.onlineOrderTrackingToken) {
-        const orderKotSnap = await getDocs(query(collection(db, 'kotItems'), where('orderId', '==', item.orderId)));
+        const orderKotSnap = await getDocs(query(
+          collection(db, 'kotItems'),
+          where('storeId', '==', item.storeId),
+          where('orderId', '==', item.orderId),
+        ));
         const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
         const allServed = relatedItems.length > 0
           && relatedItems.every(related => ['SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? 'SERVED' : related.status));

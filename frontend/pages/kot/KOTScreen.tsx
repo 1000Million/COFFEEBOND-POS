@@ -232,7 +232,11 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     }
 
     if (newStatus === 'READY') {
-      const orderKotSnap = await getDocs(query(collection(db, 'kotItems'), where('orderId', '==', item.orderId)));
+      const orderKotSnap = await getDocs(query(
+        collection(db, 'kotItems'),
+        where('storeId', '==', item.storeId),
+        where('orderId', '==', item.orderId),
+      ));
       const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
       const allDone = relatedItems.length > 0
         && relatedItems.every(related => ['READY', 'SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? newStatus : related.status));
