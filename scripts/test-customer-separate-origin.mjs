@@ -92,6 +92,10 @@ check('4. customer manifest ships 192, 512 and a maskable icon',
   customerManifest.icons.some((i) => i.sizes === '192x192')
   && customerManifest.icons.some((i) => i.sizes === '512x512')
   && customerManifest.icons.some((i) => i.purpose === 'maskable'));
+check('4. official vector branding is isolated to customer PWA assets',
+  existsSync(resolve(root, 'public-customer/pwa/coffee-bond-mark.svg'))
+  && !existsSync(resolve(root, 'public/pwa/coffee-bond-mark.svg'))
+  && customerSw.includes("const CACHE_VERSION = 'v2'"));
 check('4. the two apps are distinct install identities',
   customerManifest.id !== staffManifest.id
   && customerManifest.start_url !== staffManifest.start_url
@@ -265,7 +269,8 @@ if (existsSync(resolve(root, 'dist-customer/index.html'))) {
     && !builtHtml.includes('CB POS'));
   check('built customer site ships its own manifest and worker',
     existsSync(resolve(root, 'dist-customer/manifest.webmanifest'))
-    && existsSync(resolve(root, 'dist-customer/sw.js')));
+    && existsSync(resolve(root, 'dist-customer/sw.js'))
+    && existsSync(resolve(root, 'dist-customer/pwa/coffee-bond-mark.svg')));
   check('built customer manifest is the Coffee Bond identity',
     json('dist-customer/manifest.webmanifest').start_url === '/');
   check('built customer worker keeps the order cache namespace',

@@ -16,7 +16,7 @@
  * different origins so their caches can never collide.
  */
 const CACHE_PREFIX = 'coffee-bond-order-static';
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const STATIC_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const APP_SHELL = ['/', '/index.html', '/offline.html', '/manifest.webmanifest', '/pwa/icon-192.png', '/pwa/icon-512.png', '/pwa/icon-maskable-512.png', '/pwa/apple-touch-icon.png'];
 const STATIC_EXTENSION = /\.(?:css|js|mjs|png|jpg|jpeg|webp|svg|ico|woff|woff2)$/i;

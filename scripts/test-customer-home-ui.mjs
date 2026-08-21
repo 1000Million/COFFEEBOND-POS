@@ -22,6 +22,7 @@ const rail = read('frontend/components/customer/CustomerCategoryRail.tsx');
 const store = read('frontend/components/customer/CustomerStoreCard.tsx');
 const nav = read('frontend/components/customer/CustomerBottomNav.tsx');
 const header = read('frontend/components/customer/CustomerHeader.tsx');
+const productImage = read('frontend/components/customer/CustomerProductImage.tsx');
 const usual = read('frontend/components/customer/CustomerMyUsualCard.tsx');
 const bondCard = read('frontend/components/customer/CustomerBondSummaryCard.tsx');
 const horizontalScroller = read('frontend/components/customer/HorizontalScroller.tsx');
@@ -47,12 +48,17 @@ const composition = [
 ].map(anchor => home.indexOf(anchor));
 check('the home composition follows the approved reference order',
   composition.every((position, index) => position >= 0 && (index === 0 || position > composition[index - 1])));
-check('the compact header uses the botanical wordmark and real profile-derived avatar',
-  header.includes('<Wheat')
+check('the customer header uses the official PDF-derived mark beside the readable wordmark',
+  header.includes('IS_CUSTOMER_ORIGIN_BUILD')
+  && header.includes('src="/pwa/coffee-bond-mark.svg"')
+  && header.includes('<Wheat')
   && header.includes('cb-customer-wordmark')
+  && header.includes('Coffee <em>Bond</em>')
   && header.includes('profile?.displayName')
   && header.includes('pointsBalance')
-  && !header.includes('coffee-bond-logo.png'));
+  && !header.includes('coffee-bond-logo.png')
+  && productImage.includes('src="/pwa/coffee-bond-mark.svg"')
+  && productImage.includes('IS_CUSTOMER_ORIGIN_BUILD'));
 check('every My Usual state keeps the same hero family and real menu-image wiring',
   ['is-signed-out', 'is-empty', 'is-loading', 'is-saved'].every(state => usual.includes(state))
   && home.includes('lines={myUsualPreview?.state === \'SAVED\' ? myUsualPreview.displayLines : []}')

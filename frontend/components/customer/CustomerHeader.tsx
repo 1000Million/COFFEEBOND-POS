@@ -3,7 +3,12 @@ import { Loader2, UserRound, Wheat } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { CustomerProfile } from '../../lib/customerAuth';
 import CustomerAccountSheet from './CustomerAccountSheet';
-import { CUSTOMER_ACCOUNT_PATH, CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH } from '../../lib/customerRoutes';
+import {
+  CUSTOMER_ACCOUNT_PATH,
+  CUSTOMER_HOME_PATH,
+  CUSTOMER_MY_ORDERS_PATH,
+  IS_CUSTOMER_ORIGIN_BUILD,
+} from '../../lib/customerRoutes';
 
 type Props = {
   title: string;
@@ -91,8 +96,21 @@ export default function CustomerHeader({
       <header className={`${sticky ? 'sticky top-0 z-30' : ''} cb-customer-header`}>
         <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-2 px-4 lg:max-w-6xl lg:px-6">
           <Link to={CUSTOMER_HOME_PATH} className="cb-customer-brand flex min-h-11 min-w-0 items-center gap-2 focus:outline-none">
-            <span className="cb-customer-brand-mark" aria-hidden="true">
-              <Wheat size={29} strokeWidth={1.6} />
+            <span
+              className={`cb-customer-brand-mark${IS_CUSTOMER_ORIGIN_BUILD ? ' is-official' : ''}`}
+              aria-hidden="true"
+            >
+              {IS_CUSTOMER_ORIGIN_BUILD ? (
+                <img
+                  src="/pwa/coffee-bond-mark.svg"
+                  alt=""
+                  width="38"
+                  height="38"
+                  className="cb-customer-official-mark"
+                />
+              ) : (
+                <Wheat size={29} strokeWidth={1.6} />
+              )}
             </span>
             <span className="cb-customer-wordmark whitespace-nowrap">
               Coffee <em>Bond</em>

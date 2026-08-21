@@ -83,6 +83,9 @@ tests += 1;
 assert.match(source, /alt=\{alt\}/);
 assert.match(source, /role="img" aria-label=\{`\$\{alt\} image unavailable`\}/);
 assert.match(source, /aria-hidden="true"/);
+assert.match(source, /IS_CUSTOMER_ORIGIN_BUILD/);
+assert.match(source, /src="\/pwa\/coffee-bond-mark\.svg"/);
+assert.match(source, /<Icon size=\{25\} className=\{iconClassName\} \/>/);
 tests += 1;
 
 assert.equal(tests, 5);

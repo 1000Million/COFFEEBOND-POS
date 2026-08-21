@@ -365,6 +365,14 @@
    The picture carries the state; the text keeps full contrast. */
 .cb-customer-unavailable .cb-customer-product-media { opacity: 0.45; }
 
+.cb-customer-product-fallback-mark {
+  display: block;
+  width: min(44%, 64px);
+  height: min(44%, 64px);
+  object-fit: contain;
+  opacity: 0.42;
+}
+
 /* Reserves space so the fixed bottom navigation never covers page content.
    The bar is lg:hidden, so the reservation is dropped at the same breakpoint. */
 .cb-customer-page-bottom { padding-bottom: var(--cb-content-bottom); }
@@ -2053,6 +2061,17 @@
   place-items: center;
   color: #b47a21;
   transform: rotate(-7deg);
+}
+.cb-customer-brand-mark.is-official {
+  width: 38px;
+  height: 38px;
+  transform: none;
+}
+.cb-customer-official-mark {
+  display: block;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
 }
 .cb-customer-wordmark {
   font-family: Georgia, 'Times New Roman', ui-serif, serif;

@@ -1,4 +1,5 @@
 import { ComponentType, useCallback, useState } from 'react';
+import { IS_CUSTOMER_ORIGIN_BUILD } from '../../lib/customerRoutes';
 
 type Props = {
   src: string | null;
@@ -68,7 +69,18 @@ export default function CustomerProductImage({
       {!loaded && showImage && <div className="absolute inset-0 animate-pulse bg-[#e8ddd2] motion-reduce:animate-none" aria-hidden="true" />}
       {(!showImage || failed) && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#f1e8df]" role="img" aria-label={`${alt} image unavailable`}>
-          <Icon size={25} className={iconClassName} />
+          {IS_CUSTOMER_ORIGIN_BUILD ? (
+            <img
+              src="/pwa/coffee-bond-mark.svg"
+              alt=""
+              width="64"
+              height="64"
+              aria-hidden="true"
+              className="cb-customer-product-fallback-mark"
+            />
+          ) : (
+            <Icon size={25} className={iconClassName} />
+          )}
         </div>
       )}
     </div>
