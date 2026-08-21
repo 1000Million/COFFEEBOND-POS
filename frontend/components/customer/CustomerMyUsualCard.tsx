@@ -29,7 +29,7 @@ type Props = {
   discoveryImageUrl?: string | null;
   discoveryImageName?: string;
   discoveryImageIsFood?: boolean;
-  /** Formatted total recalculated from live prices at the CURRENT store, or null. */
+  /** Formatted menu subtotal recalculated from live prices at the CURRENT store, or null. */
   totalLabel: string | null;
   /** Hard blocker text — reorder is disabled while present. */
   blockerMessage?: string;
@@ -199,7 +199,20 @@ export default function CustomerMyUsualCard({
 
         <div className="cb-customer-usual-price-row">
           {totalLabel ? (
-            <p className="cb-customer-usual-price" aria-label={`Current total ${totalLabel}`}>{totalLabel}</p>
+            <>
+              <p
+                className="cb-customer-usual-price"
+                aria-label={`Current menu price ${totalLabel}; GST added at checkout`}
+              >
+                {totalLabel}
+              </p>
+              <p
+                aria-hidden="true"
+                className="cb-customer-usual-copy"
+              >
+                Current menu price · GST added at checkout
+              </p>
+            </>
           ) : blockerMessage ? (
             <p className="cb-customer-usual-review">Review required</p>
           ) : null}

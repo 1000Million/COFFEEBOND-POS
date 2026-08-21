@@ -476,10 +476,12 @@ check('a blocked line is struck through as well as labelled',
 check('a blocked line is never dropped from the list',
   /displayLines = myUsual\.items\.map[\s\S]{0,1400}unavailableReason/.test(homeCode)
   && !/displayLines[\s\S]{0,600}\.filter\(/.test(homeCode));
-check('no partial total is presented as the usual total',
-  /!myUsualPreview\.blocked[\s\S]{0,140}formatMoney\(myUsualPreview\.totals\.grandTotal\)/.test(homeCode)
+check('the unblocked card shows the current menu subtotal and explains checkout GST',
+  /!myUsualPreview\.blocked[\s\S]{0,140}formatMoney\(myUsualPreview\.totals\.subtotal\)/.test(homeCode)
+  && card.includes('Current menu price · GST added at checkout')
+  && card.includes('Current menu price ${totalLabel}; GST added at checkout')
   && card.includes('Review required')
-  && /totalLabel \? \([\s\S]{0,400}\) : blockerMessage \? \([\s\S]{0,220}Review required/.test(card));
+  && /totalLabel \? \([\s\S]{0,600}\) : blockerMessage \? \([\s\S]{0,220}Review required/.test(card));
 check('the blocked headline states the usual needs an update',
   homeCode.includes("blocked ? 'Your usual needs a quick update.' : undefined"));
 check('the blocked CTA reads Review My Usual',

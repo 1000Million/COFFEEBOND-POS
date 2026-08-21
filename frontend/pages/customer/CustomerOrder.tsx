@@ -2578,7 +2578,7 @@ export default function CustomerOrder() {
                   ].includes(customerMenuCategory(discoveryProduct)))}
                   totalLabel={
                     myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
-                      ? formatMoney(myUsualPreview.totals.grandTotal)
+                      ? formatMoney(myUsualPreview.totals.subtotal)
                       : null
                   }
                   blockerMessage={
