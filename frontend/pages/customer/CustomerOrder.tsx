@@ -380,7 +380,7 @@ function cartLineCatalogMarker(
 function persistedCheckoutLines(cart: CartLine[], fallbackTaxRate: number) {
   return cart.map(line => ({
     lineId: line.id,
-    productId: line.item.id,
+    productId: line.item.id || line.item.code,
     productCode: line.item.code,
     quantity: line.quantity,
     addOns: line.addOns.map(addOn => ({

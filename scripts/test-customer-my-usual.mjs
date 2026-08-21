@@ -271,6 +271,16 @@ const helperCode = helperSrc
   .replace(/const FORBIDDEN_KEYS = \[[\s\S]*?\];/, '');
 const apiCode = apiSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const usualBlock = homeCode.slice(homeCode.indexOf('const startMyUsualOrder'), homeCode.indexOf('const deleteMyUsual'));
+const persistedCheckoutLinesBlock = homeCode.slice(
+  homeCode.indexOf('function persistedCheckoutLines'),
+  homeCode.indexOf('function isStoreAvailable'),
+);
+const runtimePublicMenuProduct = { code: 'QA_PREVIEW_FLAT_WHITE' };
+
+check('a runtime public-menu product without id falls back to its authoritative code',
+  !Object.hasOwn(runtimePublicMenuProduct, 'id')
+  && (runtimePublicMenuProduct.id || runtimePublicMenuProduct.code) === 'QA_PREVIEW_FLAT_WHITE'
+  && persistedCheckoutLinesBlock.includes('productId: line.item.id || line.item.code,'));
 
 // --- Signed out ---
 check('signed out renders its own state, not an empty one',
