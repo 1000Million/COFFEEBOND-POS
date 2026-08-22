@@ -9,6 +9,7 @@ const entryRedirect = read('frontend/components/EntryRedirect.tsx');
 const layout = read('frontend/components/Layout.tsx');
 const staffManagement = read('frontend/pages/admin/StaffManagement.tsx');
 const login = read('frontend/pages/franchise/FranchiseLogin.tsx');
+const staffLogin = read('frontend/pages/Login.tsx');
 const api = read('frontend/lib/bondPolicyCampaigns.ts');
 const workspace = read('frontend/components/bond/BondPolicyCampaignWorkspace.tsx');
 const rules = read('firestore.rules');
@@ -29,6 +30,9 @@ check('entry redirect sends managers only to their BOND workspace', entryRedirec
 check('operational navigation never grants a Franchise Manager role branch', !layout.includes("role === 'FRANCHISE_MANAGER'"));
 check('ordinary staff editor excludes both franchise-only roles', staffManagement.includes("['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'].includes"));
 check('franchise sign-in copy supports a workspace without changing viewer authentication', login.includes('Franchise Workspace') && login.includes('FRANCHISE_AUTH_DOMAIN'));
+check('staff sign-in hides raw Firebase errors behind generic credential copy',
+  staffLogin.includes('setErrorMsg("Email or password is incorrect")')
+  && !staffLogin.includes('err.message ||'));
 
 for (const callableName of [
   'getBondPolicyCampaignManagerState',

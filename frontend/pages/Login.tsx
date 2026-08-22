@@ -29,10 +29,8 @@ export default function Login() {
       await signInWithEmailAndPassword(auth, email, password);
       // Navigation is handled by the Auth state observer in a routing wrapper
     } catch (err: any) {
-      console.error(err);
-      setErrorMsg(
-        err.message || "Failed to sign in. Please check your credentials.",
-      );
+      console.error("staff-login-failed", { code: err.code || "unknown" });
+      setErrorMsg("Email or password is incorrect");
       setErrorCode(err.code || "");
     } finally {
       setIsSubmitting(false);
