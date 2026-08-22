@@ -37,6 +37,7 @@ const ROLE_LABELS: Record<Role, string> = {
   KITCHEN: 'KOT User / Kitchen',
   TRAINEE: 'Trainee / No live access',
   FRANCHISE_VIEWER: 'Franchise Viewer',
+  FRANCHISE_MANAGER: 'Franchise Manager',
 };
 
 const ROLE_CATEGORY_LABELS: Record<Role, string> = {
@@ -47,6 +48,7 @@ const ROLE_CATEGORY_LABELS: Record<Role, string> = {
   KITCHEN: 'KOT only',
   TRAINEE: 'Setup only',
   FRANCHISE_VIEWER: 'Read-only franchise reporting',
+  FRANCHISE_MANAGER: 'Assigned-store BOND governance',
 };
 
 const ROLE_MODULES: Record<Role, string> = {
@@ -57,6 +59,7 @@ const ROLE_MODULES: Record<Role, string> = {
   KITCHEN: 'Assigned stores: Barista, Kitchen, and Ready KOT only.',
   TRAINEE: 'No live operational workspace until promoted.',
   FRANCHISE_VIEWER: 'Assigned stores: read-only daily sales through the franchise workspace.',
+  FRANCHISE_MANAGER: 'Assigned stores: draft, preview, submit, and pause BOND policy or campaign configurations. No POS, KOT, inventory, or customer access.',
 };
 
 const roleLabel = (role: Role) => ROLE_LABELS[role] || role.replace('_', ' ');
@@ -91,7 +94,7 @@ export default function StaffManagement() {
       collection(db, 'users'),
       (snapshot) => {
         const nextStaff = snapshot.docs
-          .filter((staffDoc) => staffDoc.data().role !== 'FRANCHISE_VIEWER')
+          .filter((staffDoc) => !['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'].includes(staffDoc.data().role))
           .map((staffDoc) => {
           const data = staffDoc.data();
           const assignedStoreIds = normalizeStoreIds(data.assignedStoreIds || data.storeIds);

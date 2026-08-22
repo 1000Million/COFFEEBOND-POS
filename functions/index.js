@@ -14,6 +14,7 @@ const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 const { createBondLoyaltyService } = require('./bondLoyalty');
+const { createBondPolicyCampaignManagerFunctions } = require('./bondPolicyCampaignManager');
 
 admin.initializeApp();
 
@@ -63,6 +64,18 @@ exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund
 exports.posRazorpayWebhook = posRazorpayFunctions.posRazorpayWebhook;
 
 const bondLoyaltyService = createBondLoyaltyService({ admin, db });
+
+const bondPolicyCampaignManager = createBondPolicyCampaignManagerFunctions({ admin, db, region: REGION });
+exports.getBondPolicyCampaignManagerState = bondPolicyCampaignManager.getBondPolicyCampaignManagerState;
+exports.previewBondPolicyCampaign = bondPolicyCampaignManager.previewBondPolicyCampaign;
+exports.saveBondPolicyDraft = bondPolicyCampaignManager.saveBondPolicyDraft;
+exports.submitBondPolicyDraft = bondPolicyCampaignManager.submitBondPolicyDraft;
+exports.saveBondCampaignDraft = bondPolicyCampaignManager.saveBondCampaignDraft;
+exports.submitBondCampaignDraft = bondPolicyCampaignManager.submitBondCampaignDraft;
+exports.approveBondConfiguration = bondPolicyCampaignManager.approveBondConfiguration;
+exports.scheduleBondConfiguration = bondPolicyCampaignManager.scheduleBondConfiguration;
+exports.pauseBondConfiguration = bondPolicyCampaignManager.pauseBondConfiguration;
+exports.rollbackBondConfiguration = bondPolicyCampaignManager.rollbackBondConfiguration;
 
 // Loyalty observes authoritative records only after the order/KOT transactions have
 // committed. Trigger failure therefore cannot roll back payment, KOT, stock or reports.

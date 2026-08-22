@@ -48,11 +48,13 @@ const Phase7IBomAliasCorrection = lazy(() => import('./pages/admin/Phase7IBomAli
 const POSReadiness = lazy(() => import('./pages/admin/POSReadiness'));
 const ProductImages = lazy(() => import('./pages/admin/ProductImages'));
 const MenuManagementHub = lazy(() => import('./pages/admin/MenuManagementHub'));
+const BondPolicyCampaignManager = lazy(() => import('./pages/admin/BondPolicyCampaignManager'));
 const POSHome = lazy(() => import('./pages/pos/POSHome'));
 const IncomingOnlineOrders = lazy(() => import('./pages/pos/IncomingOnlineOrders'));
 const RunningOrders = lazy(() => import('./pages/pos/RunningOrders'));
 const FranchiseLogin = lazy(() => import('./pages/franchise/FranchiseLogin'));
 const FranchiseDailySales = lazy(() => import('./pages/franchise/FranchiseDailySales'));
+const FranchiseBondCampaignManager = lazy(() => import('./pages/franchise/FranchiseBondCampaignManager'));
 
 function RouteLoading() {
   return (
@@ -108,6 +110,9 @@ function FranchiseLoginRoute() {
   if (authStatus === 'ready' && staffProfile?.role === 'FRANCHISE_VIEWER') {
     return <Navigate to="/franchise/daily-sales" replace />;
   }
+  if (authStatus === 'ready' && staffProfile?.role === 'FRANCHISE_MANAGER') {
+    return <Navigate to="/franchise/bond" replace />;
+  }
   if (authStatus === 'ready') return <Navigate to="/" replace />;
   return <FranchiseLogin />;
 }
@@ -129,6 +134,9 @@ export default function App() {
             <Route path="/franchise/login" element={<FranchiseLoginRoute />} />
             <Route element={<ProtectedRoute allowedRoles={['FRANCHISE_VIEWER']} signInPath="/franchise/login" />}>
               <Route path="/franchise/daily-sales" element={<FranchiseDailySales />} />
+            </Route>
+            <Route element={<ProtectedRoute allowedRoles={['FRANCHISE_MANAGER']} signInPath="/franchise/login" />}>
+              <Route path="/franchise/bond" element={<FranchiseBondCampaignManager />} />
             </Route>
 
             {/* Main App Layout - Protected by Auth */}
@@ -152,6 +160,7 @@ export default function App() {
                   <Route path="/admin/product-images" element={<ProductImages />} />
                   <Route path="/admin/seed" element={<Seed />} />
                   <Route path="/admin/staff" element={<StaffManagement />} />
+                  <Route path="/admin/bond-policy" element={<BondPolicyCampaignManager />} />
                 </Route>
 
                 <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>

@@ -229,7 +229,7 @@ assert.match(pwaUi, /if \(criticalOperationActive\) return null;/);
 assert.match(pwaUi, /&& !isStandalone\(\)/);
 // Staff behaviour must be untouched: still profile-gated and still off customer routes.
 assert.match(pwaUi, /canShowStaffInstall = authStatus === 'ready'/);
-assert.match(pwaUi, /staffProfile && staffProfile\.role !== 'FRANCHISE_VIEWER'/);
+assert.match(pwaUi, /staffProfile && !\['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'\]\.includes\(staffProfile\.role\)/);
 assert.match(pwaUi, /if \(waitingRegistration && !isCustomerRoute\) return 'UPDATE';/);
 
 // A single service worker still serves both apps, with both manifests in the shell

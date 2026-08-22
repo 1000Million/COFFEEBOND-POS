@@ -7,13 +7,15 @@ const {
   assignedStoreIds,
   canAccessRequestedStores,
   franchiseAuthEmail,
+  validateFranchisePassword,
   validateFranchiseUsername,
 } = require('./franchiseSalesPolicy');
 
-const PROJECT_ID = 'coffee-bond-pos';
+const FRANCHISE_ACCESS_PROJECTS = new Set(['coffee-bond-pos', 'coffee-bond-pos-preview']);
+const FRANCHISE_MANAGER_ROLE = 'FRANCHISE_MANAGER';
+const FRANCHISE_ACCOUNT_ROLES = new Set([FRANCHISE_ROLE, FRANCHISE_MANAGER_ROLE]);
 const USERNAME_MAX = 40;
 const DISPLAY_NAME_MAX = 80;
-const PASSWORD_MIN = 12;
 const MAX_STORES_PER_VIEWER = 10;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -30,10 +32,28 @@ function uniqueStrings(value) {
   return [...new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
 }
 
-function permissionsFrom(value) {
+function normalizeAccountRole(value) {
+  const role = cleanText(value || FRANCHISE_ROLE, 40).toUpperCase();
+  if (!FRANCHISE_ACCOUNT_ROLES.has(role)) {
+    fail('invalid-argument', 'Choose Franchise Viewer or Franchise Manager access.');
+  }
+  return role;
+}
+
+function permissionsFrom(value, role = FRANCHISE_ROLE) {
+  if (role === FRANCHISE_MANAGER_ROLE) {
+    return {
+      viewDailySales: false,
+      exportSales: false,
+      manageBondCampaigns: true,
+      pauseBondCampaigns: true,
+    };
+  }
   return {
     viewDailySales: true,
     exportSales: value?.exportSales !== false,
+    manageBondCampaigns: false,
+    pauseBondCampaigns: false,
   };
 }
 
@@ -42,9 +62,8 @@ function isActiveProfile(profile) {
 }
 
 function validatePassword(password) {
-  if (typeof password !== 'string' || password.length < PASSWORD_MIN || password.length > 128) {
-    fail('invalid-argument', `Temporary password must be ${PASSWORD_MIN}-128 characters.`);
-  }
+  const result = validateFranchisePassword(password);
+  if (!result.valid) fail('invalid-argument', result.reason);
 }
 
 function timeZoneOffsetMs(date, timeZone) {
@@ -121,7 +140,15 @@ async function requireActiveViewer(db, request) {
   return profile;
 }
 
-async function validateStores(db, storeIds) {
+async function requireActiveFranchiseAccount(db, request) {
+  const profile = await loadProfile(db, request.auth?.uid);
+  if (!isActiveProfile(profile) || !FRANCHISE_ACCOUNT_ROLES.has(profile.role)) {
+    fail('permission-denied', 'An active franchise profile is required.');
+  }
+  return profile;
+}
+
+async function validateStores(db, storeIds, { requireActive = false } = {}) {
   const ids = uniqueStrings(storeIds);
   if (ids.length === 0) fail('invalid-argument', 'Assign at least one store.');
   if (ids.length > MAX_STORES_PER_VIEWER) fail('invalid-argument', 'Too many stores were selected.');
@@ -129,6 +156,12 @@ async function validateStores(db, storeIds) {
   const snapshots = await db.getAll(...refs);
   const missing = snapshots.filter((snapshot) => !snapshot.exists).map((snapshot) => snapshot.id);
   if (missing.length > 0) fail('failed-precondition', `Unknown store assignment: ${missing.join(', ')}`);
+  const inactive = requireActive
+    ? snapshots.filter((snapshot) => snapshot.data()?.isActive !== true).map((snapshot) => snapshot.id)
+    : [];
+  if (inactive.length > 0) {
+    fail('failed-precondition', `Franchise Managers can only be assigned active stores: ${inactive.join(', ')}`);
+  }
   return snapshots.map((snapshot) => ({
     id: snapshot.id,
     name: cleanText(snapshot.data()?.name || snapshot.id, DISPLAY_NAME_MAX),
@@ -137,13 +170,15 @@ async function validateStores(db, storeIds) {
   }));
 }
 
-async function setViewerClaims(auth, userRecord, storeIds, isActive) {
+async function setFranchiseClaims(auth, userRecord, role, storeIds, isActive) {
   const existing = userRecord.customClaims || {};
   await auth.setCustomUserClaims(userRecord.uid, {
     ...existing,
-    role: FRANCHISE_ROLE,
+    role,
     storeIds,
-    franchiseViewer: true,
+    assignedStoreIds: storeIds,
+    franchiseViewer: role === FRANCHISE_ROLE,
+    franchiseManager: role === FRANCHISE_MANAGER_ROLE,
     active: isActive,
   });
 }
@@ -153,6 +188,7 @@ async function appendAudit(db, admin, actorUid, action, target) {
     action,
     actorUid,
     targetUid: target.uid,
+    role: target.role,
     username: target.username,
     storeIds: target.storeIds,
     isActive: target.isActive,
@@ -160,8 +196,10 @@ async function appendAudit(db, admin, actorUid, action, target) {
   });
 }
 
-async function listViewers(db, auth) {
-  const snapshot = await db.collection('users').where('role', '==', FRANCHISE_ROLE).get();
+async function listFranchiseAccounts(db, auth) {
+  const snapshot = await db.collection('users')
+    .where('role', 'in', [...FRANCHISE_ACCOUNT_ROLES])
+    .get();
   const rows = await Promise.all(snapshot.docs.map(async (viewerDoc) => {
     const data = viewerDoc.data();
     let authRecord = null;
@@ -172,11 +210,12 @@ async function listViewers(db, auth) {
     }
     return {
       uid: viewerDoc.id,
+      role: data.role,
       username: cleanText(data.usernameNormalized || data.username, USERNAME_MAX),
       displayName: cleanText(data.displayName || data.name, DISPLAY_NAME_MAX),
       storeIds: assignedStoreIds(data),
       isActive: data.isActive === true,
-      permissions: permissionsFrom(data.permissions),
+      permissions: permissionsFrom(data.permissions, data.role),
       mustChangePassword: data.mustChangePassword === true,
       lastLoginAt: authRecord?.metadata?.lastSignInTime || null,
       authAccountPresent: Boolean(authRecord),
@@ -189,6 +228,7 @@ async function listViewers(db, auth) {
 function safeViewerTarget(profile) {
   return {
     uid: profile.uid,
+    role: profile.role,
     username: cleanText(profile.usernameNormalized || profile.username, USERNAME_MAX),
     storeIds: assignedStoreIds(profile),
     isActive: profile.isActive === true,
@@ -197,17 +237,23 @@ function safeViewerTarget(profile) {
 
 function createManageFranchiseViewer({ admin, db, region }) {
   return onCall({ region, timeoutSeconds: 60, memory: '256MiB' }, async (request) => {
-    if (admin.app().options.projectId && admin.app().options.projectId !== PROJECT_ID) {
-      fail('failed-precondition', 'Franchise access is configured for the Coffee Bond production project only.');
+    if (admin.app().options.projectId && !FRANCHISE_ACCESS_PROJECTS.has(admin.app().options.projectId)) {
+      fail('failed-precondition', 'Franchise access is configured only for approved Coffee Bond production and preview projects.');
     }
 
     const action = String(request.data?.action || '').trim().toUpperCase();
 
     if (action === 'SELF_PASSWORD_CHANGED') {
-      const viewer = await requireActiveViewer(db, request);
+      const viewer = await requireActiveFranchiseAccount(db, request);
       if (request.auth?.token?.firebase?.sign_in_provider !== 'password') {
         fail('failed-precondition', 'Password sign-in is required.');
       }
+      if (viewer.mustChangePassword !== true) {
+        fail('failed-precondition', 'No temporary password change is pending.');
+      }
+      const newPassword = request.data?.newPassword;
+      validatePassword(newPassword);
+      await admin.auth().updateUser(viewer.uid, { password: newPassword });
       await db.collection('users').doc(viewer.uid).set({
         mustChangePassword: false,
         passwordChangedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -220,17 +266,20 @@ function createManageFranchiseViewer({ admin, db, region }) {
     const auth = admin.auth();
 
     if (action === 'LIST') {
-      return { viewers: await listViewers(db, auth) };
+      return { viewers: await listFranchiseAccounts(db, auth) };
     }
 
     if (action === 'CREATE') {
+      const role = normalizeAccountRole(request.data?.role);
       const usernameValidation = validateFranchiseUsername(request.data?.username);
       if (!usernameValidation.valid) fail('invalid-argument', usernameValidation.reason);
       const username = usernameValidation.username;
       const displayName = cleanText(request.data?.displayName, DISPLAY_NAME_MAX);
       if (!displayName) fail('invalid-argument', 'Display name is required.');
       validatePassword(request.data?.temporaryPassword);
-      const stores = await validateStores(db, request.data?.storeIds);
+      const stores = await validateStores(db, request.data?.storeIds, {
+        requireActive: role === FRANCHISE_MANAGER_ROLE,
+      });
       const storeIds = stores.map((store) => store.id);
       const duplicate = await db.collection('users').where('usernameNormalized', '==', username).limit(1).get();
       if (!duplicate.empty) fail('already-exists', 'This franchise username already exists.');
@@ -253,8 +302,8 @@ function createManageFranchiseViewer({ admin, db, region }) {
           displayName,
           disabled: false,
         });
-        await setViewerClaims(auth, authUser, storeIds, true);
-        const permissions = permissionsFrom(request.data?.permissions);
+        await setFranchiseClaims(auth, authUser, role, storeIds, true);
+        const permissions = permissionsFrom(request.data?.permissions, role);
         const profile = {
           uid: authUser.uid,
           username,
@@ -263,7 +312,7 @@ function createManageFranchiseViewer({ admin, db, region }) {
           email,
           displayName,
           name: displayName,
-          role: FRANCHISE_ROLE,
+          role,
           userCategory: 'FRANCHISE',
           isActive: true,
           active: true,
@@ -278,7 +327,7 @@ function createManageFranchiseViewer({ admin, db, region }) {
         await db.collection('users').doc(authUser.uid).create(profile);
         profileCreated = true;
         await appendAudit(db, admin, adminProfile.uid, 'CREATE', safeViewerTarget(profile));
-        return { ok: true, uid: authUser.uid, username, storeIds };
+        return { ok: true, uid: authUser.uid, username, role, storeIds };
       } catch (error) {
         if (authUser && !profileCreated) {
           try {
@@ -295,10 +344,10 @@ function createManageFranchiseViewer({ admin, db, region }) {
     }
 
     const uid = cleanText(request.data?.uid, 128);
-    if (!uid) fail('invalid-argument', 'Viewer UID is required.');
+    if (!uid) fail('invalid-argument', 'Franchise account UID is required.');
     const viewerSnapshot = await db.collection('users').doc(uid).get();
-    if (!viewerSnapshot.exists || viewerSnapshot.data()?.role !== FRANCHISE_ROLE) {
-      fail('not-found', 'Franchise Viewer profile not found.');
+    if (!viewerSnapshot.exists || !FRANCHISE_ACCOUNT_ROLES.has(viewerSnapshot.data()?.role)) {
+      fail('not-found', 'Franchise profile not found.');
     }
     const viewer = { uid, ...viewerSnapshot.data() };
     const userRecord = await auth.getUser(uid);
@@ -306,12 +355,14 @@ function createManageFranchiseViewer({ admin, db, region }) {
     if (action === 'UPDATE') {
       const displayName = cleanText(request.data?.displayName, DISPLAY_NAME_MAX);
       if (!displayName) fail('invalid-argument', 'Display name is required.');
-      const stores = await validateStores(db, request.data?.storeIds);
+      const stores = await validateStores(db, request.data?.storeIds, {
+        requireActive: viewer.role === FRANCHISE_MANAGER_ROLE,
+      });
       const storeIds = stores.map((store) => store.id);
       const isActive = request.data?.isActive !== false;
-      const permissions = permissionsFrom(request.data?.permissions);
+      const permissions = permissionsFrom(request.data?.permissions, viewer.role);
       await auth.updateUser(uid, { displayName, disabled: !isActive });
-      await setViewerClaims(auth, userRecord, storeIds, isActive);
+      await setFranchiseClaims(auth, userRecord, viewer.role, storeIds, isActive);
       await db.collection('users').doc(uid).set({
         displayName,
         name: displayName,
@@ -346,7 +397,7 @@ function createManageFranchiseViewer({ admin, db, region }) {
 
     if (action === 'REVOKE') {
       await auth.updateUser(uid, { disabled: true });
-      await setViewerClaims(auth, userRecord, assignedStoreIds(viewer), false);
+      await setFranchiseClaims(auth, userRecord, viewer.role, assignedStoreIds(viewer), false);
       await db.collection('users').doc(uid).set({
         isActive: false,
         active: false,

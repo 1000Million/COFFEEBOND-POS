@@ -13,6 +13,7 @@ const RESERVED_USERNAMES = new Set([
   'system',
 ]);
 const PAYMENT_METHODS = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'PAY_AT_COUNTER', 'RAZORPAY'];
+const FRANCHISE_PASSWORD_MIN = 12;
 
 function money(value) {
   const parsed = Number(value ?? 0);
@@ -36,6 +37,22 @@ function validateFranchiseUsername(value) {
     return { valid: false, username, reason: 'This username is reserved.' };
   }
   return { valid: true, username, reason: null };
+}
+
+function validateFranchisePassword(value) {
+  if (typeof value !== 'string' || value.length < FRANCHISE_PASSWORD_MIN || value.length > 128) {
+    return {
+      valid: false,
+      reason: `Password must be ${FRANCHISE_PASSWORD_MIN}-128 characters.`,
+    };
+  }
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value) || !/[^A-Za-z0-9]/.test(value)) {
+    return {
+      valid: false,
+      reason: 'Password must include uppercase, lowercase, number, and symbol characters.',
+    };
+  }
+  return { valid: true, reason: null };
 }
 
 function franchiseAuthEmail(username) {
@@ -325,5 +342,6 @@ module.exports = {
   maskIndianMobile,
   normalizeFranchiseUsername,
   summarizeFranchiseDailySales,
+  validateFranchisePassword,
   validateFranchiseUsername,
 };

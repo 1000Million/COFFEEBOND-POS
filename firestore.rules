@@ -42,6 +42,10 @@ service cloud.firestore {
     function isKitchen() {
       return hasRole('KITCHEN');
     }
+
+    function isFranchiseManager() {
+      return hasRole('FRANCHISE_MANAGER');
+    }
     
     function isActiveStaff() {
       return isActiveUserProfile()
@@ -49,7 +53,7 @@ service cloud.firestore {
     }
 
     function isFranchiseProfile(data) {
-      return data.keys().hasAny(['role']) && data.role == 'FRANCHISE_VIEWER';
+      return data.keys().hasAny(['role']) && data.role in ['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'];
     }
 
     function isCheckoutStaff() {
@@ -806,6 +810,74 @@ service cloud.firestore {
     match /loyaltyShadowLogs/{logId} {
       allow read: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // Versioned BOND policy, campaign, approval, scheduling, liability, usage,
+    // runtime and audit state is available only through role- and store-scoped
+    // Admin SDK callables. Franchise Managers never inherit operational staff
+    // access and cannot bypass HQ approval with a direct Firestore write.
+    match /bondPolicyGuardrails/{documentId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondPolicyGuardrailVersions/{versionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondPolicyVersions/{versionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondCampaignVersions/{versionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondPolicyScopes/{scopeId} {
+      allow read, create, update, delete: if false;
+
+      match /{document=**} {
+        allow read, create, update, delete: if false;
+      }
+    }
+
+    match /bondCampaignScopes/{scopeId} {
+      allow read, create, update, delete: if false;
+
+      match /{document=**} {
+        allow read, create, update, delete: if false;
+      }
+    }
+
+    match /bondRewardApprovals/{approvalId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondPolicySchedules/{scheduleId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondCampaignSchedules/{scheduleId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondRewardSchedules/{scheduleId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondRewardRuntime/{scopeId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondCampaignBudgets/{budgetId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondCampaignCustomerUsage/{usageId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /bondPolicyAudit/{auditId} {
+      allow read, create, update, delete: if false;
     }
 
     match /posRazorpaySessions/{sessionId} {

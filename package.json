@@ -80,7 +80,12 @@
     "test:customer-my-usual": "node scripts/test-customer-my-usual.mjs",
     "test:customer-my-usual-emulator": "node scripts/test-customer-my-usual-emulator-e2e.mjs",
     "test:bond-loyalty": "node scripts/test-bond-loyalty.mjs",
-    "test:bond-loyalty-emulator": "node scripts/test-bond-loyalty-emulator-e2e.mjs"
+    "test:bond-loyalty-emulator": "node scripts/test-bond-loyalty-emulator-e2e.mjs",
+    "test:bond-policy-campaigns": "node scripts/test-bond-policy-campaigns.mjs",
+    "test:bond-policy-campaign-manager": "node scripts/test-bond-policy-campaigns-emulator-e2e.mjs",
+    "test:bond-policy-campaign-runtime": "node scripts/test-bond-policy-campaign-runtime-emulator-e2e.mjs",
+    "test:bond-policy-campaign-ui": "node scripts/test-bond-policy-campaign-manager-ui.mjs",
+    "test:customer-bond-store-rate": "node scripts/test-customer-bond-store-rate.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

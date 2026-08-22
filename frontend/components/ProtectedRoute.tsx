@@ -5,6 +5,7 @@ import { Role } from '../types';
 import AppLoading from './AppLoading';
 import MissingProfile from '../pages/MissingProfile';
 import InactiveProfile from '../pages/InactiveProfile';
+import FranchisePasswordChangeGate from './franchise/FranchisePasswordChangeGate';
 
 interface ProtectedRouteProps {
   allowedRoles?: Role[];
@@ -36,6 +37,13 @@ export default function ProtectedRoute({ allowedRoles, children, signInPath = '/
   }
 
   if (authStatus === 'ready' && staffProfile) {
+    if (
+      staffProfile.mustChangePassword === true
+      && ['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'].includes(staffProfile.role)
+    ) {
+      return <FranchisePasswordChangeGate />;
+    }
+
     if (allowedRoles && !allowedRoles.includes(staffProfile.role)) {
       let fallback = '/';
       if (staffProfile.role === 'ADMIN') fallback = '/admin';
@@ -43,6 +51,7 @@ export default function ProtectedRoute({ allowedRoles, children, signInPath = '/
       else if (staffProfile.role === 'BARISTA') fallback = '/kot/barista';
       else if (staffProfile.role === 'KITCHEN') fallback = '/kot/kitchen';
       else if (staffProfile.role === 'FRANCHISE_VIEWER') fallback = '/franchise/daily-sales';
+      else if (staffProfile.role === 'FRANCHISE_MANAGER') fallback = '/franchise/bond';
       
       return <Navigate to={fallback} replace />;
     }

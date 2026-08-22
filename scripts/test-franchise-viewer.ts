@@ -10,6 +10,7 @@ const {
   maskIndianMobile,
   normalizeFranchiseUsername,
   summarizeFranchiseDailySales,
+  validateFranchisePassword,
   validateFranchiseUsername,
 } = policy;
 
@@ -149,6 +150,10 @@ test('username is trimmed and case-normalized', normalizeFranchiseUsername('  Go
 test('internal auth email is deterministic', franchiseAuthEmail('GoldenI.Owner') === 'goldeni.owner@franchise.pos.coffeebond.in');
 test('reserved ADMIN username is rejected case-insensitively', validateFranchiseUsername(' ADMIN ').valid === false);
 test('invalid username characters are rejected', validateFranchiseUsername('owner@example').valid === false);
+test('missing franchise password is rejected', validateFranchisePassword(undefined).valid === false);
+test('short franchise password is rejected', validateFranchisePassword('Short1!').valid === false);
+test('weak franchise password without all character classes is rejected', validateFranchisePassword('alllowercase12!').valid === false);
+test('strong franchise password is accepted', validateFranchisePassword('CoffeeBond12!').valid === true);
 test('Indian mobile numbers are masked', maskIndianMobile('9999999999') === '99******99');
 test('commercial net sales exclude void and complimentary orders', summary.metrics.netSales === 677.25);
 test('GST excludes void and complimentary orders', summary.metrics.gstCollected === 32.25);
@@ -228,13 +233,30 @@ const functionSource = fs.readFileSync(path.join(repoRoot, 'functions/franchiseS
 const rulesSource = fs.readFileSync(path.join(repoRoot, 'firestore.rules'), 'utf8');
 const appSource = fs.readFileSync(path.join(repoRoot, 'frontend/App.tsx'), 'utf8');
 const dashboardSource = fs.readFileSync(path.join(repoRoot, 'frontend/pages/franchise/FranchiseDailySales.tsx'), 'utf8');
+const accessPanelSource = fs.readFileSync(path.join(repoRoot, 'frontend/components/admin/FranchiseAccessPanel.tsx'), 'utf8');
+const protectedRouteSource = fs.readFileSync(path.join(repoRoot, 'frontend/components/ProtectedRoute.tsx'), 'utf8');
+const passwordGateSource = fs.readFileSync(path.join(repoRoot, 'frontend/components/franchise/FranchisePasswordChangeGate.tsx'), 'utf8');
+const selfPasswordAuthUpdateIndex = functionSource.indexOf("admin.auth().updateUser(viewer.uid, { password: newPassword })");
+const selfPasswordProfileClearIndex = functionSource.indexOf('mustChangePassword: false', selfPasswordAuthUpdateIndex);
 
 test('daily sales callable requires an active viewer profile', functionSource.includes('requireActiveViewer(db, request)'));
 test('daily sales callable validates every requested store', functionSource.includes('canAccessRequestedStores(profile, requestedStoreIds)'));
-test('Admin can create a Franchise Viewer through the secured callable', functionSource.includes("if (action === 'CREATE')") && functionSource.includes('requireActiveAdmin(db, request)'));
+test('Admin can create franchise accounts through the secured callable', functionSource.includes("if (action === 'CREATE')") && functionSource.includes('requireActiveAdmin(db, request)'));
 test('Store Manager cannot create a Franchise Viewer', functionSource.includes("profile.role !== 'ADMIN'"));
 test('Cashier cannot create a Franchise Viewer', functionSource.includes("profile.role !== 'ADMIN'"));
 test('inactive Admin cannot manage Franchise Viewers', functionSource.includes('!isActiveProfile(profile)'));
+test('Admin lifecycle supports a distinct immutable Franchise Manager role', functionSource.includes("const FRANCHISE_MANAGER_ROLE = 'FRANCHISE_MANAGER'") && functionSource.includes('normalizeAccountRole(request.data?.role)') && functionSource.includes('viewer.role === FRANCHISE_MANAGER_ROLE'));
+test('Franchise Manager provisioning is restricted to exact production and preview projects', functionSource.includes("new Set(['coffee-bond-pos', 'coffee-bond-pos-preview'])") && functionSource.includes('FRANCHISE_ACCESS_PROJECTS.has'));
+test('Franchise Manager claims exclude Viewer privileges', functionSource.includes('franchiseViewer: role === FRANCHISE_ROLE') && functionSource.includes('franchiseManager: role === FRANCHISE_MANAGER_ROLE'));
+test('Franchise Managers require assigned active stores', functionSource.includes('requireActive: role === FRANCHISE_MANAGER_ROLE') && functionSource.includes('Franchise Managers can only be assigned active stores'));
+test('Franchise Manager permissions are limited to BOND campaign work', functionSource.includes('manageBondCampaigns: true') && functionSource.includes('viewDailySales: false'));
+test('temporary passwords gate both franchise workspaces', protectedRouteSource.includes('staffProfile.mustChangePassword === true') && protectedRouteSource.includes("['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER']") && passwordGateSource.includes("action: 'SELF_PASSWORD_CHANGED'"));
+test('password-change callable accepts only active franchise accounts using password auth', functionSource.includes('requireActiveFranchiseAccount(db, request)') && functionSource.includes("sign_in_provider !== 'password'"));
+test('password-change callable requires a pending rotation and strong newPassword', functionSource.includes('viewer.mustChangePassword !== true') && functionSource.includes('const newPassword = request.data?.newPassword') && functionSource.includes('validatePassword(newPassword)'));
+test('password-change callable updates Auth before clearing the profile gate', selfPasswordAuthUpdateIndex >= 0 && selfPasswordProfileClearIndex > selfPasswordAuthUpdateIndex);
+test('password-change UI sends newPassword only through the callable', passwordGateSource.includes("newPassword: password") && !passwordGateSource.includes("from 'firebase/auth'") && !passwordGateSource.includes('updatePassword('));
+test('new passwords are not written to Firestore or logged', !functionSource.includes('newPassword: newPassword') && !/console\.(?:info|log|warn|error)\([^)]*newPassword/s.test(functionSource));
+test('Admin UI can create either franchise account type and cannot change the role later', accessPanelSource.includes('FRANCHISE_MANAGER') && accessPanelSource.includes('The role is fixed after account creation.') && accessPanelSource.includes('disabled={Boolean(form.uid)}'));
 test('Admin SDK manages Auth users without exposing passwords to Firestore', functionSource.includes('auth.createUser') && !functionSource.includes('temporaryPassword: request.data?.temporaryPassword'));
 test('duplicate usernames are rejected by normalized username and Auth email', functionSource.includes("where('usernameNormalized', '==', username)") && functionSource.includes('getUserByEmail(email)'));
 test('franchise report access is logged without order payloads', functionSource.includes("'franchise-daily-sales-access'") && !functionSource.includes('console.info(order'));
@@ -244,8 +266,10 @@ test('franchise callable loads gateway orders without returning private customer
   && !dashboardSource.includes('razorpayCustomerId'));
 test('viewer has dedicated routes', appSource.includes('/franchise/login') && appSource.includes('/franchise/daily-sales'));
 test('viewer route is isolated from operational layout', appSource.indexOf('path="/franchise/daily-sales"') < appSource.indexOf('Main App Layout'));
+test('manager route is isolated from operational layout', appSource.indexOf('path="/franchise/bond"') < appSource.indexOf('Main App Layout'));
 test('dashboard has no direct Firestore import', !dashboardSource.includes('firebase/firestore') && !dashboardSource.includes("collection(db"));
 test('viewer role is excluded from active operational staff', rulesSource.includes("userData().role in ['ADMIN', 'STORE_MANAGER', 'CASHIER', 'BARISTA', 'KITCHEN', 'TRAINEE']"));
+test('manager role is excluded from active operational staff', !rulesSource.slice(rulesSource.indexOf('function isActiveStaff()'), rulesSource.indexOf('function isFranchiseProfile')).includes('FRANCHISE_MANAGER'));
 test('viewer cannot create, void, or settle orders', rulesSource.includes('allow create: if isValidOrderCreate(orderId);') && rulesSource.includes('allow update: if isOrderSettlementUpdate() || isOrderVoidUpdate();'));
 test('viewer cannot read supplier or inventory cost data', rulesSource.includes('match /purchaseEntries/{purchaseId}') && rulesSource.includes('allow read: if isActiveStaff()') && !rulesSource.match(/FRANCHISE_VIEWER[\s\S]{0,200}purchaseEntries/));
 test('franchise profiles cannot be managed by direct client writes', rulesSource.includes('!isFranchiseProfile(request.resource.data)') && rulesSource.includes('!isFranchiseProfile(resource.data)'));

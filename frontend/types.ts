@@ -1,4 +1,4 @@
-export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE" | "FRANCHISE_VIEWER";
+export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE" | "FRANCHISE_VIEWER" | "FRANCHISE_MANAGER";
 
 export type AuthStatus = 
   | "checking-auth"
@@ -24,6 +24,8 @@ export interface StaffProfile {
   permissions?: {
     viewDailySales?: boolean;
     exportSales?: boolean;
+    manageBondCampaigns?: boolean;
+    pauseBondCampaigns?: boolean;
   };
   mustChangePassword?: boolean;
   createdAt: any; // Firestore Timestamp

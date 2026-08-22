@@ -728,13 +728,14 @@ export default function CustomerOrder() {
       setBondSummaryLoading(false);
       return () => { active = false; };
     }
+    setBondSummary(null);
     setBondSummaryLoading(true);
-    getCustomerBondSummary()
+    getCustomerBondSummary(selectedStoreId || undefined)
       .then(summary => { if (active) setBondSummary(summary); })
       .catch(() => { if (active) setBondSummary(null); })
       .finally(() => { if (active) setBondSummaryLoading(false); });
     return () => { active = false; };
-  }, [verifiedCustomer?.customerUid, isOffline, demoRequested]);
+  }, [verifiedCustomer?.customerUid, selectedStoreId, isOffline, demoRequested]);
 
   useEffect(() => {
     let active = true;
@@ -2155,7 +2156,9 @@ export default function CustomerOrder() {
               here and only the estimate is grafted on. */}
           {displayedBondSummary?.enabled && displayedBondSummary.earnEnabled && (demoRequested || verifiedCustomer) && (
             <div className="mt-3 rounded-2xl border border-[#e4d7c8] bg-[#fffaf4] px-4 py-3 text-sm text-[#5c4033]">
-              <p className="font-black">You’ll earn approximately {demoRequested ? 18 : estimateBondPoints(totals.taxableAmount)} BOND Points.</p>
+              <p className="font-black">You’ll earn approximately {demoRequested
+                ? 18
+                : estimateBondPoints(totals.taxableAmount, displayedBondSummary.effectiveEarnRateBps)} BOND Points.</p>
               <p className="mt-1 text-xs font-semibold leading-relaxed text-neutral-500">
                 {demoRequested
                   ? 'Visual preview only. No points are issued from this example.'

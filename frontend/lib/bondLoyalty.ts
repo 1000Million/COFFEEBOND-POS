@@ -20,6 +20,8 @@ export type BondSummary = {
   omakaseEnabled: boolean;
   customerOrderingOnly: true;
   policyVersion: string;
+  effectiveEarnRateBps?: number;
+  effectivePolicyVersionId?: string | null;
   pointsBalance?: number;
   qualifyingVisitCount?: number;
   currentClubStatus?: string;
@@ -36,6 +38,10 @@ export type BondSummary = {
     clubProgressPercentage: number;
     clubQualified: boolean;
   };
+};
+
+type GetCustomerBondSummaryRequest = {
+  storeId?: string;
 };
 
 export const BOND_UI_DEMO_ENABLED = (
@@ -55,16 +61,25 @@ export function explicitBondDemoKey(search: string): BondDemoQueryKey | null {
     : null;
 }
 
-const getSummary = httpsCallable<void, BondSummary>(customerFunctions, 'getCustomerBondSummary');
+const getSummary = httpsCallable<GetCustomerBondSummaryRequest, BondSummary>(customerFunctions, 'getCustomerBondSummary');
 
-export async function getCustomerBondSummary(): Promise<BondSummary> {
-  const response = await getSummary();
+export async function getCustomerBondSummary(storeId?: string): Promise<BondSummary> {
+  const normalizedStoreId = typeof storeId === 'string' ? storeId.trim() : '';
+  const response = await getSummary(normalizedStoreId ? { storeId: normalizedStoreId } : {});
   return response.data;
 }
 
-export function estimateBondPoints(eligibleSpendRupees: number): number {
+const LEGACY_BOND_EARN_RATE_BPS = 1000;
+
+export function estimateBondPoints(
+  eligibleSpendRupees: number,
+  effectiveEarnRateBps: number = LEGACY_BOND_EARN_RATE_BPS,
+): number {
   const eligibleSpendPaise = Math.max(0, Math.round(Number(eligibleSpendRupees || 0) * 100));
-  return Math.floor(eligibleSpendPaise / 1000);
+  const earnRateBps = Number.isFinite(effectiveEarnRateBps) && effectiveEarnRateBps >= 0
+    ? Math.floor(effectiveEarnRateBps)
+    : LEGACY_BOND_EARN_RATE_BPS;
+  return Math.floor((eligibleSpendPaise * earnRateBps) / 1_000_000);
 }
 
 export function formatBondDate(value: string | null | undefined): string {

@@ -4,8 +4,9 @@ import { AlertCircle, CheckCircle2, Eye, KeyRound, Loader2, Pencil, ShieldOff, U
 import { functions } from '../../lib/firebase';
 import { Store } from '../../types';
 
-type FranchiseViewer = {
+type FranchiseAccount = {
   uid: string;
+  role: 'FRANCHISE_VIEWER' | 'FRANCHISE_MANAGER';
   username: string;
   displayName: string;
   storeIds: string[];
@@ -13,6 +14,8 @@ type FranchiseViewer = {
   permissions: {
     viewDailySales: boolean;
     exportSales: boolean;
+    manageBondCampaigns?: boolean;
+    pauseBondCampaigns?: boolean;
   };
   mustChangePassword: boolean;
   lastLoginAt: string | null;
@@ -22,6 +25,7 @@ type FranchiseViewer = {
 
 type ManageRequest = {
   action: 'LIST' | 'CREATE' | 'UPDATE' | 'RESET_PASSWORD' | 'REVOKE';
+  role?: FranchiseAccount['role'];
   uid?: string;
   username?: string;
   displayName?: string;
@@ -33,11 +37,12 @@ type ManageRequest = {
 
 type ManageResponse = {
   ok?: boolean;
-  viewers?: FranchiseViewer[];
+  viewers?: FranchiseAccount[];
 };
 
 type FormState = {
   uid: string | null;
+  role: FranchiseAccount['role'];
   username: string;
   displayName: string;
   storeIds: string[];
@@ -48,6 +53,7 @@ type FormState = {
 
 const EMPTY_FORM: FormState = {
   uid: null,
+  role: 'FRANCHISE_VIEWER',
   username: '',
   displayName: '',
   storeIds: [],
@@ -67,7 +73,7 @@ const friendlyError = (error: any) => {
 };
 
 export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
-  const [viewers, setViewers] = useState<FranchiseViewer[]>([]);
+  const [viewers, setViewers] = useState<FranchiseAccount[]>([]);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [resetUid, setResetUid] = useState<string | null>(null);
   const [resetPassword, setResetPassword] = useState('');
@@ -101,9 +107,10 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
     }));
   };
 
-  const editViewer = (viewer: FranchiseViewer) => {
+  const editViewer = (viewer: FranchiseAccount) => {
     setForm({
       uid: viewer.uid,
+      role: viewer.role,
       username: viewer.username,
       displayName: viewer.displayName,
       storeIds: viewer.storeIds,
@@ -138,13 +145,14 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
       } else {
         await manageFranchiseViewer({
           action: 'CREATE',
+          role: form.role,
           username: form.username,
           displayName: form.displayName,
           storeIds: form.storeIds,
           temporaryPassword: form.temporaryPassword,
           permissions: { exportSales: form.exportSales },
         });
-        setSuccess('Franchise account created. Share the temporary password outside the POS.');
+        setSuccess('Franchise account created. Share the temporary password outside the POS. It must be changed before workspace access.');
       }
       setForm(EMPTY_FORM);
       await loadViewers();
@@ -177,7 +185,7 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
     }
   };
 
-  const revokeViewer = async (viewer: FranchiseViewer) => {
+  const revokeViewer = async (viewer: FranchiseAccount) => {
     if (!window.confirm(`Revoke franchise access for ${viewer.username}?`)) return;
     setSaving(true);
     setError(null);
@@ -203,7 +211,7 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
               <h3 className="text-xl font-black text-[#3e2723]">Franchise Access</h3>
             </div>
             <p className="mt-1 max-w-2xl text-sm text-neutral-600">
-              Admin-managed, read-only daily sales accounts. These users cannot access POS, KOT, customers, inventory, or Admin.
+              Admin-managed Viewer and BOND Campaign Manager accounts. Both are limited to assigned stores and cannot access POS or KOT.
             </p>
           </div>
           <button
@@ -212,7 +220,7 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#3e2723] px-4 text-sm font-black text-white"
           >
             <UserPlus size={16} />
-            New franchise viewer
+            New franchise account
           </button>
         </div>
       </div>
@@ -228,7 +236,24 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
 
       <div className="grid gap-5 p-5 md:p-6 xl:grid-cols-[390px_1fr]">
         <form onSubmit={saveViewer} className="h-fit space-y-4 rounded-2xl border border-neutral-200 bg-white p-4">
-          <h4 className="font-black text-neutral-900">{form.uid ? 'Edit franchise viewer' : 'Create franchise viewer'}</h4>
+          <h4 className="font-black text-neutral-900">{form.uid ? 'Edit franchise account' : 'Create franchise account'}</h4>
+          <label className="block">
+            <span className="text-xs font-black uppercase tracking-wider text-neutral-500">Access type</span>
+            <select
+              value={form.role}
+              onChange={(event) => setForm({
+                ...form,
+                role: event.target.value as FranchiseAccount['role'],
+                exportSales: event.target.value === 'FRANCHISE_VIEWER',
+              })}
+              disabled={Boolean(form.uid)}
+              className="mt-1 h-11 w-full rounded-xl border border-neutral-200 bg-white px-3 text-sm font-bold disabled:bg-neutral-100"
+            >
+              <option value="FRANCHISE_VIEWER">Franchise Viewer · read-only daily sales</option>
+              <option value="FRANCHISE_MANAGER">Franchise Manager · assigned-store BOND campaigns</option>
+            </select>
+            <p className="mt-1 text-[11px] text-neutral-500">The role is fixed after account creation.</p>
+          </label>
           <label className="block">
             <span className="text-xs font-black uppercase tracking-wider text-neutral-500">Username</span>
             <input
@@ -284,14 +309,20 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
               ))}
             </div>
           </div>
-          <label className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3 text-sm font-bold">
-            <input
-              type="checkbox"
-              checked={form.exportSales}
-              onChange={(event) => setForm({ ...form, exportSales: event.target.checked })}
-            />
-            Allow CSV export
-          </label>
+          {form.role === 'FRANCHISE_VIEWER' ? (
+            <label className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3 text-sm font-bold">
+              <input
+                type="checkbox"
+                checked={form.exportSales}
+                onChange={(event) => setForm({ ...form, exportSales: event.target.checked })}
+              />
+              Allow CSV export
+            </label>
+          ) : (
+            <p className="rounded-xl bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800">
+              Can draft and submit BOND policies and campaigns for assigned active stores. HQ Admin approval is still required.
+            </p>
+          )}
           {form.uid && (
             <label className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3 text-sm font-bold">
               <input
@@ -314,11 +345,11 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
           {loading ? (
             <div className="flex min-h-48 items-center justify-center gap-2 text-sm font-bold text-neutral-500">
               <Loader2 size={18} className="animate-spin" />
-              Loading franchise viewers...
+              Loading franchise accounts...
             </div>
           ) : viewers.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-center text-sm text-neutral-500">
-              No franchise viewers have been created.
+              No franchise accounts have been created.
             </div>
           ) : (
             <div className="grid gap-3">
@@ -328,6 +359,9 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="font-black text-neutral-900">{viewer.displayName}</h4>
+                        <span className="rounded-full bg-[#f3e8dd] px-2 py-1 text-[10px] font-black uppercase text-[#5c4033]">
+                          {viewer.role === 'FRANCHISE_MANAGER' ? 'BOND Manager' : 'Sales Viewer'}
+                        </span>
                         <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${
                           viewer.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
                         }`}>
@@ -350,7 +384,9 @@ export default function FranchiseAccessPanel({ stores }: { stores: Store[] }) {
                       <p className="mt-3 text-xs text-neutral-500">
                         Last login: {viewer.lastLoginAt ? new Date(viewer.lastLoginAt).toLocaleString() : 'Never'}
                         {' · '}
-                        CSV: {viewer.permissions.exportSales ? 'Allowed' : 'Disabled'}
+                        {viewer.role === 'FRANCHISE_MANAGER'
+                          ? 'BOND campaigns: assigned stores only'
+                          : `CSV: ${viewer.permissions.exportSales ? 'Allowed' : 'Disabled'}`}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">

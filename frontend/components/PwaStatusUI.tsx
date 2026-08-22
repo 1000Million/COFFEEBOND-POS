@@ -59,7 +59,7 @@ export default function PwaStatusUI() {
 
   const isCustomerRoute = location.pathname === '/order' || location.pathname.startsWith('/order/');
   const canShowStaffInstall = authStatus === 'ready'
-    && Boolean(staffProfile && staffProfile.role !== 'FRANCHISE_VIEWER')
+    && Boolean(staffProfile && !['FRANCHISE_VIEWER', 'FRANCHISE_MANAGER'].includes(staffProfile.role))
     && !isCustomerRoute
     && !criticalOperationActive
     && !isStandalone();

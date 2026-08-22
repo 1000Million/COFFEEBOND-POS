@@ -43,8 +43,8 @@ export default function FranchiseLogin() {
           <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-white/10">
             <BarChart3 size={23} />
           </div>
-          <h1 className="text-2xl font-black">Franchise Sales</h1>
-          <p className="mt-1 text-sm text-white/70">Coffee Bond read-only reporting</p>
+          <h1 className="text-2xl font-black">Franchise Workspace</h1>
+          <p className="mt-1 text-sm text-white/70">Coffee Bond assigned-store access</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 p-6">
@@ -87,7 +87,7 @@ export default function FranchiseLogin() {
             className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#3e2723] font-black text-white transition hover:bg-[#2d1c19] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? <Loader2 className="animate-spin" size={19} /> : <LockKeyhole size={18} />}
-            {submitting ? 'Signing in...' : 'Open daily sales'}
+            {submitting ? 'Signing in...' : 'Open workspace'}
           </button>
 
           <Link to="/login" className="block text-center text-sm font-bold text-[#5c4033] hover:underline">

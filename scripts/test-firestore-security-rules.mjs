@@ -57,6 +57,7 @@ const hasRoleBody = extractFunction(rules, 'hasRole');
 const isActiveUserProfileBody = extractFunction(rules, 'isActiveUserProfile');
 const isActiveStaffBody = extractFunction(rules, 'isActiveStaff');
 const isFranchiseProfileBody = extractFunction(rules, 'isFranchiseProfile');
+const isFranchiseManagerBody = extractFunction(rules, 'isFranchiseManager');
 const hasStoreAccessBody = extractFunction(rules, 'hasStoreAccess');
 const safePublicTrackingBody = extractFunction(rules, 'isSafePublicTrackingDocument');
 const orderCreateBody = extractFunction(rules, 'isValidOrderCreate');
@@ -110,6 +111,20 @@ const posRazorpaySessionsBlock = extractMatchBlock(rules, 'match /posRazorpaySes
 const posRazorpayWebhookEventsBlock = extractMatchBlock(rules, 'match /posRazorpayWebhookEvents/{eventId}');
 const inventoryReservationsBlock = extractMatchBlock(rules, 'match /inventoryReservations/{reservationId}');
 const razorpayRefundsBlock = extractMatchBlock(rules, 'match /razorpayRefunds/{refundId}');
+const bondPolicyGuardrailsBlock = extractMatchBlock(rules, 'match /bondPolicyGuardrails/{documentId}');
+const bondPolicyGuardrailVersionsBlock = extractMatchBlock(rules, 'match /bondPolicyGuardrailVersions/{versionId}');
+const bondPolicyVersionsBlock = extractMatchBlock(rules, 'match /bondPolicyVersions/{versionId}');
+const bondCampaignVersionsBlock = extractMatchBlock(rules, 'match /bondCampaignVersions/{versionId}');
+const bondPolicyScopesBlock = extractMatchBlock(rules, 'match /bondPolicyScopes/{scopeId}');
+const bondCampaignScopesBlock = extractMatchBlock(rules, 'match /bondCampaignScopes/{scopeId}');
+const bondRewardApprovalsBlock = extractMatchBlock(rules, 'match /bondRewardApprovals/{approvalId}');
+const bondPolicySchedulesBlock = extractMatchBlock(rules, 'match /bondPolicySchedules/{scheduleId}');
+const bondCampaignSchedulesBlock = extractMatchBlock(rules, 'match /bondCampaignSchedules/{scheduleId}');
+const bondRewardSchedulesBlock = extractMatchBlock(rules, 'match /bondRewardSchedules/{scheduleId}');
+const bondRewardRuntimeBlock = extractMatchBlock(rules, 'match /bondRewardRuntime/{scopeId}');
+const bondCampaignBudgetsBlock = extractMatchBlock(rules, 'match /bondCampaignBudgets/{budgetId}');
+const bondCampaignCustomerUsageBlock = extractMatchBlock(rules, 'match /bondCampaignCustomerUsage/{usageId}');
+const bondPolicyAuditBlock = extractMatchBlock(rules, 'match /bondPolicyAudit/{auditId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const menuImageStorageBlock = extractMatchBlock(storageRules, 'match /menu-images/{productCode}/{fileName}');
 const legacyRootAdminUid = ['51eEH5q0wVXe5aIPER', 'sqOO8zx8A2'].join('');
@@ -132,7 +147,9 @@ assert(/allow\s+create:\s*if\s+isAdmin\(\)\s*&&\s*!isFranchiseProfile\(request\.
 assert(/allow\s+update:\s*if\s+isAdmin\(\)/.test(usersBlock) && /!isFranchiseProfile\(resource\.data\)/.test(usersBlock), 'Direct client updates to franchise profiles must be denied.');
 assert(!/allow write:\s*if\s*isSignedIn\(\) && request\.auth\.uid == userId/.test(usersBlock), 'Users must not be able to update their own staff profile.');
 assert(!isActiveStaffBody.includes('FRANCHISE_VIEWER'), 'FRANCHISE_VIEWER must not inherit operational active-staff access.');
-assert(/data\.role\s*==\s*'FRANCHISE_VIEWER'/.test(isFranchiseProfileBody), 'Franchise profiles must be identified explicitly.');
+assert(!isActiveStaffBody.includes('FRANCHISE_MANAGER'), 'FRANCHISE_MANAGER must not inherit POS, KOT, reports, inventory, or other operational staff access.');
+assert(/hasRole\('FRANCHISE_MANAGER'\)/.test(isFranchiseManagerBody), 'Franchise Manager identity must require an active FRANCHISE_MANAGER profile.');
+assert(/data\.role\s+in\s+\['FRANCHISE_VIEWER',\s*'FRANCHISE_MANAGER'\]/.test(isFranchiseProfileBody), 'Both franchise-only roles must be identified explicitly and kept out of direct Admin profile writes.');
 assert(/allow\s+read:\s*if\s+isAdmin\(\);/.test(franchiseAccessAuditBlock), 'Only Admin may read franchise access audit records.');
 assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(franchiseAccessAuditBlock), 'Franchise audit records must be server-written and client-immutable.');
 
@@ -205,6 +222,27 @@ assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazor
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazorpayWebhookEventsBlock), 'POS Razorpay webhook audits must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(inventoryReservationsBlock), 'Inventory reservations must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(razorpayRefundsBlock), 'Razorpay refunds must be server-only.');
+for (const [collectionName, block] of [
+  ['bondPolicyGuardrails', bondPolicyGuardrailsBlock],
+  ['bondPolicyGuardrailVersions', bondPolicyGuardrailVersionsBlock],
+  ['bondPolicyVersions', bondPolicyVersionsBlock],
+  ['bondCampaignVersions', bondCampaignVersionsBlock],
+  ['bondPolicyScopes', bondPolicyScopesBlock],
+  ['bondCampaignScopes', bondCampaignScopesBlock],
+  ['bondRewardApprovals', bondRewardApprovalsBlock],
+  ['bondPolicySchedules', bondPolicySchedulesBlock],
+  ['bondCampaignSchedules', bondCampaignSchedulesBlock],
+  ['bondRewardSchedules', bondRewardSchedulesBlock],
+  ['bondRewardRuntime', bondRewardRuntimeBlock],
+  ['bondCampaignBudgets', bondCampaignBudgetsBlock],
+  ['bondCampaignCustomerUsage', bondCampaignCustomerUsageBlock],
+  ['bondPolicyAudit', bondPolicyAuditBlock],
+]) {
+  assert(
+    /allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(block),
+    `${collectionName} must be callable-only and deny every direct client read or write.`,
+  );
+}
 assert(/resource\.data\.paymentProvider\s*!=\s*'RAZORPAY'/.test(onlineOrdersBlock), 'All Razorpay online-order mutations must use secured backend callables.');
 assert(/allow\s+delete:\s*if\s+isAdmin\(\)\s*&&\s*resource\.data\.paymentProvider\s*!=\s*'RAZORPAY'/.test(onlineOrdersBlock), 'Even Admin must not directly delete a Razorpay online order.');
 

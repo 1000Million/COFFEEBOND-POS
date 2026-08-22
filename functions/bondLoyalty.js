@@ -18,6 +18,15 @@ const {
   resolveLoyaltyFlags,
   rupeesToPaise,
 } = require('./bondLoyaltyPolicy');
+const {
+  CAMPAIGN_BUDGETS,
+  CAMPAIGN_CUSTOMER_USAGE,
+} = require('./bondPolicyCampaignManager');
+const { LEGACY_DEFAULT_EARN_BASIS_POINTS } = require('./bondPolicyCampaignEngine');
+const {
+  campaignCustomerUsageId,
+  createBondPolicyCampaignRuntime,
+} = require('./bondPolicyCampaignRuntime');
 
 const FLAGS_DOCUMENT = 'appSettings/loyalty';
 const POINT_LEDGER = 'loyaltyPointLedger';
@@ -26,6 +35,8 @@ const VISIT_EVENTS = 'qualifyingVisitEvents';
 const VISIT_DAYS = 'qualifyingVisitDays';
 const MEMBERSHIPS = 'clubMemberships';
 const SHADOW_LOGS = 'loyaltyShadowLogs';
+const POINT_EARN_ZERO_DECISION = 'POINT_EARN_ZERO_DECISION';
+const LEGACY_STATIC_POLICY_VERSIONS = Object.freeze(['BOND_POLICY_V1_2026']);
 
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
@@ -40,11 +51,35 @@ function safeDocumentId(...parts) {
 }
 
 function pointEarnLedgerId(orderId) {
-  return safeDocumentId('POINT_EARN', orderId, BOND_POLICY.policyVersion);
+  return safeDocumentId('POINT_EARN', orderId);
 }
 
 function pointEarnReversalLedgerId(orderId) {
-  return safeDocumentId('POINT_EARN_REVERSAL', orderId, BOND_POLICY.policyVersion);
+  return safeDocumentId('POINT_EARN_REVERSAL', orderId);
+}
+
+function visitCampaignEarnLedgerId(orderId) {
+  return safeDocumentId('CAMPAIGN_VISIT_EARN', orderId);
+}
+
+function visitCampaignReversalLedgerId(orderId) {
+  return safeDocumentId('CAMPAIGN_VISIT_EARN_REVERSAL', orderId);
+}
+
+function legacyPointEarnLedgerId(orderId, policyVersion = LEGACY_STATIC_POLICY_VERSIONS[0]) {
+  return safeDocumentId('POINT_EARN', orderId, policyVersion);
+}
+
+function legacyPointEarnReversalLedgerId(orderId, policyVersion = LEGACY_STATIC_POLICY_VERSIONS[0]) {
+  return safeDocumentId('POINT_EARN_REVERSAL', orderId, policyVersion);
+}
+
+function legacyPointEarnLedgerIds(orderId) {
+  return LEGACY_STATIC_POLICY_VERSIONS.map(version => legacyPointEarnLedgerId(orderId, version));
+}
+
+function legacyPointEarnReversalLedgerIds(orderId) {
+  return LEGACY_STATIC_POLICY_VERSIONS.map(version => legacyPointEarnReversalLedgerId(orderId, version));
 }
 
 function visitEventId(orderId) {
@@ -156,6 +191,7 @@ function currentNumber(data, field) {
 
 function createBondLoyaltyService({ admin, db, logger = console }) {
   const { FieldValue, Timestamp } = firestoreTypes(admin);
+  const policyCampaignRuntime = createBondPolicyCampaignRuntime({ admin, db });
   async function getBondPolicy() {
     return BOND_POLICY;
   }
@@ -225,10 +261,16 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         originEvidenceType: origin.originEvidenceType,
         eligibleSpendPaise: calculation.eligibleSpendPaise,
         expectedPoints: calculation.pointsEarned,
+        basePoints: currentNumber(calculation, 'basePoints'),
+        campaignBonusPoints: currentNumber(calculation, 'campaignBonusPoints'),
+        campaignId: calculation.campaignId || null,
+        campaignVersionId: calculation.campaignVersionId || null,
+        liabilityPaise: currentNumber(calculation, 'liabilityPaise'),
         expectedVisitEligibility: calculation.eligibleSpendPaise >= BOND_POLICY.visitMinimumPaise,
         istBusinessDate: calculateISTBusinessDate(occurredAt),
         exclusionReasons: origin.exclusionReasons,
-        policyVersion: BOND_POLICY.policyVersion,
+        policyVersion: calculation.policyVersionId || BOND_POLICY.policyVersion,
+        effectiveEarnRateBps: calculation.effectiveEarnRateBps || LEGACY_DEFAULT_EARN_BASIS_POINTS,
         sourceOrderUpdatedAt: order?.updatedAt || order?.createdAt || null,
         processedAt: FieldValue.serverTimestamp(),
         calculationStatus: status,
@@ -251,47 +293,191 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     return ref.get();
   }
 
+  function calculationFromRewardContext(rewardContext, legacyCalculation) {
+    const { evaluation } = rewardContext;
+    return {
+      ...legacyCalculation,
+      pointsEarned: evaluation.reward.totalPoints,
+      basePoints: evaluation.reward.basePoints,
+      campaignBonusPoints: evaluation.reward.campaignPoints,
+      policyVersionId: evaluation.policy.policyVersionId,
+      effectiveEarnRateBps: evaluation.policy.earnRateBps,
+      campaignId: evaluation.campaign?.campaignId || null,
+      campaignVersionId: evaluation.campaign?.campaignVersionId || null,
+      liabilityPaise: evaluation.reward.totalLiabilityPaise,
+    };
+  }
+
   async function postPointEarn({ orderId, order, origin, calculation, faultInjector }) {
-    if (calculation.pointsEarned <= 0) return { status: 'ZERO_POINTS', writes: 0, ledgerEntryId: null };
     if (faultInjector) await faultInjector('BEFORE_LEDGER_TRANSACTION');
     const ledgerEntryId = pointEarnLedgerId(orderId);
     const ledgerRef = db.collection(POINT_LEDGER).doc(ledgerEntryId);
+    const legacyLedgerRefs = legacyPointEarnLedgerIds(orderId)
+      .filter(id => id !== ledgerEntryId)
+      .map(id => db.collection(POINT_LEDGER).doc(id));
     const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
-    const occurredAt = authoritativeOrderTimestamp(admin, order);
-    const expiryAt = Timestamp.fromMillis(
-      addCalendarMonthsIST(occurredAt, BOND_POLICY.pointInactivityMonths),
-    );
+    const orderRef = db.collection('orders').doc(orderId);
+    const itemQuery = db.collection('orders').doc(orderId).collection('items');
     return db.runTransaction(async transaction => {
-      const [ledgerSnapshot, accountSnapshot] = await Promise.all([
+      const [ledgerSnapshot, legacyLedgerSnapshots, accountSnapshot, itemSnapshot, orderSnapshot] = await Promise.all([
         transaction.get(ledgerRef),
+        Promise.all(legacyLedgerRefs.map(ref => transaction.get(ref))),
         transaction.get(accountRef),
+        transaction.get(itemQuery),
+        transaction.get(orderRef),
       ]);
-      if (ledgerSnapshot.exists) {
-        return { status: 'DUPLICATE_EVENT', writes: 0, ledgerEntryId };
+      const existingSnapshot = ledgerSnapshot.exists
+        ? ledgerSnapshot
+        : legacyLedgerSnapshots.find(snapshot => snapshot.exists) || null;
+      if (existingSnapshot) {
+        const existing = existingSnapshot.data();
+        return {
+          status: 'DUPLICATE_EVENT',
+          writes: 0,
+          ledgerEntryId: existingSnapshot.id,
+          calculation: {
+            eligibleSpendPaise: currentNumber(existing, 'eligibleSpendPaise'),
+            pointsEarned: currentNumber(existing, 'pointsDelta'),
+            policyVersionId: existing.policyVersionId || existing.policyVersion || BOND_POLICY.policyVersion,
+            campaignId: existing.campaignId || null,
+            campaignVersionId: existing.campaignVersionId || null,
+          },
+        };
       }
+      if (!orderSnapshot.exists || !isFinalSettledOrder(orderSnapshot.data())) {
+        return {
+          status: 'INELIGIBLE_ORDER',
+          writes: 0,
+          ledgerEntryId: null,
+          exclusionReasons: ['AUTHORITATIVE_ORDER_NOT_FINAL_AND_SETTLED'],
+        };
+      }
+      const authoritativeOrder = orderSnapshot.data();
+      const authoritativeEvidence = calculateEligibleSpendPaise(authoritativeOrder);
+      const authoritativePoints = calculateBondPoints(authoritativeEvidence.eligibleSpendPaise);
+      const authoritativeCalculation = {
+        ...authoritativeEvidence,
+        ...authoritativePoints,
+        evidence: authoritativeEvidence,
+      };
+      const occurredAt = authoritativeOrderTimestamp(admin, authoritativeOrder);
+      const expiryAt = Timestamp.fromMillis(
+        addCalendarMonthsIST(occurredAt, BOND_POLICY.pointInactivityMonths),
+      );
       const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
+      const rewardContext = await policyCampaignRuntime.resolveRewardInTransaction(transaction, {
+        orderId,
+        order: authoritativeOrder,
+        customerId: origin.customerId,
+        account,
+        eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
+        itemDocuments: itemSnapshot.docs,
+        deferVisitCampaign: true,
+      });
+      const { evaluation, baseCalculation } = rewardContext;
+      const pointsEarned = evaluation.reward.totalPoints;
+      if (pointsEarned <= 0) {
+        const policyVersionId = evaluation.policy.policyVersionId;
+        transaction.create(ledgerRef, {
+          ledgerEntryId,
+          customerId: origin.customerId,
+          eventType: POINT_EARN_ZERO_DECISION,
+          pointsDelta: 0,
+          basePoints: 0,
+          campaignBonusPoints: 0,
+          eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
+          remainderPaise: evaluation.policy.source === 'LEGACY_DEFAULT'
+            ? authoritativeCalculation.remainderPaise
+            : null,
+          remainderRateUnits: baseCalculation.remainderRateUnits,
+          calculationEvidence: {
+            ...authoritativeCalculation.evidence,
+            effectiveEarnRateBps: evaluation.policy.earnRateBps,
+            basePoints: 0,
+            campaignBonusPoints: 0,
+            matchedProductCodes: evaluation.campaign?.matchedProductCodes || [],
+            matchedCategoryCodes: evaluation.campaign?.matchedCategoryCodes || [],
+            uniqueIstVisitDays: evaluation.campaign?.uniqueIstVisitDays || 0,
+            decision: 'ZERO_POINTS',
+          },
+          sourceOrderId: orderId,
+          sourceOnlineOrderId: origin.sourceOnlineOrderId,
+          storeId: cleanText(authoritativeOrder?.storeId, 240),
+          issuingStoreId: cleanText(authoritativeOrder?.storeId, 240),
+          orderChannel: origin.orderChannel,
+          originEvidenceType: origin.originEvidenceType,
+          policyVersion: policyVersionId,
+          policyVersionId,
+          effectiveEarnRateBps: evaluation.policy.earnRateBps,
+          policySource: evaluation.policy.source,
+          campaignId: evaluation.campaign?.campaignId || null,
+          campaignVersionId: evaluation.campaign?.campaignVersionId || null,
+          campaignRewardType: evaluation.campaign?.rewardType || null,
+          liabilityPaise: 0,
+          baseLiabilityPaise: 0,
+          campaignLiabilityPaise: 0,
+          idempotencyKey: ledgerEntryId,
+          occurredAt,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return {
+          status: 'ZERO_POINTS',
+          writes: 1,
+          ledgerEntryId,
+          calculation: {
+            eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
+            pointsEarned: 0,
+            policyVersionId,
+            campaignId: evaluation.campaign?.campaignId || null,
+            campaignVersionId: evaluation.campaign?.campaignVersionId || null,
+          },
+        };
+      }
+      const campaignBonusPoints = evaluation.reward.campaignPoints;
+      const policyVersionId = evaluation.policy.policyVersionId;
       transaction.create(ledgerRef, {
         ledgerEntryId,
         customerId: origin.customerId,
         eventType: 'POINT_EARN',
-        pointsDelta: calculation.pointsEarned,
-        eligibleSpendPaise: calculation.eligibleSpendPaise,
-        remainderPaise: calculation.remainderPaise,
-        calculationEvidence: calculation.evidence,
+        pointsDelta: pointsEarned,
+        basePoints: evaluation.reward.basePoints,
+        campaignBonusPoints,
+        eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
+        remainderPaise: evaluation.policy.source === 'LEGACY_DEFAULT' ? authoritativeCalculation.remainderPaise : null,
+        remainderRateUnits: baseCalculation.remainderRateUnits,
+        calculationEvidence: {
+          ...authoritativeCalculation.evidence,
+          effectiveEarnRateBps: evaluation.policy.earnRateBps,
+          basePoints: evaluation.reward.basePoints,
+          campaignBonusPoints,
+          matchedProductCodes: evaluation.campaign?.matchedProductCodes || [],
+          matchedCategoryCodes: evaluation.campaign?.matchedCategoryCodes || [],
+          uniqueIstVisitDays: evaluation.campaign?.uniqueIstVisitDays || 0,
+        },
         sourceOrderId: orderId,
         sourceOnlineOrderId: origin.sourceOnlineOrderId,
-        storeId: cleanText(order?.storeId, 240),
+        storeId: cleanText(authoritativeOrder?.storeId, 240),
+        issuingStoreId: cleanText(authoritativeOrder?.storeId, 240),
         orderChannel: origin.orderChannel,
         originEvidenceType: origin.originEvidenceType,
-        policyVersion: BOND_POLICY.policyVersion,
+        policyVersion: policyVersionId,
+        policyVersionId,
+        effectiveEarnRateBps: evaluation.policy.earnRateBps,
+        policySource: evaluation.policy.source,
+        campaignId: evaluation.campaign?.campaignId || null,
+        campaignVersionId: evaluation.campaign?.campaignVersionId || null,
+        campaignRewardType: evaluation.campaign?.rewardType || null,
+        liabilityPaise: evaluation.reward.totalLiabilityPaise,
+        baseLiabilityPaise: evaluation.reward.baseLiabilityPaise,
+        campaignLiabilityPaise: evaluation.reward.campaignLiabilityPaise,
         idempotencyKey: ledgerEntryId,
         occurredAt,
         createdAt: FieldValue.serverTimestamp(),
       });
       const accountWrite = {
         customerId: origin.customerId,
-        pointsBalance: currentNumber(account, 'pointsBalance') + calculation.pointsEarned,
-        lifetimePointsEarned: currentNumber(account, 'lifetimePointsEarned') + calculation.pointsEarned,
+        pointsBalance: currentNumber(account, 'pointsBalance') + pointsEarned,
+        lifetimePointsEarned: currentNumber(account, 'lifetimePointsEarned') + pointsEarned,
         lifetimePointsReversed: currentNumber(account, 'lifetimePointsReversed'),
         qualifyingVisitCount: currentNumber(account, 'qualifyingVisitCount'),
         rollingVisitBusinessDates: Array.isArray(account.rollingVisitBusinessDates) ? account.rollingVisitBusinessDates : [],
@@ -299,51 +485,237 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         clubExpiresAt: account.clubExpiresAt || null,
         lastQualifyingActivityAt: occurredAt,
         projectedPointsExpiryAt: expiryAt,
-        policyVersion: BOND_POLICY.policyVersion,
+        policyVersion: policyVersionId,
         updatedAt: FieldValue.serverTimestamp(),
       };
       if (!accountSnapshot.exists) accountWrite.createdAt = FieldValue.serverTimestamp();
       transaction.set(accountRef, accountWrite, { merge: true });
+      const campaignWrites = policyCampaignRuntime.applyCampaignAwardInTransaction(
+        transaction,
+        rewardContext,
+        {
+          customerId: origin.customerId,
+          storeId: authoritativeOrder?.storeId,
+          FieldValue,
+        },
+      );
       return {
         status: 'POSTED',
-        writes: 2,
+        writes: 2 + campaignWrites,
         ledgerEntryId,
+        calculation: {
+          eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
+          pointsEarned,
+          basePoints: evaluation.reward.basePoints,
+          campaignBonusPoints,
+          policyVersionId,
+          effectiveEarnRateBps: evaluation.policy.earnRateBps,
+          campaignId: evaluation.campaign?.campaignId || null,
+          campaignVersionId: evaluation.campaign?.campaignVersionId || null,
+          liabilityPaise: evaluation.reward.totalLiabilityPaise,
+        },
+      };
+    });
+  }
+
+  async function postVisitCampaignBonus({ orderId, origin, completionTimestamp }) {
+    const ledgerEntryId = visitCampaignEarnLedgerId(orderId);
+    const ledgerRef = db.collection(POINT_LEDGER).doc(ledgerEntryId);
+    const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
+    const orderRef = db.collection('orders').doc(orderId);
+    const itemQuery = orderRef.collection('items');
+    const occurredAt = asTimestamp(admin, completionTimestamp);
+    return db.runTransaction(async transaction => {
+      const [ledgerSnapshot, accountSnapshot, itemSnapshot, orderSnapshot] = await Promise.all([
+        transaction.get(ledgerRef),
+        transaction.get(accountRef),
+        transaction.get(itemQuery),
+        transaction.get(orderRef),
+      ]);
+      if (ledgerSnapshot.exists) {
+        return { status: 'DUPLICATE_CAMPAIGN_EVENT', writes: 0, ledgerEntryId };
+      }
+      if (!orderSnapshot.exists || !isFinalSettledOrder(orderSnapshot.data())) {
+        return { status: 'INELIGIBLE_ORDER', writes: 0 };
+      }
+      const authoritativeOrder = orderSnapshot.data();
+      const evidence = calculateEligibleSpendPaise(authoritativeOrder);
+      const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
+      const rewardContext = await policyCampaignRuntime.resolveRewardInTransaction(transaction, {
+        orderId,
+        order: authoritativeOrder,
+        customerId: origin.customerId,
+        account,
+        eligibleSpendPaise: evidence.eligibleSpendPaise,
+        itemDocuments: itemSnapshot.docs,
+        eventAtOverride: occurredAt,
+      });
+      const { evaluation } = rewardContext;
+      const campaignBonusPoints = evaluation.reward.campaignPoints;
+      if (!rewardContext.requiresVisitEvidence || !evaluation.campaign || campaignBonusPoints <= 0) {
+        return {
+          status: 'NO_VISIT_CAMPAIGN_AWARD',
+          writes: 0,
+          reasons: evaluation.campaign?.ineligibilityReasons || [],
+        };
+      }
+      const policyVersionId = evaluation.policy.policyVersionId;
+      transaction.create(ledgerRef, {
+        ledgerEntryId,
+        customerId: origin.customerId,
+        eventType: 'CAMPAIGN_BONUS_EARN',
+        pointsDelta: campaignBonusPoints,
+        basePoints: 0,
+        campaignBonusPoints,
+        eligibleSpendPaise: evidence.eligibleSpendPaise,
+        calculationEvidence: {
+          ...evidence,
+          effectiveEarnRateBps: evaluation.policy.earnRateBps,
+          basePoints: 0,
+          campaignBonusPoints,
+          matchedProductCodes: evaluation.campaign.matchedProductCodes || [],
+          matchedCategoryCodes: evaluation.campaign.matchedCategoryCodes || [],
+          uniqueIstVisitDays: evaluation.campaign.uniqueIstVisitDays || 0,
+          qualifyingVisitBusinessDate: calculateISTBusinessDate(occurredAt),
+        },
+        sourceOrderId: orderId,
+        sourceOnlineOrderId: origin.sourceOnlineOrderId,
+        storeId: cleanText(authoritativeOrder.storeId, 240),
+        issuingStoreId: cleanText(authoritativeOrder.storeId, 240),
+        orderChannel: origin.orderChannel,
+        originEvidenceType: origin.originEvidenceType,
+        policyVersion: policyVersionId,
+        policyVersionId,
+        effectiveEarnRateBps: evaluation.policy.earnRateBps,
+        policySource: evaluation.policy.source,
+        campaignId: evaluation.campaign.campaignId,
+        campaignVersionId: evaluation.campaign.campaignVersionId,
+        campaignRewardType: evaluation.campaign.rewardType,
+        liabilityPaise: evaluation.reward.campaignLiabilityPaise,
+        baseLiabilityPaise: 0,
+        campaignLiabilityPaise: evaluation.reward.campaignLiabilityPaise,
+        idempotencyKey: ledgerEntryId,
+        occurredAt,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      const expiryAt = Timestamp.fromMillis(
+        addCalendarMonthsIST(occurredAt, BOND_POLICY.pointInactivityMonths),
+      );
+      const accountWrite = {
+        customerId: origin.customerId,
+        pointsBalance: currentNumber(account, 'pointsBalance') + campaignBonusPoints,
+        lifetimePointsEarned: currentNumber(account, 'lifetimePointsEarned') + campaignBonusPoints,
+        lifetimePointsReversed: currentNumber(account, 'lifetimePointsReversed'),
+        policyVersion: policyVersionId,
+        lastQualifyingActivityAt: occurredAt,
+        projectedPointsExpiryAt: expiryAt,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (!accountSnapshot.exists) accountWrite.createdAt = FieldValue.serverTimestamp();
+      transaction.set(accountRef, accountWrite, { merge: true });
+      const campaignWrites = policyCampaignRuntime.applyCampaignAwardInTransaction(
+        transaction,
+        rewardContext,
+        {
+          customerId: origin.customerId,
+          storeId: authoritativeOrder.storeId,
+          FieldValue,
+        },
+      );
+      return {
+        status: 'CAMPAIGN_BONUS_POSTED',
+        writes: 2 + campaignWrites,
+        ledgerEntryId,
+        pointsEarned: campaignBonusPoints,
+        campaignId: evaluation.campaign.campaignId,
+        campaignVersionId: evaluation.campaign.campaignVersionId,
       };
     });
   }
 
   async function reversePointEarn({ orderId, order, origin }) {
-    const originalLedgerEntryId = pointEarnLedgerId(orderId);
+    const stableOriginalLedgerEntryId = pointEarnLedgerId(orderId);
     const reversalLedgerEntryId = pointEarnReversalLedgerId(orderId);
-    const originalRef = db.collection(POINT_LEDGER).doc(originalLedgerEntryId);
+    const originalRefs = [
+      db.collection(POINT_LEDGER).doc(stableOriginalLedgerEntryId),
+      ...legacyPointEarnLedgerIds(orderId)
+        .filter(id => id !== stableOriginalLedgerEntryId)
+        .map(id => db.collection(POINT_LEDGER).doc(id)),
+    ];
     const reversalRef = db.collection(POINT_LEDGER).doc(reversalLedgerEntryId);
+    const legacyReversalRefs = legacyPointEarnReversalLedgerIds(orderId)
+      .filter(id => id !== reversalLedgerEntryId)
+      .map(id => db.collection(POINT_LEDGER).doc(id));
     const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
     const occurredAt = asTimestamp(admin, order?.voidedAt || order?.updatedAt || order?.createdAt);
     return db.runTransaction(async transaction => {
-      const [originalSnapshot, reversalSnapshot, accountSnapshot] = await Promise.all([
-        transaction.get(originalRef),
+      const [originalSnapshots, reversalSnapshot, legacyReversalSnapshots, accountSnapshot] = await Promise.all([
+        Promise.all(originalRefs.map(ref => transaction.get(ref))),
         transaction.get(reversalRef),
+        Promise.all(legacyReversalRefs.map(ref => transaction.get(ref))),
         transaction.get(accountRef),
       ]);
-      if (reversalSnapshot.exists) return { status: 'DUPLICATE_EVENT', writes: 0 };
-      if (!originalSnapshot.exists || originalSnapshot.data()?.eventType !== 'POINT_EARN') {
+      if (reversalSnapshot.exists || legacyReversalSnapshots.some(snapshot => snapshot.exists)) {
+        return { status: 'DUPLICATE_EVENT', writes: 0 };
+      }
+      const originalSnapshot = originalSnapshots.find(snapshot => (
+        snapshot.exists && snapshot.data()?.eventType === 'POINT_EARN'
+      )) || originalSnapshots.find(snapshot => snapshot.exists) || null;
+      if (!originalSnapshot || originalSnapshot.data()?.eventType !== 'POINT_EARN') {
         return { status: 'NO_ORIGINAL_EARN', writes: 0 };
       }
+      const originalLedgerEntryId = originalSnapshot.id;
       const original = originalSnapshot.data();
       const points = Math.max(0, currentNumber(original, 'pointsDelta'));
+      const campaignBonusPoints = Math.max(0, currentNumber(original, 'campaignBonusPoints'));
       const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
+      let budgetRef = null;
+      let usageRef = null;
+      let budgetSnapshot = null;
+      let usageSnapshot = null;
+      if (campaignBonusPoints > 0) {
+        const campaignVersionId = cleanText(original.campaignVersionId, 180);
+        if (!campaignVersionId) {
+          throw new Error('Campaign reward ledger is missing its immutable campaign version.');
+        }
+        budgetRef = db.collection(CAMPAIGN_BUDGETS).doc(campaignVersionId);
+        usageRef = db.collection(CAMPAIGN_CUSTOMER_USAGE)
+          .doc(campaignCustomerUsageId(campaignVersionId, origin.customerId));
+        [budgetSnapshot, usageSnapshot] = await Promise.all([
+          transaction.get(budgetRef),
+          transaction.get(usageRef),
+        ]);
+        if (!budgetSnapshot.exists || !usageSnapshot.exists) {
+          throw new Error('Campaign reward projections are missing; reversal failed closed.');
+        }
+      }
       transaction.create(reversalRef, {
         ledgerEntryId: reversalLedgerEntryId,
         customerId: origin.customerId,
         eventType: 'POINT_EARN_REVERSAL',
         pointsDelta: -points,
+        basePoints: -Math.max(0, currentNumber(original, 'basePoints')),
+        campaignBonusPoints: -campaignBonusPoints,
         eligibleSpendPaise: currentNumber(original, 'eligibleSpendPaise'),
         sourceOrderId: orderId,
         sourceOnlineOrderId: origin.sourceOnlineOrderId,
         storeId: cleanText(order?.storeId, 240),
+        issuingStoreId: original.issuingStoreId || cleanText(order?.storeId, 240),
         orderChannel: origin.orderChannel,
         originEvidenceType: origin.originEvidenceType,
-        policyVersion: BOND_POLICY.policyVersion,
+        policyVersion: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
+        policyVersionId: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
+        effectiveEarnRateBps: original.effectiveEarnRateBps || null,
+        campaignId: original.campaignId || null,
+        campaignVersionId: original.campaignVersionId || null,
+        campaignRewardType: original.campaignRewardType || null,
+        liabilityPaise: -Math.max(0, currentNumber(original, 'liabilityPaise')),
+        baseLiabilityPaise: -Math.max(0, currentNumber(original, 'baseLiabilityPaise')),
+        campaignLiabilityPaise: -Math.max(0, currentNumber(original, 'campaignLiabilityPaise')),
+        calculationEvidence: {
+          reversalOfLedgerEntryId: originalLedgerEntryId,
+          originalCalculationEvidence: original.calculationEvidence || null,
+        },
         idempotencyKey: reversalLedgerEntryId,
         occurredAt,
         createdAt: FieldValue.serverTimestamp(),
@@ -354,19 +726,147 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         pointsBalance: currentNumber(account, 'pointsBalance') - points,
         lifetimePointsEarned: currentNumber(account, 'lifetimePointsEarned'),
         lifetimePointsReversed: currentNumber(account, 'lifetimePointsReversed') + points,
-        policyVersion: BOND_POLICY.policyVersion,
+        policyVersion: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
         updatedAt: FieldValue.serverTimestamp(),
       };
       if (!accountSnapshot.exists) accountWrite.createdAt = FieldValue.serverTimestamp();
       transaction.set(accountRef, accountWrite, { merge: true });
-      return { status: 'REVERSED', writes: 2, pointsDelta: -points };
+      let campaignWrites = 0;
+      if (campaignBonusPoints > 0) {
+        const budget = budgetSnapshot.data();
+        const usage = usageSnapshot.data();
+        const budgetNet = currentNumber(budget, 'netConsumedPoints') - campaignBonusPoints;
+        const usageNetPoints = currentNumber(usage, 'netPoints') - campaignBonusPoints;
+        const usageNetAwards = currentNumber(usage, 'netAwardCount') - 1;
+        if (budgetNet < 0 || usageNetPoints < 0 || usageNetAwards < 0) {
+          throw new Error('Campaign reversal would make an immutable projection negative.');
+        }
+        transaction.update(budgetRef, {
+          reversedPoints: currentNumber(budget, 'reversedPoints') + campaignBonusPoints,
+          netConsumedPoints: budgetNet,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        transaction.update(usageRef, {
+          reversedAwardCount: currentNumber(usage, 'reversedAwardCount') + 1,
+          netAwardCount: usageNetAwards,
+          reversedPoints: currentNumber(usage, 'reversedPoints') + campaignBonusPoints,
+          netPoints: usageNetPoints,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        campaignWrites = 2;
+      }
+      return { status: 'REVERSED', writes: 2 + campaignWrites, pointsDelta: -points };
+    });
+  }
+
+  async function reverseVisitCampaignBonus({ orderId, order, origin }) {
+    const originalRef = db.collection(POINT_LEDGER).doc(visitCampaignEarnLedgerId(orderId));
+    const reversalLedgerEntryId = visitCampaignReversalLedgerId(orderId);
+    const reversalRef = db.collection(POINT_LEDGER).doc(reversalLedgerEntryId);
+    const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
+    const occurredAt = asTimestamp(admin, order?.voidedAt || order?.updatedAt || order?.createdAt);
+    return db.runTransaction(async transaction => {
+      const [originalSnapshot, reversalSnapshot, accountSnapshot] = await Promise.all([
+        transaction.get(originalRef),
+        transaction.get(reversalRef),
+        transaction.get(accountRef),
+      ]);
+      if (reversalSnapshot.exists) return { status: 'DUPLICATE_EVENT', writes: 0 };
+      if (!originalSnapshot.exists || originalSnapshot.data()?.eventType !== 'CAMPAIGN_BONUS_EARN') {
+        return { status: 'NO_ORIGINAL_CAMPAIGN_BONUS', writes: 0 };
+      }
+      const original = originalSnapshot.data();
+      const points = Math.max(0, currentNumber(original, 'pointsDelta'));
+      const campaignVersionId = cleanText(original.campaignVersionId, 180);
+      if (!points || !campaignVersionId) {
+        throw new Error('Campaign bonus ledger is missing immutable reversal evidence.');
+      }
+      const budgetRef = db.collection(CAMPAIGN_BUDGETS).doc(campaignVersionId);
+      const usageRef = db.collection(CAMPAIGN_CUSTOMER_USAGE)
+        .doc(campaignCustomerUsageId(campaignVersionId, origin.customerId));
+      const [budgetSnapshot, usageSnapshot] = await Promise.all([
+        transaction.get(budgetRef),
+        transaction.get(usageRef),
+      ]);
+      if (!budgetSnapshot.exists || !usageSnapshot.exists) {
+        throw new Error('Campaign bonus projections are missing; reversal failed closed.');
+      }
+      const budget = budgetSnapshot.data();
+      const usage = usageSnapshot.data();
+      const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
+      const budgetNet = currentNumber(budget, 'netConsumedPoints') - points;
+      const usageNetPoints = currentNumber(usage, 'netPoints') - points;
+      const usageNetAwards = currentNumber(usage, 'netAwardCount') - 1;
+      if (budgetNet < 0 || usageNetPoints < 0 || usageNetAwards < 0) {
+        throw new Error('Campaign bonus reversal would make an immutable projection negative.');
+      }
+      transaction.create(reversalRef, {
+        ledgerEntryId: reversalLedgerEntryId,
+        customerId: origin.customerId,
+        eventType: 'CAMPAIGN_BONUS_REVERSAL',
+        pointsDelta: -points,
+        basePoints: 0,
+        campaignBonusPoints: -points,
+        eligibleSpendPaise: currentNumber(original, 'eligibleSpendPaise'),
+        sourceOrderId: orderId,
+        sourceOnlineOrderId: origin.sourceOnlineOrderId,
+        storeId: cleanText(order?.storeId, 240),
+        issuingStoreId: original.issuingStoreId || cleanText(order?.storeId, 240),
+        orderChannel: origin.orderChannel,
+        originEvidenceType: origin.originEvidenceType,
+        policyVersion: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
+        policyVersionId: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
+        effectiveEarnRateBps: original.effectiveEarnRateBps || null,
+        campaignId: original.campaignId,
+        campaignVersionId,
+        campaignRewardType: original.campaignRewardType || null,
+        liabilityPaise: -Math.max(0, currentNumber(original, 'liabilityPaise')),
+        baseLiabilityPaise: 0,
+        campaignLiabilityPaise: -Math.max(0, currentNumber(original, 'campaignLiabilityPaise')),
+        calculationEvidence: {
+          reversalOfLedgerEntryId: originalRef.id,
+          originalCalculationEvidence: original.calculationEvidence || null,
+        },
+        originalLedgerEntryId: originalRef.id,
+        idempotencyKey: reversalLedgerEntryId,
+        occurredAt,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      transaction.set(accountRef, {
+        customerId: origin.customerId,
+        pointsBalance: currentNumber(account, 'pointsBalance') - points,
+        lifetimePointsEarned: currentNumber(account, 'lifetimePointsEarned'),
+        lifetimePointsReversed: currentNumber(account, 'lifetimePointsReversed') + points,
+        policyVersion: original.policyVersionId || original.policyVersion || BOND_POLICY.policyVersion,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      transaction.update(budgetRef, {
+        reversedPoints: currentNumber(budget, 'reversedPoints') + points,
+        netConsumedPoints: budgetNet,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.update(usageRef, {
+        reversedAwardCount: currentNumber(usage, 'reversedAwardCount') + 1,
+        netAwardCount: usageNetAwards,
+        reversedPoints: currentNumber(usage, 'reversedPoints') + points,
+        netPoints: usageNetPoints,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { status: 'CAMPAIGN_BONUS_REVERSED', writes: 4, pointsDelta: -points };
     });
   }
 
   async function processCustomerOrderLoyalty({ orderId, order, flags, faultInjector } = {}) {
     if (!orderId || !order) return { status: 'INELIGIBLE_ORDER', writes: 0 };
     const effectiveFlags = flags || await getLoyaltyFlags();
-    if (isVoidedOrder(order)) return reverseCustomerOrderLoyalty({ orderId, order, flags: effectiveFlags });
+    if (isVoidedOrder(order)) {
+      return reverseCustomerOrderLoyalty({
+        orderId,
+        order,
+        flags: effectiveFlags,
+        faultInjector,
+      });
+    }
     if (!effectiveFlags.shadowEnabled && !effectiveFlags.earnEnabled) return { status: 'DISABLED', writes: 0 };
     const origin = await resolveOrigin(orderId, order);
     const evidence = calculateEligibleSpendPaise(order);
@@ -384,14 +884,33 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       }
       return { status: 'INELIGIBLE_ORDER', writes: 0, exclusionReasons: ['ORDER_NOT_FINAL_AND_SETTLED'] };
     }
-    if (effectiveFlags.shadowEnabled) {
-      await writeShadowLog({ orderId, order, origin, calculation, status: 'MATCH' });
+    if (!effectiveFlags.earnEnabled) {
+      const rewardContext = await policyCampaignRuntime.resolveReward({
+        orderId,
+        order,
+        customerId: origin.customerId,
+        eligibleSpendPaise: calculation.eligibleSpendPaise,
+      });
+      const managedCalculation = calculationFromRewardContext(rewardContext, calculation);
+      if (effectiveFlags.shadowEnabled) {
+        await writeShadowLog({ orderId, order, origin, calculation: managedCalculation, status: 'MATCH' });
+      }
+      return { status: 'SHADOW_ONLY', writes: 0, calculation: managedCalculation };
     }
-    if (!effectiveFlags.earnEnabled) return { status: 'SHADOW_ONLY', writes: 0, calculation };
-    return postPointEarn({ orderId, order, origin, calculation, faultInjector });
+    const result = await postPointEarn({ orderId, order, origin, calculation, faultInjector });
+    if (effectiveFlags.shadowEnabled) {
+      await writeShadowLog({
+        orderId,
+        order,
+        origin,
+        calculation: { ...calculation, ...(result.calculation || {}) },
+        status: 'MATCH',
+      });
+    }
+    return result;
   }
 
-  async function processQualifyingVisit({ orderId, order, completionTimestamp, flags } = {}) {
+  async function processQualifyingVisit({ orderId, order, completionTimestamp, flags, faultInjector } = {}) {
     const effectiveFlags = flags || await getLoyaltyFlags();
     if (!effectiveFlags.visitEnabled) return { status: 'VISITS_DISABLED', writes: 0 };
     if (!isFinalSettledOrder(order)) return { status: 'INELIGIBLE_ORDER', writes: 0 };
@@ -411,15 +930,36 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     const eventRef = db.collection(VISIT_EVENTS).doc(visitEventId(orderId));
     const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
     const clubRef = db.collection(MEMBERSHIPS).doc(membershipId(origin.customerId));
-    return db.runTransaction(async transaction => {
-      const [daySnapshot, eventSnapshot, accountSnapshot, membershipSnapshot] = await Promise.all([
+    const orderRef = db.collection('orders').doc(orderId);
+    if (faultInjector) await faultInjector('BEFORE_VISIT_TRANSACTION');
+    const visitResult = await db.runTransaction(async transaction => {
+      const [daySnapshot, eventSnapshot, accountSnapshot, membershipSnapshot, orderSnapshot] = await Promise.all([
         transaction.get(dayRef),
         transaction.get(eventRef),
         transaction.get(accountRef),
         transaction.get(clubRef),
+        transaction.get(orderRef),
       ]);
       if (eventSnapshot.exists) return { status: 'DUPLICATE_EVENT', writes: 0 };
       if (daySnapshot.exists) return { status: 'DAILY_VISIT_ALREADY_AWARDED', writes: 0 };
+      if (!orderSnapshot.exists || !isFinalSettledOrder(orderSnapshot.data())) {
+        return {
+          status: 'INELIGIBLE_ORDER',
+          writes: 0,
+          exclusionReasons: ['AUTHORITATIVE_ORDER_NOT_FINAL_AND_SETTLED'],
+        };
+      }
+      const authoritativeOrder = orderSnapshot.data();
+      if (authoritativeOrder.orderType !== 'TAKEAWAY') {
+        return {
+          status: authoritativeOrder.orderType === 'DELIVERY' ? 'DELIVERY_NO_VISIT' : 'NON_PICKUP_NO_VISIT',
+          writes: 0,
+        };
+      }
+      const authoritativeSpend = calculateEligibleSpendPaise(authoritativeOrder);
+      if (authoritativeSpend.eligibleSpendPaise < BOND_POLICY.visitMinimumPaise) {
+        return { status: 'BELOW_VISIT_MINIMUM', writes: 0 };
+      }
       const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
       const windowStartDate = businessDateDaysBefore(businessDate, BOND_POLICY.qualificationWindowDays - 1);
       const currentDates = Array.isArray(account.rollingVisitBusinessDates)
@@ -447,10 +987,10 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         visitDelta: 1,
         customerId: origin.customerId,
         businessDate,
-        eligibleSpendPaise: spend.eligibleSpendPaise,
+        eligibleSpendPaise: authoritativeSpend.eligibleSpendPaise,
         sourceOrderId: orderId,
         sourceOnlineOrderId: origin.sourceOnlineOrderId,
-        storeId: cleanText(order.storeId, 240),
+        storeId: cleanText(authoritativeOrder.storeId, 240),
         orderChannel: origin.orderChannel,
         originEvidenceType: origin.originEvidenceType,
         policyVersion: BOND_POLICY.policyVersion,
@@ -508,9 +1048,23 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         businessDate,
       };
     });
+    const visitBelongsToOrder = ['VISIT_POSTED', 'VISIT_AND_CLUB_POSTED', 'DUPLICATE_EVENT']
+      .includes(visitResult.status);
+    if (!visitBelongsToOrder || !effectiveFlags.earnEnabled) return visitResult;
+    if (faultInjector) await faultInjector('AFTER_VISIT_TRANSACTION_BEFORE_CAMPAIGN');
+    const campaignResult = await postVisitCampaignBonus({
+      orderId,
+      origin,
+      completionTimestamp: occurredAt,
+    });
+    return {
+      ...visitResult,
+      writes: currentNumber(visitResult, 'writes') + currentNumber(campaignResult, 'writes'),
+      campaignResult,
+    };
   }
 
-  async function processKotFulfillment({ before, after, kotId } = {}) {
+  async function processKotFulfillment({ before, after, kotId, faultInjector } = {}) {
     if (!after || before?.status === 'SERVED' || after.status !== 'SERVED') {
       return { status: 'NO_COMPLETION_TRANSITION', writes: 0 };
     }
@@ -525,10 +1079,11 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       order: orderSnapshot.data(),
       flags,
       sourceKotId: kotId,
+      faultInjector,
     });
   }
 
-  async function processOrderFulfillmentIfReady({ orderId, order, flags } = {}) {
+  async function processOrderFulfillmentIfReady({ orderId, order, flags, faultInjector } = {}) {
     const effectiveFlags = flags || await getLoyaltyFlags();
     if (!effectiveFlags.visitEnabled) return { status: 'VISITS_DISABLED', writes: 0 };
     const kotSnapshot = await db.collection('kotItems').where('orderId', '==', orderId).get();
@@ -545,10 +1100,11 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       order,
       completionTimestamp: completionMillis || Date.now(),
       flags: effectiveFlags,
+      faultInjector,
     });
   }
 
-  async function reverseQualifyingVisit({ orderId, origin, order }) {
+  async function reverseQualifyingVisit({ orderId, origin, order, faultInjector }) {
     const originalRef = db.collection(VISIT_EVENTS).doc(visitEventId(orderId));
     const reversalRef = db.collection(VISIT_EVENTS).doc(visitReversalEventId(orderId));
     const accountRef = db.collection(ACCOUNTS).doc(origin.customerId);
@@ -560,7 +1116,13 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         transaction.get(accountRef),
       ]);
       if (!originalSnapshot.exists) return { status: 'NO_ORIGINAL_VISIT', writes: 0 };
-      if (reversalSnapshot.exists) return { status: 'DUPLICATE_EVENT', writes: 0 };
+      if (reversalSnapshot.exists) {
+        return {
+          status: 'DUPLICATE_EVENT',
+          writes: 0,
+          businessDate: cleanText(originalSnapshot.data()?.businessDate, 20) || null,
+        };
+      }
       const original = originalSnapshot.data();
       const dayRef = db.collection(VISIT_DAYS).doc(safeDocumentId(origin.customerId, original.businessDate));
       const daySnapshot = await transaction.get(dayRef);
@@ -593,7 +1155,10 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       }, { merge: true });
       return { status: 'VISIT_REVERSED', writes: daySnapshot.exists ? 3 : 2, businessDate: original.businessDate };
     });
-    if (result.businessDate) await reevaluateVisitDay(origin.customerId, result.businessDate, orderId);
+    if (result.businessDate) {
+      if (faultInjector) await faultInjector('AFTER_VISIT_REVERSAL_TRANSACTION');
+      await reevaluateVisitDay(origin.customerId, result.businessDate, orderId);
+    }
     return result;
   }
 
@@ -601,10 +1166,9 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     const ledgerSnapshot = await db.collection(POINT_LEDGER).where('customerId', '==', customerId).get();
     const candidates = ledgerSnapshot.docs
       .map(snapshot => snapshot.data())
-      .filter(entry => entry.eventType === 'POINT_EARN'
+      .filter(entry => ['POINT_EARN', POINT_EARN_ZERO_DECISION].includes(entry.eventType)
         && entry.sourceOrderId !== excludedOrderId
-        && entry.eligibleSpendPaise >= BOND_POLICY.visitMinimumPaise
-        && calculateISTBusinessDate(entry.occurredAt) === businessDate)
+        && entry.eligibleSpendPaise >= BOND_POLICY.visitMinimumPaise)
       .sort((left, right) => timestampMillis(left.occurredAt) - timestampMillis(right.occurredAt));
     for (const candidate of candidates) {
       const orderSnapshot = await db.collection('orders').doc(candidate.sourceOrderId).get();
@@ -612,7 +1176,10 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       const kotSnapshot = await db.collection('kotItems').where('orderId', '==', candidate.sourceOrderId).get();
       const tickets = kotSnapshot.docs.map(snapshot => snapshot.data());
       if (!tickets.length || tickets.some(ticket => !['SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(ticket.status))) continue;
-      const servedAt = Math.max(...tickets.map(ticket => timestampMillis(ticket.servedAt)), timestampMillis(candidate.occurredAt));
+      const servedTickets = tickets.filter(ticket => ticket.status === 'SERVED');
+      if (!servedTickets.length) continue;
+      const servedAt = Math.max(...servedTickets.map(ticket => timestampMillis(ticket.servedAt)));
+      if (!servedAt || calculateISTBusinessDate(servedAt) !== businessDate) continue;
       const result = await processQualifyingVisit({
         orderId: candidate.sourceOrderId,
         order: orderSnapshot.data(),
@@ -623,18 +1190,20 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     return { status: 'NO_REPLACEMENT_VISIT', writes: 0 };
   }
 
-  async function reverseCustomerOrderLoyalty({ orderId, order, flags } = {}) {
+  async function reverseCustomerOrderLoyalty({ orderId, order, flags, faultInjector } = {}) {
     // Reversals are mandatory for any previously posted event even if earning is
     // subsequently switched off. With no original ledger/visit both paths are no-ops.
     void flags;
     const origin = await resolveOrigin(orderId, order, { allowReversedStatus: true });
     if (!origin.eligible) return { status: 'INELIGIBLE_CHANNEL', writes: 0, exclusionReasons: origin.exclusionReasons };
     const pointResult = await reversePointEarn({ orderId, order, origin });
-    const visitResult = await reverseQualifyingVisit({ orderId, order, origin });
+    const campaignResult = await reverseVisitCampaignBonus({ orderId, order, origin });
+    const visitResult = await reverseQualifyingVisit({ orderId, order, origin, faultInjector });
     return {
       status: 'REVERSAL_EVALUATED',
-      writes: pointResult.writes + visitResult.writes,
+      writes: pointResult.writes + campaignResult.writes + visitResult.writes,
       pointResult,
+      campaignResult,
       visitResult,
     };
   }
@@ -645,20 +1214,31 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     const earnings = new Map();
     snapshot.docs.forEach(document => {
       const entry = document.data();
-      if (entry.eventType !== 'POINT_EARN' || !entry.sourceOnlineOrderId) return;
-      earnings.set(entry.sourceOnlineOrderId, currentNumber(entry, 'pointsDelta'));
+      if (!['POINT_EARN', 'CAMPAIGN_BONUS_EARN'].includes(entry.eventType) || !entry.sourceOnlineOrderId) return;
+      earnings.set(
+        entry.sourceOnlineOrderId,
+        (earnings.get(entry.sourceOnlineOrderId) || 0) + currentNumber(entry, 'pointsDelta'),
+      );
     });
     return earnings;
   }
 
-  async function getCustomerLoyaltySummary(customerId) {
+  async function getCustomerLoyaltySummary(customerId, storeId = null) {
     const flags = await getLoyaltyFlags();
     if (!flags.accountEnabled) {
       return { enabled: false, ...flags, policyVersion: BOND_POLICY.policyVersion };
     }
-    const [accountSnapshot, membershipSnapshot] = await Promise.all([
+    const effectivePolicyPromise = storeId
+      ? policyCampaignRuntime.resolveCurrentPolicy({ storeId })
+      : Promise.resolve({
+        effectiveEarnRateBps: LEGACY_DEFAULT_EARN_BASIS_POINTS,
+        effectivePolicyVersionId: BOND_POLICY.policyVersion,
+        policySource: 'LEGACY_DEFAULT',
+      });
+    const [accountSnapshot, membershipSnapshot, effectivePolicy] = await Promise.all([
       db.collection(ACCOUNTS).doc(customerId).get(),
       db.collection(MEMBERSHIPS).doc(membershipId(customerId)).get(),
+      effectivePolicyPromise,
     ]);
     const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(customerId);
     const visits = currentNumber(account, 'qualifyingVisitCount');
@@ -666,7 +1246,10 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     return {
       enabled: true,
       ...flags,
-      policyVersion: BOND_POLICY.policyVersion,
+      policyVersion: effectivePolicy.effectivePolicyVersionId,
+      effectivePolicyVersionId: effectivePolicy.effectivePolicyVersionId,
+      effectiveEarnRateBps: effectivePolicy.effectiveEarnRateBps,
+      policySource: effectivePolicy.policySource,
       pointsBalance: currentNumber(account, 'pointsBalance'),
       qualifyingVisitCount: visits,
       currentClubStatus: membershipSnapshot.exists ? membershipSnapshot.data()?.status || 'ACTIVE' : account.currentClubStatus || 'NONE',
@@ -687,7 +1270,8 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       error.code = 'unauthenticated';
       throw error;
     }
-    return getCustomerLoyaltySummary(customerId);
+    const storeId = cleanText(request.data?.storeId, 180) || null;
+    return getCustomerLoyaltySummary(customerId, storeId);
   }
 
   async function reconcileLoyaltyAccount(customerId, { repair = false } = {}) {
@@ -697,7 +1281,8 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       db.collection('onlineOrders').where('customerUid', '==', customerId).limit(100).get(),
     ]);
     const entries = ledgerSnapshot.docs.map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
-    const ledgerBalance = entries.reduce((sum, entry) => sum + currentNumber(entry, 'pointsDelta'), 0);
+    const financialEntries = entries.filter(entry => entry.eventType !== POINT_EARN_ZERO_DECISION);
+    const ledgerBalance = financialEntries.reduce((sum, entry) => sum + currentNumber(entry, 'pointsDelta'), 0);
     const projectedBalance = accountSnapshot.exists ? currentNumber(accountSnapshot.data(), 'pointsBalance') : null;
     const groups = new Map();
     entries.forEach(entry => {
@@ -714,17 +1299,24 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       const orderSnapshot = await db.collection('orders').doc(orderId).get();
       if (!orderSnapshot.exists) continue;
       const order = orderSnapshot.data();
-      const earnExists = entries.some(entry => entry.id === pointEarnLedgerId(orderId));
-      const reversalExists = entries.some(entry => entry.id === pointEarnReversalLedgerId(orderId));
-      if (isFinalSettledOrder(order) && !earnExists) missingLoyaltyOrders.push(orderId);
-      if (isVoidedOrder(order) && earnExists && !reversalExists) missingReversals.push(orderId);
+      const pointDecision = entries.find(entry => (
+        entry.sourceOrderId === orderId
+        && ['POINT_EARN', POINT_EARN_ZERO_DECISION].includes(entry.eventType)
+      ));
+      const reversalExists = entries.some(entry => (
+        entry.sourceOrderId === orderId && entry.eventType === 'POINT_EARN_REVERSAL'
+      ));
+      if (isFinalSettledOrder(order) && !pointDecision) missingLoyaltyOrders.push(orderId);
+      if (isVoidedOrder(order) && pointDecision?.eventType === 'POINT_EARN' && !reversalExists) {
+        missingReversals.push(orderId);
+      }
     }
     const report = {
       customerId,
       ledgerBalance,
       projectedBalance,
-      projectionMismatch: projectedBalance !== ledgerBalance,
-      postedLedgerMissingAccountProjection: !accountSnapshot.exists && entries.length > 0,
+      projectionMismatch: financialEntries.length > 0 ? projectedBalance !== ledgerBalance : false,
+      postedLedgerMissingAccountProjection: !accountSnapshot.exists && financialEntries.length > 0,
       duplicateEvents,
       missingLoyaltyOrders,
       missingReversals,
@@ -794,6 +1386,7 @@ module.exports = {
   FLAGS_DOCUMENT,
   MEMBERSHIPS,
   POINT_LEDGER,
+  POINT_EARN_ZERO_DECISION,
   SHADOW_LOGS,
   VISIT_DAYS,
   VISIT_EVENTS,
@@ -801,10 +1394,14 @@ module.exports = {
   createBondLoyaltyService,
   isEligibleCustomerOrderingOrigin,
   isFinalSettledOrder,
+  legacyPointEarnLedgerId,
+  legacyPointEarnReversalLedgerId,
   membershipId,
   pointEarnLedgerId,
   pointEarnReversalLedgerId,
   safeDocumentId,
+  visitCampaignEarnLedgerId,
+  visitCampaignReversalLedgerId,
   visitEventId,
   visitReversalEventId,
 };

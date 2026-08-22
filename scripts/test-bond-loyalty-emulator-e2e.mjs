@@ -50,7 +50,12 @@ process.env.GOOGLE_CLOUD_PROJECT = PROJECT_ID;
 const admin = require('firebase-admin');
 if (!admin.apps.length) admin.initializeApp({ projectId: PROJECT_ID });
 const db = admin.firestore();
-const { createBondLoyaltyService, pointEarnLedgerId, pointEarnReversalLedgerId } = require('../functions/bondLoyalty');
+const {
+  POINT_EARN_ZERO_DECISION,
+  createBondLoyaltyService,
+  pointEarnLedgerId,
+  pointEarnReversalLedgerId,
+} = require('../functions/bondLoyalty');
 const { calculateISTBusinessDate } = require('../functions/bondLoyaltyPolicy');
 const service = createBondLoyaltyService({ admin, db });
 const Timestamp = admin.firestore.Timestamp;
@@ -304,6 +309,48 @@ const concurrentResults = await Promise.all([
 const concurrentAccount = (await db.collection('loyaltyAccounts').doc(concurrentCustomer).get()).data();
 check('truly concurrent same-day cross-store visits create one daily lock', concurrentResults.filter(result => result.status === 'VISIT_POSTED').length === 1 && concurrentAccount.qualifyingVisitCount === 1);
 
+// A served-completion callback that already loaded the completed order cannot post
+// a visit after the authoritative order is voided before its transaction begins.
+const staleVisitCustomer = 'stale_visit_after_void_customer';
+const staleVisitOrder = await seedEligibleOrder({
+  orderId: 'stale_visit_after_void',
+  customerId: staleVisitCustomer,
+  occurredAt: visitTime + 600000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+await service.processCustomerOrderLoyalty({ orderId: staleVisitOrder.orderId, order: staleVisitOrder.order });
+const staleVisitKot = await seedServedKot(staleVisitOrder.orderId, visitTime + 660000);
+let releaseStaleVisitWorker;
+let staleVisitWorkerReachedTransaction;
+const staleVisitGate = new Promise(resolve => { releaseStaleVisitWorker = resolve; });
+const staleVisitReached = new Promise(resolve => { staleVisitWorkerReachedTransaction = resolve; });
+const staleVisitWork = service.processKotFulfillment({
+  before: { ...staleVisitKot, status: 'READY' },
+  after: staleVisitKot,
+  kotId: `kot_${staleVisitOrder.orderId}`,
+  faultInjector: async stage => {
+    if (stage !== 'BEFORE_VISIT_TRANSACTION') return;
+    staleVisitWorkerReachedTransaction();
+    await staleVisitGate;
+  },
+});
+await staleVisitReached;
+const staleVisitVoidedOrder = {
+  ...staleVisitOrder.order,
+  status: 'VOIDED',
+  voidedAt: Timestamp.fromMillis(visitTime + 720000),
+  updatedAt: Timestamp.fromMillis(visitTime + 720000),
+};
+await db.collection('orders').doc(staleVisitOrder.orderId).set(staleVisitVoidedOrder);
+releaseStaleVisitWorker();
+const staleVisitResult = await staleVisitWork;
+const staleVisitBusinessDate = calculateISTBusinessDate(visitTime + 660000);
+check('authoritative visit transaction rejects reordered served completion after void', staleVisitResult.status === 'INELIGIBLE_ORDER'
+  && !(await db.collection('qualifyingVisitEvents').doc(`QUALIFY_VISIT_ORDER__${staleVisitOrder.orderId}__BOND_POLICY_V1_2026`).get()).exists
+  && !(await db.collection('qualifyingVisitDays').doc(`${staleVisitCustomer}__${staleVisitBusinessDate}`).get()).exists
+  && (await db.collection('loyaltyAccounts').doc(staleVisitCustomer).get()).data().qualifyingVisitCount === 0);
+
 const boundaryCustomer = 'boundary_customer';
 for (const [suffix, occurredAt] of [['2359', Date.parse('2026-03-01T18:29:00.000Z')], ['0001', Date.parse('2026-03-01T18:31:00.000Z')]]) {
   const seeded = await seedEligibleOrder({ orderId: `boundary_${suffix}`, customerId: boundaryCustomer, occurredAt, taxableRupees: 150, gstRupees: 7.5 });
@@ -380,12 +427,189 @@ await service.processKotFulfillment({ before: { ...sourceKot, status: 'READY' },
 await service.processKotFulfillment({ before: { ...alternateKot, status: 'READY' }, after: alternateKot });
 const sourceVoided = { ...sourceOrder.order, status: 'VOIDED', voidedAt: Timestamp.fromMillis(replacementTime + 240000) };
 await db.collection('orders').doc(sourceOrder.orderId).set(sourceVoided);
-await service.processCustomerOrderLoyalty({ orderId: sourceOrder.orderId, order: sourceVoided });
 const replacementDay = calculateISTBusinessDate(replacementTime);
+let replacementReevaluationInterrupted = false;
+try {
+  await service.processCustomerOrderLoyalty({
+    orderId: sourceOrder.orderId,
+    order: sourceVoided,
+    faultInjector: async stage => {
+      if (stage === 'AFTER_VISIT_REVERSAL_TRANSACTION') {
+        throw new Error('INJECTED_AFTER_VISIT_REVERSAL');
+      }
+    },
+  });
+} catch (error) {
+  replacementReevaluationInterrupted = error?.message === 'INJECTED_AFTER_VISIT_REVERSAL';
+}
+const dayLockAfterInterruptedReversal = await db.collection('qualifyingVisitDays')
+  .doc(`${replacementCustomer}__${replacementDay}`).get();
+check('injected failure occurs after immutable visit reversal but before day replacement', replacementReevaluationInterrupted
+  && !dayLockAfterInterruptedReversal.exists
+  && (await db.collection('qualifyingVisitEvents').doc(`QUALIFY_VISIT_REVERSAL__${sourceOrder.orderId}__BOND_POLICY_V1_2026`).get()).exists);
+const replacementRetry = await service.processCustomerOrderLoyalty({
+  orderId: sourceOrder.orderId,
+  order: sourceVoided,
+});
 const replacementLock = (await db.collection('qualifyingVisitDays').doc(`${replacementCustomer}__${replacementDay}`).get()).data();
 check('voided daily source records immutable visit reversal', (await db.collection('qualifyingVisitEvents').doc(`QUALIFY_VISIT_REVERSAL__${sourceOrder.orderId}__BOND_POLICY_V1_2026`).get()).exists);
+check('duplicate visit reversal returns its business date and resumes replacement', replacementRetry.visitResult.status === 'DUPLICATE_EVENT'
+  && replacementRetry.visitResult.businessDate === replacementDay);
 check('another qualifying served order becomes the daily source', replacementLock.sourceOrderId === alternateOrder.orderId);
 check('daily source replacement keeps visit count at one', (await db.collection('loyaltyAccounts').doc(replacementCustomer).get()).data().qualifyingVisitCount === 1);
+
+// A paid pickup may have an immutable zero-point decision under a zero-rate policy;
+// it still remains eligible to replace a voided visit-day source.
+const zeroReplacementCustomer = 'zero_point_replacement_customer';
+const zeroReplacementTime = Date.parse('2026-06-02T08:00:00.000Z');
+const zeroSourceOrder = await seedEligibleOrder({
+  orderId: 'zero_day_source',
+  customerId: zeroReplacementCustomer,
+  occurredAt: zeroReplacementTime,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+const zeroAlternateOrder = await seedEligibleOrder({
+  orderId: 'zero_day_alternate',
+  customerId: zeroReplacementCustomer,
+  occurredAt: zeroReplacementTime + 60000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+await service.processCustomerOrderLoyalty({ orderId: zeroSourceOrder.orderId, order: zeroSourceOrder.order });
+await db.collection('loyaltyPointLedger').doc(pointEarnLedgerId(zeroAlternateOrder.orderId)).set({
+  ledgerEntryId: pointEarnLedgerId(zeroAlternateOrder.orderId),
+  customerId: zeroReplacementCustomer,
+  eventType: POINT_EARN_ZERO_DECISION,
+  pointsDelta: 0,
+  eligibleSpendPaise: 15000,
+  sourceOrderId: zeroAlternateOrder.orderId,
+  sourceOnlineOrderId: zeroAlternateOrder.onlineOrderId,
+  storeId: zeroAlternateOrder.order.storeId,
+  orderChannel: 'CUSTOMER_ORDERING',
+  policyVersion: 'ZERO_RATE_POLICY_TEST',
+  policyVersionId: 'ZERO_RATE_POLICY_TEST',
+  occurredAt: zeroAlternateOrder.timestamp,
+  createdAt: zeroAlternateOrder.timestamp,
+});
+const zeroSourceKot = await seedServedKot(zeroSourceOrder.orderId, zeroReplacementTime + 120000);
+const zeroAlternateKot = await seedServedKot(zeroAlternateOrder.orderId, zeroReplacementTime + 180000);
+await service.processKotFulfillment({ before: { ...zeroSourceKot, status: 'READY' }, after: zeroSourceKot });
+await service.processKotFulfillment({ before: { ...zeroAlternateKot, status: 'READY' }, after: zeroAlternateKot });
+const zeroSourceVoided = {
+  ...zeroSourceOrder.order,
+  status: 'VOIDED',
+  voidedAt: Timestamp.fromMillis(zeroReplacementTime + 240000),
+};
+await db.collection('orders').doc(zeroSourceOrder.orderId).set(zeroSourceVoided);
+await service.processCustomerOrderLoyalty({ orderId: zeroSourceOrder.orderId, order: zeroSourceVoided });
+const zeroReplacementDay = calculateISTBusinessDate(zeroReplacementTime);
+const zeroReplacementLock = (await db.collection('qualifyingVisitDays')
+  .doc(`${zeroReplacementCustomer}__${zeroReplacementDay}`).get()).data();
+check('zero-point decision remains a qualifying visit-day replacement candidate', zeroReplacementLock.sourceOrderId === zeroAlternateOrder.orderId
+  && (await db.collection('loyaltyAccounts').doc(zeroReplacementCustomer).get()).data().qualifyingVisitCount === 1);
+
+// Replacement eligibility follows the authoritative SERVED instant, not the
+// earlier payment/point-ledger instant, across the IST midnight boundary.
+const midnightBoundary = Date.parse('2026-06-03T18:30:00.000Z');
+const crossMidnightCustomer = 'cross_midnight_replacement_customer';
+const crossMidnightSource = await seedEligibleOrder({
+  orderId: 'cross_midnight_source',
+  customerId: crossMidnightCustomer,
+  occurredAt: midnightBoundary - 600000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+const crossMidnightAlternate = await seedEligibleOrder({
+  orderId: 'cross_midnight_alternate',
+  customerId: crossMidnightCustomer,
+  occurredAt: midnightBoundary - 60000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+await service.processCustomerOrderLoyalty({ orderId: crossMidnightSource.orderId, order: crossMidnightSource.order });
+await service.processCustomerOrderLoyalty({ orderId: crossMidnightAlternate.orderId, order: crossMidnightAlternate.order });
+const crossMidnightSourceKot = await seedServedKot(crossMidnightSource.orderId, midnightBoundary + 120000);
+const crossMidnightAlternateKot = await seedServedKot(crossMidnightAlternate.orderId, midnightBoundary + 60000);
+await service.processKotFulfillment({
+  before: { ...crossMidnightSourceKot, status: 'READY' },
+  after: crossMidnightSourceKot,
+});
+await service.processKotFulfillment({
+  before: { ...crossMidnightAlternateKot, status: 'READY' },
+  after: crossMidnightAlternateKot,
+});
+const crossMidnightSourceVoided = {
+  ...crossMidnightSource.order,
+  status: 'VOIDED',
+  voidedAt: Timestamp.fromMillis(midnightBoundary + 180000),
+};
+await db.collection('orders').doc(crossMidnightSource.orderId).set(crossMidnightSourceVoided);
+await service.processCustomerOrderLoyalty({
+  orderId: crossMidnightSource.orderId,
+  order: crossMidnightSourceVoided,
+});
+const crossMidnightReplacementDay = calculateISTBusinessDate(midnightBoundary + 60000);
+const crossMidnightLock = (await db.collection('qualifyingVisitDays')
+  .doc(`${crossMidnightCustomer}__${crossMidnightReplacementDay}`).get()).data();
+check('paid-before but served-after IST midnight order replaces the reversed served day',
+  calculateISTBusinessDate(crossMidnightAlternate.timestamp) !== crossMidnightReplacementDay
+  && crossMidnightLock.sourceOrderId === crossMidnightAlternate.orderId);
+
+// Terminal KOTs without any SERVED ticket cannot replace a visit-day source.
+const terminalOnlyCustomer = 'terminal_only_replacement_customer';
+const terminalOnlyCandidate = await seedEligibleOrder({
+  orderId: 'terminal_only_candidate',
+  customerId: terminalOnlyCustomer,
+  occurredAt: midnightBoundary + 600000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+const terminalOnlySource = await seedEligibleOrder({
+  orderId: 'terminal_only_source',
+  customerId: terminalOnlyCustomer,
+  occurredAt: midnightBoundary + 1200000,
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+await service.processCustomerOrderLoyalty({ orderId: terminalOnlyCandidate.orderId, order: terminalOnlyCandidate.order });
+await service.processCustomerOrderLoyalty({ orderId: terminalOnlySource.orderId, order: terminalOnlySource.order });
+const terminalBatch = db.batch();
+terminalBatch.set(db.collection('kotItems').doc('kot_terminal_only_cancelled'), {
+  orderId: terminalOnlyCandidate.orderId,
+  orderItemId: 'terminal_cancelled_item',
+  storeId: terminalOnlyCandidate.order.storeId,
+  status: 'CANCELLED',
+  updatedAt: Timestamp.fromMillis(midnightBoundary + 1500000),
+});
+terminalBatch.set(db.collection('kotItems').doc('kot_terminal_only_wastage'), {
+  orderId: terminalOnlyCandidate.orderId,
+  orderItemId: 'terminal_wastage_item',
+  storeId: terminalOnlyCandidate.order.storeId,
+  status: 'WASTAGE_RECORDED',
+  updatedAt: Timestamp.fromMillis(midnightBoundary + 1500000),
+});
+await terminalBatch.commit();
+const terminalSourceKot = await seedServedKot(terminalOnlySource.orderId, midnightBoundary + 1800000);
+await service.processKotFulfillment({
+  before: { ...terminalSourceKot, status: 'READY' },
+  after: terminalSourceKot,
+});
+const terminalSourceVoided = {
+  ...terminalOnlySource.order,
+  status: 'VOIDED',
+  voidedAt: Timestamp.fromMillis(midnightBoundary + 2400000),
+};
+await db.collection('orders').doc(terminalOnlySource.orderId).set(terminalSourceVoided);
+await service.processCustomerOrderLoyalty({
+  orderId: terminalOnlySource.orderId,
+  order: terminalSourceVoided,
+});
+const terminalReplacementDay = calculateISTBusinessDate(midnightBoundary + 1800000);
+const terminalReplacementLock = await db.collection('qualifyingVisitDays')
+  .doc(`${terminalOnlyCustomer}__${terminalReplacementDay}`).get();
+check('all-cancelled and wastage KOTs cannot replace a reversed visit day', !terminalReplacementLock.exists
+  && (await db.collection('loyaltyAccounts').doc(terminalOnlyCustomer).get()).data().qualifyingVisitCount === 0);
 
 // Failure isolation and reconciliation recovery.
 const failureOrder = await seedEligibleOrder({ orderId: 'failure_isolation', customerId: 'failure_customer', taxableRupees: 320, gstRupees: 16 });

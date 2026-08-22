@@ -14,6 +14,7 @@ export default function EntryRedirect() {
   if (staffProfile.role === 'BARISTA') return <Navigate to="/kot/barista" replace />;
   if (staffProfile.role === 'KITCHEN') return <Navigate to="/kot/kitchen" replace />;
   if (staffProfile.role === 'FRANCHISE_VIEWER') return <Navigate to="/franchise/daily-sales" replace />;
+  if (staffProfile.role === 'FRANCHISE_MANAGER') return <Navigate to="/franchise/bond" replace />;
 
   return (
     <div className="max-w-xl mx-auto w-full bg-white border border-neutral-200 rounded-2xl p-8 text-center shadow-sm">
