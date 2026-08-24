@@ -155,6 +155,7 @@ async function seedGuardrails() {
     guardrails: {
       minEarnRateBps: 500,
       maxEarnRateBps: 2000,
+      maxCombinedRewardRateBps: 2000,
       maxMultiplierBps: 30000,
       maxFixedBonusPoints: 50,
       maxCampaignDays: 60,
@@ -467,6 +468,33 @@ const belowMinimumOrder = await seedEligibleOrder({
 await earn(belowMinimumOrder);
 const belowMinimumLedger = await ledgerFor(belowMinimumOrder.orderId);
 check('non-matching spend cannot pad the campaign minimum', belowMinimumLedger.basePoints === 20 && belowMinimumLedger.campaignBonusPoints === 0 && belowMinimumLedger.pointsDelta === 20);
+
+await seedCampaign({
+  versionId: 'campaign-combined-cap-v1',
+  campaignId: 'campaign-combined-cap',
+  storeId: 'STORE_COMBINED_CAP',
+  fixedBonusPoints: 25,
+  minimumSpendPaise: 15_000,
+  customerAwardLimit: 1,
+  budgetPoints: 100,
+});
+const cappedOrder = await seedEligibleOrder({
+  orderId: 'runtime_combined_cap',
+  customerId: 'customer_combined_cap',
+  storeId: 'STORE_COMBINED_CAP',
+  taxableRupees: 150,
+  gstRupees: 7.5,
+});
+await earn(cappedOrder);
+const cappedLedger = await ledgerFor(cappedOrder.orderId);
+const cappedBudget = await budgetFor('campaign-combined-cap-v1');
+check('runtime caps base plus campaign reward at twenty percent', cappedLedger.basePoints === 15
+  && cappedLedger.calculationEvidence.configuredCampaignPoints === 25
+  && cappedLedger.campaignBonusPoints === 15
+  && cappedLedger.pointsDelta === 30
+  && cappedLedger.combinedRewardCapApplied === true);
+check('campaign budget records only the capped points actually awarded', cappedBudget.netConsumedPoints === 15
+  && cappedBudget.awardCount === 1);
 
 // A category-filtered 2x campaign adds only the incremental points for matching spend.
 await seedCampaign({

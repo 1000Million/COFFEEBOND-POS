@@ -18,7 +18,8 @@ const T2 = Date.parse('2026-08-31T09:00:00.000Z');
 
 const guardrails = Object.freeze({
   minEarnRateBps: 500,
-  maxEarnRateBps: 2000,
+  maxEarnRateBps: 1500,
+  maxCombinedRewardRateBps: 2000,
   maxMultiplierBps: 30_000,
   maxFixedBonusPoints: 100,
   maxCampaignDays: 31,
@@ -164,7 +165,7 @@ check('HQ earn-rate guardrails reject an out-of-range store override', () => {
       versionId: 'unsafe-store',
       scope: 'STORE',
       storeIds: ['STORE_A'],
-      earnRateBps: 2001,
+      earnRateBps: 1501,
     })],
     storeId: 'STORE_A',
     eventAt: T1,
@@ -216,12 +217,43 @@ check('fixed campaign points use authoritative finished-good codes and lineTaxab
     basePoints: 25,
     campaignPoints: 7,
     totalPoints: 32,
+    maxCombinedRewardRateBps: 2000,
+    combinedRewardCapPoints: 50,
+    combinedRewardCapApplied: false,
     pointValuePaise: 125,
     baseLiabilityPaise: 3125,
     campaignLiabilityPaise: 875,
     totalLiabilityPaise: 4000,
     totalLiabilityRupees: 40,
   });
+});
+
+check('combined base and campaign reward is capped independently at 20 percent', () => {
+  const result = dryRunBondReward({
+    order: order({ eligibleSpendPaise: 15_000 }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      fixedBonusPoints: 25,
+      minimumSpendPaise: 15_000,
+      customerAwardLimit: 1,
+      budgetPoints: 100,
+    })],
+    guardrails,
+    campaignUsage: {
+      authoritative: true,
+      campaignId: 'campaign-1',
+      campaignVersionId: 'campaign-1-v1',
+      customerUses: 0,
+      campaignAwardedPoints: 0,
+    },
+  });
+  assert.equal(result.reward.basePoints, 15);
+  assert.equal(result.campaign.configuredCampaignPoints, 25);
+  assert.equal(result.reward.campaignPoints, 15);
+  assert.equal(result.reward.totalPoints, 30);
+  assert.equal(result.reward.combinedRewardCapPoints, 30);
+  assert.equal(result.reward.combinedRewardCapApplied, true);
+  assert.equal(result.campaign.budgetRemainingAfter, 85);
 });
 
 check('filtered products cannot pad campaign minimum spend with ineligible items', () => {

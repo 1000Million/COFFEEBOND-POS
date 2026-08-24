@@ -76,6 +76,7 @@ type CampaignForm = {
 const EMPTY_GUARDRAILS: PolicyForm['guardrails'] = {
   minEarnRateBps: '',
   maxEarnRateBps: '',
+  maxCombinedRewardRateBps: '',
   maxMultiplierBps: '',
   maxFixedBonusPoints: '',
   maxCampaignDays: '',
@@ -121,9 +122,26 @@ function guardrailField(value: number | null): string {
   return value == null ? '' : String(value);
 }
 
+function percentField(value: number | null): string {
+  return value == null ? '' : String(value / 100);
+}
+
+function multiplierField(value: number | null): string {
+  return value == null ? '' : String(value / 10_000);
+}
+
+function moneyField(value: number | null): string {
+  return value == null ? '' : String(value / 100);
+}
+
 function basisPoints(value: string): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
+}
+
+function multiplierBasisPoints(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 10_000) : 0;
 }
 
 function paise(value: string): number {
@@ -152,7 +170,7 @@ function statusTone(status: string): string {
 
 function Card({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-3xl border border-[#e3d7cc] bg-white p-5 shadow-sm md:p-6">
+    <section className="bond-print-card rounded-3xl border border-[#e3d7cc] bg-white p-5 shadow-sm md:p-6">
       <div className="mb-5">
         <h2 className="text-lg font-black text-[#3e2723]">{title}</h2>
         {note && <p className="mt-1 text-sm font-medium text-neutral-500">{note}</p>}
@@ -237,14 +255,15 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
         scope: isAdmin ? current.scope : 'STORE',
         storeIds: current.storeIds.filter((storeId) => next.stores.some((store) => store.id === storeId)),
         guardrails: isAdmin ? {
-          minEarnRateBps: guardrailField(next.guardrails.minEarnRateBps),
-          maxEarnRateBps: guardrailField(next.guardrails.maxEarnRateBps),
-          maxMultiplierBps: guardrailField(next.guardrails.maxMultiplierBps),
+          minEarnRateBps: percentField(next.guardrails.minEarnRateBps),
+          maxEarnRateBps: percentField(next.guardrails.maxEarnRateBps),
+          maxCombinedRewardRateBps: percentField(next.guardrails.maxCombinedRewardRateBps),
+          maxMultiplierBps: multiplierField(next.guardrails.maxMultiplierBps),
           maxFixedBonusPoints: guardrailField(next.guardrails.maxFixedBonusPoints),
           maxCampaignDays: guardrailField(next.guardrails.maxCampaignDays),
           maxCustomerAwards: guardrailField(next.guardrails.maxCustomerAwards),
           maxCampaignBudgetPoints: guardrailField(next.guardrails.maxCampaignBudgetPoints),
-          liabilityPaisePerPoint: guardrailField(next.guardrails.liabilityPaisePerPoint),
+          liabilityPaisePerPoint: moneyField(next.guardrails.liabilityPaisePerPoint),
         } : current.guardrails,
       }));
     } catch (error) {
@@ -267,14 +286,15 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
     reason: policy.reason.trim(),
     ...(isAdmin && policy.scope === 'GLOBAL' ? {
       guardrails: {
-        minEarnRateBps: integer(policy.guardrails.minEarnRateBps),
-        maxEarnRateBps: integer(policy.guardrails.maxEarnRateBps),
-        maxMultiplierBps: integer(policy.guardrails.maxMultiplierBps),
+        minEarnRateBps: basisPoints(policy.guardrails.minEarnRateBps),
+        maxEarnRateBps: basisPoints(policy.guardrails.maxEarnRateBps),
+        maxCombinedRewardRateBps: basisPoints(policy.guardrails.maxCombinedRewardRateBps),
+        maxMultiplierBps: multiplierBasisPoints(policy.guardrails.maxMultiplierBps),
         maxFixedBonusPoints: integer(policy.guardrails.maxFixedBonusPoints),
         maxCampaignDays: integer(policy.guardrails.maxCampaignDays),
         maxCustomerAwards: integer(policy.guardrails.maxCustomerAwards),
         maxCampaignBudgetPoints: integer(policy.guardrails.maxCampaignBudgetPoints),
-        liabilityPaisePerPoint: integer(policy.guardrails.liabilityPaisePerPoint),
+        liabilityPaisePerPoint: paise(policy.guardrails.liabilityPaisePerPoint),
       },
     } : {}),
   }), [isAdmin, policy]);
@@ -286,7 +306,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
     endsAt: iso(campaign.endsAt),
     rewardType: campaign.rewardType,
     fixedBonusPoints: campaign.rewardType === 'FIXED_POINTS' ? integer(campaign.fixedBonusPoints) : null,
-    multiplierBps: campaign.rewardType === 'EARN_MULTIPLIER' ? basisPoints(campaign.multiplierPercent) : null,
+    multiplierBps: campaign.rewardType === 'EARN_MULTIPLIER' ? multiplierBasisPoints(campaign.multiplierPercent) : null,
     minimumSpendPaise: paise(campaign.minimumSpendRupees),
     eligibleProductCodes: splitCodes(campaign.productCodes),
     eligibleCategoryCodes: splitCodes(campaign.categoryCodes),
@@ -487,13 +507,28 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
     ...(state?.campaigns || []).map((value) => ({ type: 'CAMPAIGN' as const, value })),
   ], [state]);
 
+  const weeklyCampaign = useMemo(() => (state?.campaigns || [])
+    .filter((entry) => (
+      entry.minimumUniqueVisitDays === 3
+      && entry.visitWindowDays === 7
+      && entry.minimumSpendPaise === 15_000
+      && entry.rewardType === 'FIXED_POINTS'
+      && entry.fixedBonusPoints === 25
+      && entry.customerAwardLimit === 1
+    ))
+    .sort((left, right) => {
+      const rank = (status: string) => (status === 'ACTIVE' ? 0 : status === 'SCHEDULED' ? 1 : 2);
+      return rank(left.status) - rank(right.status)
+        || (Date.parse(right.startsAt || '') || 0) - (Date.parse(left.startsAt || '') || 0);
+    })[0] || null, [state?.campaigns]);
+
   if (loading && !state) {
     return <div className="flex min-h-[50vh] items-center justify-center gap-2 font-bold text-neutral-500"><Loader2 className="animate-spin" /> Loading BOND controls…</div>;
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6 pb-20">
-      <header className="flex flex-col gap-4 rounded-3xl bg-[#3e2723] p-6 text-white md:flex-row md:items-end md:justify-between">
+    <div className="bond-policy-manager mx-auto w-full max-w-7xl space-y-6 pb-20">
+      <header className="bond-print-card flex flex-col gap-4 rounded-3xl bg-[#3e2723] p-6 text-white md:flex-row md:items-end md:justify-between">
         <div>
           <Link to={isAdmin ? '/admin' : '/'} className="mb-4 inline-flex items-center gap-1 text-xs font-black uppercase tracking-wider text-white/70">
             <ArrowLeft size={14} /> Back
@@ -504,7 +539,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
             Versioned, approval-gated customer-ordering rewards. Native POS remains excluded.
           </p>
         </div>
-        <button onClick={() => void loadState()} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-black hover:bg-white/15">
+        <button onClick={() => void loadState()} className="bond-print-controls inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-black hover:bg-white/15">
           <RefreshCw size={16} /> Refresh
         </button>
       </header>
@@ -541,6 +576,19 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
         </div>
       </section>
 
+      {weeklyCampaign && (
+        <section className="bond-print-card rounded-3xl border border-amber-300 bg-amber-50 p-5 text-[#3e2723] shadow-sm">
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700">Weekly Noida 29 campaign</p>
+          <h2 className="mt-2 text-xl font-black">3 unique qualifying visit days · ₹150 minimum per visit</h2>
+          <p className="mt-2 text-sm font-bold text-amber-950">Monday–Sunday IST · +25 points · maximum once per customer per week.</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl bg-white/80 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-neutral-500">Budget used</p><p className="mt-1 text-xl font-black">{weeklyCampaign.issuedPoints || 0} points</p></div>
+            <div className="rounded-2xl bg-white/80 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-neutral-500">Budget remaining</p><p className="mt-1 text-xl font-black">{Math.max(0, weeklyCampaign.budgetPoints - (weeklyCampaign.issuedPoints || 0))} points</p></div>
+            <div className="rounded-2xl bg-white/80 p-3"><p className="text-[10px] font-black uppercase tracking-wider text-neutral-500">Combined reward ceiling</p><p className="mt-1 text-xl font-black">{earnRatePercent(state?.guardrails.maxCombinedRewardRateBps || 0)}</p></div>
+          </div>
+        </section>
+      )}
+
       <div className="grid gap-6 xl:grid-cols-2">
         <Card title="Earn policy" note={isAdmin ? 'Create a global default or store override. Global versions include HQ guardrails.' : 'Franchise Managers may propose overrides only for assigned stores.'}>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -550,7 +598,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
                 <option value="STORE">Per-store override</option>
               </select>
             </Field>}
-            <Field label="Earn percentage" note="Stored as integer basis points; calculated on eligible pre-GST spend.">
+            <Field label="Earn percentage" note="Calculated on eligible pre-GST spend. Store and franchise rates must stay between the HQ minimum and maximum.">
               <input type="number" min="0" step="0.01" value={policy.earnPercent} onChange={(event) => setPolicy({ ...policy, earnPercent: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" placeholder="Percent" />
             </Field>
             <Field label="Starts at"><input type="datetime-local" value={policy.startsAt} onChange={(event) => setPolicy({ ...policy, startsAt: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
@@ -562,20 +610,15 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
             <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50/60 p-4">
               <div className="mb-3 flex items-center gap-2"><ShieldCheck size={17} className="text-blue-700" /><h3 className="font-black text-blue-950">HQ guardrail version</h3></div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {([
-                  ['minEarnRateBps', 'Minimum earn (bps)'],
-                  ['maxEarnRateBps', 'Maximum earn (bps)'],
-                  ['maxMultiplierBps', 'Maximum multiplier (bps)'],
-                  ['maxFixedBonusPoints', 'Maximum fixed points'],
-                  ['maxCampaignDays', 'Maximum campaign days'],
-                  ['maxCustomerAwards', 'Maximum awards/customer'],
-                  ['maxCampaignBudgetPoints', 'Maximum budget points'],
-                  ['liabilityPaisePerPoint', 'Liability paise/point'],
-                ] as const).map(([key, label]) => (
-                  <Field key={key} label={label}>
-                    <input type="number" min="0" step="1" value={policy.guardrails[key]} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, [key]: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" />
-                  </Field>
-                ))}
+                <Field label="Minimum store/franchise earn (%)"><input type="number" min="0" step="0.01" value={policy.guardrails.minEarnRateBps} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, minEarnRateBps: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum store/franchise earn (%)"><input type="number" min="0" step="0.01" value={policy.guardrails.maxEarnRateBps} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxEarnRateBps: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum combined base + campaign reward (%)"><input type="number" min="0" step="0.01" value={policy.guardrails.maxCombinedRewardRateBps} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxCombinedRewardRateBps: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum campaign multiplier (×)"><input type="number" min="1" step="0.01" value={policy.guardrails.maxMultiplierBps} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxMultiplierBps: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum fixed points"><input type="number" min="0" step="1" value={policy.guardrails.maxFixedBonusPoints} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxFixedBonusPoints: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum campaign days"><input type="number" min="1" step="1" value={policy.guardrails.maxCampaignDays} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxCampaignDays: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum awards per customer (per campaign)" note="This limit resets only with a new approved campaign version."><input type="number" min="1" step="1" value={policy.guardrails.maxCustomerAwards} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxCustomerAwards: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Maximum campaign budget (points)"><input type="number" min="1" step="1" value={policy.guardrails.maxCampaignBudgetPoints} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, maxCampaignBudgetPoints: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
+                <Field label="Store liability (₹ per point)"><input type="number" min="0.01" step="0.01" value={policy.guardrails.liabilityPaisePerPoint} onChange={(event) => setPolicy({ ...policy, guardrails: { ...policy.guardrails, liabilityPaisePerPoint: event.target.value } })} className="h-10 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm" /></Field>
               </div>
               <p className="mt-3 text-xs font-bold text-blue-700">Guardrails are versioned with the global policy and must be approved before activation.</p>
             </div>
@@ -600,14 +643,14 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
             {campaign.rewardType === 'FIXED_POINTS' ? (
               <Field label="Fixed bonus points"><input type="number" min="0" step="1" value={campaign.fixedBonusPoints} onChange={(event) => setCampaign({ ...campaign, fixedBonusPoints: event.target.value, multiplierPercent: '' })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
             ) : (
-              <Field label="Total earn multiplier" note="Enter 200 for 2×."><input type="number" min="0" step="0.01" value={campaign.multiplierPercent} onChange={(event) => setCampaign({ ...campaign, multiplierPercent: event.target.value, fixedBonusPoints: '' })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" placeholder="Percent" /></Field>
+              <Field label="Total earn multiplier (×)" note="Enter 2 for a 2× reward."><input type="number" min="1" step="0.01" value={campaign.multiplierPercent} onChange={(event) => setCampaign({ ...campaign, multiplierPercent: event.target.value, fixedBonusPoints: '' })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" placeholder="Multiplier" /></Field>
             )}
             <Field label="Minimum eligible spend"><input type="number" min="0" step="0.01" value={campaign.minimumSpendRupees} onChange={(event) => setCampaign({ ...campaign, minimumSpendRupees: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" placeholder="₹" /></Field>
             <Field label="Starts at"><input type="datetime-local" value={campaign.startsAt} onChange={(event) => setCampaign({ ...campaign, startsAt: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
             <Field label="Ends at"><input type="datetime-local" value={campaign.endsAt} onChange={(event) => setCampaign({ ...campaign, endsAt: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
             <Field label="Unique IST visit days" note="Completed qualifying days before this order, within the campaign window; repeat orders on one IST day count once."><input type="number" min="0" step="1" value={campaign.minimumUniqueVisitDays} onChange={(event) => setCampaign({ ...campaign, minimumUniqueVisitDays: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
             <Field label="Visit lookback days"><input type="number" min="0" step="1" value={campaign.visitWindowDays} onChange={(event) => setCampaign({ ...campaign, visitWindowDays: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
-            <Field label="Awards per customer"><input type="number" min="0" step="1" value={campaign.customerAwardLimit} onChange={(event) => setCampaign({ ...campaign, customerAwardLimit: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
+            <Field label="Maximum awards per customer for this campaign" note="Campaign-specific; it does not change limits for any other campaign."><input type="number" min="0" step="1" value={campaign.customerAwardLimit} onChange={(event) => setCampaign({ ...campaign, customerAwardLimit: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
             <Field label="Campaign budget (points)"><input type="number" min="0" step="1" value={campaign.budgetPoints} onChange={(event) => setCampaign({ ...campaign, budgetPoints: event.target.value })} className="h-11 w-full rounded-xl border border-neutral-200 px-3 text-sm" /></Field>
           </div>
           <div className="mt-4"><p className="mb-2 text-[11px] font-black uppercase tracking-wider text-neutral-500">Selected stores</p><StoreSelector stores={state?.stores || []} selected={campaign.storeIds} onChange={(storeIds) => setCampaign({ ...campaign, storeIds })} /></div>
@@ -638,7 +681,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
         </div>
         {dryRun && (
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-2xl bg-emerald-50 p-4"><p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Customer reward</p><p className="mt-2 text-2xl font-black text-emerald-950">{dryRun.totalRewardPoints} points</p><p className="text-xs font-bold text-emerald-700">{dryRun.basePoints} base + {dryRun.campaignPoints} campaign</p></div>
+            <div className="rounded-2xl bg-emerald-50 p-4"><p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Customer reward</p><p className="mt-2 text-2xl font-black text-emerald-950">{dryRun.totalRewardPoints} points</p><p className="text-xs font-bold text-emerald-700">{dryRun.basePoints} base + {dryRun.campaignPoints} campaign</p><p className="mt-1 text-[11px] font-bold text-emerald-700">Combined cap {earnRatePercent(dryRun.maxCombinedRewardRateBps)}{dryRun.combinedRewardCapApplied ? ' · cap applied' : ''}</p></div>
             <div className="rounded-2xl bg-blue-50 p-4"><p className="text-[10px] font-black uppercase tracking-widest text-blue-700">Store liability</p><p className="mt-2 text-2xl font-black text-blue-950">{formatBondMoneyPaise(dryRun.storeLiabilityPaise)}</p><p className="text-xs font-bold text-blue-700">Accounting forecast, not redemption</p></div>
             <div className="rounded-2xl bg-amber-50 p-4"><p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Campaign maximum</p><p className="mt-2 text-2xl font-black text-amber-950">{formatBondMoneyPaise(dryRun.maximumCampaignLiabilityPaise)}</p><p className="text-xs font-bold text-amber-700">Budget-backed liability</p></div>
             <div className="rounded-2xl bg-neutral-100 p-4"><p className="text-[10px] font-black uppercase tracking-widest text-neutral-500">Dry-run writes</p><p className="mt-2 text-2xl font-black text-neutral-900">{dryRun.writesPerformed}</p><p className="text-xs font-bold text-neutral-500">Store {dryRun.previewStoreId} · must remain zero</p></div>
@@ -651,7 +694,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
         {configurations.length === 0 ? <p className="text-sm font-bold text-neutral-400">No policy or campaign versions returned.</p> : (
           <div className="space-y-3">
             {configurations.map(({ type, value }) => (
-              <article key={`${type}-${value.versionId}`} className="rounded-2xl border border-neutral-200 p-4">
+              <article key={`${type}-${value.versionId}`} className="bond-print-row rounded-2xl border border-neutral-200 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -661,6 +704,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
                     </div>
                     <p className="mt-2 text-sm font-black text-neutral-900">{'name' in value ? value.name : `${value.scope} ${earnRatePercent(value.earnRateBps)}`}</p>
                     <p className="mt-1 text-xs font-bold text-neutral-500">{versionTime(value.startsAt, value.endsAt)} · {value.storeIds.length ? `${value.storeIds.length} store(s)` : 'Global'}</p>
+                    {'budgetPoints' in value && <p className="mt-1 text-xs font-black text-amber-700">Campaign budget: {value.issuedPoints || 0} used · {Math.max(0, value.budgetPoints - (value.issuedPoints || 0))} remaining of {value.budgetPoints} points</p>}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {value.status === 'DRAFT' && <button onClick={() => void submitPersistedDraft(type, value)} disabled={Boolean(working)} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[#5c4033] px-3 text-xs font-black text-[#5c4033]"><ClipboardCheck size={14} /> Submit</button>}
@@ -685,7 +729,7 @@ export default function BondPolicyCampaignWorkspace({ mode }: { mode: WorkspaceM
         {!state?.auditHistory.length ? <p className="text-sm font-bold text-neutral-400">No audit entries returned for this scope.</p> : (
           <div className="space-y-2">
             {state.auditHistory.map((entry) => (
-              <div key={entry.auditId} className="flex flex-col gap-2 rounded-xl border border-neutral-100 bg-neutral-50 p-3 sm:flex-row sm:items-start">
+              <div key={entry.auditId} className="bond-print-row flex flex-col gap-2 rounded-xl border border-neutral-100 bg-neutral-50 p-3 sm:flex-row sm:items-start">
                 <History size={16} className="mt-0.5 shrink-0 text-[#5c4033]" />
                 <div className="min-w-0 flex-1"><p className="text-sm font-black text-neutral-900">{entry.action} · {entry.entityType}</p><p className="mt-0.5 text-xs font-bold text-neutral-500">{entry.actorName} ({entry.actorRole}) · {entry.storeIds.length ? `${entry.storeIds.length} store(s)` : 'Global'} · {entry.createdAt ? new Date(entry.createdAt).toLocaleString('en-IN') : 'Pending timestamp'}</p>{entry.reason && <p className="mt-1 text-xs text-neutral-600">{entry.reason}</p>}</div>
                 {entry.versionId && <code className="truncate text-[10px] text-neutral-400">{entry.versionId}</code>}

@@ -202,6 +202,7 @@ function normalizeGuardrails(value) {
   const guardrails = {
     minEarnRateBps: requiredInteger(value.minEarnRateBps, 'Minimum earn percentage', { minimum: 0 }),
     maxEarnRateBps: requiredInteger(value.maxEarnRateBps, 'Maximum earn percentage', { minimum: 0 }),
+    maxCombinedRewardRateBps: requiredInteger(value.maxCombinedRewardRateBps, 'Maximum combined base and campaign reward', { minimum: 0 }),
     maxMultiplierBps: requiredInteger(value.maxMultiplierBps, 'Maximum multiplier', { minimum: 0 }),
     maxFixedBonusPoints: requiredInteger(value.maxFixedBonusPoints, 'Maximum fixed bonus', { minimum: 0 }),
     maxCampaignDays: requiredInteger(value.maxCampaignDays, 'Maximum campaign days', { minimum: 1 }),
@@ -211,6 +212,9 @@ function normalizeGuardrails(value) {
   };
   if (guardrails.minEarnRateBps > guardrails.maxEarnRateBps) {
     fail('invalid-argument', 'Minimum earn percentage cannot exceed the maximum.');
+  }
+  if (guardrails.maxCombinedRewardRateBps < guardrails.maxEarnRateBps) {
+    fail('invalid-argument', 'Maximum combined reward cannot be below the maximum base earn percentage.');
   }
   return guardrails;
 }
@@ -1652,6 +1656,7 @@ function createBondPolicyCampaignManagerService({ admin, db, now = () => Date.no
       versionId: '',
       minEarnRateBps: null,
       maxEarnRateBps: null,
+      maxCombinedRewardRateBps: null,
       maxMultiplierBps: null,
       maxFixedBonusPoints: null,
       maxCampaignDays: null,
@@ -2199,6 +2204,9 @@ function createBondPolicyCampaignManagerService({ admin, db, now = () => Date.no
       basePoints: evaluated.reward.basePoints,
       campaignPoints: evaluated.reward.campaignPoints,
       totalRewardPoints: evaluated.reward.totalPoints,
+      maxCombinedRewardRateBps: evaluated.reward.maxCombinedRewardRateBps,
+      combinedRewardCapPoints: evaluated.reward.combinedRewardCapPoints,
+      combinedRewardCapApplied: evaluated.reward.combinedRewardCapApplied,
       storeLiabilityPaise: evaluated.reward.totalLiabilityPaise,
       maximumCampaignLiabilityPaise,
       budgetPointsRemaining: campaignResult?.budgetRemainingAfter ?? null,

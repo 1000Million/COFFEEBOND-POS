@@ -63,6 +63,7 @@ check('every mutating callable carries a client request ID', api.includes('funct
 check('HQ guardrail fields are sourced from manager state, not fixed policy constants', [
   'minEarnRateBps',
   'maxEarnRateBps',
+  'maxCombinedRewardRateBps',
   'maxMultiplierBps',
   'maxFixedBonusPoints',
   'maxCampaignDays',
@@ -70,6 +71,15 @@ check('HQ guardrail fields are sourced from manager state, not fixed policy cons
   'liabilityPaisePerPoint',
 ].every((field) => api.includes(field) && workspace.includes(field)));
 check('missing HQ guardrails remain blank and cannot be silently saved as numeric defaults', api.includes('number | null') && workspace.includes("value == null ? '' : String(value)") && workspace.includes('Complete every HQ guardrail field'));
+check('HQ guardrails show percentages and multipliers while keeping basis points internal',
+  workspace.includes('Minimum store/franchise earn (%)')
+  && workspace.includes('Maximum store/franchise earn (%)')
+  && workspace.includes('Maximum combined base + campaign reward (%)')
+  && workspace.includes('Maximum campaign multiplier (×)')
+  && workspace.includes('maxCombinedRewardRateBps: basisPoints')
+  && workspace.includes('maxMultiplierBps: multiplierBasisPoints')
+  && !workspace.includes('Minimum earn (bps)')
+  && !workspace.includes('Maximum earn (bps)'));
 check('global and per-store policy scopes are explicit', workspace.includes('Global default + guardrails') && workspace.includes('Per-store override'));
 check('campaign supports exactly fixed points or multiplier', workspace.includes('FIXED_POINTS') && workspace.includes('EARN_MULTIPLIER') && workspace.includes("fixedBonusPoints: campaign.rewardType === 'FIXED_POINTS'") && workspace.includes("multiplierBps: campaign.rewardType === 'EARN_MULTIPLIER'"));
 check('campaign captures spend, products, categories, unique IST days, customer limit and budget', [
@@ -77,9 +87,20 @@ check('campaign captures spend, products, categories, unique IST days, customer 
   'Eligible product codes',
   'Eligible category codes',
   'Unique IST visit days',
-  'Awards per customer',
+  'Maximum awards per customer for this campaign',
   'Campaign budget (points)',
 ].every((label) => workspace.includes(label)));
+check('weekly campaign rule and budget usage are explicit in the HQ view',
+  workspace.includes('3 unique qualifying visit days · ₹150 minimum per visit')
+  && workspace.includes('Monday–Sunday IST · +25 points · maximum once per customer per week.')
+  && workspace.includes('Budget used')
+  && workspace.includes('Budget remaining'));
+check('customer award limit is explicitly campaign-specific',
+  workspace.includes('Campaign-specific; it does not change limits for any other campaign.'));
+check('print layout avoids splitting governance cards and rows',
+  workspace.includes('bond-print-card')
+  && workspace.includes('bond-print-row')
+  && read('frontend/index.css').includes('break-inside: avoid-page'));
 check('campaign stacking is explicitly exclusive', api.includes("stackingMode: 'EXCLUSIVE_ONE'") && workspace.includes('EXCLUSIVE_ONE'));
 check('dry-run requires an explicit covered store and shows reward, liability and zero writes', workspace.includes('Preview store')
   && workspace.includes('previewStoreId')

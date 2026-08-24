@@ -167,3 +167,35 @@
   50% { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
+
+@media print {
+  .bond-policy-manager {
+    max-width: none !important;
+    padding-bottom: 0 !important;
+  }
+
+  .bond-print-card,
+  .bond-print-row {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .bond-print-controls,
+  .bond-policy-manager button,
+  .bond-policy-manager input,
+  .bond-policy-manager select,
+  .bond-policy-manager textarea {
+    display: none !important;
+  }
+
+  .bond-policy-manager > * {
+    orphans: 3;
+    widows: 3;
+  }
+
+  .bond-policy-manager,
+  .bond-policy-manager * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

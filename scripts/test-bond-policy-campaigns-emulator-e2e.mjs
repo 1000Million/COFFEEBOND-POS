@@ -224,6 +224,7 @@ await expectCode('permission-denied', () => service.managerState(requestFor(cust
 const guardrails = {
   minEarnRateBps: 500,
   maxEarnRateBps: 2000,
+  maxCombinedRewardRateBps: 10000,
   maxMultiplierBps: 30000,
   maxFixedBonusPoints: 50,
   maxCampaignDays: 31,

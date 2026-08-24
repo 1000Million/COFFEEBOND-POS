@@ -131,6 +131,7 @@ function normalizeGuardrails(value) {
     return deepFreeze({
       minEarnRateBps: 0,
       maxEarnRateBps: 10_000,
+      maxCombinedRewardRateBps: 10_000,
       minEarnBasisPoints: 0,
       maxEarnBasisPoints: 10_000,
       liabilityPaisePerPoint: POINT_VALUE_PAISE,
@@ -156,11 +157,22 @@ function normalizeGuardrails(value) {
       maxEarnRateBps,
     });
   }
+  const maxCombinedRewardRateBps = nonNegativeSafeInteger(
+    value.maxCombinedRewardRateBps ?? 10_000,
+    'guardrails.maxCombinedRewardRateBps',
+  );
+  if (maxCombinedRewardRateBps < maxEarnRateBps) {
+    fail('BOND_INVALID_GUARDRAILS', 'The combined base and campaign reward cap cannot be below the maximum base earn rate.', {
+      maxEarnRateBps,
+      maxCombinedRewardRateBps,
+    });
+  }
   return deepFreeze({
     minEarnRateBps,
     maxEarnRateBps,
     minEarnBasisPoints: minEarnRateBps,
     maxEarnBasisPoints: maxEarnRateBps,
+    maxCombinedRewardRateBps,
     liabilityPaisePerPoint: nonNegativeSafeInteger(
       value.liabilityPaisePerPoint,
       'guardrails.liabilityPaisePerPoint',
@@ -768,6 +780,7 @@ function evaluateCampaign({
   campaignUsage,
   visitEvidence,
   liabilityPaisePerPoint,
+  maximumCampaignPoints,
 }) {
   if (!campaign) return null;
   const filteredSpend = campaignEligibleSpend(order, campaign);
@@ -803,9 +816,10 @@ function evaluateCampaign({
     reasons.push('CUSTOMER_USE_LIMIT_REACHED');
   }
 
-  const preliminaryPoints = reasons.length === 0
+  const configuredCampaignPoints = reasons.length === 0
     ? calculateCampaignPoints(campaign, filteredSpend.eligibleSpendPaise, policy.earnBasisPoints)
     : 0;
+  const preliminaryPoints = Math.min(configuredCampaignPoints, maximumCampaignPoints);
   if (
     campaign.budgetPoints !== null
     && usage.campaignAwardedPoints + preliminaryPoints > campaign.budgetPoints
@@ -822,6 +836,9 @@ function evaluateCampaign({
     ineligibilityReasons: reasons,
     campaignEligibleSpendPaise: filteredSpend.eligibleSpendPaise,
     campaignPoints,
+    configuredCampaignPoints,
+    combinedRewardCapApplied: campaignPoints > 0 && campaignPoints < configuredCampaignPoints,
+    maximumCampaignPoints,
     liabilityPaise: calculateLiabilityPaise(campaignPoints, liabilityPaisePerPoint),
     matchedProductIds: filteredSpend.matchedProductIds,
     matchedCategoryIds: filteredSpend.matchedCategoryIds,
@@ -869,6 +886,11 @@ function evaluateBondReward({
     });
   }
   const base = calculateEarnPoints(normalizedOrder.eligibleSpendPaise, policy.earnBasisPoints);
+  const combinedRewardCap = calculateEarnPoints(
+    normalizedOrder.eligibleSpendPaise,
+    normalizedGuardrails.maxCombinedRewardRateBps,
+  );
+  const maximumCampaignPoints = Math.max(0, combinedRewardCap.points - base.points);
   const campaignResult = evaluateCampaign({
     campaign,
     order: normalizedOrder,
@@ -876,6 +898,7 @@ function evaluateBondReward({
     campaignUsage,
     visitEvidence,
     liabilityPaisePerPoint: normalizedGuardrails.liabilityPaisePerPoint,
+    maximumCampaignPoints,
   });
   const campaignPoints = campaignResult?.campaignPoints || 0;
   const totalPoints = base.points + campaignPoints;
@@ -918,6 +941,9 @@ function evaluateBondReward({
       basePoints: base.points,
       campaignPoints,
       totalPoints,
+      maxCombinedRewardRateBps: normalizedGuardrails.maxCombinedRewardRateBps,
+      combinedRewardCapPoints: combinedRewardCap.points,
+      combinedRewardCapApplied: Boolean(campaignResult?.combinedRewardCapApplied),
       pointValuePaise: normalizedGuardrails.liabilityPaisePerPoint,
       baseLiabilityPaise,
       campaignLiabilityPaise,

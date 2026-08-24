@@ -23,6 +23,7 @@ export type BondGuardrails = {
   versionId: string;
   minEarnRateBps: number | null;
   maxEarnRateBps: number | null;
+  maxCombinedRewardRateBps: number | null;
   maxMultiplierBps: number | null;
   maxFixedBonusPoints: number | null;
   maxCampaignDays: number | null;
@@ -48,6 +49,7 @@ export type BondPolicyVersion = {
 
 export type BondCampaignVersion = {
   versionId: string;
+  campaignId?: string;
   name: string;
   storeIds: string[];
   rewardType: BondCampaignRewardType;
@@ -139,6 +141,9 @@ export type BondDryRunResponse = {
   basePoints: number;
   campaignPoints: number;
   totalRewardPoints: number;
+  maxCombinedRewardRateBps: number;
+  combinedRewardCapPoints: number;
+  combinedRewardCapApplied: boolean;
   storeLiabilityPaise: number;
   maximumCampaignLiabilityPaise: number;
   budgetPointsRemaining: number | null;
