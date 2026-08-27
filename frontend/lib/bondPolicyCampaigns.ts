@@ -11,7 +11,8 @@ export type BondConfigurationStatus =
   | 'PAUSED'
   | 'ROLLED_BACK'
   | 'SUPERSEDED';
-export type BondCampaignRewardType = 'FIXED_POINTS' | 'EARN_MULTIPLIER';
+export type BondCampaignRewardType = 'FIXED_POINTS' | 'PERCENTAGE_BONUS' | 'EARN_MULTIPLIER';
+export type BondCampaignStackingMode = 'NONE' | 'BASE_PLUS_ONE_CAMPAIGN';
 
 export type BondManagerStore = {
   id: string;
@@ -37,6 +38,7 @@ export type BondPolicyVersion = {
   scope: 'GLOBAL' | 'STORE';
   storeIds: string[];
   earnRateBps: number;
+  campaignStackingMode: BondCampaignStackingMode;
   status: BondConfigurationStatus;
   startsAt: string | null;
   endsAt: string | null;
@@ -54,21 +56,38 @@ export type BondCampaignVersion = {
   storeIds: string[];
   rewardType: BondCampaignRewardType;
   fixedBonusPoints: number | null;
+  percentageBonusBps: number | null;
   multiplierBps: number | null;
   minimumSpendPaise: number;
+  spendMilestonePaise?: number | null;
   eligibleProductCodes: string[];
   eligibleCategoryCodes: string[];
   minimumUniqueVisitDays: number;
   visitWindowDays: number;
+  visitWindowMode?: 'ROLLING_IST_DAYS' | 'CALENDAR_WEEK_IST';
   customerAwardLimit: number;
   budgetPoints: number;
-  stackingMode: 'EXCLUSIVE_ONE';
+  maximumAwardPointsPerOrder?: number | null;
+  frequencyAwardLimit?: number | null;
+  frequencyWindow?: 'CAMPAIGN' | 'DAY_IST' | 'WEEK_IST' | 'ROLLING_DAYS' | null;
+  frequencyWindowDays?: number | null;
+  eligibleIstWeekdays?: string[];
+  startsAtMinuteIST?: number | null;
+  endsAtMinuteIST?: number | null;
+  stackingMode: BondCampaignStackingMode;
   status: BondConfigurationStatus;
   startsAt: string | null;
   endsAt: string | null;
   approvedStartsAt: string | null;
   approvedEndsAt: string | null;
   issuedPoints?: number;
+  customerAwards?: number;
+  budgetRemainingPoints?: number;
+  estimatedLoyaltyLiabilityPaise?: number;
+  qualificationCount?: number | null;
+  evaluationCount?: number;
+  qualificationRateBps?: number | null;
+  visitAwardCount?: number;
   scheduleId?: string | null;
 };
 
@@ -98,6 +117,24 @@ export type BondPolicyCampaignManagerState = {
   globalPolicies?: BondPolicyVersion[];
   storePolicies: BondPolicyVersion[];
   campaigns: BondCampaignVersion[];
+  effectivePolicies: Array<{
+    storeId: string;
+    globalEarnRateBps: number;
+    globalPolicyVersionId: string;
+    storeOverrideEarnRateBps: number | null;
+    storeOverridePolicyVersionId: string | null;
+    effectiveEarnRateBps: number;
+    effectivePolicyVersionId: string;
+    policySource: 'GLOBAL_DEFAULT' | 'STORE_OVERRIDE';
+    campaignStackingMode: BondCampaignStackingMode;
+    activeCampaigns: Array<{
+      versionId: string;
+      name: string;
+      rewardType: BondCampaignRewardType;
+      contributionEnabled: boolean;
+    }>;
+    maxCombinedRewardRateBps: number | null;
+  }>;
   auditHistory: BondAuditEntry[];
 };
 
@@ -107,6 +144,7 @@ export type BondPolicyDraftInput = {
   scope: 'GLOBAL' | 'STORE';
   storeIds: string[];
   earnRateBps: number;
+  campaignStackingMode?: BondCampaignStackingMode;
   startsAt: string;
   endsAt: string | null;
   reason: string;
@@ -122,15 +160,25 @@ export type BondCampaignDraftInput = {
   endsAt: string;
   rewardType: BondCampaignRewardType;
   fixedBonusPoints: number | null;
+  percentageBonusBps?: number | null;
   multiplierBps: number | null;
   minimumSpendPaise: number;
+  spendMilestonePaise?: number | null;
   eligibleProductCodes: string[];
   eligibleCategoryCodes: string[];
   minimumUniqueVisitDays: number;
   visitWindowDays: number;
+  visitWindowMode?: 'ROLLING_IST_DAYS' | 'CALENDAR_WEEK_IST';
   customerAwardLimit: number;
   budgetPoints: number;
-  stackingMode: 'EXCLUSIVE_ONE';
+  maximumAwardPointsPerOrder?: number | null;
+  frequencyAwardLimit?: number | null;
+  frequencyWindow?: 'CAMPAIGN' | 'DAY_IST' | 'WEEK_IST' | 'ROLLING_DAYS' | null;
+  frequencyWindowDays?: number | null;
+  eligibleIstWeekdays?: string[];
+  startsAtMinuteIST?: number | null;
+  endsAtMinuteIST?: number | null;
+  stackingMode: BondCampaignStackingMode;
   reason: string;
 };
 
@@ -139,6 +187,8 @@ export type BondDryRunResponse = {
   policyVersionId: string | null;
   campaignVersionId: string | null;
   basePoints: number;
+  rawCampaignPoints: number;
+  adjustedCampaignPoints: number;
   campaignPoints: number;
   totalRewardPoints: number;
   maxCombinedRewardRateBps: number;
@@ -149,6 +199,13 @@ export type BondDryRunResponse = {
   budgetPointsRemaining: number | null;
   eligibleSpendPaise: number;
   matchedSpendPaise: number;
+  campaignTriggered: boolean;
+  campaignIneligibilityReasons: string[];
+  customerLimitImpact: {
+    before: number;
+    after: number;
+    maximum: number | null;
+  } | null;
   validationErrors: string[];
   warnings: string[];
   conflicts: string[];
@@ -176,7 +233,17 @@ const previewCallable = httpsCallable<{
   matchingEligibleSpendPaise: number;
   productCodes: string[];
   categoryCodes: string[];
-  scenario?: { eventAt?: string };
+  orderChannel?: 'CUSTOMER_WEB' | 'NATIVE_POS';
+  scenario?: {
+    eventAt?: string;
+    orderChannel?: 'CUSTOMER_WEB' | 'NATIVE_POS';
+    visitBusinessDates?: string[];
+    customerCampaignHistory?: {
+      customerUses?: number;
+      customerEligibleSpendPaise?: number;
+      frequencyAwards?: number;
+    };
+  };
   policyDraft?: BondPolicyDraftInput;
   campaignDraft?: BondCampaignDraftInput;
 }, BondDryRunResponse>(functions, 'previewBondPolicyCampaign');

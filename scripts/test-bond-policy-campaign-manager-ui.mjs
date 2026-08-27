@@ -81,7 +81,7 @@ check('HQ guardrails show percentages and multipliers while keeping basis points
   && !workspace.includes('Minimum earn (bps)')
   && !workspace.includes('Maximum earn (bps)'));
 check('global and per-store policy scopes are explicit', workspace.includes('Global default + guardrails') && workspace.includes('Per-store override'));
-check('campaign supports exactly fixed points or multiplier', workspace.includes('FIXED_POINTS') && workspace.includes('EARN_MULTIPLIER') && workspace.includes("fixedBonusPoints: campaign.rewardType === 'FIXED_POINTS'") && workspace.includes("multiplierBps: campaign.rewardType === 'EARN_MULTIPLIER'"));
+check('campaign supports fixed points, percentage bonus, and multiplier rewards', workspace.includes('FIXED_POINTS') && workspace.includes('PERCENTAGE_BONUS') && workspace.includes('EARN_MULTIPLIER') && workspace.includes("fixedBonusPoints: campaign.rewardType === 'FIXED_POINTS'") && workspace.includes("percentageBonusBps: campaign.rewardType === 'PERCENTAGE_BONUS'") && workspace.includes("multiplierBps: campaign.rewardType === 'EARN_MULTIPLIER'"));
 check('campaign captures spend, products, categories, unique IST days, customer limit and budget', [
   'Minimum eligible spend',
   'Eligible product codes',
@@ -101,7 +101,9 @@ check('print layout avoids splitting governance cards and rows',
   workspace.includes('bond-print-card')
   && workspace.includes('bond-print-row')
   && read('frontend/index.css').includes('break-inside: avoid-page'));
-check('campaign stacking is explicitly exclusive', api.includes("stackingMode: 'EXCLUSIVE_ONE'") && workspace.includes('EXCLUSIVE_ONE'));
+check('campaign stacking is explicit and server-resolved', api.includes("'NONE' | 'BASE_PLUS_ONE_CAMPAIGN'") && workspace.includes('None — base earning only') && workspace.includes('Base + one campaign') && workspace.includes('Effective policy by store'));
+check('calendar-week and rolling IST visit windows are separate controls', workspace.includes('Rolling IST days') && workspace.includes('Monday–Sunday IST') && api.includes('CALENDAR_WEEK_IST'));
+check('manager exposes campaign reporting without client ledger access', api.includes('effectivePolicies') && api.includes('qualificationRateBps') && workspace.includes('qualifying orders:'));
 check('dry-run requires an explicit covered store and shows reward, liability and zero writes', workspace.includes('Preview store')
   && workspace.includes('previewStoreId')
   && workspace.includes('Select one store covered by every candidate configuration')
@@ -141,6 +143,7 @@ for (const collectionName of [
   'bondRewardRuntime',
   'bondCampaignBudgets',
   'bondCampaignCustomerUsage',
+  'bondCampaignQualificationEvents',
   'bondPolicyAudit',
 ]) {
   const start = rules.indexOf(`match /${collectionName}/`);

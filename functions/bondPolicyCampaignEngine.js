@@ -15,8 +15,23 @@ const POLICY_SCOPES = Object.freeze({
 const CAMPAIGN_REWARD_TYPES = Object.freeze({
   FIXED_POINTS: 'FIXED_POINTS',
   FIXED_BONUS_POINTS: 'FIXED_BONUS_POINTS',
+  PERCENTAGE_BONUS: 'PERCENTAGE_BONUS',
+  PERCENTAGE_BONUS_POINTS: 'PERCENTAGE_BONUS_POINTS',
   EARN_MULTIPLIER: 'EARN_MULTIPLIER',
   MULTIPLIER: 'MULTIPLIER',
+});
+
+// `NONE` deliberately means base earning only. `BASE_PLUS_ONE_CAMPAIGN` is the
+// only stacking mode that can add a campaign reward, and it remains fail-closed
+// if more than one campaign is simultaneously active for a store.
+const CAMPAIGN_STACKING_MODES = Object.freeze({
+  NONE: 'NONE',
+  BASE_PLUS_ONE_CAMPAIGN: 'BASE_PLUS_ONE_CAMPAIGN',
+});
+
+const VISIT_WINDOW_MODES = Object.freeze({
+  ROLLING_IST_DAYS: 'ROLLING_IST_DAYS',
+  CALENDAR_WEEK_IST: 'CALENDAR_WEEK_IST',
 });
 
 const RESOLVABLE_STATUSES = new Set(['APPROVED', 'SCHEDULED', 'ACTIVE']);
@@ -94,6 +109,36 @@ function normalizeStatus(version, field) {
   const approvalStatus = configuredApproval
     || (RESOLVABLE_STATUSES.has(lifecycleStatus) ? 'APPROVED' : lifecycleStatus);
   return { approvalStatus, lifecycleStatus };
+}
+
+function normalizeCampaignStackingMode(value, field) {
+  const requested = String(value ?? 'BASE_PLUS_ONE_CAMPAIGN').trim().toUpperCase();
+  // EXCLUSIVE_ONE was the initial preview-only name. Keep it readable as a
+  // backwards-compatible alias rather than silently changing live semantics.
+  const normalized = requested === 'EXCLUSIVE_ONE'
+    ? CAMPAIGN_STACKING_MODES.BASE_PLUS_ONE_CAMPAIGN
+    : requested;
+  if (!Object.values(CAMPAIGN_STACKING_MODES).includes(normalized)) {
+    fail('BOND_INVALID_CONFIGURATION', `${field} must be NONE or BASE_PLUS_ONE_CAMPAIGN.`, {
+      field,
+      requested,
+    });
+  }
+  return normalized;
+}
+
+function normalizeVisitWindowMode(value, field) {
+  const requested = String(value ?? 'ROLLING_IST_DAYS').trim().toUpperCase();
+  const normalized = requested === 'CALENDAR_WEEK'
+    ? VISIT_WINDOW_MODES.CALENDAR_WEEK_IST
+    : requested;
+  if (!Object.values(VISIT_WINDOW_MODES).includes(normalized)) {
+    fail('BOND_INVALID_CONFIGURATION', `${field} must be ROLLING_IST_DAYS or CALENDAR_WEEK_IST.`, {
+      field,
+      requested,
+    });
+  }
+  return normalized;
 }
 
 function isResolvableVersion(version) {
@@ -245,6 +290,10 @@ function validatePolicyVersion(value, index = 0) {
     value.earnRateBps ?? value.earnBasisPoints,
     `${field}.earnRateBps`,
   );
+  const campaignStackingMode = normalizeCampaignStackingMode(
+    value.campaignStackingMode ?? value.stackingMode,
+    `${field}.campaignStackingMode`,
+  );
   const { effectiveFromMs, effectiveToMs } = normalizeWindow(value, field);
   const { approvalStatus, lifecycleStatus } = normalizeStatus(value, field);
   return deepFreeze({
@@ -253,6 +302,7 @@ function validatePolicyVersion(value, index = 0) {
     storeIds,
     earnBasisPoints,
     earnRateBps: earnBasisPoints,
+    campaignStackingMode,
     effectiveFromMs,
     effectiveToMs,
     approvalStatus,
@@ -306,6 +356,7 @@ function resolvePolicyVersion({ policyVersions = [], storeId, eventAt, guardrail
       storeIds: [],
       earnBasisPoints: LEGACY_DEFAULT_EARN_BASIS_POINTS,
       earnRateBps: LEGACY_DEFAULT_EARN_BASIS_POINTS,
+      campaignStackingMode: CAMPAIGN_STACKING_MODES.BASE_PLUS_ONE_CAMPAIGN,
       effectiveFromMs: null,
       effectiveToMs: null,
       source: 'LEGACY_DEFAULT',
@@ -348,12 +399,10 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
   }
   const versionId = requiredString(value.versionId, `${field}.versionId`);
   const campaignId = requiredString(value.campaignId || versionId, `${field}.campaignId`);
-  if (value.stackingMode && value.stackingMode !== 'EXCLUSIVE_ONE') {
-    fail('BOND_CAMPAIGN_STACKING_REJECTED', 'Campaigns must use EXCLUSIVE_ONE stacking.', {
-      campaignId,
-      versionId,
-    });
-  }
+  const stackingMode = normalizeCampaignStackingMode(
+    value.stackingMode,
+    `${field}.stackingMode`,
+  );
   const storeIds = normalizedStringList(value.storeIds, `${field}.storeIds`);
   if (storeIds.length === 0) {
     fail('BOND_INVALID_CONFIGURATION', `${field}.storeIds must select at least one store or '*'.`, {
@@ -370,10 +419,12 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
   const configuredRewardType = String(value.rewardType || '').trim().toUpperCase();
   const rewardType = configuredRewardType === CAMPAIGN_REWARD_TYPES.FIXED_BONUS_POINTS
     ? CAMPAIGN_REWARD_TYPES.FIXED_POINTS
+    : configuredRewardType === CAMPAIGN_REWARD_TYPES.PERCENTAGE_BONUS_POINTS
+      ? CAMPAIGN_REWARD_TYPES.PERCENTAGE_BONUS
     : configuredRewardType === CAMPAIGN_REWARD_TYPES.MULTIPLIER
       ? CAMPAIGN_REWARD_TYPES.EARN_MULTIPLIER
       : configuredRewardType;
-  if (![CAMPAIGN_REWARD_TYPES.FIXED_POINTS, CAMPAIGN_REWARD_TYPES.EARN_MULTIPLIER].includes(rewardType)) {
+  if (![CAMPAIGN_REWARD_TYPES.FIXED_POINTS, CAMPAIGN_REWARD_TYPES.PERCENTAGE_BONUS, CAMPAIGN_REWARD_TYPES.EARN_MULTIPLIER].includes(rewardType)) {
     fail('BOND_INVALID_CONFIGURATION', `${field}.rewardType is not supported.`, {
       field: `${field}.rewardType`,
     });
@@ -385,6 +436,13 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     ? nonNegativeSafeInteger(
       value.multiplierBps ?? value.earnMultiplierBasisPoints,
       `${field}.multiplierBps`,
+      { positive: true },
+    )
+    : null;
+  const percentageBonusBps = rewardType === CAMPAIGN_REWARD_TYPES.PERCENTAGE_BONUS
+    ? nonNegativeSafeInteger(
+      value.percentageBonusBps ?? value.bonusRateBps ?? value.additionalEarnRateBps,
+      `${field}.percentageBonusBps`,
       { positive: true },
     )
     : null;
@@ -423,6 +481,16 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     value.minimumSpendPaise ?? value.minimumEligibleSpendPaise,
     `${field}.minimumSpendPaise`,
   ) || 0;
+  const spendMilestonePaise = optionalNonNegativeSafeInteger(
+    value.spendMilestonePaise,
+    `${field}.spendMilestonePaise`,
+    { positive: true },
+  );
+  if (spendMilestonePaise !== null && rewardType !== CAMPAIGN_REWARD_TYPES.FIXED_POINTS) {
+    fail('BOND_INVALID_CONFIGURATION', 'A cumulative spend milestone must use fixed bonus points.', {
+      field: `${field}.rewardType`,
+    });
+  }
   const minimumUniqueIstVisitDays = optionalNonNegativeSafeInteger(
     value.minimumUniqueVisitDays ?? value.minimumUniqueIstVisitDays,
     `${field}.minimumUniqueVisitDays`,
@@ -431,12 +499,80 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     value.visitWindowDays,
     `${field}.visitWindowDays`,
   ) || 0;
+  const visitWindowMode = normalizeVisitWindowMode(
+    value.visitWindowMode ?? (value.calendarWeekIST === true ? 'CALENDAR_WEEK_IST' : null),
+    `${field}.visitWindowMode`,
+  );
+  if (minimumUniqueIstVisitDays > 0 && visitWindowDays === 0) {
+    fail('BOND_INVALID_CONFIGURATION', 'A visit campaign requires a positive IST visit window.', {
+      field: `${field}.visitWindowDays`,
+    });
+  }
+  if (visitWindowMode === VISIT_WINDOW_MODES.CALENDAR_WEEK_IST && visitWindowDays !== 0 && visitWindowDays !== 7) {
+    fail('BOND_INVALID_CONFIGURATION', 'A Monday–Sunday IST visit window is always seven calendar days.', {
+      field: `${field}.visitWindowDays`,
+    });
+  }
   const maxUsesPerCustomer = optionalNonNegativeSafeInteger(
     value.customerAwardLimit ?? value.maxUsesPerCustomer,
     `${field}.customerAwardLimit`,
     { positive: true },
   );
   const budgetPoints = optionalNonNegativeSafeInteger(value.budgetPoints, `${field}.budgetPoints`);
+  const maximumAwardPointsPerOrder = optionalNonNegativeSafeInteger(
+    value.maximumAwardPointsPerOrder ?? value.maxCampaignPointsPerOrder,
+    `${field}.maximumAwardPointsPerOrder`,
+    { positive: true },
+  );
+  const frequencyAwardLimit = optionalNonNegativeSafeInteger(
+    value.frequencyAwardLimit,
+    `${field}.frequencyAwardLimit`,
+    { positive: true },
+  );
+  const frequencyWindow = frequencyAwardLimit === null
+    ? null
+    : requiredString(value.frequencyWindow || 'CAMPAIGN', `${field}.frequencyWindow`).toUpperCase();
+  if (frequencyWindow !== null && !['CAMPAIGN', 'DAY_IST', 'WEEK_IST', 'ROLLING_DAYS'].includes(frequencyWindow)) {
+    fail('BOND_INVALID_CONFIGURATION', `${field}.frequencyWindow is invalid.`, {
+      field: `${field}.frequencyWindow`,
+    });
+  }
+  const frequencyWindowDays = frequencyWindow === 'ROLLING_DAYS'
+    ? optionalNonNegativeSafeInteger(value.frequencyWindowDays, `${field}.frequencyWindowDays`, { positive: true })
+    : null;
+  if (frequencyWindow === 'ROLLING_DAYS' && frequencyWindowDays === null) {
+    fail('BOND_INVALID_CONFIGURATION', 'A rolling campaign frequency limit requires frequencyWindowDays.', {
+      field: `${field}.frequencyWindowDays`,
+    });
+  }
+  const eligibleIstWeekdays = normalizedStringList(
+    value.eligibleIstWeekdays,
+    `${field}.eligibleIstWeekdays`,
+  );
+  const validWeekdays = new Set(['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']);
+  if (eligibleIstWeekdays.some(day => !validWeekdays.has(day))) {
+    fail('BOND_INVALID_CONFIGURATION', `${field}.eligibleIstWeekdays must use weekday names.`, {
+      field: `${field}.eligibleIstWeekdays`,
+    });
+  }
+  const startsAtMinuteIST = optionalNonNegativeSafeInteger(
+    value.startsAtMinuteIST,
+    `${field}.startsAtMinuteIST`,
+  );
+  const endsAtMinuteIST = optionalNonNegativeSafeInteger(
+    value.endsAtMinuteIST,
+    `${field}.endsAtMinuteIST`,
+  );
+  if ((startsAtMinuteIST === null) !== (endsAtMinuteIST === null)) {
+    fail('BOND_INVALID_CONFIGURATION', 'A day/time campaign needs both IST time bounds.', {
+      field: `${field}.startsAtMinuteIST`,
+    });
+  }
+  if (startsAtMinuteIST !== null && (startsAtMinuteIST >= 1440 || endsAtMinuteIST >= 1440)) {
+    fail('BOND_INVALID_CONFIGURATION', 'IST time bounds must be whole minutes from 0 through 1439.', {
+      field: `${field}.startsAtMinuteIST`,
+    });
+  }
   if (
     normalizedGuardrails?.maxCustomerAwards !== null
     && maxUsesPerCustomer !== null
@@ -477,12 +613,15 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     lifecycleStatus,
     paused: value.paused === true,
     immutable: true,
+    stackingMode,
     rewardType,
     fixedBonusPoints,
+    percentageBonusBps,
     earnMultiplierBasisPoints,
     multiplierBps: earnMultiplierBasisPoints,
     minimumEligibleSpendPaise,
     minimumSpendPaise: minimumEligibleSpendPaise,
+    spendMilestonePaise,
     eligibleProductIds: normalizedStringList(
       value.eligibleProductCodes ?? value.eligibleProductIds,
       `${field}.eligibleProductCodes`,
@@ -494,6 +633,7 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     minimumUniqueIstVisitDays,
     minimumUniqueVisitDays: minimumUniqueIstVisitDays,
     visitWindowDays,
+    visitWindowMode,
     everyNthUniqueIstVisitDay: optionalNonNegativeSafeInteger(
       value.everyNthUniqueIstVisitDay,
       `${field}.everyNthUniqueIstVisitDay`,
@@ -502,6 +642,13 @@ function validateCampaignVersion(value, index = 0, guardrails = null) {
     maxUsesPerCustomer,
     customerAwardLimit: maxUsesPerCustomer,
     budgetPoints,
+    maximumAwardPointsPerOrder,
+    frequencyAwardLimit,
+    frequencyWindow,
+    frequencyWindowDays,
+    eligibleIstWeekdays,
+    startsAtMinuteIST,
+    endsAtMinuteIST,
   });
 }
 
@@ -691,9 +838,14 @@ function uniqueIstVisitDayEvidence(campaign, visitEvidence, eventAtMs) {
   const dates = new Set();
   const eventBusinessDate = businessDateInTimeZone(eventAtMs);
   const eventOrdinal = strictBusinessDateOrdinal(eventBusinessDate);
-  const lookbackOrdinal = campaign.visitWindowDays > 0
-    ? eventOrdinal - ((campaign.visitWindowDays - 1) * DAY_MS)
-    : null;
+  const eventWeekdayOffset = new Date(eventOrdinal).getUTCDay() === 0
+    ? 6
+    : new Date(eventOrdinal).getUTCDay() - 1;
+  const lookbackOrdinal = campaign.visitWindowMode === VISIT_WINDOW_MODES.CALENDAR_WEEK_IST
+    ? eventOrdinal - (eventWeekdayOffset * DAY_MS)
+    : campaign.visitWindowDays > 0
+      ? eventOrdinal - ((campaign.visitWindowDays - 1) * DAY_MS)
+      : null;
   const campaignStartBusinessDate = businessDateInTimeZone(campaign.effectiveFromMs);
   const campaignStartOrdinal = strictBusinessDateOrdinal(campaignStartBusinessDate);
   const minimumOrdinal = lookbackOrdinal === null
@@ -717,13 +869,17 @@ function uniqueIstVisitDayEvidence(campaign, visitEvidence, eventAtMs) {
     uniqueDayCount: dates.size,
     businessDates: [...dates].sort(),
     visitWindowDays: campaign.visitWindowDays,
+    visitWindowMode: campaign.visitWindowMode,
     campaignStartBusinessDate,
     eventBusinessDate,
   });
 }
 
 function normalizeCampaignUsage(campaign, value) {
-  const countersRequired = campaign.maxUsesPerCustomer !== null || campaign.budgetPoints !== null;
+  const countersRequired = campaign.maxUsesPerCustomer !== null
+    || campaign.budgetPoints !== null
+    || campaign.spendMilestonePaise !== null
+    || campaign.frequencyAwardLimit !== null;
   if (!countersRequired) {
     return deepFreeze({ customerUses: 0, campaignAwardedPoints: 0, authoritative: false });
   }
@@ -748,6 +904,14 @@ function normalizeCampaignUsage(campaign, value) {
       value.campaignAwardedPoints,
       'campaignUsage.campaignAwardedPoints',
     ),
+    customerEligibleSpendPaise: nonNegativeSafeInteger(
+      value.customerEligibleSpendPaise ?? 0,
+      'campaignUsage.customerEligibleSpendPaise',
+    ),
+    frequencyAwards: nonNegativeSafeInteger(
+      value.frequencyAwards ?? value.customerUses,
+      'campaignUsage.frequencyAwards',
+    ),
     authoritative: true,
   });
 }
@@ -756,6 +920,9 @@ function calculateCampaignPoints(campaign, matchingSpendPaise, earnBasisPoints) 
   if (campaign.rewardType === CAMPAIGN_REWARD_TYPES.FIXED_POINTS) {
     return campaign.fixedBonusPoints;
   }
+  if (campaign.rewardType === CAMPAIGN_REWARD_TYPES.PERCENTAGE_BONUS) {
+    return calculateEarnPoints(matchingSpendPaise, campaign.percentageBonusBps).points;
+  }
   const matchingBasePoints = calculateEarnPoints(matchingSpendPaise, earnBasisPoints).points;
   const multipliedPoints = checkedBigIntResult(
     (BigInt(matchingBasePoints) * BigInt(campaign.earnMultiplierBasisPoints))
@@ -763,6 +930,29 @@ function calculateCampaignPoints(campaign, matchingSpendPaise, earnBasisPoints) 
     'campaignPoints',
   );
   return Math.max(0, multipliedPoints - matchingBasePoints);
+}
+
+function istDayAndMinute(eventAtMs) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: BOND_TIMEZONE,
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(eventAtMs));
+  const read = type => parts.find(part => part.type === type)?.value || '';
+  return {
+    weekday: read('weekday').toUpperCase(),
+    minuteOfDay: (Number(read('hour')) * 60) + Number(read('minute')),
+  };
+}
+
+function containsIstMinute(startMinute, endMinute, minuteOfDay) {
+  if (startMinute === null || endMinute === null) return true;
+  if (startMinute === endMinute) return true;
+  if (startMinute < endMinute) return minuteOfDay >= startMinute && minuteOfDay < endMinute;
+  // An overnight promotion such as 22:00–02:00 wraps across midnight IST.
+  return minuteOfDay >= startMinute || minuteOfDay < endMinute;
 }
 
 function calculateLiabilityPaise(points, liabilityPaisePerPoint) {
@@ -787,6 +977,7 @@ function evaluateCampaign({
   const visits = uniqueIstVisitDayEvidence(campaign, visitEvidence, order.eventAtMs);
   const usage = normalizeCampaignUsage(campaign, campaignUsage);
   const reasons = [];
+  const eventIst = istDayAndMinute(order.eventAtMs);
 
   const thresholdSpendPaise = filteredSpend.filterApplied
     ? filteredSpend.eligibleSpendPaise
@@ -816,10 +1007,40 @@ function evaluateCampaign({
     reasons.push('CUSTOMER_USE_LIMIT_REACHED');
   }
 
-  const configuredCampaignPoints = reasons.length === 0
+  if (
+    campaign.frequencyAwardLimit !== null
+    && usage.frequencyAwards >= campaign.frequencyAwardLimit
+  ) {
+    reasons.push('CAMPAIGN_FREQUENCY_LIMIT_REACHED');
+  }
+  if (
+    campaign.eligibleIstWeekdays.length > 0
+    && !campaign.eligibleIstWeekdays.includes(eventIst.weekday)
+  ) {
+    reasons.push('IST_WEEKDAY_NOT_ELIGIBLE');
+  }
+  if (!containsIstMinute(campaign.startsAtMinuteIST, campaign.endsAtMinuteIST, eventIst.minuteOfDay)) {
+    reasons.push('IST_TIME_NOT_ELIGIBLE');
+  }
+
+  let rawCampaignPoints = reasons.length === 0
     ? calculateCampaignPoints(campaign, filteredSpend.eligibleSpendPaise, policy.earnBasisPoints)
     : 0;
-  const preliminaryPoints = Math.min(configuredCampaignPoints, maximumCampaignPoints);
+  let spendMilestonesCrossed = 0;
+  if (rawCampaignPoints > 0 && campaign.spendMilestonePaise !== null) {
+    const before = usage.customerEligibleSpendPaise;
+    const after = before + filteredSpend.eligibleSpendPaise;
+    spendMilestonesCrossed = Math.max(
+      0,
+      Math.floor(after / campaign.spendMilestonePaise) - Math.floor(before / campaign.spendMilestonePaise),
+    );
+    rawCampaignPoints *= spendMilestonesCrossed;
+    if (spendMilestonesCrossed === 0) reasons.push('SPEND_MILESTONE_NOT_REACHED');
+  }
+  const perOrderCappedPoints = campaign.maximumAwardPointsPerOrder === null
+    ? rawCampaignPoints
+    : Math.min(rawCampaignPoints, campaign.maximumAwardPointsPerOrder);
+  const preliminaryPoints = Math.min(perOrderCappedPoints, maximumCampaignPoints);
   if (
     campaign.budgetPoints !== null
     && usage.campaignAwardedPoints + preliminaryPoints > campaign.budgetPoints
@@ -836,8 +1057,11 @@ function evaluateCampaign({
     ineligibilityReasons: reasons,
     campaignEligibleSpendPaise: filteredSpend.eligibleSpendPaise,
     campaignPoints,
-    configuredCampaignPoints,
-    combinedRewardCapApplied: campaignPoints > 0 && campaignPoints < configuredCampaignPoints,
+    configuredCampaignPoints: rawCampaignPoints,
+    rawCampaignPoints,
+    adjustedCampaignPoints: campaignPoints,
+    perOrderCappedPoints,
+    combinedRewardCapApplied: campaignPoints > 0 && campaignPoints < perOrderCappedPoints,
     maximumCampaignPoints,
     liabilityPaise: calculateLiabilityPaise(campaignPoints, liabilityPaisePerPoint),
     matchedProductIds: filteredSpend.matchedProductIds,
@@ -849,6 +1073,15 @@ function evaluateCampaign({
     customerUsesAfter: usage.customerUses + (campaignPoints > 0 ? 1 : 0),
     campaignAwardedPointsBefore: usage.campaignAwardedPoints,
     campaignAwardedPointsAfter: usage.campaignAwardedPoints + campaignPoints,
+    customerEligibleSpendPaiseBefore: usage.customerEligibleSpendPaise,
+    customerEligibleSpendPaiseAfter: usage.customerEligibleSpendPaise + filteredSpend.eligibleSpendPaise,
+    spendMilestonesCrossed,
+    frequencyAwardsBefore: usage.frequencyAwards,
+    frequencyAwardsAfter: usage.frequencyAwards + (campaignPoints > 0 ? 1 : 0),
+    frequencyWindow: campaign.frequencyWindow,
+    frequencyAwardLimit: campaign.frequencyAwardLimit,
+    eventIstWeekday: eventIst.weekday,
+    eventIstMinute: eventIst.minuteOfDay,
     budgetPoints: campaign.budgetPoints,
     budgetRemainingAfter: campaign.budgetPoints === null
       ? null
@@ -873,12 +1106,14 @@ function evaluateBondReward({
     eventAt: normalizedOrder.eventAtMs,
     guardrails,
   });
-  const campaign = resolveCampaignVersion({
-    campaignVersions,
-    storeId: normalizedOrder.storeId,
-    eventAt: normalizedOrder.eventAtMs,
-    guardrails,
-  });
+  const campaign = policy.campaignStackingMode === CAMPAIGN_STACKING_MODES.BASE_PLUS_ONE_CAMPAIGN
+    ? resolveCampaignVersion({
+      campaignVersions,
+      storeId: normalizedOrder.storeId,
+      eventAt: normalizedOrder.eventAtMs,
+      guardrails,
+    })
+    : null;
   if (campaign && normalizedGuardrails.source !== 'HQ_VERSIONED') {
     fail('BOND_GUARDRAILS_REQUIRED', 'A managed campaign version requires versioned HQ guardrails.', {
       campaignId: campaign.campaignId,
@@ -932,6 +1167,7 @@ function evaluateBondReward({
       issuingStoreId: normalizedOrder.storeId,
       earnBasisPoints: policy.earnBasisPoints,
       earnRateBps: policy.earnBasisPoints,
+      campaignStackingMode: policy.campaignStackingMode,
       effectiveFromMs: policy.effectiveFromMs,
       effectiveToMs: policy.effectiveToMs,
       windowSemantics: policy.windowSemantics,
@@ -939,8 +1175,11 @@ function evaluateBondReward({
     campaign: campaignResult,
     reward: {
       basePoints: base.points,
+      rawCampaignPoints: campaignResult?.rawCampaignPoints || 0,
+      adjustedCampaignPoints: campaignPoints,
       campaignPoints,
       totalPoints,
+      finalRewardPoints: totalPoints,
       maxCombinedRewardRateBps: normalizedGuardrails.maxCombinedRewardRateBps,
       combinedRewardCapPoints: combinedRewardCap.points,
       combinedRewardCapApplied: Boolean(campaignResult?.combinedRewardCapApplied),
@@ -955,6 +1194,7 @@ function evaluateBondReward({
       policyVersionId: policy.versionId,
       campaignId: campaignResult?.campaignId || null,
       campaignVersionId: campaignResult?.campaignVersionId || null,
+      campaignStackingMode: policy.campaignStackingMode,
     },
     idempotencyEvidence: {
       logicalEventType: 'ORDER_POINT_EARN',
@@ -974,10 +1214,12 @@ module.exports = {
   BOND_TIMEZONE,
   BondPolicyCampaignError,
   CAMPAIGN_REWARD_TYPES,
+  CAMPAIGN_STACKING_MODES,
   LEGACY_DEFAULT_EARN_BASIS_POINTS,
   MULTIPLIER_BASIS_POINTS,
   POINT_VALUE_PAISE,
   POLICY_SCOPES,
+  VISIT_WINDOW_MODES,
   calculateEarnPoints,
   dryRunBondReward,
   evaluateBondReward,

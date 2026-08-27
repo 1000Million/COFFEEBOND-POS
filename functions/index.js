@@ -3,6 +3,7 @@
 const { randomBytes, createHash } = require('node:crypto');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
@@ -14,6 +15,7 @@ const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 const { createBondLoyaltyService } = require('./bondLoyalty');
+const { createBondRedemptionService } = require('./bondRedemption');
 const { createBondPolicyCampaignManagerFunctions } = require('./bondPolicyCampaignManager');
 
 admin.initializeApp();
@@ -64,6 +66,7 @@ exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund
 exports.posRazorpayWebhook = posRazorpayFunctions.posRazorpayWebhook;
 
 const bondLoyaltyService = createBondLoyaltyService({ admin, db });
+const bondRedemptionService = createBondRedemptionService({ admin, db });
 
 const bondPolicyCampaignManager = createBondPolicyCampaignManagerFunctions({ admin, db, region: REGION });
 exports.getBondPolicyCampaignManagerState = bondPolicyCampaignManager.getBondPolicyCampaignManagerState;
@@ -112,11 +115,21 @@ const razorpayCheckoutFunctions = createRazorpayPaymentFirstFunctions({ admin, d
 exports.resolveCustomerProfile = razorpayCheckoutFunctions.resolveCustomerProfile;
 exports.updateCustomerProfile = razorpayCheckoutFunctions.updateCustomerProfile;
 exports.createCustomerCheckoutSession = razorpayCheckoutFunctions.createCustomerCheckoutSession;
+exports.quoteCustomerBondRedemption = razorpayCheckoutFunctions.quoteCustomerBondRedemption;
+exports.releaseCustomerCheckoutSession = razorpayCheckoutFunctions.releaseCustomerCheckoutSession;
 exports.verifyCustomerRazorpayPayment = razorpayCheckoutFunctions.verifyCustomerRazorpayPayment;
 exports.listMyCustomerOrders = razorpayCheckoutFunctions.listMyCustomerOrders;
 exports.acceptPaidRazorpayOrder = razorpayCheckoutFunctions.acceptPaidRazorpayOrder;
 exports.cancelAndRefundRazorpayOrder = razorpayCheckoutFunctions.cancelAndRefundRazorpayOrder;
 exports.razorpayWebhook = razorpayCheckoutFunctions.razorpayWebhook;
+exports.recoverCapturedCustomerPayments = razorpayCheckoutFunctions.recoverCapturedCustomerPaymentsSchedule;
+
+exports.releaseExpiredBondRedemptionReservations = onSchedule({
+  schedule: 'every 5 minutes',
+  region: REGION,
+  timeZone: 'Asia/Kolkata',
+  retryCount: 3,
+}, () => bondRedemptionService.releaseExpiredReservations({ limit: 100 }));
 
 // "My Usual" lives in the customer's own private profile. These three callables are
 // the only path to it — customerProfiles is closed to every client in firestore.rules.

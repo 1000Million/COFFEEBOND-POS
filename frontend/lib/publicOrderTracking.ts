@@ -60,6 +60,11 @@ export function buildInitialPublicTrackingDoc(args: {
     subtotal: onlineOrder.subtotal,
     gstTotal: onlineOrder.gstTotal,
     total: onlineOrder.grandTotal,
+    ...(Number(onlineOrder.bondRedemptionPoints || 0) > 0 ? {
+      bondRedemptionPoints: Number(onlineOrder.bondRedemptionPoints),
+      bondRedemptionDiscount: Number(onlineOrder.bondRedemptionDiscount || 0),
+      discountLabel: onlineOrder.discountLabel || 'BOND Points Redemption',
+    } : {}),
     publicStatus: 'PENDING',
     submittedAt: serverTimestamp(),
     customerStatusMessage: publicStatusMessage('PENDING'),
@@ -68,7 +73,7 @@ export function buildInitialPublicTrackingDoc(args: {
 
 export async function updatePublicOrderTracking(
   trackingToken: string | null | undefined,
-  update: Partial<Omit<PublicOrderTracking, 'id' | 'trackingToken' | 'publicOrderReference' | 'storeName' | 'orderType' | 'tableNumber' | 'items' | 'subtotal' | 'gstTotal' | 'total' | 'submittedAt'>>,
+  update: Partial<Omit<PublicOrderTracking, 'id' | 'trackingToken' | 'publicOrderReference' | 'storeName' | 'orderType' | 'tableNumber' | 'items' | 'subtotal' | 'gstTotal' | 'total' | 'bondRedemptionPoints' | 'bondRedemptionDiscount' | 'discountLabel' | 'submittedAt'>>,
 ) {
   if (!trackingToken) return;
   await updateDoc(publicTrackingDocRef(trackingToken), update);

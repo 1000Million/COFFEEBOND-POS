@@ -22,6 +22,9 @@ type Props = {
    * actually awarded — the customer app never estimates a balance.
    */
   pointsEarned?: number | null;
+  bondRedemptionPoints?: number | null;
+  bondRedemptionLabel?: string | null;
+  bondRedemptionDiscountLabel?: string | null;
 };
 
 /**
@@ -52,13 +55,21 @@ export default function CustomerOrderCard({
   totalLabel,
   viewPath,
   pointsEarned = null,
+  bondRedemptionPoints = null,
+  bondRedemptionLabel = null,
+  bondRedemptionDiscountLabel = null,
 }: Props) {
+  const redemptionAnnouncement = typeof bondRedemptionPoints === 'number'
+    && bondRedemptionPoints > 0
+    && bondRedemptionDiscountLabel
+    ? `, ${bondRedemptionLabel || 'BOND Points Redemption'}, ${bondRedemptionPoints.toLocaleString('en-IN')} points, minus ${bondRedemptionDiscountLabel}`
+    : '';
   return (
     <li>
       <Link
         to={viewPath}
         className="cb-customer-row min-h-[44px]"
-        aria-label={`${dateLabel ? `${dateLabel}, ` : ''}${storeName}, ${fulfilmentLabel}, ${statusLabel}, ${totalLabel}, reference ${reference}. View order`}
+        aria-label={`${dateLabel ? `${dateLabel}, ` : ''}${storeName}, ${fulfilmentLabel}, ${statusLabel}, ${totalLabel}${redemptionAnnouncement}, reference ${reference}. View order`}
       >
         <span className="min-w-0 flex-1">
           <span className="cb-customer-row-title block truncate">
@@ -73,6 +84,11 @@ export default function CustomerOrderCard({
           {typeof pointsEarned === 'number' && pointsEarned > 0 && (
             <span className="cb-customer-row-points block truncate">
               You earned {pointsEarned} BOND Points
+            </span>
+          )}
+          {typeof bondRedemptionPoints === 'number' && bondRedemptionPoints > 0 && bondRedemptionDiscountLabel && (
+            <span className="cb-customer-row-points block truncate">
+              {bondRedemptionLabel || 'BOND Points Redemption'} · {bondRedemptionPoints.toLocaleString('en-IN')} pts · −{bondRedemptionDiscountLabel}
             </span>
           )}
         </span>

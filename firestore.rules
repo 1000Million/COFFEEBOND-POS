@@ -559,6 +559,9 @@ service cloud.firestore {
         'tableNumber',
         'items',
         'subtotal',
+        'bondRedemptionPoints',
+        'bondRedemptionDiscount',
+        'discountLabel',
         'gstTotal',
         'total',
         'publicStatus',
@@ -599,6 +602,17 @@ service cloud.firestore {
       && data.subtotal >= 0
       && data.gstTotal >= 0
       && data.total >= 0
+      && (
+        (!data.keys().hasAny(['bondRedemptionPoints', 'bondRedemptionDiscount', 'discountLabel']))
+        || (
+          data.bondRedemptionPoints is int
+          && data.bondRedemptionPoints >= 50
+          && data.bondRedemptionPoints % 10 == 0
+          && data.bondRedemptionDiscount is number
+          && data.bondRedemptionDiscount == data.bondRedemptionPoints
+          && data.discountLabel == 'BOND Points Redemption'
+        )
+      )
       && data.publicStatus in ['PENDING', 'PAYMENT_PROCESSING', 'PAID_PENDING_ACCEPTANCE', 'ACCEPTED', 'ACCEPTED_AWAITING_PAYMENT', 'CONVERTED', 'PREPARING', 'READY', 'SERVED', 'COMPLETED', 'REJECTED', 'NEEDS_ATTENTION', 'CANCELLED', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'CANCELLED_REFUNDED', 'PAYMENT_REVIEW_REQUIRED']
       && (!data.keys().hasAny(['paymentProvider']) || data.paymentProvider in ['PAY_AT_COUNTER', 'RAZORPAY'])
       && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['NOT_STARTED', 'AWAITING_PAYMENT', 'PAYMENT_PROCESSING', 'FAILED', 'PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'PAYMENT_REVIEW_REQUIRED'])
@@ -792,6 +806,13 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // Redemption holds contain checkout and balance-reservation state. They are
+    // created and transitioned only by Admin SDK transactions; no customer or
+    // staff client, including Admin UI clients, may read or mutate them directly.
+    match /loyaltyRedemptionReservations/{reservationId} {
+      allow read, create, update, delete: if false;
+    }
+
     match /clubMemberships/{membershipId} {
       allow get, list: if (isSignedIn() && resource.data.customerId == request.auth.uid) || isAdmin();
       allow create, update, delete: if false;
@@ -873,6 +894,18 @@ service cloud.firestore {
     }
 
     match /bondCampaignCustomerUsage/{usageId} {
+      allow read, create, update, delete: if false;
+    }
+
+    // Frequency windows are private server-side projections. A client must
+    // never learn or mutate another customer's campaign cadence directly.
+    match /bondCampaignFrequencyEvents/{eventId} {
+      allow read, create, update, delete: if false;
+    }
+
+    // Immutable server-side campaign evaluations power HQ reporting. They
+    // intentionally expose neither customer history nor budget state to a client.
+    match /bondCampaignQualificationEvents/{eventId} {
       allow read, create, update, delete: if false;
     }
 

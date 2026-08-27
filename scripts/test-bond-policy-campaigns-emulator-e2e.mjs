@@ -126,6 +126,7 @@ const MANAGED_COLLECTIONS = [
   'bondRewardRuntime',
   'bondCampaignBudgets',
   'bondCampaignCustomerUsage',
+  'bondCampaignQualificationEvents',
   'bondPolicyAudit',
 ];
 
@@ -939,6 +940,7 @@ await Promise.all([
   db.collection('bondCampaignSchedules').doc('RULES_EXISTING').set({ marker: true }),
   db.collection('bondRewardRuntime').doc('RULES_EXISTING').set({ marker: true }),
   db.collection('bondCampaignCustomerUsage').doc('RULES_EXISTING').set({ marker: true }),
+  db.collection('bondCampaignQualificationEvents').doc('RULES_EXISTING').set({ marker: true }),
 ]);
 
 const securedExistingPaths = [
@@ -955,6 +957,7 @@ const securedExistingPaths = [
   'bondRewardRuntime/RULES_EXISTING',
   `bondCampaignBudgets/${campaignV1.versionId}`,
   'bondCampaignCustomerUsage/RULES_EXISTING',
+  'bondCampaignQualificationEvents/RULES_EXISTING',
   (await db.collection('bondPolicyAudit').limit(1).get()).docs[0].ref.path,
   `bondPolicyScopes/STORE_STORE_A/segments/${policyV1Schedule.scheduleId}`,
   `bondCampaignScopes/STORE_A/segments/${campaignSchedule.scheduleId}`,

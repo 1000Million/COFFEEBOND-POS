@@ -7,6 +7,7 @@ const {
   Timestamp: ModularTimestamp,
 } = require('firebase-admin/firestore');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineString } = require('firebase-functions/params');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
 const { canonicalizeCustomerCheckout, cleanText } = require('./customerCheckoutCanonicalization');
@@ -35,6 +36,17 @@ const {
   resolveWebhookPaymentId,
 } = require('./razorpayCheckout');
 const { createBondLoyaltyService } = require('./bondLoyalty');
+const {
+  BOND_REDEMPTION_POLICY,
+} = require('./bondRedemptionPolicy');
+const {
+  BondRedemptionPolicyError,
+  BondRedemptionServiceError,
+  createBondRedemptionService,
+} = require('./bondRedemption');
+const {
+  createCustomerWebRefundOperationalReversalService,
+} = require('./customerWebRefundOperationalReversal');
 
 const CUSTOMER_PROFILE_COLLECTION = 'customerProfiles';
 const CHECKOUT_SESSION_COLLECTION = 'customerCheckoutSessions';
@@ -50,6 +62,32 @@ const PHONE_PATTERN = /^\+91[6-9][0-9]{9}$/;
 
 function fail(code, message) {
   throw new HttpsError(code, message);
+}
+
+function rethrowBondRedemptionError(error) {
+  if (!(error instanceof BondRedemptionPolicyError)
+    && !(error instanceof BondRedemptionServiceError)) {
+    throw error;
+  }
+  const code = error.code === 'INSUFFICIENT_POINTS'
+    || error.code === 'RESERVATION_CONFLICT'
+    ? 'resource-exhausted'
+    : error.code === 'REDEMPTION_DISABLED'
+      ? 'failed-precondition'
+      : 'invalid-argument';
+  throw new HttpsError(code, error.message, {
+    bondCode: error.code,
+    ...(error.details || {}),
+  });
+}
+
+function requiresCapturedPaymentRefund(error) {
+  const bondCode = cleanText(error?.details?.bondCode || error?.code, 120);
+  return [
+    'REDEMPTION_RESERVATION_NOT_FOUND',
+    'REDEMPTION_RESERVATION_NOT_ACTIVE',
+    'REDEMPTION_NOT_SETTLED',
+  ].includes(bondCode);
 }
 
 function booleanParameter(parameter) {
@@ -86,6 +124,14 @@ function customerOnlineOrderId(sessionId) {
 
 function deterministicRefundRequestId(onlineOrderId) {
   return `CBREF_${sha256(onlineOrderId).slice(0, 32).toUpperCase()}`;
+}
+
+function capturedSessionRefundId(sessionId) {
+  return `CHECKOUT_REFUND_${sha256(sessionId).slice(0, 48)}`;
+}
+
+function capturedSessionRefundRequestId(sessionId) {
+  return `CBREF_SESSION_${sha256(sessionId).slice(0, 28).toUpperCase()}`;
 }
 
 function generateTrackingToken() {
@@ -142,6 +188,16 @@ async function findOrCreateProviderOrder(client, payload) {
   return recovered || client.orders.create(payload);
 }
 
+async function findProviderOrderByReceipt(client, payload) {
+  if (typeof client.orders?.all !== 'function') return null;
+  const existingOrders = await client.orders.all({ receipt: payload.receipt, count: 10 });
+  return (existingOrders?.items || []).find(order => (
+    order?.receipt === payload.receipt
+    && Number(order?.amount) === payload.amount
+    && String(order?.currency).toUpperCase() === CURRENCY
+  )) || null;
+}
+
 function fetchProviderPaymentAndOrder(client, paymentId, providerOrderId) {
   return Promise.all([
     client.payments.fetch(paymentId),
@@ -151,6 +207,237 @@ function fetchProviderPaymentAndOrder(client, paymentId, providerOrderId) {
 
 function createProviderRefund(client, paymentId, payload) {
   return client.payments.refund(paymentId, payload);
+}
+
+async function markCustomerPaymentCaptured({
+  db,
+  admin,
+  sessionId,
+  providerPayment,
+  providerOrder,
+}) {
+  const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
+  const onlineOrderRef = db.collection('onlineOrders').doc(customerOnlineOrderId(sessionId));
+  return db.runTransaction(async transaction => {
+    const [sessionSnapshot, onlineOrderSnapshot] = await Promise.all([
+      transaction.get(sessionRef),
+      transaction.get(onlineOrderRef),
+    ]);
+    if (!sessionSnapshot.exists) fail('not-found', 'Checkout session no longer exists.');
+    const session = sessionSnapshot.data();
+    if (session.razorpayOrderId !== providerOrder.id
+      || providerPayment.order_id !== session.razorpayOrderId
+      || Number(providerPayment.amount) !== Number(session.amountPaise)
+      || String(providerPayment.currency || '').toUpperCase() !== CURRENCY) {
+      fail('failed-precondition', 'Captured provider payment does not match this checkout.');
+    }
+    if (onlineOrderSnapshot.exists || session.status === 'ORDER_CREATED') {
+      return { status: 'ORDER_CREATED', session: { sessionId, ...session } };
+    }
+    if (['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED'].includes(session.status)) {
+      return { status: session.status, session: { sessionId, ...session } };
+    }
+    const releasedStatuses = new Set([
+      'CANCELLED',
+      'EXPIRED',
+      'PAYMENT_FAILED',
+      'CAPTURED_AFTER_RELEASE',
+    ]);
+    const releasedCheckout = releasedStatuses.has(session.status)
+      || session.bondRedemptionStatus === 'RELEASED'
+      || session.refundStatus === 'REFUND_FAILED';
+    const nextStatus = releasedCheckout
+      ? 'CAPTURED_AFTER_RELEASE'
+      : 'PAYMENT_CAPTURED';
+    transaction.set(sessionRef, {
+      status: nextStatus,
+      providerPaymentId: providerPayment.id,
+      paymentCapturedAt: admin.firestore.FieldValue.serverTimestamp(),
+      failureCode: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return {
+      status: nextStatus,
+      session: {
+        sessionId,
+        ...session,
+        status: nextStatus,
+        providerPaymentId: providerPayment.id,
+      },
+    };
+  });
+}
+
+async function recordPendingPaymentState({ db, admin, sessionId, failureCode }) {
+  const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
+  return db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(sessionRef);
+    if (!snapshot.exists) return { status: 'NO_SESSION', writes: 0 };
+    const currentStatus = cleanText(snapshot.data()?.status, 80);
+    if ([
+      'PAYMENT_CAPTURED',
+      'ORDER_CREATED',
+      'REFUND_REQUESTING',
+      'REFUND_PENDING',
+      'REFUNDED',
+    ].includes(currentStatus)) {
+      return { status: currentStatus, writes: 0 };
+    }
+    transaction.set(sessionRef, {
+      status: 'PAYMENT_STARTED',
+      failureCode: cleanText(failureCode, 120),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { status: 'PAYMENT_STARTED', writes: 1 };
+  });
+}
+
+function validateFullProviderRefund(refund, { paymentId, amountPaise }) {
+  if (!cleanText(refund?.id, 120)
+    || cleanText(refund?.payment_id, 120) !== cleanText(paymentId, 120)
+    || Number(refund?.amount) !== Number(amountPaise)
+    || String(refund?.currency || '').toUpperCase() !== CURRENCY) {
+    throw Object.assign(new Error('Full refund confirmation failed validation.'), { statusCode: 502 });
+  }
+}
+
+async function refundCapturedReleasedCheckout({
+  db,
+  admin,
+  sessionId,
+  providerPayment,
+  providerOrder,
+  keyId,
+  keySecret,
+  RazorpayClass,
+  now = Date.now(),
+}) {
+  const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
+  const onlineOrderRef = db.collection('onlineOrders').doc(customerOnlineOrderId(sessionId));
+  const refundRef = db.collection(REFUND_COLLECTION).doc(capturedSessionRefundId(sessionId));
+  const refundRequestId = capturedSessionRefundRequestId(sessionId);
+  const leaseId = `captured_refund_${randomBytes(12).toString('hex')}`;
+  const claim = await db.runTransaction(async transaction => {
+    const [sessionSnapshot, onlineOrderSnapshot, refundSnapshot] = await Promise.all([
+      transaction.get(sessionRef),
+      transaction.get(onlineOrderRef),
+      transaction.get(refundRef),
+    ]);
+    if (!sessionSnapshot.exists) fail('not-found', 'Checkout session no longer exists.');
+    if (onlineOrderSnapshot.exists || sessionSnapshot.data()?.onlineOrderId) {
+      return { kind: 'ORDER_EXISTS' };
+    }
+    const session = sessionSnapshot.data();
+    if (session.razorpayOrderId !== providerOrder.id
+      || providerPayment.order_id !== session.razorpayOrderId
+      || Number(providerPayment.amount) !== Number(session.amountPaise)
+      || String(providerPayment.currency || '').toUpperCase() !== CURRENCY) {
+      fail('failed-precondition', 'Captured provider payment does not match this checkout.');
+    }
+    const existing = refundSnapshot.exists ? refundSnapshot.data() : null;
+    if (existing && ['REFUND_PENDING', 'REFUNDED'].includes(existing.status)) {
+      return { kind: 'EXISTING', refund: existing };
+    }
+    const leaseUntil = timestampMillis(existing?.requestLeaseUntil);
+    if (existing?.status === 'REFUND_REQUESTING'
+      && existing?.requestLeaseId
+      && leaseUntil
+      && leaseUntil > now) {
+      return { kind: 'IN_PROGRESS', refund: existing };
+    }
+    transaction.set(refundRef, {
+      checkoutSessionId: sessionId,
+      onlineOrderId: null,
+      storeId: session.storeId,
+      provider: PROVIDER,
+      providerPaymentId: providerPayment.id,
+      providerOrderId: providerOrder.id,
+      workflow: 'CUSTOMER_CHECKOUT_ORPHAN',
+      refundRequestId,
+      amountPaise: Number(session.amountPaise),
+      currency: CURRENCY,
+      status: 'REFUND_REQUESTING',
+      reason: 'CAPTURED_AFTER_CHECKOUT_RELEASE',
+      requestedAt: existing?.requestedAt || admin.firestore.FieldValue.serverTimestamp(),
+      requestLeaseId: leaseId,
+      requestLeaseUntil: admin.firestore.Timestamp.fromMillis(now + REFUND_REQUEST_LEASE_MS),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(sessionRef, {
+      status: 'REFUND_REQUESTING',
+      failureCode: 'CAPTURED_AFTER_CHECKOUT_RELEASE',
+      providerPaymentId: providerPayment.id,
+      paymentCapturedAt: session.paymentCapturedAt || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { kind: 'CREATE' };
+  });
+  if (claim.kind === 'ORDER_EXISTS') return { status: 'ORDER_CREATED', alreadyRequested: false };
+  if (claim.kind === 'EXISTING') {
+    return { status: claim.refund.status, alreadyRequested: true };
+  }
+  if (claim.kind === 'IN_PROGRESS') {
+    return { status: 'REFUND_REQUESTING', alreadyRequested: true };
+  }
+
+  const client = razorpayClient(keyId, keySecret, RazorpayClass, {
+    headers: { 'X-Refund-Idempotency': refundRequestId },
+  });
+  try {
+    const providerRefund = await createProviderRefund(client, providerPayment.id, {
+      amount: Number(providerPayment.amount),
+      speed: 'normal',
+      receipt: refundRequestId,
+      notes: { coffee_bond_checkout: sha256(sessionId).slice(0, 24) },
+    });
+    validateFullProviderRefund(providerRefund, {
+      paymentId: providerPayment.id,
+      amountPaise: Number(providerPayment.amount),
+    });
+    await db.runTransaction(async transaction => {
+      const [sessionSnapshot, refundSnapshot] = await Promise.all([
+        transaction.get(sessionRef),
+        transaction.get(refundRef),
+      ]);
+      if (!refundSnapshot.exists || refundSnapshot.data()?.requestLeaseId !== leaseId) return;
+      transaction.set(refundRef, {
+        providerRefundId: providerRefund.id,
+        status: 'REFUND_PENDING',
+        requestLeaseId: admin.firestore.FieldValue.delete(),
+        requestLeaseUntil: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      if (sessionSnapshot.exists && sessionSnapshot.data()?.status !== 'ORDER_CREATED') {
+        transaction.set(sessionRef, {
+          status: 'REFUND_PENDING',
+          refundStatus: 'REFUND_PENDING',
+          providerRefundId: providerRefund.id,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+    });
+    return { status: 'REFUND_PENDING', alreadyRequested: false };
+  } catch (error) {
+    const safe = safeProviderError(error);
+    await db.runTransaction(async transaction => {
+      const refundSnapshot = await transaction.get(refundRef);
+      if (!refundSnapshot.exists || refundSnapshot.data()?.requestLeaseId !== leaseId) return;
+      transaction.set(refundRef, {
+        status: 'REFUND_FAILED',
+        failureCode: safe.code,
+        requestLeaseId: admin.firestore.FieldValue.delete(),
+        requestLeaseUntil: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      transaction.set(sessionRef, {
+        status: REVIEW_STATUS,
+        refundStatus: 'REFUND_FAILED',
+        failureCode: safe.code,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+    throw error;
+  }
 }
 
 function sanitizedPublicItems(items) {
@@ -179,6 +466,11 @@ function publicTrackingPayload(order, admin) {
     subtotal: order.subtotal,
     gstTotal: order.gstTotal,
     total: order.grandTotal,
+    ...(Number(order.bondRedemptionPoints || 0) > 0 ? {
+      bondRedemptionPoints: Number(order.bondRedemptionPoints),
+      bondRedemptionDiscount: Number(order.bondRedemptionDiscount || 0),
+      discountLabel: BOND_REDEMPTION_POLICY.label,
+    } : {}),
     publicStatus: order.status,
     paymentProvider: PROVIDER,
     paymentStatus: order.paymentStatus,
@@ -202,6 +494,32 @@ function sessionResponse(session, keyId, magicEnabled) {
       contact: session.verifiedPhone,
     },
     readonly: { contact: true },
+    bondRedemption: {
+      enabled: session.bondRedemptionEnabled === true,
+      policyVersion: session.bondRedemptionPolicyVersion || BOND_REDEMPTION_POLICY.policyVersion,
+      discountLabel: BOND_REDEMPTION_POLICY.label,
+      policy: {
+        label: BOND_REDEMPTION_POLICY.label,
+        minimumPoints: BOND_REDEMPTION_POLICY.minimumPoints,
+        incrementPoints: BOND_REDEMPTION_POLICY.incrementPoints,
+        pointValuePaise: BOND_REDEMPTION_POLICY.pointValuePaise,
+        maximumPercent: BOND_REDEMPTION_POLICY.maximumEligibleSubtotalBasisPoints / 100,
+      },
+      minimumPoints: BOND_REDEMPTION_POLICY.minimumPoints,
+      incrementPoints: BOND_REDEMPTION_POLICY.incrementPoints,
+      pointValuePaise: BOND_REDEMPTION_POLICY.pointValuePaise,
+      pointsBalance: Number(session.bondPointsBalance || 0),
+      reservedPoints: Number(session.bondReservedPoints || 0),
+      availablePoints: Number(session.bondAvailablePoints || 0),
+      maximumUsablePoints: Number(session.bondMaximumUsablePoints || 0),
+      requestedPoints: Number(session.bondRedemptionPoints || 0),
+      selectedPoints: Number(session.bondRedemptionPoints || 0),
+      discount: Number(session.bondRedemptionDiscount || 0),
+      subtotal: Number(session.subtotal || 0),
+      taxableAmount: Number(session.taxableAmount || 0),
+      gstTotal: Number(session.gstTotal || 0),
+      grandTotal: Number(session.payable || 0),
+    },
     magicCheckoutEnabled: magicEnabled,
     ...(magicEnabled ? {
       oneClickCheckout: true,
@@ -405,10 +723,42 @@ async function updateCustomerProfileHandler({ request, db, admin }) {
   };
 }
 
+async function quoteCustomerBondRedemptionHandler({
+  request,
+  db,
+  redemptionService,
+}) {
+  const identity = verifiedCustomerIdentity(request);
+  const quoteFingerprint = sha256(JSON.stringify({
+    customerUid: identity.uid,
+    storeId: request.data?.storeId || null,
+    storeCode: request.data?.storeCode || null,
+    orderType: request.data?.orderType || null,
+    items: request.data?.items || [],
+  }));
+  const baseCanonical = await canonicalizeCustomerCheckout({
+    db,
+    data: request.data,
+    sessionId: `bond_quote_${quoteFingerprint.slice(0, 40)}`,
+  });
+  try {
+    const quote = await redemptionService.quote({
+      customerId: identity.uid,
+      canonical: { ...baseCanonical, source: 'CUSTOMER_WEB' },
+      requestedPoints: Number(request.data?.bondRedemptionPoints || 0),
+    });
+    const { canonical: _canonical, ...safeQuote } = quote;
+    return safeQuote;
+  } catch (error) {
+    return rethrowBondRedemptionError(error);
+  }
+}
+
 async function createCheckoutSession({
   request,
   db,
   admin,
+  redemptionService,
   keyId,
   keySecret,
   RazorpayClass,
@@ -420,15 +770,29 @@ async function createCheckoutSession({
   if (idempotencyKey.length < 12) fail('invalid-argument', 'Please retry secure checkout.');
   const sessionId = customerSessionId(identity.uid, idempotencyKey);
   const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
-  const canonical = await canonicalizeCustomerCheckout({
+  const baseCanonical = await canonicalizeCustomerCheckout({
     db,
     data: request.data,
     sessionId,
   });
+  let redemptionQuote;
+  try {
+    redemptionQuote = await redemptionService.quote({
+      customerId: identity.uid,
+      sessionId,
+      canonical: { ...baseCanonical, source: 'CUSTOMER_WEB' },
+      requestedPoints: Number(request.data?.bondRedemptionPoints || 0),
+    });
+  } catch (error) {
+    return rethrowBondRedemptionError(error);
+  }
+  const canonical = redemptionQuote.canonical;
   const amountPaise = rupeesToPaise(canonical.grandTotal);
   const checksum = requestChecksum({
     storeId: canonical.store.id,
     grandTotal: canonical.grandTotal,
+    bondRedemptionPoints: canonical.bondRedemptionPoints,
+    bondRedemptionDiscount: canonical.bondRedemptionDiscount,
     items: canonical.items,
   });
   const providerCreationLeaseId = `order_${randomBytes(12).toString('hex')}`;
@@ -451,8 +815,18 @@ async function createCheckoutSession({
     ) {
       return { kind: 'REUSE', session: existing };
     }
-    if (existing && ['PAYMENT_CAPTURED', 'ORDER_CREATED'].includes(existing.status)) {
+    if (existing?.status === 'ORDER_CREATED') {
       return { kind: 'PAID', session: existing };
+    }
+    if (existing && [
+      'PAYMENT_CAPTURED',
+      REVIEW_STATUS,
+      'CAPTURED_AFTER_RELEASE',
+      'REFUND_REQUESTING',
+      'REFUND_PENDING',
+      'REFUNDED',
+    ].includes(existing.status)) {
+      return { kind: 'RECOVERY', session: existing };
     }
     const leaseUntil = timestampMillis(existing?.providerCreationLeaseUntil);
     if (
@@ -464,6 +838,19 @@ async function createCheckoutSession({
       return { kind: 'WAIT', session: existing };
     }
     const trackingToken = existing?.trackingToken || generateTrackingToken();
+    let redemptionReservation;
+    try {
+      redemptionReservation = await redemptionService.reserveInTransaction({
+        transaction,
+        customerId: identity.uid,
+        sessionId,
+        canonical,
+        expiresAt,
+        requestChecksum: checksum,
+      });
+    } catch (error) {
+      return rethrowBondRedemptionError(error);
+    }
     const session = {
       sessionId,
       customerUid: identity.uid,
@@ -478,11 +865,25 @@ async function createCheckoutSession({
       items: canonical.items,
       subtotal: canonical.subtotal,
       discount: canonical.discount,
+      discountAmount: canonical.discountAmount,
+      discountTotal: canonical.discountTotal,
+      discountReason: canonical.discountReason,
+      discountSource: canonical.discountSource,
       taxableAmount: canonical.taxableAmount,
       gstTotal: canonical.gstTotal,
       payable: canonical.grandTotal,
       amountPaise,
       currency: CURRENCY,
+      bondRedemptionEnabled: redemptionQuote.enabled,
+      bondRedemptionPolicyVersion: BOND_REDEMPTION_POLICY.policyVersion,
+      bondRedemptionReservationId: redemptionReservation.reservationId,
+      bondRedemptionStatus: redemptionReservation.points > 0 ? 'RESERVED' : 'NOT_REQUESTED',
+      bondRedemptionPoints: Number(canonical.bondRedemptionPoints || 0),
+      bondRedemptionDiscount: Number(canonical.bondRedemptionDiscount || 0),
+      bondPointsBalance: redemptionQuote.pointsBalance,
+      bondReservedPoints: redemptionQuote.reservedPoints,
+      bondAvailablePoints: redemptionQuote.availablePoints,
+      bondMaximumUsablePoints: redemptionQuote.maximumUsablePoints,
       razorpayCustomerId: existing?.razorpayCustomerId || null,
       razorpayOrderId: null,
       status: 'CREATED',
@@ -508,32 +909,20 @@ async function createCheckoutSession({
     };
   }
   if (claim.kind === 'WAIT') return waitForCheckoutSession(sessionRef, keyId, magicEnabled);
+  if (claim.kind === 'RECOVERY') {
+    fail(
+      'failed-precondition',
+      ['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED', 'CAPTURED_AFTER_RELEASE']
+        .includes(claim.session.status)
+        ? 'This closed checkout has a captured payment refund in progress.'
+        : 'Payment was captured and order recovery is still in progress.',
+    );
+  }
 
   const client = razorpayClient(keyId, keySecret, RazorpayClass);
-  try {
-    const razorpayCustomerId = await resolveRazorpayCustomer({
-      db,
-      admin,
-      customerUid: identity.uid,
-      verifiedPhone: identity.phoneNumber,
-      customerName: canonical.customerName,
-      client,
-      now,
-    });
-    await db.collection(CUSTOMER_PROFILE_COLLECTION).doc(identity.uid).set({
-      displayName: canonical.customerName,
-      defaultOrderType: canonical.orderType,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    const providerOrder = await findOrCreateProviderOrder(client, {
-      amount: amountPaise,
-      currency: CURRENCY,
-      receipt,
-      customer_id: razorpayCustomerId,
-      notes: {
-        coffee_bond_checkout: sha256(sessionId).slice(0, 24),
-      },
-    });
+  let razorpayCustomerId = cleanText(claim.session.razorpayCustomerId, 120) || null;
+  let providerPayload = null;
+  const persistProviderOrder = async providerOrder => {
     if (
       !providerOrder?.id
       || Number(providerOrder.amount) !== amountPaise
@@ -557,15 +946,77 @@ async function createCheckoutSession({
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
     return sessionResponse(created, keyId, magicEnabled);
-  } catch (error) {
-    const safe = safeProviderError(error);
-    await sessionRef.set({
-      status: 'PAYMENT_FAILED',
-      failureCode: safe.code,
-      providerCreationLeaseId: admin.firestore.FieldValue.delete(),
-      providerCreationLeaseUntil: admin.firestore.FieldValue.delete(),
+  };
+  try {
+    razorpayCustomerId = await resolveRazorpayCustomer({
+      db,
+      admin,
+      customerUid: identity.uid,
+      verifiedPhone: identity.phoneNumber,
+      customerName: canonical.customerName,
+      client,
+      now,
+    });
+    await db.collection(CUSTOMER_PROFILE_COLLECTION).doc(identity.uid).set({
+      displayName: canonical.customerName,
+      defaultOrderType: canonical.orderType,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+    providerPayload = {
+      amount: amountPaise,
+      currency: CURRENCY,
+      receipt,
+      customer_id: razorpayCustomerId,
+      notes: {
+        coffee_bond_checkout: sha256(sessionId).slice(0, 24),
+      },
+    };
+    const providerOrder = await findOrCreateProviderOrder(client, providerPayload);
+    return await persistProviderOrder(providerOrder);
+  } catch (error) {
+    const safe = safeProviderError(error);
+    let providerAbsenceConfirmed = false;
+    if (providerPayload) {
+      try {
+        const recoveredOrder = await findProviderOrderByReceipt(client, providerPayload);
+        providerAbsenceConfirmed = !recoveredOrder;
+        if (recoveredOrder) return await persistProviderOrder(recoveredOrder);
+      } catch (reconciliationError) {
+        console.error('razorpay-payment-first-order-reconciliation-failed', {
+          sessionHash: sha256(sessionId).slice(0, 16),
+          failureCode: safeProviderError(reconciliationError).code,
+        });
+      }
+    }
+    if (!providerAbsenceConfirmed) {
+      await sessionRef.set({
+        status: 'CREATED',
+        failureCode: 'PROVIDER_ORDER_STATE_UNKNOWN',
+        providerCreationLeaseId: admin.firestore.FieldValue.delete(),
+        providerCreationLeaseUntil: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      console.error('razorpay-payment-first-order-create-ambiguous', {
+        sessionHash: sha256(sessionId).slice(0, 16),
+        storeId: canonical.store.id,
+        failureCode: safe.code,
+      });
+      fail('unavailable', 'Payment setup is being reconciled. Please retry shortly.');
+    }
+    try {
+      await redemptionService.releaseReservation({
+        customerId: identity.uid,
+        sessionId,
+        reason: 'PROVIDER_ORDER_CREATION_FAILED',
+        terminalSessionStatus: 'PAYMENT_FAILED',
+        allowedSessionStatuses: ['CREATED', 'PAYMENT_STARTED', 'PAYMENT_FAILED'],
+      });
+    } catch (releaseError) {
+      console.error('bond-redemption-release-after-provider-failure-failed', {
+        sessionHash: sha256(sessionId).slice(0, 16),
+        code: cleanText(releaseError?.code || releaseError?.message, 120),
+      });
+    }
     console.error('razorpay-payment-first-order-create-failed', {
       sessionHash: sha256(sessionId).slice(0, 16),
       storeId: canonical.store.id,
@@ -578,6 +1029,7 @@ async function createCheckoutSession({
 async function createPaidOnlineOrder({
   db,
   admin,
+  redemptionService,
   sessionId,
   providerPayment,
   providerOrder,
@@ -608,6 +1060,22 @@ async function createPaidOnlineOrder({
     if (session.razorpayOrderId !== providerOrder.id || providerPayment.order_id !== session.razorpayOrderId) {
       fail('failed-precondition', 'Provider order does not match this checkout.');
     }
+    if (!['PAYMENT_STARTED', 'PAYMENT_CAPTURED', REVIEW_STATUS].includes(session.status)) {
+      fail('failed-precondition', 'This checkout is no longer active. Any captured payment requires review.');
+    }
+
+    let redemptionSettlement;
+    try {
+      redemptionSettlement = await redemptionService.settleInTransaction({
+        transaction,
+        customerId: session.customerUid,
+        sessionId,
+        onlineOrderId,
+        canonical: { ...session, source: 'CUSTOMER_WEB', grandTotal: session.payable },
+      });
+    } catch (error) {
+      return rethrowBondRedemptionError(error);
+    }
 
     const tender = providerMethod(providerPayment.method);
     const onlineOrder = {
@@ -623,9 +1091,18 @@ async function createPaidOnlineOrder({
       notes: session.notes,
       items: session.items,
       subtotal: session.subtotal,
+      discount: Number(session.discount || 0),
+      discountAmount: Number(session.discountAmount || session.discount || 0),
+      discountTotal: Number(session.discountTotal || session.discount || 0),
+      discountReason: session.discountReason || null,
+      discountSource: session.discountSource || null,
       taxableAmount: session.taxableAmount,
       gstTotal: session.gstTotal,
       grandTotal: session.payable,
+      bondRedemptionPoints: Number(session.bondRedemptionPoints || 0),
+      bondRedemptionDiscount: Number(session.bondRedemptionDiscount || 0),
+      bondRedemptionPolicyVersion: session.bondRedemptionPolicyVersion || null,
+      bondRedemptionLedgerEntryId: redemptionSettlement.ledgerEntryId || null,
       status: 'PAID_PENDING_ACCEPTANCE',
       source: 'CUSTOMER_WEB',
       paymentProvider: PROVIDER,
@@ -685,6 +1162,8 @@ async function createPaidOnlineOrder({
     transaction.update(sessionRef, {
       status: 'ORDER_CREATED',
       onlineOrderId,
+      bondRedemptionStatus: redemptionSettlement.points > 0 ? 'REDEEMED' : 'NOT_REQUESTED',
+      bondRedemptionLedgerEntryId: redemptionSettlement.ledgerEntryId || null,
       paymentCapturedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -699,7 +1178,15 @@ async function createPaidOnlineOrder({
   });
 }
 
-async function verifySessionPayment({ request, db, admin, keyId, keySecret, RazorpayClass }) {
+async function verifySessionPayment({
+  request,
+  db,
+  admin,
+  redemptionService,
+  keyId,
+  keySecret,
+  RazorpayClass,
+}) {
   const identity = verifiedCustomerIdentity(request);
   const sessionId = cleanText(request.data?.sessionId, 120);
   const paymentId = cleanText(request.data?.razorpay_payment_id, 120);
@@ -746,29 +1233,75 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
     expectedAmountPaise: session.amountPaise,
   });
   if (!finalState.valid) {
-    await sessionSnapshot.ref.set({
-      status: payment?.status === 'failed' ? 'PAYMENT_FAILED' : 'PAYMENT_STARTED',
-      failureCode: finalState.code,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    if (payment?.status === 'failed') {
+      await redemptionService.releaseReservation({
+        customerId: identity.uid,
+        sessionId,
+        reason: 'PAYMENT_FAILED',
+        terminalSessionStatus: 'PAYMENT_FAILED',
+        allowedSessionStatuses: ['CREATED', 'PAYMENT_STARTED', 'PAYMENT_FAILED'],
+      });
+    } else {
+      await recordPendingPaymentState({
+        db,
+        admin,
+        sessionId,
+        failureCode: finalState.code,
+      });
+    }
     fail('failed-precondition', 'Payment is not captured and paid yet.');
   }
+  const captureState = await markCustomerPaymentCaptured({
+    db,
+    admin,
+    sessionId,
+    providerPayment: payment,
+    providerOrder,
+  });
+  if (captureState.status === 'CAPTURED_AFTER_RELEASE'
+    || ['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED'].includes(captureState.status)) {
+    const refund = await refundCapturedReleasedCheckout({
+      db,
+      admin,
+      sessionId,
+      providerPayment: payment,
+      providerOrder,
+      keyId,
+      keySecret,
+      RazorpayClass,
+    });
+    fail(
+      'failed-precondition',
+      refund.status === 'REFUNDED'
+        ? 'This late payment was refunded automatically.'
+        : 'This checkout had already closed. A full automatic refund has been initiated.',
+    );
+  }
   try {
-    return await createPaidOnlineOrder({ db, admin, sessionId, providerPayment: payment, providerOrder });
+    return await createPaidOnlineOrder({
+      db,
+      admin,
+      redemptionService,
+      sessionId,
+      providerPayment: payment,
+      providerOrder,
+    });
   } catch (error) {
-    try {
-      await sessionSnapshot.ref.set({
-        status: REVIEW_STATUS,
-        failureCode: 'PAID_ORDER_CREATION_FAILED',
-        paymentCapturedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    } catch (statusError) {
-      console.error('razorpay-payment-first-review-status-failed', {
-        sessionHash: sha256(sessionId).slice(0, 16),
-        storeId: session.storeId,
-        failureCode: cleanText(statusError?.code || statusError?.message, 120) || 'UNKNOWN',
+    if (requiresCapturedPaymentRefund(error)) {
+      await refundCapturedReleasedCheckout({
+        db,
+        admin,
+        sessionId,
+        providerPayment: payment,
+        providerOrder,
+        keyId,
+        keySecret,
+        RazorpayClass,
       });
+      fail(
+        'failed-precondition',
+        'The points hold could not be settled. A full automatic refund has been initiated.',
+      );
     }
     console.error('razorpay-payment-first-order-finalisation-failed', {
       sessionHash: sha256(sessionId).slice(0, 16),
@@ -777,6 +1310,52 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
     });
     fail('unavailable', 'Payment was received, but order confirmation is delayed. The store has been alerted.');
   }
+}
+
+async function releaseCustomerCheckoutSessionHandler({
+  request,
+  db,
+  admin,
+  redemptionService,
+}) {
+  const identity = verifiedCustomerIdentity(request);
+  const sessionId = cleanText(request.data?.sessionId, 120);
+  const requestedReason = cleanText(request.data?.reason, 80).toUpperCase();
+  const reason = ['CUSTOMER_CANCELLED', 'CHECKOUT_DISMISSED', 'PAYMENT_FAILED'].includes(requestedReason)
+    ? requestedReason
+    : 'CUSTOMER_CANCELLED';
+  if (!sessionId) fail('invalid-argument', 'Checkout session is required.');
+  const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(sessionId);
+  const sessionSnapshot = await sessionRef.get();
+  if (!sessionSnapshot.exists) return { status: 'NO_SESSION', released: false };
+  if (sessionSnapshot.data()?.customerUid !== identity.uid) {
+    fail('permission-denied', 'This checkout belongs to another customer.');
+  }
+  const released = await redemptionService.releaseReservation({
+    customerId: identity.uid,
+    sessionId,
+    reason,
+    terminalSessionStatus: 'CANCELLED',
+    allowedSessionStatuses: [
+      'CREATED',
+      'PAYMENT_STARTED',
+      'PAYMENT_FAILED',
+      'CANCELLING',
+      REVIEW_STATUS,
+    ],
+  });
+  if (released.status === 'PAYMENT_ALREADY_FINAL') {
+    return { status: 'ALREADY_PAID', released: false };
+  }
+  if (released.status === 'SESSION_STATE_CHANGED') {
+    return { status: released.sessionStatus || 'STATE_CHANGED', released: false };
+  }
+  return {
+    status: ['ALREADY_RELEASED', 'NO_RESERVATION'].includes(released.status)
+      ? 'ALREADY_RELEASED'
+      : 'CANCELLED',
+    released: released.status === 'RELEASED',
+  };
 }
 
 function allowedStoreIds(profile) {
@@ -880,14 +1459,64 @@ async function cancelAndRefund({
   if (!['REFUND', order.publicOrderReference].includes(confirmation)) {
     fail('failed-precondition', 'Type REFUND or the order reference to confirm the full refund.');
   }
+  const refundRef = db.collection(REFUND_COLLECTION).doc(onlineOrderId);
+  if (['REFUND_PENDING', 'CANCELLED_REFUNDED'].includes(order.status)) {
+    const existingRefundSnapshot = await refundRef.get();
+    const existingRefund = existingRefundSnapshot.exists ? existingRefundSnapshot.data() : null;
+    if (existingRefund && ['REFUND_PENDING', 'REFUNDED'].includes(existingRefund.status)) {
+      return {
+        alreadyRequested: true,
+        status: existingRefund.status,
+        refundId: existingRefund.providerRefundId || null,
+      };
+    }
+    fail('failed-precondition', 'The refund state requires review.');
+  }
+  const acceptedCustomerOrder = order.status === 'CONVERTED'
+    && order.paymentStatus === 'PAID'
+    && Boolean(cleanText(order.linkedOrderId, 180));
+  if (acceptedCustomerOrder) {
+    const linkedOrderRef = db.collection('orders').doc(order.linkedOrderId);
+    const [linkedOrderSnapshot, linkedPaymentSnapshot] = await Promise.all([
+      linkedOrderRef.get(),
+      linkedOrderRef.collection('payments').where('provider', '==', PROVIDER).limit(2).get(),
+    ]);
+    const linkedOrder = linkedOrderSnapshot.exists ? linkedOrderSnapshot.data() : null;
+    const linkedPayment = linkedPaymentSnapshot.size === 1
+      ? linkedPaymentSnapshot.docs[0].data()
+      : null;
+    if (
+      !linkedOrder
+      || linkedOrder.source !== 'CUSTOMER_WEB'
+      || linkedOrder.onlineOrderId !== onlineOrderId
+      || linkedOrder.paymentMethod !== 'ONLINE'
+      || linkedOrder.paymentProvider !== PROVIDER
+      || linkedOrder.paymentStatus !== 'PAID'
+      || linkedOrder.status === 'VOIDED'
+      || !linkedPayment
+      || linkedPayment.method !== 'ONLINE'
+      || linkedPayment.provider !== PROVIDER
+      || linkedPayment.status !== 'CAPTURED'
+      || linkedPayment.verifiedServerSide !== true
+      || String(linkedPayment.currency || '').toUpperCase() !== CURRENCY
+      || cleanText(linkedPayment.providerPaymentId, 120) !== cleanText(order.providerPaymentId, 120)
+      || rupeesToPaise(Number(linkedPayment.amount)) !== rupeesToPaise(Number(order.grandTotal))
+    ) {
+      fail('failed-precondition', 'The accepted customer payment is not eligible for an automatic refund.');
+    }
+  }
   if (
     order.paymentProvider !== PROVIDER
     || !['PAID', 'REFUND_FAILED'].includes(order.paymentStatus)
-    || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(order.status)
+    || ![
+      'PAID_PENDING_ACCEPTANCE',
+      REVIEW_STATUS,
+      'REFUND_FAILED',
+      'CONVERTED',
+    ].includes(order.status)
   ) {
-    fail('failed-precondition', 'Only an unaccepted captured Razorpay order can be refunded here.');
+    fail('failed-precondition', 'Only a captured customer Razorpay order can be refunded here.');
   }
-  const refundRef = db.collection(REFUND_COLLECTION).doc(onlineOrderId);
   const refundRequestId = deterministicRefundRequestId(onlineOrderId);
   const requestLeaseId = `refund_${randomBytes(12).toString('hex')}`;
   const now = Date.now();
@@ -898,7 +1527,12 @@ async function cancelAndRefund({
     ]);
     if (
       !freshOrder.exists
-      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(freshOrder.data().status)
+      || ![
+        'PAID_PENDING_ACCEPTANCE',
+        REVIEW_STATUS,
+        'REFUND_FAILED',
+        'CONVERTED',
+      ].includes(freshOrder.data().status)
     ) {
       fail('aborted', 'Order status changed before the refund could be requested.');
     }
@@ -921,6 +1555,8 @@ async function cancelAndRefund({
       storeId: order.storeId,
       provider: PROVIDER,
       providerPaymentId: order.providerPaymentId,
+      workflow: acceptedCustomerOrder ? 'CUSTOMER_WEB_ACCEPTED' : 'CUSTOMER_WEB_UNACCEPTED',
+      sourceOrderId: acceptedCustomerOrder ? order.linkedOrderId : null,
       refundRequestId,
       amountPaise: rupeesToPaise(Number(order.grandTotal)),
       currency: CURRENCY,
@@ -959,9 +1595,10 @@ async function cancelAndRefund({
         reason: claim.reason.slice(0, 120),
       },
     });
-    if (!cleanText(providerRefund?.id, 120)) {
-      throw Object.assign(new Error('Refund confirmation was not returned.'), { statusCode: 502 });
-    }
+    validateFullProviderRefund(providerRefund, {
+      paymentId: order.providerPaymentId,
+      amountPaise: rupeesToPaise(Number(order.grandTotal)),
+    });
   } catch (error) {
     const safe = safeProviderError(error);
     console.error('razorpay-refund-request-failed', {
@@ -1002,7 +1639,12 @@ async function cancelAndRefund({
     ]);
     if (
       !freshOrder.exists
-      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(freshOrder.data().status)
+      || ![
+        'PAID_PENDING_ACCEPTANCE',
+        REVIEW_STATUS,
+        'REFUND_FAILED',
+        'CONVERTED',
+      ].includes(freshOrder.data().status)
       || freshRefund.data()?.requestLeaseId !== requestLeaseId
       || freshRefund.data()?.refundRequestId !== refundRequestId
     ) {
@@ -1013,6 +1655,8 @@ async function cancelAndRefund({
       storeId: order.storeId,
       provider: PROVIDER,
       providerPaymentId: order.providerPaymentId,
+      workflow: acceptedCustomerOrder ? 'CUSTOMER_WEB_ACCEPTED' : 'CUSTOMER_WEB_UNACCEPTED',
+      sourceOrderId: acceptedCustomerOrder ? order.linkedOrderId : null,
       providerRefundId: providerRefund.id,
       refundRequestId,
       amountPaise: rupeesToPaise(Number(order.grandTotal)),
@@ -1070,13 +1714,110 @@ async function listMyOrders({ request, db, getLoyaltyEarnings = async () => new 
         status: order.status,
         paymentStatus: order.paymentStatus,
         pointsEarned: loyaltyEarnings.get(document.id) ?? null,
+        bondRedemptionPoints: Number(order.bondRedemptionPoints || 0),
+        bondRedemptionDiscount: Number(order.bondRedemptionDiscount || 0),
+        discountLabel: Number(order.bondRedemptionPoints || 0) > 0
+          ? BOND_REDEMPTION_POLICY.label
+          : null,
         createdAt: order.createdAt?.toDate?.().toISOString?.() || null,
       };
     }).sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || ''))),
   };
 }
 
-async function updateRefundFromWebhook({ db, admin, eventName, refundEntity }) {
+function refundWebhookEvidenceError(refund, refundEntity) {
+  const expectedPaymentId = cleanText(refund?.providerPaymentId, 120);
+  const actualPaymentId = cleanText(refundEntity?.payment_id, 120);
+  const expectedAmount = Number(refund?.amountPaise);
+  const actualAmount = Number(refundEntity?.amount);
+  const expectedCurrency = cleanText(refund?.currency, 20).toUpperCase();
+  const actualCurrency = cleanText(refundEntity?.currency, 20).toUpperCase();
+  if (refund?.provider !== PROVIDER) return 'REFUND_PROVIDER_MISMATCH';
+  if (!expectedPaymentId || actualPaymentId !== expectedPaymentId) return 'REFUND_PAYMENT_MISMATCH';
+  if (!Number.isSafeInteger(expectedAmount) || expectedAmount <= 0 || actualAmount !== expectedAmount) {
+    return 'REFUND_AMOUNT_MISMATCH';
+  }
+  if (expectedCurrency !== CURRENCY || actualCurrency !== expectedCurrency) {
+    return 'REFUND_CURRENCY_MISMATCH';
+  }
+  return null;
+}
+
+async function updateOrphanRefundFromWebhook({
+  db,
+  admin,
+  eventName,
+  refundSnapshot,
+  refundEntity,
+}) {
+  const checkoutSessionId = cleanText(refundSnapshot.data()?.checkoutSessionId, 500);
+  if (!checkoutSessionId) return { handled: false, outcome: 'REFUND_SESSION_ID_MISSING' };
+  const sessionRef = db.collection(CHECKOUT_SESSION_COLLECTION).doc(checkoutSessionId);
+  const onlineOrderRef = db.collection('onlineOrders').doc(customerOnlineOrderId(checkoutSessionId));
+  return db.runTransaction(async transaction => {
+    const [freshRefundSnapshot, sessionSnapshot, onlineOrderSnapshot] = await Promise.all([
+      transaction.get(refundSnapshot.ref),
+      transaction.get(sessionRef),
+      transaction.get(onlineOrderRef),
+    ]);
+    if (!freshRefundSnapshot.exists) return { handled: false, outcome: 'REFUND_RECORD_NOT_FOUND' };
+    if (!sessionSnapshot.exists) return { handled: false, outcome: 'REFUND_SESSION_NOT_FOUND' };
+    const refund = freshRefundSnapshot.data();
+    const session = sessionSnapshot.data();
+    const evidenceError = refundWebhookEvidenceError(refund, refundEntity);
+    if (evidenceError) return { handled: false, outcome: evidenceError };
+    if (
+      cleanText(refund.workflow, 80) !== 'CUSTOMER_CHECKOUT_ORPHAN'
+      || cleanText(refund.checkoutSessionId, 500) !== checkoutSessionId
+      || cleanText(refund.providerOrderId, 120) !== cleanText(session.razorpayOrderId, 120)
+      || cleanText(refund.providerPaymentId, 120) !== cleanText(session.providerPaymentId, 120)
+      || Number(refund.amountPaise) !== Number(session.amountPaise)
+      || cleanText(session.currency, 20).toUpperCase() !== CURRENCY
+    ) {
+      return { handled: false, outcome: 'REFUND_SESSION_EVIDENCE_MISMATCH' };
+    }
+    if (onlineOrderSnapshot.exists || cleanText(session.onlineOrderId, 500)) {
+      return { handled: false, outcome: 'ORPHAN_REFUND_ORDER_CONFLICT' };
+    }
+    if (refund.status === 'REFUNDED' || session.status === 'REFUNDED') {
+      return { handled: true, outcome: 'REFUNDED', terminal: true };
+    }
+    if (eventName === 'refund.created') {
+      return { handled: true, outcome: 'REFUND_PENDING' };
+    }
+    const processed = eventName === 'refund.processed';
+    const status = processed ? 'REFUNDED' : 'REFUND_FAILED';
+    transaction.set(freshRefundSnapshot.ref, {
+      status,
+      failureCode: processed
+        ? admin.firestore.FieldValue.delete()
+        : cleanText(refundEntity?.error_code, 80) || 'PROVIDER_REFUND_FAILED',
+      processedAt: processed ? admin.firestore.FieldValue.serverTimestamp() : null,
+      failedAt: processed ? null : admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(sessionRef, {
+      status: processed ? 'REFUNDED' : REVIEW_STATUS,
+      refundStatus: status,
+      providerRefundId: cleanText(refundEntity?.id, 120),
+      failureCode: processed
+        ? admin.firestore.FieldValue.delete()
+        : cleanText(refundEntity?.error_code, 80) || 'PROVIDER_REFUND_FAILED',
+      refundedAt: processed ? admin.firestore.FieldValue.serverTimestamp() : null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { handled: true, outcome: status };
+  });
+}
+
+async function updateRefundFromWebhook({
+  db,
+  admin,
+  redemptionService,
+  refundOperationalReversalService,
+  eventName,
+  refundEntity,
+}) {
   const providerRefundId = cleanText(refundEntity?.id, 120);
   if (!providerRefundId) return { handled: false, outcome: 'REFUND_ID_MISSING' };
   const query = await db.collection(REFUND_COLLECTION)
@@ -1085,34 +1826,251 @@ async function updateRefundFromWebhook({ db, admin, eventName, refundEntity }) {
     .get();
   if (query.size !== 1) return { handled: false, outcome: 'REFUND_RECORD_NOT_FOUND' };
   const refundSnapshot = query.docs[0];
-  const refund = refundSnapshot.data();
-  const orderRef = db.collection('onlineOrders').doc(refund.onlineOrderId);
-  const orderSnapshot = await orderRef.get();
-  if (!orderSnapshot.exists) return { handled: false, outcome: 'REFUND_ORDER_NOT_FOUND' };
-  const order = orderSnapshot.data();
-  if (eventName === 'refund.created') return { handled: true, outcome: 'REFUND_PENDING' };
-  const status = eventName === 'refund.processed' ? 'REFUNDED' : 'REFUND_FAILED';
-  await db.runTransaction(async transaction => {
-    transaction.set(refundSnapshot.ref, {
+  const initialRefund = refundSnapshot.data();
+  const initialEvidenceError = refundWebhookEvidenceError(initialRefund, refundEntity);
+  if (initialEvidenceError) return { handled: false, outcome: initialEvidenceError };
+  if (initialRefund.workflow === 'CUSTOMER_CHECKOUT_ORPHAN') {
+    return updateOrphanRefundFromWebhook({
+      db,
+      admin,
+      eventName,
+      refundSnapshot,
+      refundEntity,
+    });
+  }
+  const onlineOrderId = cleanText(initialRefund.onlineOrderId, 500);
+  if (!onlineOrderId) return { handled: false, outcome: 'REFUND_ORDER_ID_MISSING' };
+  const orderRef = db.collection('onlineOrders').doc(onlineOrderId);
+  const operationalReversalService = refundOperationalReversalService
+    || createCustomerWebRefundOperationalReversalService({ admin, db });
+  const transactionResult = await db.runTransaction(async transaction => {
+    const [freshRefundSnapshot, orderSnapshot] = await Promise.all([
+      transaction.get(refundSnapshot.ref),
+      transaction.get(orderRef),
+    ]);
+    if (!freshRefundSnapshot.exists) return { handled: false, outcome: 'REFUND_RECORD_NOT_FOUND' };
+    if (!orderSnapshot.exists) return { handled: false, outcome: 'REFUND_ORDER_NOT_FOUND' };
+    const refund = freshRefundSnapshot.data();
+    const order = orderSnapshot.data();
+    const evidenceError = refundWebhookEvidenceError(refund, refundEntity);
+    if (evidenceError) return { handled: false, outcome: evidenceError };
+    if (
+      !['CUSTOMER_WEB_ACCEPTED', 'CUSTOMER_WEB_UNACCEPTED'].includes(cleanText(refund.workflow, 80))
+      || cleanText(refund.onlineOrderId, 500) !== onlineOrderId
+      || order.source !== 'CUSTOMER_WEB'
+      || order.paymentProvider !== PROVIDER
+      || order.paymentMethod !== 'ONLINE'
+      || cleanText(order.providerPaymentId, 120) !== cleanText(refund.providerPaymentId, 120)
+      || rupeesToPaise(Number(order.grandTotal)) !== Number(refund.amountPaise)
+    ) {
+      return { handled: false, outcome: 'REFUND_ORDER_EVIDENCE_MISMATCH' };
+    }
+    if (refund.status === 'REFUNDED'
+      || (order.paymentStatus === 'REFUNDED' && order.refundStatus === 'REFUNDED')) {
+      return {
+        handled: true,
+        outcome: 'REFUNDED',
+        linkedPosOrderId: cleanText(order.linkedOrderId, 180),
+        refund,
+        terminal: true,
+      };
+    }
+    if (eventName === 'refund.created') {
+      return { handled: true, outcome: 'REFUND_PENDING', refund };
+    }
+    const linkedPosOrderId = cleanText(order.linkedOrderId, 180);
+    const posOrderRef = linkedPosOrderId ? db.collection('orders').doc(linkedPosOrderId) : null;
+    const posOrderSnapshot = posOrderRef ? await transaction.get(posOrderRef) : null;
+    if (posOrderRef && !posOrderSnapshot.exists) {
+      return { handled: false, outcome: 'REFUND_POS_ORDER_NOT_FOUND' };
+    }
+    if (posOrderSnapshot) {
+      const posOrder = posOrderSnapshot.data();
+      if (
+        posOrder.source !== 'CUSTOMER_WEB'
+        || cleanText(posOrder.onlineOrderId, 500) !== onlineOrderId
+        || posOrder.paymentProvider !== PROVIDER
+        || posOrder.paymentMethod !== 'ONLINE'
+      ) {
+        return { handled: false, outcome: 'REFUND_POS_ORDER_EVIDENCE_MISMATCH' };
+      }
+    }
+    const processed = eventName === 'refund.processed';
+    const status = processed ? 'REFUNDED' : 'REFUND_FAILED';
+    const restoration = processed
+      ? await redemptionService.restoreInTransaction({
+        transaction,
+        sessionId: order.checkoutSessionId,
+        onlineOrderId,
+        sourceOrderId: linkedPosOrderId || null,
+        reason: 'RAZORPAY_REFUND_PROCESSED',
+      })
+      : { status: 'NOT_RESTORED', points: 0 };
+    const bondRedemptionStatus = processed
+      ? restoration.points > 0 ? 'RESTORED' : order.bondRedemptionStatus || 'NOT_REQUESTED'
+      : order.bondRedemptionStatus || 'NOT_REQUESTED';
+    transaction.set(freshRefundSnapshot.ref, {
       status,
-      failureCode: eventName === 'refund.failed' ? cleanText(refundEntity?.error_code, 80) || 'PROVIDER_REFUND_FAILED' : null,
-      processedAt: eventName === 'refund.processed' ? admin.firestore.FieldValue.serverTimestamp() : null,
-      failedAt: eventName === 'refund.failed' ? admin.firestore.FieldValue.serverTimestamp() : null,
+      failureCode: processed
+        ? admin.firestore.FieldValue.delete()
+        : cleanText(refundEntity?.error_code, 80) || 'PROVIDER_REFUND_FAILED',
+      processedAt: processed ? admin.firestore.FieldValue.serverTimestamp() : null,
+      failedAt: processed ? null : admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
     transaction.update(orderRef, {
-      status: eventName === 'refund.processed' ? 'CANCELLED_REFUNDED' : 'REFUND_FAILED',
+      status: processed ? 'CANCELLED_REFUNDED' : 'REFUND_FAILED',
       paymentStatus: status,
       refundStatus: status,
+      bondRedemptionStatus,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    transaction.set(db.collection('publicOrderTracking').doc(order.trackingToken), {
-      publicStatus: status,
-      paymentStatus: status,
-      customerStatusMessage: publicStatusMessage(status),
-    }, { merge: true });
+    if (cleanText(order.trackingToken, 500)) {
+      transaction.set(db.collection('publicOrderTracking').doc(order.trackingToken), {
+        publicStatus: status,
+        paymentStatus: status,
+        customerStatusMessage: publicStatusMessage(status),
+      }, { merge: true });
+    }
+    if (posOrderRef) {
+      transaction.set(posOrderRef, {
+        refundStatus: status,
+        paymentReversalStatus: processed ? 'REFUNDED' : 'MANUAL_REFUND_REQUIRED',
+        refundedAmount: processed ? Number(order.grandTotal || 0) : 0,
+        refundPendingAmount: 0,
+        manualRefundRequiredAmount: processed ? 0 : Number(order.grandTotal || 0),
+        netCollectionAmount: processed ? 0 : Number(order.grandTotal || 0),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      transaction.set(posOrderRef.collection('payments').doc('razorpay'), {
+        refundStatus: status,
+        refundedAt: processed ? admin.firestore.FieldValue.serverTimestamp() : null,
+        refundFailedAt: processed ? null : admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    if (order.checkoutSessionId) {
+      transaction.set(db.collection(CHECKOUT_SESSION_COLLECTION).doc(order.checkoutSessionId), {
+        bondRedemptionStatus,
+        refundStatus: status,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    return {
+      handled: true,
+      outcome: status,
+      linkedPosOrderId,
+      refund,
+    };
   });
-  return { handled: true, outcome: status };
+  if (!transactionResult.handled) return transactionResult;
+  const operationalReversal = transactionResult.outcome === 'REFUNDED'
+    && transactionResult.linkedPosOrderId
+    ? await operationalReversalService.reverseConfirmedRefund({
+      onlineOrderId,
+      posOrderId: transactionResult.linkedPosOrderId,
+      reason: cleanText(transactionResult.refund?.reason, 240)
+        || 'Razorpay confirmed the full customer-order refund.',
+    })
+    : null;
+  return { ...transactionResult, operationalReversal };
+}
+
+async function recoverCapturedCustomerPayments({
+  db,
+  admin,
+  redemptionService,
+  keyId,
+  keySecret,
+  RazorpayClass,
+  limit = 50,
+}) {
+  const statuses = ['PAYMENT_CAPTURED', REVIEW_STATUS, 'CAPTURED_AFTER_RELEASE'];
+  const snapshots = await Promise.all(statuses.map(status => (
+    db.collection(CHECKOUT_SESSION_COLLECTION)
+      .where('status', '==', status)
+      .limit(limit)
+      .get()
+  )));
+  const sessions = new Map();
+  snapshots.forEach(snapshot => snapshot.docs.forEach(document => {
+    sessions.set(document.id, { sessionId: document.id, ...document.data() });
+  }));
+  const client = razorpayClient(keyId, keySecret, RazorpayClass);
+  const result = { scanned: sessions.size, finalized: 0, refunds: 0, unchanged: 0, errors: 0 };
+  for (const session of sessions.values()) {
+    try {
+      const providerOrderId = cleanText(session.razorpayOrderId, 120);
+      let providerPaymentId = cleanText(session.providerPaymentId, 120);
+      if (!providerOrderId) {
+        result.unchanged += 1;
+        continue;
+      }
+      if (!providerPaymentId) {
+        providerPaymentId = await resolveWebhookPaymentId({
+          client,
+          eventPaymentId: '',
+          providerOrderId,
+        });
+      }
+      if (!providerPaymentId) {
+        result.unchanged += 1;
+        continue;
+      }
+      const [payment, providerOrder] = await fetchProviderPaymentAndOrder(
+        client,
+        providerPaymentId,
+        providerOrderId,
+      );
+      const finalState = isFinalProviderState({
+        payment,
+        providerOrder,
+        expectedOrderId: providerOrderId,
+        expectedAmountPaise: session.amountPaise,
+      });
+      if (!finalState.valid) {
+        result.unchanged += 1;
+        continue;
+      }
+      const captureState = await markCustomerPaymentCaptured({
+        db,
+        admin,
+        sessionId: session.sessionId,
+        providerPayment: payment,
+        providerOrder,
+      });
+      if (captureState.status === 'CAPTURED_AFTER_RELEASE'
+        || ['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED'].includes(captureState.status)) {
+        await refundCapturedReleasedCheckout({
+          db,
+          admin,
+          sessionId: session.sessionId,
+          providerPayment: payment,
+          providerOrder,
+          keyId,
+          keySecret,
+          RazorpayClass,
+        });
+        result.refunds += 1;
+        continue;
+      }
+      await createPaidOnlineOrder({
+        db,
+        admin,
+        redemptionService,
+        sessionId: session.sessionId,
+        providerPayment: payment,
+        providerOrder,
+      });
+      result.finalized += 1;
+    } catch (error) {
+      result.errors += 1;
+      console.error('captured-customer-payment-recovery-failed', {
+        sessionHash: sha256(session.sessionId).slice(0, 16),
+        failureCode: cleanText(error?.code || error?.message, 120),
+      });
+    }
+  }
+  return result;
 }
 
 function createRazorpayPaymentFirstFunctions({
@@ -1139,6 +2097,11 @@ function createRazorpayPaymentFirstFunctions({
   });
   const loyaltyEarningsProvider = getLoyaltyEarnings
     || (customerId => createBondLoyaltyService({ admin, db }).getCustomerOrderEarnings(customerId));
+  const redemptionService = createBondRedemptionService({ admin, db });
+  const refundOperationalReversalService = createCustomerWebRefundOperationalReversalService({
+    admin,
+    db,
+  });
   const resolveCustomerProfile = onCall({ region }, request => (
     resolveCustomerProfileHandler({ request, db, admin })
   ));
@@ -1146,6 +2109,28 @@ function createRazorpayPaymentFirstFunctions({
   const updateCustomerProfile = onCall({ region }, request => (
     updateCustomerProfileHandler({ request, db, admin })
   ));
+
+  const quoteCustomerBondRedemption = onCall({ region }, request => (
+    quoteCustomerBondRedemptionHandler({ request, db, redemptionService })
+  ));
+
+  const releaseCustomerCheckoutSession = onCall({ region }, request => (
+    releaseCustomerCheckoutSessionHandler({ request, db, admin, redemptionService })
+  ));
+
+  const recoverCapturedCustomerPaymentsSchedule = onSchedule({
+    schedule: 'every 5 minutes',
+    region,
+    retryCount: 3,
+    secrets: [keySecretParameter],
+  }, () => recoverCapturedCustomerPayments({
+    db,
+    admin,
+    redemptionService,
+    keyId: cleanText(keyIdParameter.value(), 120),
+    keySecret: keySecretParameter.value(),
+    RazorpayClass,
+  }));
 
   const createCustomerCheckoutSession = onCall({
     region,
@@ -1156,6 +2141,7 @@ function createRazorpayPaymentFirstFunctions({
     request,
     db,
     admin,
+    redemptionService,
     keyId: cleanText(keyIdParameter.value(), 120),
     keySecret: keySecretParameter.value(),
     RazorpayClass,
@@ -1171,6 +2157,7 @@ function createRazorpayPaymentFirstFunctions({
     request,
     db,
     admin,
+    redemptionService,
     keyId: cleanText(keyIdParameter.value(), 120),
     keySecret: keySecretParameter.value(),
     RazorpayClass,
@@ -1240,7 +2227,14 @@ function createRazorpayPaymentFirstFunctions({
     }, { merge: true });
 
     if (['refund.created', 'refund.processed', 'refund.failed'].includes(eventName)) {
-      const outcome = await updateRefundFromWebhook({ db, admin, eventName, refundEntity });
+      const outcome = await updateRefundFromWebhook({
+        db,
+        admin,
+        redemptionService,
+        refundOperationalReversalService,
+        eventName,
+        refundEntity,
+      });
       await auditRef.set({
         status: outcome.handled ? 'PROCESSED' : 'FAILED',
         outcome: outcome.outcome,
@@ -1275,14 +2269,19 @@ function createRazorpayPaymentFirstFunctions({
     const sessionSnapshot = sessionQuery.docs[0];
     const session = { sessionId: sessionSnapshot.id, ...sessionSnapshot.data() };
     if (eventName === 'payment.failed') {
-      await sessionSnapshot.ref.set({
-        status: 'PAYMENT_FAILED',
-        failureCode: 'PROVIDER_PAYMENT_FAILED',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      const released = await redemptionService.releaseReservation({
+        customerId: session.customerUid,
+        sessionId: session.sessionId,
+        reason: 'PAYMENT_FAILED',
+        terminalSessionStatus: 'PAYMENT_FAILED',
+        allowedSessionStatuses: ['CREATED', 'PAYMENT_STARTED', 'PAYMENT_FAILED'],
+      });
       await auditRef.set({
         status: 'PROCESSED',
-        outcome: 'PAYMENT_FAILED_RECORDED',
+        outcome: released.status === 'PAYMENT_ALREADY_FINAL'
+          || released.status === 'SESSION_STATE_CHANGED'
+          ? 'LATE_PAYMENT_FAILED_IGNORED'
+          : 'PAYMENT_FAILED_RECORDED',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       response.status(200).json({ ok: true });
@@ -1320,9 +2319,39 @@ function createRazorpayPaymentFirstFunctions({
         expectedAmountPaise: session.amountPaise,
       });
       if (!finalState.valid) throw new Error(finalState.code);
+      const captureState = await markCustomerPaymentCaptured({
+        db,
+        admin,
+        sessionId: session.sessionId,
+        providerPayment: payment,
+        providerOrder,
+      });
+      if (captureState.status === 'CAPTURED_AFTER_RELEASE'
+        || ['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED'].includes(captureState.status)) {
+        const refund = await refundCapturedReleasedCheckout({
+          db,
+          admin,
+          sessionId: session.sessionId,
+          providerPayment: payment,
+          providerOrder,
+          keyId: cleanText(keyIdParameter.value(), 120),
+          keySecret: keySecretParameter.value(),
+          RazorpayClass,
+        });
+        await auditRef.set({
+          status: 'PROCESSED',
+          outcome: refund.status === 'REFUNDED'
+            ? 'LATE_PAYMENT_ALREADY_REFUNDED'
+            : 'LATE_PAYMENT_REFUND_PENDING',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        response.status(200).json({ ok: true, refunded: refund.status === 'REFUNDED' });
+        return;
+      }
       const result = await createPaidOnlineOrder({
         db,
         admin,
+        redemptionService,
         sessionId: session.sessionId,
         providerPayment: payment,
         providerOrder,
@@ -1335,11 +2364,39 @@ function createRazorpayPaymentFirstFunctions({
       }, { merge: true });
       response.status(200).json({ ok: true, duplicate: result.alreadyFinalized });
     } catch (error) {
-      await sessionSnapshot.ref.set({
-        status: REVIEW_STATUS,
-        failureCode: cleanText(error?.message, 120) || 'PAYMENT_FINALISATION_FAILED',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      if (requiresCapturedPaymentRefund(error)) {
+        try {
+          const [payment, providerOrder] = await fetchProviderPaymentAndOrder(
+            client,
+            paymentId,
+            providerOrderId,
+          );
+          const refund = await refundCapturedReleasedCheckout({
+            db,
+            admin,
+            sessionId: session.sessionId,
+            providerPayment: payment,
+            providerOrder,
+            keyId: cleanText(keyIdParameter.value(), 120),
+            keySecret: keySecretParameter.value(),
+            RazorpayClass,
+          });
+          await auditRef.set({
+            status: 'PROCESSED',
+            outcome: refund.status === 'REFUNDED'
+              ? 'LATE_PAYMENT_ALREADY_REFUNDED'
+              : 'LATE_PAYMENT_REFUND_PENDING',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+          response.status(200).json({ ok: true, refundPending: refund.status !== 'REFUNDED' });
+          return;
+        } catch (refundError) {
+          console.error('captured-checkout-auto-refund-failed', {
+            sessionHash: sha256(session.sessionId).slice(0, 16),
+            failureCode: cleanText(refundError?.code || refundError?.message, 120),
+          });
+        }
+      }
       console.error('razorpay-payment-first-webhook-failed', {
         eventId,
         eventName,
@@ -1360,7 +2417,10 @@ function createRazorpayPaymentFirstFunctions({
     cancelAndRefundRazorpayOrder,
     createCustomerCheckoutSession,
     listMyCustomerOrders,
+    quoteCustomerBondRedemption,
     razorpayWebhook,
+    recoverCapturedCustomerPaymentsSchedule,
+    releaseCustomerCheckoutSession,
     resolveCustomerProfile,
     updateCustomerProfile,
     verifyCustomerRazorpayPayment,
@@ -1387,8 +2447,13 @@ module.exports = {
   findOrCreateProviderCustomer,
   findOrCreateProviderOrder,
   listMyOrders,
+  markCustomerPaymentCaptured,
   paidPendingMessage,
   publicStatusMessage,
+  quoteCustomerBondRedemptionHandler,
+  recoverCapturedCustomerPayments,
+  refundCapturedReleasedCheckout,
+  releaseCustomerCheckoutSessionHandler,
   resolveCustomerProfileHandler,
   updateCustomerProfileHandler,
   updateRefundFromWebhook,

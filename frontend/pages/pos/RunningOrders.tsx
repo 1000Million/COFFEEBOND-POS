@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { httpsCallable } from 'firebase/functions';
 import {
   collection,
   doc,
@@ -28,8 +29,7 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
-import { auth } from '../../lib/firebase';
+import { auth, db, functions } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
@@ -57,6 +57,11 @@ import {
 } from '../../types';
 
 type RunningTab = 'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'ONLINE' | 'PAY_AT_COUNTER' | 'PREPARING' | 'READY' | 'UNPAID' | 'VOIDED';
+
+const cancelAndRefundCustomerRazorpayOrder = httpsCallable<
+  { onlineOrderId: string; reason: string; confirmation: string },
+  { status: 'REFUND_PENDING' | 'REFUNDED'; refundId: string; alreadyRequested: boolean }
+>(functions, 'cancelAndRefundRazorpayOrder');
 
 type OrderBundle = {
   order: Order;
@@ -191,15 +196,23 @@ function isPayAtCounter(order: Order, payments: OrderPayment[]): boolean {
     || payments.some(payment => payment.method === 'PAY_AT_COUNTER');
 }
 
-function isCapturedPosRazorpayOrder(order: Order, payments: OrderPayment[]): boolean {
-  return order.paymentMethod === 'RAZORPAY'
-    && order.paymentProvider === 'RAZORPAY'
+function capturedRazorpayWorkflow(
+  order: Order,
+  payments: OrderPayment[],
+): 'POS' | 'CUSTOMER_WEB' | null {
+  const captured = order.paymentProvider === 'RAZORPAY'
     && order.paymentStatus === 'PAID'
     && payments.some(payment => (
       payment.provider === 'RAZORPAY'
       && payment.status === 'CAPTURED'
       && payment.verifiedServerSide === true
     ));
+  if (!captured) return null;
+  if (order.paymentMethod === 'RAZORPAY') return 'POS';
+  if (order.paymentMethod === 'ONLINE' && order.source === 'CUSTOMER_WEB' && order.onlineOrderId) {
+    return 'CUSTOMER_WEB';
+  }
+  return null;
 }
 
 function settledTenderRows(payments: OrderPayment[]): OrderPayment[] {
@@ -306,7 +319,7 @@ function printReceipt(bundle: OrderBundle) {
         `).join('')}
         <div class="line"></div>
         <div class="row"><span>${complimentary ? 'Menu Value' : 'Subtotal'}</span><span>${formatMoney(order.menuValue ?? order.subtotal)}</span></div>
-        <div class="row"><span>${complimentary ? 'Complimentary Discount' : `Discount (${money(order.discountPercent).toFixed(2)}%)`}</span><span>-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}</span></div>
+        <div class="row"><span>${complimentary ? 'Complimentary Discount' : order.discountLabel || `Discount (${money(order.discountPercent).toFixed(2)}%)`}</span><span>-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}</span></div>
         <div class="row"><span>Taxable</span><span>${formatMoney(order.taxableAmount ?? Math.max(0, money(order.subtotal) - money(order.discountTotal)))}</span></div>
         <div class="row"><span>GST</span><span>${formatMoney(order.gstTotal ?? order.taxTotal)}</span></div>
         <div class="row total"><span>${complimentary ? 'Amount Payable' : 'Total'}</span><span>${formatMoney(order.grandTotal)}</span></div>
@@ -725,13 +738,19 @@ export default function RunningOrders() {
     setError('');
     setSuccess('');
     try {
-      const capturedPosRazorpay = isCapturedPosRazorpayOrder(voidBundle.order, voidBundle.payments);
-      const razorpayRefund = capturedPosRazorpay
+      const razorpayWorkflow = capturedRazorpayWorkflow(voidBundle.order, voidBundle.payments);
+      const razorpayRefund = razorpayWorkflow === 'POS'
         ? await requestPosRazorpayRefund({
             orderId: voidBundle.order.id,
             reason: voidReason.trim(),
             confirmation: voidBundle.order.orderNumber,
           })
+        : razorpayWorkflow === 'CUSTOMER_WEB'
+          ? (await cancelAndRefundCustomerRazorpayOrder({
+              onlineOrderId: String(voidBundle.order.onlineOrderId),
+              reason: voidReason.trim(),
+              confirmation: String(voidBundle.order.onlineOrderReference || 'REFUND'),
+            })).data
         : null;
       const orderRef = doc(db, 'orders', voidBundle.order.id);
       const [movementSnap, kotSnap, paymentSnap] = await Promise.all([
@@ -764,8 +783,12 @@ export default function RunningOrders() {
         if (!freshOrderSnap.exists()) throw new Error('Order no longer exists.');
         const freshOrder = { id: freshOrderSnap.id, ...freshOrderSnap.data() } as Order;
         if (effectiveOrderStatus(freshOrder) === 'VOIDED') throw new Error('This order is already voided.');
-        const paymentReversal = razorpayRefund
-          ? buildRazorpayRefundAudit(freshOrder, paymentRows, razorpayRefund.status)
+        const effectiveRefundStatus = freshOrder.refundStatus === 'REFUNDED'
+          || freshOrder.paymentReversalStatus === 'REFUNDED'
+          ? 'REFUNDED'
+          : razorpayRefund?.status;
+        const paymentReversal = effectiveRefundStatus
+          ? buildRazorpayRefundAudit(freshOrder, paymentRows, effectiveRefundStatus)
           : buildPaymentReversalAudit(freshOrder, paymentRows);
 
         const stockTargets = saleMovements.map(movement => {
@@ -1273,7 +1296,7 @@ export default function RunningOrders() {
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">
                 This marks the order VOIDED, cancels related KOT rows, and reverses original sale stock movements. It does not delete the order.
               </div>
-              {isCapturedPosRazorpayOrder(voidBundle.order, voidBundle.payments) && (
+              {capturedRazorpayWorkflow(voidBundle.order, voidBundle.payments) && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
                   Coffee Bond will request one full Razorpay refund before voiding. Provider confirmation may remain pending after stock and KOT reversal.
                 </div>
@@ -1450,7 +1473,7 @@ function OrderDetailDrawer({
             <h3 className="mb-2 text-sm font-black uppercase tracking-widest text-neutral-500">Totals</h3>
             <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm">
               <Row label={isComplimentaryOrder(order) ? 'Menu Value' : 'Subtotal'} value={formatMoney(order.menuValue ?? order.subtotal)} />
-              <Row label={isComplimentaryOrder(order) ? 'Complimentary Discount' : `Discount (${money(order.discountPercent).toFixed(2)}%)`} value={`-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}`} />
+              <Row label={isComplimentaryOrder(order) ? 'Complimentary Discount' : order.discountLabel || `Discount (${money(order.discountPercent).toFixed(2)}%)`} value={`-${formatMoney(order.complimentaryDiscount ?? order.discountAmount ?? order.discountTotal ?? order.discount)}`} />
               <Row label="Taxable" value={formatMoney(order.taxableAmount ?? Math.max(0, money(order.subtotal) - money(order.discountTotal)))} />
               <Row label="GST" value={formatMoney(order.gstTotal ?? order.taxTotal)} />
               <Row label={isComplimentaryOrder(order) ? 'Amount Payable' : 'Total'} value={formatMoney(order.grandTotal)} bold />

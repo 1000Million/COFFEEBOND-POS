@@ -6,6 +6,10 @@ const { defineSecret, defineString } = require('firebase-functions/params');
 const { canonicalizeRequestedCart } = require('./posAddOnAuthorization');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
 const {
+  BOND_REDEMPTION_POLICY,
+  applyBondRedemptionToCheckout,
+} = require('./bondRedemptionPolicy');
+const {
   ACCEPTED_RAZORPAY_STATUS,
   CURRENCY,
   INTENT_TTL_MS,
@@ -415,7 +419,7 @@ async function finalizePaidOnlineOrder({
       return { reviewRequired: true, code: 'MENU_REVALIDATION_FAILED_AFTER_PAYMENT' };
     }
 
-    const calculatedLines = onlineOrder.items.map((storedItem, index) => {
+    let calculatedLines = onlineOrder.items.map((storedItem, index) => {
       const item = finishedGoods[index];
       const canonicalItem = canonical.canonicalItems[lineIds[index]];
       const quantity = Number(storedItem.quantity);
@@ -440,13 +444,56 @@ async function finalizePaidOnlineOrder({
         lineTotal: roundMoney(lineSubtotal + lineTax),
       };
     });
+    let pricedCheckout;
+    try {
+      const requestedRedemptionPoints = Number(onlineOrder.bondRedemptionPoints || 0);
+      pricedCheckout = applyBondRedemptionToCheckout({
+        checkout: { items: calculatedLines, discount: 0 },
+        requestedPoints: requestedRedemptionPoints,
+        pointsBalance: requestedRedemptionPoints,
+        availablePoints: requestedRedemptionPoints,
+        redemptionEnabled: requestedRedemptionPoints > 0,
+        channel: 'CUSTOMER_WEB',
+      });
+      calculatedLines = pricedCheckout.items;
+    } catch {
+      transaction.update(intentRef, {
+        status: REVIEW_STATUS,
+        failureCode: 'BOND_REDEMPTION_REVALIDATION_FAILED_AFTER_PAYMENT',
+        safeProviderPaymentId: providerPayment.id,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.update(onlineOrderRef, {
+        status: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        paymentReviewCode: 'BOND_REDEMPTION_REVALIDATION_FAILED_AFTER_PAYMENT',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
+        publicStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
+      }, { merge: true });
+      return { reviewRequired: true, code: 'BOND_REDEMPTION_REVALIDATION_FAILED_AFTER_PAYMENT' };
+    }
     const totals = {
-      subtotal: roundMoney(calculatedLines.reduce((sum, line) => sum + line.lineSubtotal, 0)),
-      taxableAmount: roundMoney(calculatedLines.reduce((sum, line) => sum + line.lineTaxable, 0)),
-      gstTotal: roundMoney(calculatedLines.reduce((sum, line) => sum + line.lineTax, 0)),
+      subtotal: pricedCheckout.subtotal,
+      discount: pricedCheckout.discount,
+      taxableAmount: pricedCheckout.taxableAmount,
+      gstTotal: pricedCheckout.gstTotal,
+      grandTotal: pricedCheckout.grandTotal,
     };
-    totals.grandTotal = roundMoney(totals.taxableAmount + totals.gstTotal);
-    if (rupeesToPaise(totals.grandTotal) !== intent.expectedAmountPaise) {
+    const canonicalTotalsMatch = [
+      ['subtotal', totals.subtotal],
+      ['discountAmount', totals.discount],
+      ['taxableAmount', totals.taxableAmount],
+      ['gstTotal', totals.gstTotal],
+      ['grandTotal', totals.grandTotal],
+    ].every(([field, expected]) => (
+      Math.round(Number(onlineOrder[field] || 0) * 100)
+        === Math.round(Number(expected || 0) * 100)
+    ));
+    if (!canonicalTotalsMatch || rupeesToPaise(totals.grandTotal) !== intent.expectedAmountPaise) {
       transaction.update(intentRef, {
         status: REVIEW_STATUS,
         failureCode: 'CANONICAL_TOTAL_CHANGED_AFTER_PAYMENT',
@@ -582,10 +629,19 @@ async function finalizePaidOnlineOrder({
       taxTotal: totals.gstTotal,
       gstTotal: totals.gstTotal,
       taxableAmount: totals.taxableAmount,
-      discountPercent: 0,
-      discountAmount: 0,
-      discountTotal: 0,
-      discount: 0,
+      discountPercent: totals.subtotal > 0
+        ? roundMoney((totals.discount / totals.subtotal) * 100)
+        : 0,
+      discountAmount: totals.discount,
+      discountTotal: totals.discount,
+      discount: totals.discount,
+      discountReason: totals.discount > 0 ? BOND_REDEMPTION_POLICY.label : null,
+      discountLabel: totals.discount > 0 ? BOND_REDEMPTION_POLICY.label : null,
+      discountSource: totals.discount > 0 ? 'BOND_REDEMPTION' : null,
+      bondRedemptionPoints: Number(onlineOrder.bondRedemptionPoints || 0),
+      bondRedemptionDiscount: totals.discount,
+      pointFundedAmount: totals.discount,
+      bondRedemptionPolicyVersion: onlineOrder.bondRedemptionPolicyVersion || null,
       grandTotal: totals.grandTotal,
       cogsTotal: inventoryPlan.totalCogs,
       inventoryWarningCount: inventoryPlan.warnings.length,
@@ -631,7 +687,7 @@ async function finalizePaidOnlineOrder({
         unitPriceWithAddOns: line.baseUnitPrice + line.addOnTotal,
         taxRate: line.taxRate,
         lineSubtotal: line.lineSubtotal,
-        lineDiscount: 0,
+        lineDiscount: line.lineDiscount,
         lineTaxable: line.lineTaxable,
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
@@ -682,7 +738,13 @@ async function finalizePaidOnlineOrder({
       providerPaymentId: providerPayment.id,
       providerOrderId: providerOrder.id,
       amount: totals.grandTotal,
-      status: PAID_STATUS,
+      status: 'CAPTURED',
+      currency: CURRENCY,
+      verifiedServerSide: true,
+      source: 'CUSTOMER_WEB',
+      onlineOrderId: onlineOrder.id,
+      storeId: store.id,
+      orderId: posOrderId,
       reference: providerPayment.id,
       paymentIndex: 0,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),

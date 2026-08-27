@@ -24,6 +24,7 @@ const customerOrder = source('frontend/pages/customer/CustomerOrder.tsx');
 const tracking = source('frontend/pages/customer/CustomerOrderStatus.tsx');
 const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx');
 const incoming = source('frontend/pages/pos/IncomingOnlineOrders.tsx');
+const runningOrders = source('frontend/pages/pos/RunningOrders.tsx');
 const inventoryControl = source('frontend/pages/inventory/InventoryControl.tsx');
 const conversion = source('frontend/lib/onlineOrderConversion.ts');
 const persistence = source('frontend/lib/customerOrderPersistence.ts');
@@ -161,10 +162,12 @@ test('29. Duplicate refund request is idempotent', () => {
   assert.match(backend, /'X-Refund-Idempotency': refundRequestId/);
 });
 test('30. refund.created keeps REFUND_PENDING', () => {
-  assert.match(backend, /eventName === 'refund\.created'\) return \{ handled: true, outcome: 'REFUND_PENDING'/);
+  assert.match(backend, /eventName === 'refund\.created'/);
+  assert.match(backend, /outcome: 'REFUND_PENDING'/);
 });
 test('31. refund.processed sets REFUNDED', () => {
-  assert.match(backend, /eventName === 'refund\.processed' \? 'REFUNDED' : 'REFUND_FAILED'/);
+  assert.match(backend, /const processed = eventName === 'refund\.processed'/);
+  assert.match(backend, /const status = processed \? 'REFUNDED' : 'REFUND_FAILED'/);
 });
 test('32. refund.failed sets REFUND_FAILED', () => {
   assert.match(backend, /'REFUND_FAILED'/);
@@ -177,9 +180,18 @@ test('34. Refunded order cannot be accepted', () => {
   assert.match(backend, /!\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(order\.status\)/);
   assert.match(backend, /order\.paymentStatus !== 'PAID'/);
 });
-test('35. Accepted or preparing order is not silently refunded', () => {
-  assert.match(backend, /Only an unaccepted captured Razorpay order can be refunded here/);
-  assert.doesNotMatch(backend.match(/Only an unaccepted[\s\S]{0,400}/)?.[0] || '', /CONVERTED|PREPARING/);
+test('35. Accepted customer-web refunds require structurally verified captured payment evidence', () => {
+  assert.match(backend, /acceptedCustomerOrder = order\.status === 'CONVERTED'/);
+  assert.match(backend, /linkedOrder\.source !== 'CUSTOMER_WEB'/);
+  assert.match(backend, /linkedPayment\.status !== 'CAPTURED'/);
+  assert.match(backend, /linkedPayment\.verifiedServerSide !== true/);
+  assert.match(backend, /The accepted customer payment is not eligible for an automatic refund/);
+  assert.doesNotMatch(backend, /order\.status === 'PREPARING'/);
+});
+test('35a. A fast refund webhook cannot be regressed to pending by the staff void transaction', () => {
+  assert.match(runningOrders, /freshOrder\.refundStatus === 'REFUNDED'/);
+  assert.match(runningOrders, /freshOrder\.paymentReversalStatus === 'REFUNDED'/);
+  assert.match(runningOrders, /buildRazorpayRefundAudit\(freshOrder, paymentRows, effectiveRefundStatus\)/);
 });
 test('36. Payment success automatically creates the POS incoming order', () => {
   assert.match(backend, /transaction\.create\(onlineOrderRef, onlineOrder\)/);
@@ -436,11 +448,13 @@ test('69. Refund client binds Razorpay idempotency header', () => {
   assert.equal(client.options.headers['X-Refund-Idempotency'], requestId);
   assert.match(requestId, /^CBREF_[A-F0-9]{32}$/);
 });
-test('70. Concurrency leases and captured-payment review recovery are present', () => {
+test('70. Concurrency leases and retryable captured-payment recovery are present', () => {
   assert.match(backend, /providerCreationLeaseId/);
   assert.match(backend, /razorpayCustomerLeaseId/);
   assert.match(backend, /status: 'REFUND_REQUESTING'/);
-  assert.match(backend, /status: REVIEW_STATUS,[\s\S]{0,160}failureCode: 'PAID_ORDER_CREATION_FAILED'/);
+  assert.match(backend, /async function recoverCapturedCustomerPayments/);
+  assert.match(backend, /const statuses = \['PAYMENT_CAPTURED', REVIEW_STATUS, 'CAPTURED_AFTER_RELEASE'\]/);
+  assert.doesNotMatch(backend, /failureCode: 'PAID_ORDER_CREATION_FAILED'/);
 });
 test('71. Checkout draft uses a versioned localStorage key', () => {
   assert.match(checkoutPersistence, /coffeeBondCustomerCheckoutDraft:v1/);
@@ -676,7 +690,15 @@ test('88. Failed paid acceptance writes review state before any operational reco
 test('89. Review-state paid orders remain retryable and refundable', () => {
   assert.match(backend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(order\.status\)/);
   assert.match(legacyBackend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS\]\.includes\(onlineOrder\.status\)/);
-  assert.match(backend, /\['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'\]\.includes\(order\.status\)/);
+  const refundableStateGate = backend.slice(
+    backend.indexOf('order.paymentProvider !== PROVIDER'),
+    backend.indexOf('const refundRequestId = deterministicRefundRequestId'),
+  );
+  assert.match(refundableStateGate, /'PAID_PENDING_ACCEPTANCE'/);
+  assert.match(refundableStateGate, /REVIEW_STATUS/);
+  assert.match(refundableStateGate, /'REFUND_FAILED'/);
+  assert.match(refundableStateGate, /'CONVERTED'/);
+  assert.match(refundableStateGate, /\.includes\(order\.status\)/);
 });
 test('90. Acceptance retry remains idempotent for POS KOT and stock records', () => {
   assert.match(legacyBackend, /intent\.status === PAID_STATUS && existingPosOrderSnapshot\.exists/);
@@ -811,5 +833,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 99);
+assert.equal(tests.length, 100);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

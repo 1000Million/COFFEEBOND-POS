@@ -31,6 +31,7 @@ import CustomerBasketItemCard from '../../components/customer/CustomerBasketItem
 import CustomerBasketEmptyState from '../../components/customer/CustomerBasketEmptyState';
 import CustomerPickupSummary from '../../components/customer/CustomerPickupSummary';
 import CustomerCheckoutTotalsPanel from '../../components/customer/CustomerCheckoutTotalsPanel';
+import CustomerBondRedemptionPanel from '../../components/customer/CustomerBondRedemptionPanel';
 import CustomerPaymentSelector from '../../components/customer/CustomerPaymentSelector';
 import CustomerCheckoutNotice from '../../components/customer/CustomerCheckoutNotice';
 import CustomerCheckoutActionBar from '../../components/customer/CustomerCheckoutActionBar';
@@ -91,9 +92,11 @@ import {
   getCustomerBondSummary,
 } from '../../lib/bondLoyalty';
 import {
+  BondRedemptionQuote,
   loadRazorpayCheckout,
   RazorpayCheckoutSuccess,
   RazorpayOrderResponse,
+  validateBondRedemptionQuote,
   validateRazorpayOrderResponse,
 } from '../../lib/razorpayCheckout';
 import {
@@ -200,6 +203,7 @@ type SubmitCustomerOrderRequest = {
   notes: string;
   items: Array<{
     itemCode: string;
+    parentProductId?: string;
     quantity: number;
     addOns?: Array<{
       groupId: string;
@@ -210,6 +214,16 @@ type SubmitCustomerOrderRequest = {
   clientIdempotencyKey: string;
   paymentProvider: PaymentProvider;
 };
+
+type RazorpayCustomerCheckoutRequest = Omit<
+  SubmitCustomerOrderRequest,
+  'customerPhone' | 'paymentProvider'
+> & {
+  storeId: string;
+  bondRedemptionPoints: number;
+};
+
+type BondRedemptionQuoteRequest = Omit<RazorpayCustomerCheckoutRequest, 'clientIdempotencyKey'>;
 
 type SubmitCustomerOrderResponse = {
   trackingToken: string;
@@ -234,9 +248,17 @@ const submitCustomerOrderCallable = httpsCallable<SubmitCustomerOrderRequest, Su
   'submitCustomerOrder',
 );
 const createCustomerCheckoutSession = httpsCallable<
-  Omit<SubmitCustomerOrderRequest, 'customerPhone' | 'paymentProvider'> & { storeId: string },
+  RazorpayCustomerCheckoutRequest,
   RazorpayOrderResponse
 >(customerFunctions, 'createCustomerCheckoutSession');
+const quoteCustomerBondRedemption = httpsCallable<BondRedemptionQuoteRequest, BondRedemptionQuote>(
+  customerFunctions,
+  'quoteCustomerBondRedemption',
+);
+const releaseCustomerCheckoutSession = httpsCallable<
+  { sessionId: string; reason: 'CHECKOUT_DISMISSED' | 'PAYMENT_FAILED' },
+  { released: boolean }
+>(customerFunctions, 'releaseCustomerCheckoutSession');
 const verifyCustomerRazorpayPayment = httpsCallable<
   RazorpayCheckoutSuccess & { sessionId: string },
   {
@@ -541,6 +563,7 @@ function cartSignature(
   tableNumber: string,
   paymentProvider: PaymentProvider,
   cart: CartLine[],
+  bondRedemptionPoints: number,
 ): string {
   const cartParts = cart
     .map(line => `${line.item.code}:${line.quantity}:${addOnSelectionKey(line.addOns)}`)
@@ -552,6 +575,7 @@ function cartSignature(
     orderType,
     orderType === 'DINE_IN' ? tableNumber.trim().toUpperCase() : 'PICKUP',
     paymentProvider,
+    `BOND:${bondRedemptionPoints}`,
     cartParts,
   ].join('::');
 }
@@ -606,6 +630,12 @@ export default function CustomerOrder() {
   const [verifiedCustomer, setVerifiedCustomer] = useState<CustomerProfile | null>(null);
   const [bondSummary, setBondSummary] = useState<BondSummary | null>(null);
   const [bondSummaryLoading, setBondSummaryLoading] = useState(false);
+  const [bondRedemptionPoints, setBondRedemptionPoints] = useState(0);
+  const [bondRedemptionQuote, setBondRedemptionQuote] = useState<BondRedemptionQuote | null>(null);
+  const [bondRedemptionQuoteStatus, setBondRedemptionQuoteStatus] = useState<'IDLE' | 'LOADING' | 'READY' | 'ERROR'>('IDLE');
+  const [bondRedemptionQuoteError, setBondRedemptionQuoteError] = useState<string | null>(null);
+  const [bondRedemptionQuoteFingerprint, setBondRedemptionQuoteFingerprint] = useState<string | null>(null);
+  const [bondRedemptionQuoteRefresh, setBondRedemptionQuoteRefresh] = useState(0);
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [gstConfig, setGstConfig] = useState<GstConfig>({ defaultRate: 0, storeOverrides: {} });
@@ -680,6 +710,7 @@ export default function CustomerOrder() {
   const triedAutoLocationRef = useRef(false);
   const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
   const hydrationAppliedRef = useRef(false);
+  const bondRedemptionQuoteSequenceRef = useRef(0);
 
   useEffect(() => {
     if (!demoRequested) {
@@ -1551,6 +1582,154 @@ export default function CustomerOrder() {
     [cart, selectedStoreTaxRate],
   );
 
+  const razorpayCheckoutItems = useMemo(() => cart.map(line => ({
+    itemCode: line.item.code,
+    parentProductId: line.item.id || line.item.code,
+    quantity: line.quantity,
+    addOns: line.addOns.map(addOn => ({
+      groupId: addOn.groupId,
+      optionId: addOn.optionId,
+      quantity: addOn.quantity,
+    })),
+  })), [cart]);
+
+  const bondRedemptionEligible = Boolean(
+    !demoRequested
+    && verifiedCustomer
+    && paymentProvider === 'RAZORPAY'
+    && displayedBondSummary?.enabled
+    && displayedBondSummary.redemptionEnabled,
+  );
+  const bondRedemptionPrerequisiteMessage = !customerName.trim()
+    ? 'Add the name for this order to check BOND redemption.'
+    : orderType === 'DINE_IN' && !tableNumber.trim()
+      ? 'Add your table number to check BOND redemption.'
+      : cart.length === 0 || !selectedStore
+        ? 'Add an available item to check BOND redemption.'
+        : null;
+  const bondRedemptionQuoteRequest = useMemo<BondRedemptionQuoteRequest | null>(() => {
+    if (!bondRedemptionEligible || !selectedStore || cart.length === 0 || bondRedemptionPrerequisiteMessage) {
+      return null;
+    }
+    return {
+      storeId: selectedStore.id,
+      storeCode: selectedStore.code,
+      customerName: customerName.trim().replace(/\s+/g, ' '),
+      orderType,
+      ...(orderType === 'DINE_IN'
+        ? { tableNumber: tableNumber.trim().replace(/\s+/g, ' ') }
+        : { tableNumber: null }),
+      notes: notes.trim().slice(0, MAX_NOTE_LENGTH),
+      items: razorpayCheckoutItems,
+      bondRedemptionPoints,
+    };
+  }, [
+    bondRedemptionEligible,
+    bondRedemptionPoints,
+    bondRedemptionPrerequisiteMessage,
+    cart.length,
+    customerName,
+    notes,
+    orderType,
+    razorpayCheckoutItems,
+    selectedStore,
+    tableNumber,
+  ]);
+  const currentBondRedemptionQuoteFingerprint = useMemo(() => (
+    bondRedemptionQuoteRequest
+      ? JSON.stringify({
+        customerUid: verifiedCustomer?.customerUid || '',
+        request: bondRedemptionQuoteRequest,
+      })
+      : null
+  ), [bondRedemptionQuoteRequest, verifiedCustomer?.customerUid]);
+
+  useEffect(() => {
+    const sequence = ++bondRedemptionQuoteSequenceRef.current;
+    if (!bondRedemptionEligible) {
+      setBondRedemptionPoints(0);
+      setBondRedemptionQuote(null);
+      setBondRedemptionQuoteStatus('IDLE');
+      setBondRedemptionQuoteError(null);
+      setBondRedemptionQuoteFingerprint(null);
+      return undefined;
+    }
+    if (!bondRedemptionQuoteRequest || !currentBondRedemptionQuoteFingerprint) {
+      if (cart.length === 0 || !selectedStore) setBondRedemptionPoints(0);
+      setBondRedemptionQuote(null);
+      setBondRedemptionQuoteStatus('IDLE');
+      setBondRedemptionQuoteError(bondRedemptionPrerequisiteMessage);
+      setBondRedemptionQuoteFingerprint(null);
+      return undefined;
+    }
+    if (isOffline) {
+      setBondRedemptionQuoteStatus('ERROR');
+      setBondRedemptionQuoteError('Reconnect to update your BOND redemption quote.');
+      setBondRedemptionQuoteFingerprint(null);
+      return undefined;
+    }
+
+    setBondRedemptionQuoteStatus('LOADING');
+    setBondRedemptionQuoteError(null);
+    setBondRedemptionQuoteFingerprint(null);
+    const timeout = window.setTimeout(() => {
+      quoteCustomerBondRedemption(bondRedemptionQuoteRequest)
+        .then((result) => {
+          if (sequence !== bondRedemptionQuoteSequenceRef.current) return;
+          validateBondRedemptionQuote(result.data);
+          if (result.data.selectedPoints !== bondRedemptionPoints) {
+            throw new Error('Your available BOND Points changed. Please choose the amount again.');
+          }
+          setBondRedemptionQuote(result.data);
+          setBondRedemptionQuoteFingerprint(currentBondRedemptionQuoteFingerprint);
+          setBondRedemptionQuoteStatus('READY');
+          setBondRedemptionQuoteError(null);
+        })
+        .catch((quoteError: unknown) => {
+          if (sequence !== bondRedemptionQuoteSequenceRef.current) return;
+          const message = quoteError instanceof Error && quoteError.message
+            ? quoteError.message
+            : 'We could not update your BOND redemption quote. You can continue without points.';
+          setBondRedemptionQuoteStatus('ERROR');
+          setBondRedemptionQuoteError(message);
+          setBondRedemptionQuoteFingerprint(null);
+        });
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [
+    bondRedemptionEligible,
+    bondRedemptionPoints,
+    bondRedemptionPrerequisiteMessage,
+    bondRedemptionQuoteRefresh,
+    bondRedemptionQuoteRequest,
+    cart.length,
+    currentBondRedemptionQuoteFingerprint,
+    isOffline,
+    selectedStore,
+  ]);
+
+  const bondRedemptionQuoteCurrent = Boolean(
+    bondRedemptionQuote
+    && bondRedemptionQuoteStatus === 'READY'
+    && bondRedemptionQuoteFingerprint === currentBondRedemptionQuoteFingerprint
+    && bondRedemptionQuote.selectedPoints === bondRedemptionPoints,
+  );
+  const bondRedemptionQuoteStale = Boolean(
+    bondRedemptionEligible
+    && bondRedemptionQuoteRequest
+    && bondRedemptionQuoteStatus !== 'ERROR'
+    && !bondRedemptionQuoteCurrent,
+  );
+  const checkoutDisplayTotals = bondRedemptionPoints > 0 && bondRedemptionQuoteCurrent && bondRedemptionQuote
+    ? bondRedemptionQuote
+    : totals;
+  const checkoutDiscountLabel = bondRedemptionPoints > 0 && bondRedemptionQuoteCurrent && bondRedemptionQuote
+    ? `−${formatMoney(bondRedemptionQuote.discount)}`
+    : null;
+  const checkoutDiscountName = bondRedemptionPoints > 0 && bondRedemptionQuoteCurrent && bondRedemptionQuote
+    ? bondRedemptionQuote.policy.label
+    : undefined;
+
   const checkoutDraftInput = useMemo<CustomerCheckoutDraftInput>(() => ({
     selectedStoreId,
     paymentProvider,
@@ -1721,6 +1900,25 @@ export default function CustomerOrder() {
     setPendingAddOnItem(line.item);
   };
 
+  const retryBondRedemptionQuote = () => {
+    setBondRedemptionQuoteRefresh(current => current + 1);
+  };
+
+  const releaseCheckoutSessionBestEffort = (
+    sessionId: string,
+    reason: 'CHECKOUT_DISMISSED' | 'PAYMENT_FAILED',
+  ) => {
+    if (bondRedemptionPoints > 0) {
+      setBondRedemptionQuoteStatus('LOADING');
+      setBondRedemptionQuoteFingerprint(null);
+    }
+    void releaseCustomerCheckoutSession({ sessionId, reason })
+      .catch(() => undefined)
+      .finally(() => {
+        if (bondRedemptionPoints > 0) retryBondRedemptionQuote();
+      });
+  };
+
   const submitOrder = async () => {
     if (saving || submittingRef.current) return;
     if (!selectedStore) return setError('Please select a store.');
@@ -1732,6 +1930,12 @@ export default function CustomerOrder() {
     const cleanNotes = notes.trim().slice(0, MAX_NOTE_LENGTH);
     if (paymentProvider === 'RAZORPAY' && !verifiedCustomer) {
       return setError('Verify your mobile number before paying online.');
+    }
+    if (bondRedemptionPoints > 0 && !bondRedemptionQuoteCurrent) {
+      return setError('Wait for the current BOND redemption quote before paying.');
+    }
+    if (bondRedemptionEligible && (bondRedemptionQuoteStatus === 'LOADING' || bondRedemptionQuoteStale)) {
+      return setError('Wait for the current BOND redemption quote before paying.');
     }
     if (!cleanCustomerName) return setError('Please enter your name.');
     if (!isValidIndianPhone(customerPhone)) return setError('Please enter a valid 10-digit Indian mobile number.');
@@ -1757,7 +1961,15 @@ export default function CustomerOrder() {
       return;
     }
 
-    const signature = cartSignature(selectedStore.id, cleanPhone, orderType, cleanTableNumber, paymentProvider, cart);
+    const signature = cartSignature(
+      selectedStore.id,
+      cleanPhone,
+      orderType,
+      cleanTableNumber,
+      paymentProvider,
+      cart,
+      bondRedemptionPoints,
+    );
     const lockKey = submissionLockKey(signature);
     let clientIdempotencyKey = createClientIdempotencyKey();
     try {
@@ -1784,6 +1996,7 @@ export default function CustomerOrder() {
     setSaving(true);
     setError(null);
     setPaymentNotice('');
+    let activeRazorpaySessionId: string | null = null;
     try {
       if (paymentProvider === 'RAZORPAY') {
         const checkoutResult = (await createCustomerCheckoutSession({
@@ -1793,17 +2006,9 @@ export default function CustomerOrder() {
           orderType,
           ...(orderType === 'DINE_IN' ? { tableNumber: cleanTableNumber } : { tableNumber: null }),
           notes: cleanNotes,
-          items: cart.map(line => ({
-            itemCode: line.item.code,
-            parentProductId: line.item.id,
-            quantity: line.quantity,
-            addOns: line.addOns.map(addOn => ({
-              groupId: addOn.groupId,
-              optionId: addOn.optionId,
-              quantity: addOn.quantity,
-            })),
-          })),
+          items: razorpayCheckoutItems,
           clientIdempotencyKey,
+          bondRedemptionPoints,
         })).data;
         if (checkoutResult.alreadyPaid && checkoutResult.trackingToken) {
           const trackingPath = normalizeTrackingPath(checkoutResult.trackingPath, checkoutResult.trackingToken);
@@ -1815,6 +2020,19 @@ export default function CustomerOrder() {
         }
         validateRazorpayOrderResponse(checkoutResult);
         if (!checkoutResult.sessionId) throw new Error('Secure checkout session was not returned.');
+        activeRazorpaySessionId = checkoutResult.sessionId;
+        if (bondRedemptionPoints > 0) {
+          try {
+            validateBondRedemptionQuote(checkoutResult.bondRedemption);
+          } catch {
+            releaseCheckoutSessionBestEffort(checkoutResult.sessionId, 'CHECKOUT_DISMISSED');
+            throw new Error('BOND redemption was not confirmed for this checkout. Please review and retry.');
+          }
+          if (checkoutResult.bondRedemption.selectedPoints !== bondRedemptionPoints) {
+            releaseCheckoutSessionBestEffort(checkoutResult.sessionId, 'CHECKOUT_DISMISSED');
+            throw new Error('Your available BOND Points changed. Please review the updated quote.');
+          }
+        }
         await loadRazorpayCheckout();
         const RazorpayCheckout = window.Razorpay;
         if (!RazorpayCheckout) throw new Error('Online payment could not load. Please retry.');
@@ -1858,25 +2076,30 @@ export default function CustomerOrder() {
             },
             theme: { color: '#3b261d' },
             handler: (providerResult) => {
+              if (settled) return;
+              settled = true;
               verifyCustomerRazorpayPayment({
                 sessionId: checkoutResult.sessionId!,
                 ...providerResult,
-              }).then(result => finish(() => resolve(result.data)))
-                .catch(() => finish(() => reject(new Error(
+              }).then(result => resolve(result.data))
+                .catch(() => reject(new Error(
                   'Payment confirmation is delayed. Your paid order will be recovered automatically.',
-                ))));
+                )));
             },
             modal: {
-              ondismiss: () => finish(() => reject(new Error(
-                'Payment cancelled. No order was placed. Your cart has been saved.',
-              ))),
+              ondismiss: () => finish(() => {
+                releaseCheckoutSessionBestEffort(checkoutResult.sessionId!, 'CHECKOUT_DISMISSED');
+                reject(new Error('Payment cancelled. No order was placed. Your cart has been saved.'));
+              }),
             },
           });
-          checkout.on('payment.failed', () => finish(() => reject(new Error(
-            'Payment was not completed. No order was placed. You can try again.',
-          ))));
+          checkout.on('payment.failed', () => finish(() => {
+            releaseCheckoutSessionBestEffort(checkoutResult.sessionId!, 'PAYMENT_FAILED');
+            reject(new Error('Payment was not completed. No order was placed. You can try again.'));
+          }));
           checkout.open();
         });
+        activeRazorpaySessionId = null;
         const trackingPath = normalizeTrackingPath(verifiedOrder.trackingPath, verifiedOrder.trackingToken);
         rememberCustomerOrder(verifiedOrder.trackingToken);
         clearCustomerCheckoutDraft(window.localStorage);
@@ -1943,6 +2166,9 @@ export default function CustomerOrder() {
       setTableNumber('');
       setBasketOpen(false);
     } catch (err) {
+      if (activeRazorpaySessionId) {
+        releaseCheckoutSessionBestEffort(activeRazorpaySessionId, 'CHECKOUT_DISMISSED');
+      }
       if (import.meta.env.DEV) console.error('Failed to submit online order', err);
       const message = err instanceof Error ? err.message : '';
       if (
@@ -2015,8 +2241,8 @@ export default function CustomerOrder() {
    */
   const checkoutAction = (() => {
     const payLabel = paymentProvider === 'RAZORPAY'
-      ? `Pay online \u00b7 ${formatMoney(totals.grandTotal)}`
-      : `Send order request \u00b7 ${formatMoney(totals.grandTotal)}`;
+      ? `Pay online \u00b7 ${formatMoney(checkoutDisplayTotals.grandTotal)}`
+      : `Send order request \u00b7 ${formatMoney(checkoutDisplayTotals.grandTotal)}`;
     if (saving) {
       return {
         label: paymentProvider === 'RAZORPAY' ? 'Creating secure checkout...' : 'Sending request...',
@@ -2032,6 +2258,12 @@ export default function CustomerOrder() {
     }
     if (paymentProvider === 'RAZORPAY' && !verifiedCustomer) {
       return { label: 'Verify phone', disabled: true, reason: 'Verify your mobile number to pay online.' };
+    }
+    if (bondRedemptionEligible && (bondRedemptionQuoteStatus === 'LOADING' || bondRedemptionQuoteStale)) {
+      return { label: payLabel, disabled: true, reason: 'Updating your BOND redemption quote.' };
+    }
+    if (bondRedemptionPoints > 0 && !bondRedemptionQuoteCurrent) {
+      return { label: payLabel, disabled: true, reason: bondRedemptionQuoteError || 'Your BOND redemption quote needs an update.' };
     }
     return { label: payLabel, disabled: false, reason: '' };
   })();
@@ -2144,9 +2376,11 @@ export default function CustomerOrder() {
           {/* Presentation only. Every amount is the parent's authoritative `totals`,
               unchanged: no fee, charge or tax is added here. */}
           <CustomerCheckoutTotalsPanel
-            subtotalLabel={formatMoney(totals.subtotal)}
-            gstLabel={formatMoney(totals.gstTotal)}
-            payableLabel={formatMoney(totals.grandTotal)}
+            subtotalLabel={formatMoney(checkoutDisplayTotals.subtotal)}
+            gstLabel={formatMoney(checkoutDisplayTotals.gstTotal)}
+            discountName={checkoutDiscountName}
+            discountLabel={checkoutDiscountLabel}
+            payableLabel={formatMoney(checkoutDisplayTotals.grandTotal)}
           />
 
           {/* BOND earn ESTIMATE — never authoritative. The server posts the immutable
@@ -2158,7 +2392,7 @@ export default function CustomerOrder() {
             <div className="mt-3 rounded-2xl border border-[#e4d7c8] bg-[#fffaf4] px-4 py-3 text-sm text-[#5c4033]">
               <p className="font-black">You’ll earn approximately {demoRequested
                 ? 18
-                : estimateBondPoints(totals.taxableAmount, displayedBondSummary.effectiveEarnRateBps)} BOND Points.</p>
+                : estimateBondPoints(checkoutDisplayTotals.taxableAmount, displayedBondSummary.effectiveEarnRateBps)} BOND Points.</p>
               <p className="mt-1 text-xs font-semibold leading-relaxed text-neutral-500">
                 {demoRequested
                   ? 'Visual preview only. No points are issued from this example.'
@@ -2175,7 +2409,7 @@ export default function CustomerOrder() {
               onClick={() => setBasketStep('CHECKOUT')}
               className="cb-customer-accent-button inline-flex min-h-13 w-full items-center justify-center rounded-2xl px-4 py-4 text-sm font-black"
             >
-              Continue · {formatMoney(totals.grandTotal)}
+              Continue · {formatMoney(checkoutDisplayTotals.grandTotal)}
             </button>
           </div>
         </>
@@ -2347,11 +2581,26 @@ export default function CustomerOrder() {
             </div>
           )}
 
+          {bondRedemptionEligible && (
+            <CustomerBondRedemptionPanel
+              quote={bondRedemptionQuote}
+              selectedPoints={bondRedemptionPoints}
+              loading={bondRedemptionQuoteStatus === 'LOADING'}
+              stale={bondRedemptionQuoteStale}
+              error={bondRedemptionQuoteError}
+              disabled={saving}
+              onSelectedPointsChange={setBondRedemptionPoints}
+              onRetry={retryBondRedemptionQuote}
+            />
+          )}
+
           {/* WHAT AM I PAYING. The same authoritative totals as the basket step. */}
           <CustomerCheckoutTotalsPanel
-            subtotalLabel={formatMoney(totals.subtotal)}
-            gstLabel={formatMoney(totals.gstTotal)}
-            payableLabel={formatMoney(totals.grandTotal)}
+            subtotalLabel={formatMoney(checkoutDisplayTotals.subtotal)}
+            gstLabel={formatMoney(checkoutDisplayTotals.gstTotal)}
+            discountName={checkoutDiscountName}
+            discountLabel={checkoutDiscountLabel}
+            payableLabel={formatMoney(checkoutDisplayTotals.grandTotal)}
           />
 
           {/* Existing state sources only \u2014 no lifecycle status is invented here. */}

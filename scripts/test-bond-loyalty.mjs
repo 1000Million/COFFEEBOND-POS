@@ -149,7 +149,9 @@ const unsafeFlags = resolveLoyaltyFlags({
   customerOrderingOnly: false,
 });
 check('earn cannot activate without accountEnabled', unsafeFlags.earnEnabled === false);
-check('expiry redemption paid Club and Omakase stay hard-disabled', !unsafeFlags.expiryEnabled && !unsafeFlags.redemptionEnabled && !unsafeFlags.clubPaidEnabled && !unsafeFlags.omakaseEnabled);
+check('expiry paid Club and Omakase stay hard-disabled', !unsafeFlags.expiryEnabled && !unsafeFlags.clubPaidEnabled && !unsafeFlags.omakaseEnabled);
+check('redemption cannot activate without accountEnabled', unsafeFlags.redemptionEnabled === false);
+check('redemption activates only with the account flag dependency', resolveLoyaltyFlags({ accountEnabled: true, redemptionEnabled: true }).redemptionEnabled === true);
 check('customerOrderingOnly cannot be switched off by configuration', unsafeFlags.customerOrderingOnly === true);
 
 const functionsIndex = readFileSync('functions/index.js', 'utf8');

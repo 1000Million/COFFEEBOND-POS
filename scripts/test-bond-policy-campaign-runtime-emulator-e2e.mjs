@@ -73,7 +73,11 @@ const {
   POLICY_VERSIONS,
   definitionHash,
 } = require('../functions/bondPolicyCampaignManager');
-const { campaignCustomerUsageId } = require('../functions/bondPolicyCampaignRuntime');
+const {
+  CAMPAIGN_QUALIFICATION_EVENTS,
+  campaignCustomerUsageId,
+  campaignQualificationEventId,
+} = require('../functions/bondPolicyCampaignRuntime');
 
 const service = createBondLoyaltyService({ admin, db });
 const WINDOW_START = Date.parse('2026-09-01T00:00:00.000Z');
@@ -384,6 +388,13 @@ async function usageFor(versionId, customerId) {
   return snapshot.exists ? snapshot.data() : null;
 }
 
+async function qualificationFor(versionId, orderId) {
+  const snapshot = await db.collection(CAMPAIGN_QUALIFICATION_EVENTS)
+    .doc(campaignQualificationEventId(versionId, orderId))
+    .get();
+  return snapshot.exists ? snapshot.data() : null;
+}
+
 await seedGuardrails();
 await seedPolicy({
   versionId: DEFAULT_POLICY_VERSION_ID,
@@ -453,6 +464,11 @@ check('fixed campaign ledger records issuing store, policy, campaign, liability,
   && fixedLedger.campaignVersionId === 'campaign-fixed-product-v1'
   && fixedLedger.liabilityPaise === 2700
   && fixedLedger.calculationEvidence.matchedProductCodes.includes('COFFEE'));
+const fixedQualification = await qualificationFor('campaign-fixed-product-v1', fixedOrder.orderId);
+check('campaign qualification telemetry is immutable, server-generated, and records the actual awarded points', fixedQualification?.qualified === true
+  && fixedQualification.pointsAwarded === 7
+  && fixedQualification.campaignEligibleSpendPaise === 12_000
+  && fixedQualification.sourceOrderId === fixedOrder.orderId);
 
 const belowMinimumOrder = await seedEligibleOrder({
   orderId: 'runtime_fixed_below_minimum',
@@ -468,6 +484,10 @@ const belowMinimumOrder = await seedEligibleOrder({
 await earn(belowMinimumOrder);
 const belowMinimumLedger = await ledgerFor(belowMinimumOrder.orderId);
 check('non-matching spend cannot pad the campaign minimum', belowMinimumLedger.basePoints === 20 && belowMinimumLedger.campaignBonusPoints === 0 && belowMinimumLedger.pointsDelta === 20);
+const belowMinimumQualification = await qualificationFor('campaign-fixed-product-v1', belowMinimumOrder.orderId);
+check('non-qualifying campaign evaluations are retained for HQ conversion reporting without an award', belowMinimumQualification?.qualified === false
+  && belowMinimumQualification.pointsAwarded === 0
+  && belowMinimumQualification.ineligibilityReasons.includes('MINIMUM_SPEND_NOT_MET'));
 
 await seedCampaign({
   versionId: 'campaign-combined-cap-v1',

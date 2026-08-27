@@ -3,10 +3,12 @@ import path from 'node:path';
 
 const repoRoot = process.cwd();
 const rulesPath = path.join(repoRoot, 'firestore.rules');
+const indexesPath = path.join(repoRoot, 'firestore.indexes.json');
 const storageRulesPath = path.join(repoRoot, 'storage.rules');
 const missingProfilePath = path.join(repoRoot, 'frontend/pages/MissingProfile.tsx');
 
 const rules = fs.readFileSync(rulesPath, 'utf8');
+const firestoreIndexes = JSON.parse(fs.readFileSync(indexesPath, 'utf8'));
 const storageRules = fs.existsSync(storageRulesPath) ? fs.readFileSync(storageRulesPath, 'utf8') : '';
 const missingProfile = fs.existsSync(missingProfilePath) ? fs.readFileSync(missingProfilePath, 'utf8') : '';
 
@@ -107,6 +109,9 @@ const razorpayPaymentIntentsBlock = extractMatchBlock(rules, 'match /razorpayPay
 const razorpayWebhookEventsBlock = extractMatchBlock(rules, 'match /razorpayWebhookEvents/{eventId}');
 const customerProfilesBlock = extractMatchBlock(rules, 'match /customerProfiles/{customerUid}');
 const customerCheckoutSessionsBlock = extractMatchBlock(rules, 'match /customerCheckoutSessions/{sessionId}');
+const loyaltyAccountsBlock = extractMatchBlock(rules, 'match /loyaltyAccounts/{customerId}');
+const loyaltyPointLedgerBlock = extractMatchBlock(rules, 'match /loyaltyPointLedger/{ledgerEntryId}');
+const loyaltyRedemptionReservationsBlock = extractMatchBlock(rules, 'match /loyaltyRedemptionReservations/{reservationId}');
 const posRazorpaySessionsBlock = extractMatchBlock(rules, 'match /posRazorpaySessions/{sessionId}');
 const posRazorpayWebhookEventsBlock = extractMatchBlock(rules, 'match /posRazorpayWebhookEvents/{eventId}');
 const inventoryReservationsBlock = extractMatchBlock(rules, 'match /inventoryReservations/{reservationId}');
@@ -124,6 +129,7 @@ const bondRewardSchedulesBlock = extractMatchBlock(rules, 'match /bondRewardSche
 const bondRewardRuntimeBlock = extractMatchBlock(rules, 'match /bondRewardRuntime/{scopeId}');
 const bondCampaignBudgetsBlock = extractMatchBlock(rules, 'match /bondCampaignBudgets/{budgetId}');
 const bondCampaignCustomerUsageBlock = extractMatchBlock(rules, 'match /bondCampaignCustomerUsage/{usageId}');
+const bondCampaignQualificationEventsBlock = extractMatchBlock(rules, 'match /bondCampaignQualificationEvents/{eventId}');
 const bondPolicyAuditBlock = extractMatchBlock(rules, 'match /bondPolicyAudit/{auditId}');
 const invoiceStorageBlock = extractMatchBlock(storageRules, 'match /purchase-invoices/{storeId}/{draftId}/{fileName}');
 const menuImageStorageBlock = extractMatchBlock(storageRules, 'match /menu-images/{productCode}/{fileName}');
@@ -218,6 +224,24 @@ assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayPaymentIntentsBlock), 'Franc
 assert(!/FRANCHISE_VIEWER|isFranchise/.test(razorpayWebhookEventsBlock), 'Franchise Viewer must not access private Razorpay webhook audits.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(customerProfilesBlock), 'Private customer profiles must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(customerCheckoutSessionsBlock), 'Customer checkout sessions must be server-only.');
+assert(/allow\s+get:\s*if\s*\(isSignedIn\(\)\s*&&\s*request\.auth\.uid\s*==\s*customerId\)\s*\|\|\s*isAdmin\(\);/.test(loyaltyAccountsBlock), 'Customers may read only their UID-bound loyalty account; Admin retains read-only operational access.');
+assert(/allow\s+list:\s*if\s*isAdmin\(\);/.test(loyaltyAccountsBlock), 'Customers and non-Admin staff must not list loyalty accounts.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s*false;/.test(loyaltyAccountsBlock), 'No customer, staff, or Admin client may mutate loyalty account projections.');
+assert((loyaltyAccountsBlock.match(/allow\s+(?:write|create|update|delete)[^;]*;/g) || []).length === 1, 'Loyalty accounts must not contain a second client mutation grant.');
+assert(/allow\s+get,\s*list:\s*if\s*\(isSignedIn\(\)\s*&&\s*resource\.data\.customerId\s*==\s*request\.auth\.uid\)\s*\|\|\s*isAdmin\(\);/.test(loyaltyPointLedgerBlock), 'Ledger reads must remain customer-UID-bound or Admin-only.');
+assert(/allow\s+create,\s*update,\s*delete:\s*if\s*false;/.test(loyaltyPointLedgerBlock), 'No customer, staff, or Admin client may forge, alter, or delete loyalty ledger entries.');
+assert((loyaltyPointLedgerBlock.match(/allow\s+(?:write|create|update|delete)[^;]*;/g) || []).length === 1, 'Loyalty ledger must not contain a second client mutation grant.');
+assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s*false;/.test(loyaltyRedemptionReservationsBlock), 'Loyalty redemption reservations must be unreadable and immutable to every client role; Admin SDK transactions bypass client rules.');
+assert((loyaltyRedemptionReservationsBlock.match(/\ballow\b/g) || []).length === 1, 'Loyalty redemption reservations must not contain a customer, staff, or Admin client escape rule.');
+const loyaltyReservationExpiryIndexes = firestoreIndexes.indexes.filter(index => (
+  index.collectionGroup === 'loyaltyRedemptionReservations'
+  && index.queryScope === 'COLLECTION'
+  && JSON.stringify(index.fields) === JSON.stringify([
+    { fieldPath: 'status', order: 'ASCENDING' },
+    { fieldPath: 'expiresAt', order: 'ASCENDING' },
+  ])
+));
+assert(loyaltyReservationExpiryIndexes.length === 1, 'Redemption expiry sweeps require exactly one status ASC + expiresAt ASC composite index.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazorpaySessionsBlock), 'POS Razorpay sessions must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazorpayWebhookEventsBlock), 'POS Razorpay webhook audits must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(inventoryReservationsBlock), 'Inventory reservations must be server-only.');
@@ -236,6 +260,7 @@ for (const [collectionName, block] of [
   ['bondRewardRuntime', bondRewardRuntimeBlock],
   ['bondCampaignBudgets', bondCampaignBudgetsBlock],
   ['bondCampaignCustomerUsage', bondCampaignCustomerUsageBlock],
+  ['bondCampaignQualificationEvents', bondCampaignQualificationEventsBlock],
   ['bondPolicyAudit', bondPolicyAuditBlock],
 ]) {
   assert(
@@ -407,6 +432,9 @@ const cases = [
   'customer tracking reads are exact-token only: get allowed, list denied',
   'customer tracking writes remain sanitized: public fields exclude PII and internal IDs',
   'customer profiles and checkout sessions are server-only',
+  'loyalty account projections and ledger entries are client-immutable for customers, staff, and Admin UI clients',
+  'loyalty redemption reservations are client-unreadable and client-immutable; only Admin SDK transactions operate on them',
+  'loyalty redemption expiry sweeps use the explicit status plus expiry composite index',
   'POS Razorpay sessions are server-only',
   'POS Razorpay webhook audits are server-only',
   'soft inventory reservations and Razorpay refund records are server-only',

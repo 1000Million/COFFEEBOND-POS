@@ -215,8 +215,11 @@ check('fixed campaign points use authoritative finished-good codes and lineTaxab
   assert.deepEqual(result.campaign.matchedProductCodes, ['COFFEE']);
   assert.deepEqual(result.reward, {
     basePoints: 25,
+    rawCampaignPoints: 7,
+    adjustedCampaignPoints: 7,
     campaignPoints: 7,
     totalPoints: 32,
+    finalRewardPoints: 32,
     maxCombinedRewardRateBps: 2000,
     combinedRewardCapPoints: 50,
     combinedRewardCapApplied: false,
@@ -290,6 +293,105 @@ check('category-filtered multiplier adds only the incremental matching reward', 
   assert.deepEqual(result.campaign.matchedCategoryCodes, ['FOOD']);
 });
 
+check('percentage-bonus campaigns add the configured percentage of eligible pre-GST spend', () => {
+  const result = dryRunBondReward({
+    order: order(),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      rewardType: 'PERCENTAGE_BONUS',
+      fixedBonusPoints: null,
+      percentageBonusBps: 500,
+    })],
+    guardrails,
+  });
+  assert.equal(result.reward.basePoints, 25);
+  assert.equal(result.reward.rawCampaignPoints, 12);
+  assert.equal(result.reward.adjustedCampaignPoints, 12);
+  assert.equal(result.reward.finalRewardPoints, 37);
+});
+
+check('a policy with campaign stacking NONE exposes base earning only', () => {
+  const result = dryRunBondReward({
+    order: order(),
+    policyVersions: [policy({ campaignStackingMode: 'NONE' })],
+    campaignVersions: [campaign({ fixedBonusPoints: 25 })],
+    guardrails,
+  });
+  assert.equal(result.policy.campaignStackingMode, 'NONE');
+  assert.equal(result.campaign, null);
+  assert.equal(result.reward.basePoints, 25);
+  assert.equal(result.reward.finalRewardPoints, 25);
+});
+
+check('a spend milestone carries authoritative customer spend forward and still obeys the combined cap', () => {
+  const result = dryRunBondReward({
+    order: order({ eligibleSpendPaise: 10_000 }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      fixedBonusPoints: 100,
+      spendMilestonePaise: 100_000,
+    })],
+    guardrails,
+    campaignUsage: {
+      authoritative: true,
+      campaignId: 'campaign-1',
+      campaignVersionId: 'campaign-1-v1',
+      customerUses: 0,
+      campaignAwardedPoints: 0,
+      customerEligibleSpendPaise: 90_000,
+    },
+  });
+  assert.equal(result.campaign.spendMilestonesCrossed, 1);
+  assert.equal(result.campaign.rawCampaignPoints, 100);
+  assert.equal(result.campaign.adjustedCampaignPoints, 10);
+  assert.equal(result.reward.combinedRewardCapPoints, 20);
+  assert.equal(result.reward.finalRewardPoints, 20);
+});
+
+check('a per-order campaign cap is enforced before the authoritative combined cap', () => {
+  const result = dryRunBondReward({
+    order: order({ eligibleSpendPaise: 30_000 }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      fixedBonusPoints: 25,
+      maximumAwardPointsPerOrder: 5,
+    })],
+    guardrails,
+  });
+  assert.equal(result.campaign.rawCampaignPoints, 25);
+  assert.equal(result.campaign.perOrderCappedPoints, 5);
+  assert.equal(result.reward.adjustedCampaignPoints, 5);
+  assert.equal(result.reward.finalRewardPoints, 35);
+});
+
+check('weekday and IST time campaigns evaluate in Asia/Kolkata, not browser time', () => {
+  const eligible = dryRunBondReward({
+    order: order({ eventAt: Date.parse('2026-08-24T06:00:00.000Z') }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      fixedBonusPoints: 7,
+      eligibleIstWeekdays: ['MONDAY'],
+      startsAtMinuteIST: 600,
+      endsAtMinuteIST: 720,
+    })],
+    guardrails,
+  });
+  const ineligible = dryRunBondReward({
+    order: order({ eventAt: Date.parse('2026-08-24T15:00:00.000Z') }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      fixedBonusPoints: 7,
+      eligibleIstWeekdays: ['MONDAY'],
+      startsAtMinuteIST: 600,
+      endsAtMinuteIST: 720,
+    })],
+    guardrails,
+  });
+  assert.equal(eligible.campaign.eventIstWeekday, 'MONDAY');
+  assert.equal(eligible.reward.campaignPoints, 7);
+  assert.ok(ineligible.campaign.ineligibilityReasons.includes('IST_TIME_NOT_ELIGIBLE'));
+});
+
 check('visit-frequency eligibility deduplicates IST dates inside the configured window', () => {
   const result = dryRunBondReward({
     order: order({ eventAt: Date.parse('2026-08-22T18:00:00.000Z') }),
@@ -308,6 +410,48 @@ check('visit-frequency eligibility deduplicates IST dates inside the configured 
   });
   assert.equal(result.campaign.eligible, true);
   assert.equal(result.campaign.uniqueIstVisitDays, 2);
+});
+
+check('calendar-week visit campaigns never count a prior Monday–Sunday IST week', () => {
+  const result = dryRunBondReward({
+    order: order({ eventAt: Date.parse('2026-08-26T06:30:00.000Z') }),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      minimumUniqueVisitDays: 3,
+      visitWindowDays: 7,
+      visitWindowMode: 'CALENDAR_WEEK_IST',
+    })],
+    guardrails,
+    visitEvidence: {
+      authoritative: true,
+      timezone: BOND_TIMEZONE,
+      businessDates: ['2026-08-23', '2026-08-24', '2026-08-25', '2026-08-26'],
+    },
+  });
+  assert.equal(result.campaign.uniqueIstVisitDays, 3);
+  assert.equal(result.campaign.eligible, true);
+});
+
+check('frequency limits use authoritative campaign-window counters', () => {
+  const result = dryRunBondReward({
+    order: order(),
+    policyVersions: [policy()],
+    campaignVersions: [campaign({
+      frequencyAwardLimit: 1,
+      frequencyWindow: 'WEEK_IST',
+    })],
+    guardrails,
+    campaignUsage: {
+      authoritative: true,
+      campaignId: 'campaign-1',
+      campaignVersionId: 'campaign-1-v1',
+      customerUses: 0,
+      campaignAwardedPoints: 0,
+      frequencyAwards: 1,
+    },
+  });
+  assert.ok(result.campaign.ineligibilityReasons.includes('CAMPAIGN_FREQUENCY_LIMIT_REACHED'));
+  assert.equal(result.reward.campaignPoints, 0);
 });
 
 check('visit-frequency evidence is prospective from campaign activation', () => {

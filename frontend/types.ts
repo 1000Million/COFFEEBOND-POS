@@ -238,6 +238,12 @@ export interface Order {
   discountAmount?: number;
   discountTotal: number;
   discount?: number;
+  discountLabel?: string | null;
+  discountReason?: string | null;
+  discountSource?: string | null;
+  bondRedemptionPoints?: number;
+  bondRedemptionDiscount?: number;
+  bondRedemptionPolicyVersion?: string | null;
   grandTotal: number;
   cogsTotal?: number;
   inventoryWarningCount?: number;
@@ -281,6 +287,10 @@ export interface Order {
   refundStatus?: "REFUND_PENDING" | "REFUNDED" | "REFUND_FAILED";
   refundRequestId?: string;
   providerRefundId?: string;
+  source?: "CUSTOMER_WEB" | "POS" | string;
+  onlineOrderId?: string | null;
+  onlineOrderReference?: string | null;
+  onlineOrderTrackingToken?: string | null;
   createdAt: any;
   updatedAt: any;
 }
@@ -437,6 +447,9 @@ export interface OnlineOrder {
   taxableAmount: number;
   gstTotal: number;
   grandTotal: number;
+  bondRedemptionPoints?: number;
+  bondRedemptionDiscount?: number;
+  discountLabel?: string;
   status: OnlineOrderStatus;
   source: "CUSTOMER_WEB";
   paymentProvider?: PaymentProvider;
@@ -500,6 +513,9 @@ export interface PublicOrderTracking {
   subtotal: number;
   gstTotal: number;
   total: number;
+  bondRedemptionPoints?: number;
+  bondRedemptionDiscount?: number;
+  discountLabel?: string;
   publicStatus: PublicOrderStatus;
   paymentProvider?: PaymentProvider;
   paymentStatus?: PaymentStatus;

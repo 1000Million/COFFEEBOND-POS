@@ -27,6 +27,10 @@ export type PastOrderView = {
   viewPath: string;
   /** Server-posted BOND points for this order, or null when none were posted. */
   pointsEarned?: number | null;
+  /** Immutable redemption values returned with this order's authenticated history. */
+  bondRedemptionPoints?: number | null;
+  bondRedemptionLabel?: string | null;
+  bondRedemptionDiscountLabel?: string | null;
 };
 
 /**
@@ -182,6 +186,9 @@ export default function CustomerOrdersScreen({
                       totalLabel={order.totalLabel}
                       viewPath={order.viewPath}
                       pointsEarned={order.pointsEarned ?? null}
+                      bondRedemptionPoints={order.bondRedemptionPoints ?? null}
+                      bondRedemptionLabel={order.bondRedemptionLabel ?? null}
+                      bondRedemptionDiscountLabel={order.bondRedemptionDiscountLabel ?? null}
                     />
                   ))}
                 </ul>

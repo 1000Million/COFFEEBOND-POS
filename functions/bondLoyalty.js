@@ -24,8 +24,10 @@ const {
 } = require('./bondPolicyCampaignManager');
 const { LEGACY_DEFAULT_EARN_BASIS_POINTS } = require('./bondPolicyCampaignEngine');
 const {
+  CAMPAIGN_FREQUENCY_EVENTS,
   campaignCustomerUsageId,
   createBondPolicyCampaignRuntime,
+  frequencyEventId,
 } = require('./bondPolicyCampaignRuntime');
 
 const FLAGS_DOCUMENT = 'appSettings/loyalty';
@@ -133,6 +135,16 @@ function isVoidedOrder(order) {
   return ['VOIDED', 'CANCELLED'].includes(cleanText(order?.status, 40));
 }
 
+function requiresConfirmedGatewayRefund(order) {
+  return order?.source === 'CUSTOMER_WEB'
+    && order?.paymentProvider === 'RAZORPAY';
+}
+
+function hasConfirmedGatewayRefund(order) {
+  return order?.refundStatus === 'REFUNDED'
+    && order?.paymentReversalStatus === 'REFUNDED';
+}
+
 function isEligibleCustomerOrderingOrigin({
   orderId,
   order,
@@ -174,6 +186,9 @@ function accountSeed(customerId) {
     pointsBalance: 0,
     lifetimePointsEarned: 0,
     lifetimePointsReversed: 0,
+    lifetimePointsRedeemed: 0,
+    lifetimePointsRestored: 0,
+    reservedRedemptionPoints: 0,
     qualifyingVisitCount: 0,
     rollingVisitBusinessDates: [],
     currentClubStatus: 'NONE',
@@ -385,6 +400,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
           pointsDelta: 0,
           basePoints: 0,
           campaignBonusPoints: 0,
+          campaignEligibleSpendPaise: evaluation.campaign?.campaignEligibleSpendPaise || 0,
           eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
           remainderPaise: evaluation.policy.source === 'LEGACY_DEFAULT'
             ? authoritativeCalculation.remainderPaise
@@ -395,6 +411,8 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
             effectiveEarnRateBps: evaluation.policy.earnRateBps,
             basePoints: 0,
             campaignBonusPoints: 0,
+            rawCampaignPoints: evaluation.reward.rawCampaignPoints || 0,
+            adjustedCampaignPoints: 0,
             maxCombinedRewardRateBps: evaluation.reward.maxCombinedRewardRateBps,
             combinedRewardCapPoints: evaluation.reward.combinedRewardCapPoints,
             combinedRewardCapApplied: false,
@@ -416,6 +434,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
           campaignId: evaluation.campaign?.campaignId || null,
           campaignVersionId: evaluation.campaign?.campaignVersionId || null,
           campaignRewardType: evaluation.campaign?.rewardType || null,
+          campaignStackingMode: evaluation.policy.campaignStackingMode,
           maxCombinedRewardRateBps: evaluation.reward.maxCombinedRewardRateBps,
           combinedRewardCapPoints: evaluation.reward.combinedRewardCapPoints,
           combinedRewardCapApplied: false,
@@ -448,6 +467,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         pointsDelta: pointsEarned,
         basePoints: evaluation.reward.basePoints,
         campaignBonusPoints,
+        campaignEligibleSpendPaise: evaluation.campaign?.campaignEligibleSpendPaise || 0,
         eligibleSpendPaise: authoritativeCalculation.eligibleSpendPaise,
         remainderPaise: evaluation.policy.source === 'LEGACY_DEFAULT' ? authoritativeCalculation.remainderPaise : null,
         remainderRateUnits: baseCalculation.remainderRateUnits,
@@ -457,6 +477,11 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
           basePoints: evaluation.reward.basePoints,
           campaignBonusPoints,
           configuredCampaignPoints: evaluation.campaign?.configuredCampaignPoints || campaignBonusPoints,
+          rawCampaignPoints: evaluation.reward.rawCampaignPoints || campaignBonusPoints,
+          adjustedCampaignPoints: evaluation.reward.adjustedCampaignPoints || campaignBonusPoints,
+          maximumAwardPointsPerOrder: evaluation.campaign?.maximumAwardPointsPerOrder || null,
+          spendMilestonesCrossed: evaluation.campaign?.spendMilestonesCrossed || 0,
+          frequencyWindow: evaluation.campaign?.frequencyWindow || null,
           maxCombinedRewardRateBps: evaluation.reward.maxCombinedRewardRateBps,
           combinedRewardCapPoints: evaluation.reward.combinedRewardCapPoints,
           combinedRewardCapApplied: evaluation.reward.combinedRewardCapApplied,
@@ -477,6 +502,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         campaignId: evaluation.campaign?.campaignId || null,
         campaignVersionId: evaluation.campaign?.campaignVersionId || null,
         campaignRewardType: evaluation.campaign?.rewardType || null,
+        campaignStackingMode: evaluation.policy.campaignStackingMode,
         maxCombinedRewardRateBps: evaluation.reward.maxCombinedRewardRateBps,
         combinedRewardCapPoints: evaluation.reward.combinedRewardCapPoints,
         combinedRewardCapApplied: evaluation.reward.combinedRewardCapApplied,
@@ -580,16 +606,20 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         pointsDelta: campaignBonusPoints,
         basePoints: 0,
         campaignBonusPoints,
+        campaignEligibleSpendPaise: evaluation.campaign.campaignEligibleSpendPaise || 0,
         eligibleSpendPaise: evidence.eligibleSpendPaise,
         calculationEvidence: {
           ...evidence,
           effectiveEarnRateBps: evaluation.policy.earnRateBps,
           basePoints: 0,
           campaignBonusPoints,
+          rawCampaignPoints: evaluation.reward.rawCampaignPoints || campaignBonusPoints,
+          adjustedCampaignPoints: evaluation.reward.adjustedCampaignPoints || campaignBonusPoints,
           matchedProductCodes: evaluation.campaign.matchedProductCodes || [],
           matchedCategoryCodes: evaluation.campaign.matchedCategoryCodes || [],
           uniqueIstVisitDays: evaluation.campaign.uniqueIstVisitDays || 0,
           qualifyingVisitBusinessDate: calculateISTBusinessDate(occurredAt),
+          campaignStackingMode: evaluation.policy.campaignStackingMode,
         },
         sourceOrderId: orderId,
         sourceOnlineOrderId: origin.sourceOnlineOrderId,
@@ -604,6 +634,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         campaignId: evaluation.campaign.campaignId,
         campaignVersionId: evaluation.campaign.campaignVersionId,
         campaignRewardType: evaluation.campaign.rewardType,
+        campaignStackingMode: evaluation.policy.campaignStackingMode,
         liabilityPaise: evaluation.reward.campaignLiabilityPaise,
         baseLiabilityPaise: 0,
         campaignLiabilityPaise: evaluation.reward.campaignLiabilityPaise,
@@ -681,22 +712,28 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       const original = originalSnapshot.data();
       const points = Math.max(0, currentNumber(original, 'pointsDelta'));
       const campaignBonusPoints = Math.max(0, currentNumber(original, 'campaignBonusPoints'));
+      const campaignEligibleSpendPaise = Math.max(0, currentNumber(original, 'campaignEligibleSpendPaise'));
+      const campaignVersionId = cleanText(original.campaignVersionId, 180);
       const account = accountSnapshot.exists ? accountSnapshot.data() : accountSeed(origin.customerId);
       let budgetRef = null;
       let usageRef = null;
       let budgetSnapshot = null;
       let usageSnapshot = null;
-      if (campaignBonusPoints > 0) {
-        const campaignVersionId = cleanText(original.campaignVersionId, 180);
+      let frequencyEventRef = null;
+      let frequencyEventSnapshot = null;
+      if (campaignBonusPoints > 0 || campaignEligibleSpendPaise > 0) {
         if (!campaignVersionId) {
           throw new Error('Campaign reward ledger is missing its immutable campaign version.');
         }
         budgetRef = db.collection(CAMPAIGN_BUDGETS).doc(campaignVersionId);
         usageRef = db.collection(CAMPAIGN_CUSTOMER_USAGE)
           .doc(campaignCustomerUsageId(campaignVersionId, origin.customerId));
-        [budgetSnapshot, usageSnapshot] = await Promise.all([
+        frequencyEventRef = db.collection(CAMPAIGN_FREQUENCY_EVENTS)
+          .doc(frequencyEventId(campaignVersionId, origin.customerId, orderId));
+        [budgetSnapshot, usageSnapshot, frequencyEventSnapshot] = await Promise.all([
           transaction.get(budgetRef),
           transaction.get(usageRef),
+          transaction.get(frequencyEventRef),
         ]);
         if (!budgetSnapshot.exists || !usageSnapshot.exists) {
           throw new Error('Campaign reward projections are missing; reversal failed closed.');
@@ -709,6 +746,7 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         pointsDelta: -points,
         basePoints: -Math.max(0, currentNumber(original, 'basePoints')),
         campaignBonusPoints: -campaignBonusPoints,
+        campaignEligibleSpendPaise: -campaignEligibleSpendPaise,
         eligibleSpendPaise: currentNumber(original, 'eligibleSpendPaise'),
         sourceOrderId: orderId,
         sourceOnlineOrderId: origin.sourceOnlineOrderId,
@@ -745,28 +783,31 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       if (!accountSnapshot.exists) accountWrite.createdAt = FieldValue.serverTimestamp();
       transaction.set(accountRef, accountWrite, { merge: true });
       let campaignWrites = 0;
-      if (campaignBonusPoints > 0) {
+      if (campaignBonusPoints > 0 || campaignEligibleSpendPaise > 0) {
         const budget = budgetSnapshot.data();
         const usage = usageSnapshot.data();
         const budgetNet = currentNumber(budget, 'netConsumedPoints') - campaignBonusPoints;
         const usageNetPoints = currentNumber(usage, 'netPoints') - campaignBonusPoints;
-        const usageNetAwards = currentNumber(usage, 'netAwardCount') - 1;
-        if (budgetNet < 0 || usageNetPoints < 0 || usageNetAwards < 0) {
+        const usageNetAwards = currentNumber(usage, 'netAwardCount') - (campaignBonusPoints > 0 ? 1 : 0);
+        const usageSpend = currentNumber(usage, 'eligibleSpendPaise') - campaignEligibleSpendPaise;
+        if (budgetNet < 0 || usageNetPoints < 0 || usageNetAwards < 0 || usageSpend < 0) {
           throw new Error('Campaign reversal would make an immutable projection negative.');
         }
-        transaction.update(budgetRef, {
+        if (campaignBonusPoints > 0) transaction.update(budgetRef, {
           reversedPoints: currentNumber(budget, 'reversedPoints') + campaignBonusPoints,
           netConsumedPoints: budgetNet,
           updatedAt: FieldValue.serverTimestamp(),
         });
         transaction.update(usageRef, {
-          reversedAwardCount: currentNumber(usage, 'reversedAwardCount') + 1,
-          netAwardCount: usageNetAwards,
+          reversedAwardCount: currentNumber(usage, 'reversedAwardCount') + (campaignBonusPoints > 0 ? 1 : 0),
+          netAwardCount: currentNumber(usage, 'netAwardCount') - (campaignBonusPoints > 0 ? 1 : 0),
           reversedPoints: currentNumber(usage, 'reversedPoints') + campaignBonusPoints,
           netPoints: usageNetPoints,
+          eligibleSpendPaise: usageSpend,
           updatedAt: FieldValue.serverTimestamp(),
         });
-        campaignWrites = 2;
+        if (frequencyEventSnapshot?.exists) transaction.delete(frequencyEventRef);
+        campaignWrites = 1 + (campaignBonusPoints > 0 ? 1 : 0) + (frequencyEventSnapshot?.exists ? 1 : 0);
       }
       return { status: 'REVERSED', writes: 2 + campaignWrites, pointsDelta: -points };
     });
@@ -797,9 +838,12 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       const budgetRef = db.collection(CAMPAIGN_BUDGETS).doc(campaignVersionId);
       const usageRef = db.collection(CAMPAIGN_CUSTOMER_USAGE)
         .doc(campaignCustomerUsageId(campaignVersionId, origin.customerId));
-      const [budgetSnapshot, usageSnapshot] = await Promise.all([
+      const frequencyEventRef = db.collection(CAMPAIGN_FREQUENCY_EVENTS)
+        .doc(frequencyEventId(campaignVersionId, origin.customerId, orderId));
+      const [budgetSnapshot, usageSnapshot, frequencyEventSnapshot] = await Promise.all([
         transaction.get(budgetRef),
         transaction.get(usageRef),
+        transaction.get(frequencyEventRef),
       ]);
       if (!budgetSnapshot.exists || !usageSnapshot.exists) {
         throw new Error('Campaign bonus projections are missing; reversal failed closed.');
@@ -865,7 +909,8 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         netPoints: usageNetPoints,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      return { status: 'CAMPAIGN_BONUS_REVERSED', writes: 4, pointsDelta: -points };
+      if (frequencyEventSnapshot.exists) transaction.delete(frequencyEventRef);
+      return { status: 'CAMPAIGN_BONUS_REVERSED', writes: 4 + (frequencyEventSnapshot.exists ? 1 : 0), pointsDelta: -points };
     });
   }
 
@@ -873,6 +918,9 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
     if (!orderId || !order) return { status: 'INELIGIBLE_ORDER', writes: 0 };
     const effectiveFlags = flags || await getLoyaltyFlags();
     if (isVoidedOrder(order)) {
+      if (requiresConfirmedGatewayRefund(order) && !hasConfirmedGatewayRefund(order)) {
+        return { status: 'REFUND_NOT_CONFIRMED', writes: 0 };
+      }
       return reverseCustomerOrderLoyalty({
         orderId,
         order,
@@ -1264,6 +1312,11 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
       effectiveEarnRateBps: effectivePolicy.effectiveEarnRateBps,
       policySource: effectivePolicy.policySource,
       pointsBalance: currentNumber(account, 'pointsBalance'),
+      reservedRedemptionPoints: currentNumber(account, 'reservedRedemptionPoints'),
+      availablePoints: Math.max(
+        0,
+        currentNumber(account, 'pointsBalance') - currentNumber(account, 'reservedRedemptionPoints'),
+      ),
       qualifyingVisitCount: visits,
       currentClubStatus: membershipSnapshot.exists ? membershipSnapshot.data()?.status || 'ACTIVE' : account.currentClubStatus || 'NONE',
       clubExpiresAt: membershipSnapshot.data()?.expiresAt?.toDate?.().toISOString?.()
@@ -1351,7 +1404,12 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
   async function handleOrderWrite({ before, after, orderId, faultInjector } = {}) {
     try {
       if (!after) return { status: 'ORDER_DELETED_IGNORED', writes: 0 };
-      if (before?.status === after.status && before?.paymentStatus === after.paymentStatus) {
+      if (
+        before?.status === after.status
+        && before?.paymentStatus === after.paymentStatus
+        && before?.refundStatus === after.refundStatus
+        && before?.paymentReversalStatus === after.paymentReversalStatus
+      ) {
         return { status: 'NO_RELEVANT_TRANSITION', writes: 0 };
       }
       const flags = await getLoyaltyFlags();
@@ -1405,6 +1463,7 @@ module.exports = {
   VISIT_EVENTS,
   accountSeed,
   createBondLoyaltyService,
+  hasConfirmedGatewayRefund,
   isEligibleCustomerOrderingOrigin,
   isFinalSettledOrder,
   legacyPointEarnLedgerId,
@@ -1413,6 +1472,7 @@ module.exports = {
   pointEarnLedgerId,
   pointEarnReversalLedgerId,
   safeDocumentId,
+  requiresConfirmedGatewayRefund,
   visitCampaignEarnLedgerId,
   visitCampaignReversalLedgerId,
   visitEventId,

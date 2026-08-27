@@ -277,6 +277,14 @@ export default function CustomerTrackingScreen({
                   <dt className="cb-customer-total-label">Subtotal</dt>
                   <dd className="cb-customer-total-value">{formatMoney(order.subtotal)}</dd>
                 </div>
+                {Number(order.bondRedemptionPoints || 0) > 0 && (
+                  <div className="cb-customer-total-row">
+                    <dt className="cb-customer-total-label">
+                      {order.discountLabel || 'BOND Points Redemption'} · {Number(order.bondRedemptionPoints).toLocaleString('en-IN')} pts
+                    </dt>
+                    <dd className="cb-customer-total-value">−{formatMoney(Number(order.bondRedemptionDiscount || 0))}</dd>
+                  </div>
+                )}
                 <div className="cb-customer-total-row">
                   <dt className="cb-customer-total-label">GST</dt>
                   <dd className="cb-customer-total-value">{formatMoney(order.gstTotal)}</dd>

@@ -168,7 +168,7 @@ function resolveLoyaltyFlags(value) {
     earnEnabled: accountEnabled && raw.earnEnabled === true,
     visitEnabled: accountEnabled && raw.visitEnabled === true,
     expiryEnabled: false,
-    redemptionEnabled: false,
+    redemptionEnabled: accountEnabled && raw.redemptionEnabled === true,
     gamificationEnabled: accountEnabled && raw.gamificationEnabled === true,
     clubEarnedEnabled: accountEnabled && raw.visitEnabled === true && raw.clubEarnedEnabled === true,
     clubPaidEnabled: false,

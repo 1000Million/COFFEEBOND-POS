@@ -4,16 +4,19 @@ type Props = {
   gstLabel: string;
   /** Rendered only when the parent supplies a genuine discount. */
   discountLabel?: string | null;
+  /** Server-authored reason for the discount; never inferred from the amount. */
+  discountName?: string;
   payableLabel: string;
 };
 
 /**
  * Order totals.
  *
- * Presentation only: it receives already-formatted amounts produced by the single
- * `totalsForLines` source and renders them. It performs no arithmetic and invents no
- * line — the customer app charges no delivery, service, handling or payment fee, so
- * none appears here. GST is shown as the one total the customer data model exposes;
+ * Presentation only: it receives already-formatted amounts from its parent and renders
+ * them. For a points checkout those values are one complete server quote; otherwise
+ * they are the existing menu totals. It performs no arithmetic and invents no line —
+ * the customer app charges no delivery, service, handling or payment fee, so none
+ * appears here. GST is shown as the one total the customer data model exposes;
  * CGST/SGST is deliberately NOT split, because that payload carries no state-level
  * breakdown to split it from.
  *
@@ -30,6 +33,7 @@ export default function CustomerCheckoutTotalsPanel({
   subtotalLabel,
   gstLabel,
   discountLabel = null,
+  discountName = 'Discount',
   payableLabel,
 }: Props) {
   return (
@@ -41,7 +45,7 @@ export default function CustomerCheckoutTotalsPanel({
         </div>
         {discountLabel && (
           <div className="cb-customer-total-row">
-            <dt className="cb-customer-total-label">Discount</dt>
+            <dt className="cb-customer-total-label">{discountName}</dt>
             <dd className="cb-customer-total-value">{discountLabel}</dd>
           </div>
         )}

@@ -31,6 +31,9 @@ type CustomerOrderSummary = {
   paymentStatus: PaymentStatus;
   /** Points posted by the server's immutable POINT_EARN ledger entry. Never estimated. */
   pointsEarned?: number | null;
+  bondRedemptionPoints?: number | null;
+  bondRedemptionDiscount?: number | null;
+  discountLabel?: string | null;
   createdAt: string | null;
 };
 
@@ -238,6 +241,11 @@ export default function CustomerMyOrders() {
     /* Server-posted only: listMyOrders reads this from the loyalty ledger, so a value
        here means a POINT_EARN event exists. The client never estimates it. */
     pointsEarned: typeof order.pointsEarned === 'number' ? order.pointsEarned : null,
+    bondRedemptionPoints: typeof order.bondRedemptionPoints === 'number' ? order.bondRedemptionPoints : null,
+    bondRedemptionLabel: order.discountLabel || null,
+    bondRedemptionDiscountLabel: typeof order.bondRedemptionDiscount === 'number'
+      ? money(order.bondRedemptionDiscount)
+      : null,
     statusTone: statusTone(order.status),
     totalLabel: money(order.total),
     viewPath: customerStatusPath(order.trackingToken),

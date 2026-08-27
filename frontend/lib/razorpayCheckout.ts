@@ -9,6 +9,33 @@ export type RazorpayCheckoutSuccess = {
   razorpay_signature: string;
 };
 
+export type BondRedemptionPolicy = {
+  label: string;
+  minimumPoints: number;
+  incrementPoints: number;
+  pointValuePaise: number;
+  maximumPercent: number;
+};
+
+/**
+ * One server-authored redemption quote. Monetary fields are deliberately returned by
+ * the callable together so the customer client never recreates tax or redemption
+ * arithmetic from a points balance.
+ */
+export type BondRedemptionQuote = {
+  policy: BondRedemptionPolicy;
+  pointsBalance: number;
+  reservedPoints: number;
+  availablePoints: number;
+  maximumUsablePoints: number;
+  selectedPoints: number;
+  subtotal: number;
+  discount: number;
+  taxableAmount: number;
+  gstTotal: number;
+  grandTotal: number;
+};
+
 export type RazorpayOrderResponse = {
   sessionId?: string;
   razorpayOrderId?: string;
@@ -33,6 +60,7 @@ export type RazorpayOrderResponse = {
     quantity: number;
     price: number;
   }>;
+  bondRedemption?: BondRedemptionQuote;
   alreadyPaid?: boolean;
   trackingToken?: string | null;
   trackingPath?: string | null;
@@ -153,6 +181,51 @@ export function validateRazorpayOrderResponse(value: RazorpayOrderResponse): ass
     || !value.receipt
   ) {
     throw new Error('Online payment returned an invalid order. Please retry.');
+  }
+}
+
+export function validateBondRedemptionQuote(value: unknown): asserts value is BondRedemptionQuote {
+  const quote = value as Partial<BondRedemptionQuote> | null;
+  const policy = quote?.policy as Partial<BondRedemptionPolicy> | undefined;
+  const nonNegativeNumber = (candidate: unknown) => (
+    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+  );
+  const nonNegativeInteger = (candidate: unknown) => (
+    Number.isSafeInteger(candidate) && Number(candidate) >= 0
+  );
+  if (
+    !quote
+    || !policy
+    || typeof policy.label !== 'string'
+    || !policy.label.trim()
+    || !Number.isSafeInteger(policy.minimumPoints)
+    || Number(policy.minimumPoints) <= 0
+    || !Number.isSafeInteger(policy.incrementPoints)
+    || Number(policy.incrementPoints) <= 0
+    || !Number.isSafeInteger(policy.pointValuePaise)
+    || Number(policy.pointValuePaise) <= 0
+    || !nonNegativeNumber(policy.maximumPercent)
+    || Number(policy.maximumPercent) > 100
+    || !nonNegativeInteger(quote.pointsBalance)
+    || !nonNegativeInteger(quote.reservedPoints)
+    || !nonNegativeInteger(quote.availablePoints)
+    || !nonNegativeInteger(quote.maximumUsablePoints)
+    || !nonNegativeInteger(quote.selectedPoints)
+    || !nonNegativeNumber(quote.subtotal)
+    || !nonNegativeNumber(quote.discount)
+    || !nonNegativeNumber(quote.taxableAmount)
+    || !nonNegativeNumber(quote.gstTotal)
+    || !nonNegativeNumber(quote.grandTotal)
+    || Number(quote.selectedPoints) > Number(quote.maximumUsablePoints)
+    || (
+      Number(quote.selectedPoints) > 0
+      && (
+        Number(quote.selectedPoints) < Number(policy.minimumPoints)
+        || (Number(quote.selectedPoints) - Number(policy.minimumPoints)) % Number(policy.incrementPoints) !== 0
+      )
+    )
+  ) {
+    throw new Error('BOND redemption returned an invalid quote. Please retry.');
   }
 }
 

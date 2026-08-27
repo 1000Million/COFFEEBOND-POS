@@ -17,6 +17,8 @@ const {
 
 const SEGMENT_LIMIT = 25;
 const QUALIFYING_VISIT_DAYS = 'qualifyingVisitDays';
+const CAMPAIGN_FREQUENCY_EVENTS = 'bondCampaignFrequencyEvents';
+const CAMPAIGN_QUALIFICATION_EVENTS = 'bondCampaignQualificationEvents';
 const SUPPORTED_VERSION_STATES = new Set(['APPROVED', 'SCHEDULED']);
 
 class BondPolicyRuntimeError extends Error {
@@ -54,6 +56,53 @@ function campaignCustomerUsageId(versionId, customerId) {
   const right = cleanText(customerId, 180).replace(/[^A-Za-z0-9_-]/g, '_');
   if (!left || !right) fail('BOND_INVALID_CAMPAIGN_USAGE_KEY', 'Campaign usage requires a version and customer.');
   return `${left}__${right}`;
+}
+
+function istParts(eventAtMillis) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+  }).formatToParts(new Date(eventAtMillis));
+  const read = type => parts.find(part => part.type === type)?.value || '';
+  return {
+    year: Number(read('year')),
+    month: Number(read('month')),
+    day: Number(read('day')),
+    weekday: read('weekday').toUpperCase(),
+    date: `${read('year')}-${read('month')}-${read('day')}`,
+  };
+}
+
+function istWeekKey(eventAtMillis) {
+  const local = istParts(eventAtMillis);
+  // ISO weeks are Monday–Sunday. Noon UTC avoids a date-edge shift when we
+  // calculate from an IST calendar date.
+  const date = new Date(Date.UTC(local.year, local.month - 1, local.day, 12));
+  const weekday = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - weekday + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4, 12));
+  const firstWeekday = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstWeekday + 3);
+  const week = 1 + Math.round((date.getTime() - firstThursday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function frequencyWindowKey(campaign, eventAtMillis) {
+  if (campaign.frequencyWindow === 'DAY_IST') return `DAY_${istParts(eventAtMillis).date}`;
+  if (campaign.frequencyWindow === 'WEEK_IST') return `WEEK_${istWeekKey(eventAtMillis)}`;
+  if (campaign.frequencyWindow === 'CAMPAIGN') return 'CAMPAIGN';
+  return null;
+}
+
+function frequencyEventId(versionId, customerId, orderId) {
+  return `${cleanText(versionId, 180).replace(/[^A-Za-z0-9_-]/g, '_')}__${cleanText(customerId, 180).replace(/[^A-Za-z0-9_-]/g, '_')}__${cleanText(orderId, 180).replace(/[^A-Za-z0-9_-]/g, '_')}`;
+}
+
+function campaignQualificationEventId(versionId, orderId) {
+  return `${cleanText(versionId, 180).replace(/[^A-Za-z0-9_-]/g, '_')}__${cleanText(orderId, 180).replace(/[^A-Za-z0-9_-]/g, '_')}`;
 }
 
 function activeSegment(snapshot, eventAtMillis, expectedType, scopeKey) {
@@ -146,6 +195,7 @@ function scheduledPolicyVersion(version, segment) {
     scope: version.definition.scope,
     storeIds: version.storeIds || version.definition.storeIds || [],
     earnRateBps: version.definition.earnRateBps,
+    campaignStackingMode: version.definition.campaignStackingMode || 'BASE_PLUS_ONE_CAMPAIGN',
     startsAt: timestampMillis(segment.startsAt),
     endsAt: timestampMillis(segment.endsAt) || null,
     status: 'APPROVED',
@@ -291,6 +341,9 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
     let budgetSnapshot = null;
     let usageSnapshot = null;
     let campaignUsage = null;
+    let frequencyEventRef = null;
+    let frequencyEventSnapshot = null;
+    let frequencyEventQuerySnapshot = null;
     const requiresVisitEvidence = Boolean(activeCampaign) && (
       Number(activeCampaign.minimumUniqueVisitDays || activeCampaign.minimumUniqueIstVisitDays || 0) > 0
       || Number(activeCampaign.everyNthUniqueIstVisitDay || 0) > 0
@@ -319,12 +372,41 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
         });
       }
       const usage = usageSnapshot.exists ? usageSnapshot.data() : {};
+      const frequencyWindow = activeCampaign.frequencyWindow || null;
+      const frequencyAwardLimit = Number(activeCampaign.frequencyAwardLimit || 0) || null;
+      let frequencyAwards = currentNumber(usage, 'netAwardCount');
+      if (frequencyAwardLimit !== null && frequencyWindow && frequencyWindow !== 'CAMPAIGN') {
+        const eventAtMillis = timestampMillis(eventAt);
+        const earliestMillis = frequencyWindow === 'ROLLING_DAYS'
+          ? eventAtMillis - ((Math.max(1, Number(activeCampaign.frequencyWindowDays || 1)) - 1) * 24 * 60 * 60 * 1000)
+          : null;
+        const frequencyQuery = db.collection(CAMPAIGN_FREQUENCY_EVENTS)
+          .where('campaignVersionId', '==', activeCampaign.versionId)
+          .where('customerId', '==', customerId)
+          .where('occurredAtMillis', '>=', earliestMillis === null ? 0 : earliestMillis)
+          .where('occurredAtMillis', '<=', eventAtMillis);
+        frequencyEventQuerySnapshot = await transaction.get(frequencyQuery);
+        if (frequencyWindow === 'ROLLING_DAYS') {
+          frequencyAwards = frequencyEventQuerySnapshot.size;
+        } else {
+          const windowKey = frequencyWindowKey(activeCampaign, eventAtMillis);
+          frequencyAwards = frequencyEventQuerySnapshot.docs
+            .map(document => document.data())
+            .filter(event => cleanText(event.frequencyWindowKey, 80) === windowKey)
+            .length;
+        }
+        frequencyEventRef = db.collection(CAMPAIGN_FREQUENCY_EVENTS)
+          .doc(frequencyEventId(activeCampaign.versionId, customerId, orderId));
+        frequencyEventSnapshot = await transaction.get(frequencyEventRef);
+      }
       campaignUsage = {
         authoritative: true,
         campaignId: activeCampaign.campaignId,
         campaignVersionId: activeCampaign.versionId,
         customerUses: currentNumber(usage, 'netAwardCount'),
         campaignAwardedPoints: currentNumber(budget, 'netConsumedPoints'),
+        customerEligibleSpendPaise: currentNumber(usage, 'eligibleSpendPaise'),
+        frequencyAwards,
       };
     }
     void account;
@@ -379,6 +461,10 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
       usageRef,
       budgetSnapshot,
       usageSnapshot,
+      frequencyEventRef,
+      frequencyEventSnapshot,
+      frequencyEventQuerySnapshot,
+      eventAtMillis,
       campaignDeferred,
       requiresVisitEvidence,
     };
@@ -387,39 +473,77 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
   function applyCampaignAwardInTransaction(transaction, rewardContext, { customerId, storeId, FieldValue }) {
     const campaign = rewardContext.evaluation.campaign;
     const points = rewardContext.evaluation.reward.campaignPoints;
-    if (!campaign || points <= 0) return 0;
+    if (!campaign || !rewardContext.usageRef || !rewardContext.usageSnapshot) return 0;
     const budget = rewardContext.budgetSnapshot.data();
     const usage = rewardContext.usageSnapshot.exists ? rewardContext.usageSnapshot.data() : {};
-    const awardedPoints = currentNumber(budget, 'awardedPoints') + points;
+    const awardedPoints = currentNumber(budget, 'awardedPoints') + Math.max(0, points);
     const reversedPoints = currentNumber(budget, 'reversedPoints');
-    const netConsumedPoints = currentNumber(budget, 'netConsumedPoints') + points;
-    const awardCount = currentNumber(budget, 'awardCount') + 1;
+    const netConsumedPoints = currentNumber(budget, 'netConsumedPoints') + Math.max(0, points);
+    const awardCount = currentNumber(budget, 'awardCount') + (points > 0 ? 1 : 0);
     if (netConsumedPoints > currentNumber(budget, 'budgetPoints')) {
       fail('BOND_CAMPAIGN_POINTS_BUDGET_EXCEEDED', 'The campaign budget was exhausted concurrently.');
     }
-    transaction.update(rewardContext.budgetRef, {
-      awardedPoints,
-      reversedPoints,
-      netConsumedPoints,
-      awardCount,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    if (points > 0) {
+      transaction.update(rewardContext.budgetRef, {
+        awardedPoints,
+        reversedPoints,
+        netConsumedPoints,
+        awardCount,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
     const usageWrite = {
       versionId: campaign.campaignVersionId,
       campaignId: campaign.campaignId,
       customerId,
       issuingStoreId: cleanText(storeId, 180),
-      awardCount: currentNumber(usage, 'awardCount') + 1,
+      awardCount: currentNumber(usage, 'awardCount') + (points > 0 ? 1 : 0),
       reversedAwardCount: currentNumber(usage, 'reversedAwardCount'),
-      netAwardCount: currentNumber(usage, 'netAwardCount') + 1,
-      awardedPoints: currentNumber(usage, 'awardedPoints') + points,
+      netAwardCount: currentNumber(usage, 'netAwardCount') + (points > 0 ? 1 : 0),
+      awardedPoints: currentNumber(usage, 'awardedPoints') + Math.max(0, points),
       reversedPoints: currentNumber(usage, 'reversedPoints'),
-      netPoints: currentNumber(usage, 'netPoints') + points,
+      netPoints: currentNumber(usage, 'netPoints') + Math.max(0, points),
+      eligibleSpendPaise: currentNumber(usage, 'eligibleSpendPaise')
+        + currentNumber(rewardContext.evaluation.campaign, 'campaignEligibleSpendPaise'),
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (!rewardContext.usageSnapshot.exists) usageWrite.createdAt = FieldValue.serverTimestamp();
     transaction.set(rewardContext.usageRef, usageWrite, { merge: true });
-    return 2;
+    let writes = 1 + (points > 0 ? 1 : 0);
+    if (points > 0 && rewardContext.frequencyEventRef) {
+      if (rewardContext.frequencyEventSnapshot?.exists) {
+        fail('BOND_CAMPAIGN_FREQUENCY_EVENT_DUPLICATE', 'The campaign frequency event already exists for this order.');
+      }
+      transaction.create(rewardContext.frequencyEventRef, {
+        campaignVersionId: campaign.campaignVersionId,
+        campaignId: campaign.campaignId,
+        customerId,
+        storeId: cleanText(storeId, 180),
+        sourceOrderId: rewardContext.evaluation.orderId,
+        occurredAtMillis: rewardContext.eventAtMillis,
+        frequencyWindowKey: frequencyWindowKey(campaign, rewardContext.eventAtMillis),
+        pointsAwarded: points,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      writes += 1;
+    }
+    const qualificationRef = db.collection(CAMPAIGN_QUALIFICATION_EVENTS)
+      .doc(campaignQualificationEventId(campaign.campaignVersionId, rewardContext.evaluation.orderId));
+    transaction.create(qualificationRef, {
+      campaignVersionId: campaign.campaignVersionId,
+      campaignId: campaign.campaignId,
+      customerId,
+      storeId: cleanText(storeId, 180),
+      sourceOrderId: rewardContext.evaluation.orderId,
+      occurredAtMillis: rewardContext.eventAtMillis,
+      qualified: campaign.eligible === true,
+      ineligibilityReasons: campaign.ineligibilityReasons || [],
+      campaignEligibleSpendPaise: currentNumber(campaign, 'campaignEligibleSpendPaise'),
+      pointsAwarded: points,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    writes += 1;
+    return writes;
   }
 
   async function resolveCurrentPolicy({ storeId, eventAt = Date.now() }) {
@@ -438,13 +562,21 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
           items: [],
         },
         policyVersions: configuration.policyVersions,
-        campaignVersions: [],
+        campaignVersions: configuration.campaignVersions,
         guardrails: configuration.guardrails,
       });
       return {
         effectiveEarnRateBps: evaluation.policy.earnRateBps,
         effectivePolicyVersionId: evaluation.policy.policyVersionId,
         policySource: evaluation.policy.source,
+        campaignStackingMode: evaluation.policy.campaignStackingMode,
+        activeCampaign: evaluation.campaign ? {
+          campaignId: evaluation.campaign.campaignId,
+          campaignVersionId: evaluation.campaign.campaignVersionId,
+          rewardType: evaluation.campaign.rewardType,
+        } : null,
+        maxCombinedRewardRateBps: evaluation.reward.maxCombinedRewardRateBps,
+        resolvedAt: new Date(timestampMillis(eventAt)).toISOString(),
       };
     });
   }
@@ -479,7 +611,11 @@ function createBondPolicyCampaignRuntime({ admin, db }) {
 
 module.exports = {
   BondPolicyRuntimeError,
+  CAMPAIGN_FREQUENCY_EVENTS,
+  CAMPAIGN_QUALIFICATION_EVENTS,
   campaignCustomerUsageId,
+  frequencyEventId,
+  campaignQualificationEventId,
   canonicalOrderItems,
   createBondPolicyCampaignRuntime,
 };

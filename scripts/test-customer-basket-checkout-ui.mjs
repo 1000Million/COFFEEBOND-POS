@@ -91,17 +91,17 @@ check('14. a signed-out save still routes to the existing verification flow',
 check('15. an authenticated save is still profile-synced',
   homeCode.includes('saveCustomerMyUsualRequest(buildMyUsualPayload({'));
 
-// --- 16-21: totals are untouched and authoritative -------------------------
-check('16/17/18/19. the basket still renders the parent totals object',
-  homeCode.includes('formatMoney(totals.subtotal)')
-  && homeCode.includes('formatMoney(totals.gstTotal)')
-  && homeCode.includes('formatMoney(totals.grandTotal)'));
+// --- 16-21: totals remain parent-authoritative -----------------------------
+check('16/17/18/19. the basket renders the current authoritative totals object',
+  homeCode.includes('formatMoney(checkoutDisplayTotals.subtotal)')
+  && homeCode.includes('formatMoney(checkoutDisplayTotals.gstTotal)')
+  && homeCode.includes('formatMoney(checkoutDisplayTotals.grandTotal)'));
 check('totals still come from the single totalsForLines source',
   (homeCode.match(/function totalsForLines/g) || []).length === 1
   && /const totals = useMemo\(\s*\(\) => totalsForLines\(cart\)/.test(homeCode));
 check('the redesigned components compute no money at all',
   !/salePrice|taxRate|gstTotal|grandTotal|subtotal|\* *quantity/i.test(componentCode));
-check('20/21. no invented fee, delivery or discount line was added',
+check('20/21. no invented fee or delivery line was added',
   !/delivery|shipping|service fee|packaging fee|convenience/i.test(homeCode.slice(
     homeCode.indexOf('const basketPanel'), homeCode.indexOf('const confirmation'))));
 
@@ -235,10 +235,10 @@ const stage4bCode = [totalsPanel, paymentSelector, notice, actionBar].map(strip)
 // "Taxable amount" is no longer displayed: totals.taxableAmount IS totals.subtotal in
 // this app, so the row printed the same number twice. The totals OBJECT is unchanged —
 // only the row is gone — and the three amounts still come straight from the parent.
-check('4b-2/3/4/5. the totals panel is fed from the parent totals object',
-  homeCode.includes('subtotalLabel={formatMoney(totals.subtotal)}')
-  && homeCode.includes('gstLabel={formatMoney(totals.gstTotal)}')
-  && homeCode.includes('payableLabel={formatMoney(totals.grandTotal)}'));
+check('4b-2/3/4/5. the totals panel is fed from the parent authoritative totals object',
+  homeCode.includes('subtotalLabel={formatMoney(checkoutDisplayTotals.subtotal)}')
+  && homeCode.includes('gstLabel={formatMoney(checkoutDisplayTotals.gstTotal)}')
+  && homeCode.includes('payableLabel={formatMoney(checkoutDisplayTotals.grandTotal)}'));
 check('4b-2a. the totals calculation itself was not touched',
   homeCode.includes('taxableAmount: subtotal')
   && homeCode.includes('grandTotal: subtotal + gstTotal'));
@@ -323,7 +323,7 @@ check('4b. notices use live regions',
 
 // 22-25: action bar
 check('4b-22. the action shows the authoritative payable',
-  /payLabel = paymentProvider === 'RAZORPAY'[\s\S]{0,200}formatMoney\(totals\.grandTotal\)/.test(homeCode));
+  /payLabel = paymentProvider === 'RAZORPAY'[\s\S]{0,240}formatMoney\(checkoutDisplayTotals\.grandTotal\)/.test(homeCode));
 check('4b-23. the action calls the existing submit handler and no other',
   homeCode.includes('onSubmit={submitOrder}')
   && (homeCode.match(/onClick=\{submitOrder\}|onSubmit=\{submitOrder\}/g) || []).length === 1
@@ -492,7 +492,7 @@ check('43. the change-store control meets the 44px touch target',
    silently swallowed the whole checkout branch, which would have let a payment field
    leak into the basket step without failing anything. The Continue label is the last
    thing in this branch and is itself asserted below, so it cannot vanish unnoticed. */
-const continueLabel = 'Continue · {formatMoney(totals.grandTotal)}';
+const continueLabel = 'Continue · {formatMoney(checkoutDisplayTotals.grandTotal)}';
 assert(homeCode.includes(continueLabel), 'the Continue label anchors the basket-step slice');
 const basketStepBlock = homeCode.slice(
   homeCode.indexOf("basketStep === 'BASKET' ?"),
@@ -531,7 +531,7 @@ check('46a. the totals block is flat, not a second coloured panel',
   && totalsCode.includes('cb-customer-total-row'));
 check('46b. the basket step carries exactly one primary action',
   (basketStepBlock.match(/cb-customer-accent-button/g) || []).length === 1
-  && /Continue · \{formatMoney\(totals\.grandTotal\)\}/.test(homeCode));
+  && /Continue · \{formatMoney\(checkoutDisplayTotals\.grandTotal\)\}/.test(homeCode));
 check('46c. Save as My Usual is a secondary row, not a panel or a filled button',
   homeCode.includes('data-cb-save-usual="true"')
   && /className="cb-customer-menu-row disabled:opacity-55"/.test(homeCode)
@@ -576,7 +576,7 @@ check('48e. the note is an offer until it is wanted',
   && checkoutStepBlock.includes('MAX_NOTE_LENGTH'));
 check('48f. checkout shows one total block, fed by the same authoritative totals',
   (checkoutStepBlock.match(/<CustomerCheckoutTotalsPanel/g) || []).length === 1
-  && checkoutStepBlock.includes('payableLabel={formatMoney(totals.grandTotal)}'));
+  && checkoutStepBlock.includes('payableLabel={formatMoney(checkoutDisplayTotals.grandTotal)}'));
 check('48g. the one action is still the existing submit handler',
   (homeCode.match(/onSubmit=\{submitOrder\}/g) || []).length === 1
   && checkoutStepBlock.includes('label={checkoutAction.label}')

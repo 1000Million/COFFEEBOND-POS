@@ -148,6 +148,8 @@ function requestChecksum(order) {
   return sha256(JSON.stringify({
     storeId: cleanText(order?.storeId, 120),
     total: Number(order?.grandTotal),
+    bondRedemptionPoints: Number(order?.bondRedemptionPoints || 0),
+    bondRedemptionDiscount: Number(order?.bondRedemptionDiscount || 0),
     items,
   }));
 }

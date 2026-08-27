@@ -23,6 +23,8 @@ export type BondSummary = {
   effectiveEarnRateBps?: number;
   effectivePolicyVersionId?: string | null;
   pointsBalance?: number;
+  reservedRedemptionPoints?: number;
+  availablePoints?: number;
   qualifyingVisitCount?: number;
   currentClubStatus?: string;
   clubExpiresAt?: string | null;
