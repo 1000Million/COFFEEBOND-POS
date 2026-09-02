@@ -21,6 +21,7 @@ import {
   downloadFranchiseSalesCsv,
   FranchiseDailySalesResponse,
 } from '../../lib/franchiseSales';
+import { reportDateKey, shiftReportDateKey } from '../../lib/reportDateRange';
 
 const getDailySales = httpsCallable<
   { date: string; storeIds: string[] },
@@ -37,18 +38,8 @@ const money = (value: number) => `₹${Number(value || 0).toLocaleString('en-IN'
   maximumFractionDigits: 2,
 })}`;
 
-const todayInIndia = () => new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Kolkata',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-}).format(new Date());
-
-const shiftDate = (value: string, days: number) => {
-  const date = new Date(`${value}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-};
+const todayInIndia = () => reportDateKey(new Date());
+const shiftDate = shiftReportDateKey;
 
 function MetricCard({ label, value, note }: { label: string; value: string; note?: string }) {
   return (

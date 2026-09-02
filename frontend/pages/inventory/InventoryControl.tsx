@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
-  Calendar,
   CheckCircle2,
   Clock,
   FileText,
@@ -17,7 +16,7 @@ import {
   TrendingUp,
   XCircle,
 } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, query, Timestamp, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import {
@@ -50,8 +49,10 @@ import {
   StockItemType,
   StoreStock,
 } from '../../types/menu-management';
+import ReportDateRangeControl from '../../components/reporting/ReportDateRangeControl';
+import { createReportDateRange, dateIsInReportRange } from '../../lib/reportDateRange';
+import { buildInventoryEventQueries } from '../../lib/inventoryReportQueries';
 
-type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
 type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_BOM_BACKFILL' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
 type ItemTypeFilter = 'ALL' | StockItemType | 'UNKNOWN';
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
@@ -183,7 +184,6 @@ const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMA
 const GST_CONFIG_DOC_ID = 'gstConfig';
 const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
-const RANGE_PRESETS: DatePreset[] = ['TODAY', 'LAST_7_DAYS', 'LAST_30_DAYS', 'CUSTOM'];
 const MOVEMENT_FILTERS: { value: MovementTypeFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
   { value: 'SALE_DEDUCTION', label: 'Sale deduction' },
@@ -213,35 +213,6 @@ const STATUS_ICON: Record<AuditStatus, ReactNode> = {
   WARNING: <AlertTriangle size={18} />,
   FAIL: <XCircle size={18} />,
 };
-
-function todayIso(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function shiftDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() - days);
-  return next;
-}
-
-function dateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function startOfDay(key: string): Date {
-  return new Date(`${key}T00:00:00`);
-}
-
-function endOfDay(key: string): Date {
-  return new Date(`${key}T23:59:59.999`);
-}
 
 function money(value: unknown): number {
   const parsed = Number(value);
@@ -1097,45 +1068,11 @@ function DataTable({
   );
 }
 
-function resolveDateRange(preset: DatePreset, customStart: string, customEnd: string) {
-  const today = new Date();
-  let start = new Date(today);
-  let end = new Date(today);
-
-  if (preset === 'LAST_7_DAYS') {
-    start = shiftDays(today, 6);
-  } else if (preset === 'LAST_30_DAYS') {
-    start = shiftDays(today, 29);
-  } else if (preset === 'CUSTOM') {
-    const customStartDate = customStart ? new Date(`${customStart}T00:00:00`) : null;
-    const customEndDate = customEnd ? new Date(`${customEnd}T23:59:59.999`) : null;
-    if (customStartDate) start = customStartDate;
-    if (customEndDate) end = customEndDate;
-    if (start > end) {
-      const swap = start;
-      start = end;
-      end = swap;
-    }
-  }
-
-  const startKey = dateKey(start);
-  const endKey = dateKey(end);
-  return {
-    startKey,
-    endKey,
-    startTs: Timestamp.fromDate(startOfDay(startKey)),
-    endTs: Timestamp.fromDate(endOfDay(endKey)),
-    label: startKey === endKey ? startKey : `${startKey} → ${endKey}`,
-  };
-}
-
 export default function InventoryControl() {
   const { staffProfile } = useAuth();
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState('');
-  const [datePreset, setDatePreset] = useState<DatePreset>('LAST_7_DAYS');
-  const [customStart, setCustomStart] = useState(todayIso());
-  const [customEnd, setCustomEnd] = useState(todayIso());
+  const [dateRange, setDateRange] = useState(() => createReportDateRange('THIS_WEEK'));
   const [movementTypeFilter, setMovementTypeFilter] = useState<MovementTypeFilter>('ALL');
   const [itemTypeFilter, setItemTypeFilter] = useState<ItemTypeFilter>('ALL');
   const [movementSearch, setMovementSearch] = useState('');
@@ -1170,8 +1107,6 @@ export default function InventoryControl() {
     () => accessibleStores.find((store) => store.id === selectedStoreId) || null,
     [accessibleStores, selectedStoreId],
   );
-
-  const dateRange = useMemo(() => resolveDateRange(datePreset, customStart, customEnd), [datePreset, customStart, customEnd]);
 
   useEffect(() => {
     let active = true;
@@ -1219,25 +1154,25 @@ export default function InventoryControl() {
       setDataLoading(true);
       setError('');
       try {
+        // Event queries use the shared half-open IST range: >= start and < next-day midnight.
+        const eventQueries = buildInventoryEventQueries(db, selectedStore.id, dateRange);
         const [rawSnap, prepSnap, fgSnap, stockSnap, orderSnap, onlineOrderSnap, kotSnap, movementSnap, pendingConsumptionSnap, gstConfig, closingSnap] = await Promise.all([
           getDocs(collection(db, 'rawIngredients')),
           getDocs(collection(db, 'prepItems')),
           getDocs(collection(db, 'finishedGoods')),
-          getDocs(collection(db, 'storeStock')),
-          getDocs(query(collection(db, 'orders'), where('storeId', '==', selectedStore.id))),
+          getDocs(query(collection(db, 'storeStock'), where('storeId', '==', selectedStore.id))),
+          getDocs(eventQueries.orders),
           getDocs(query(collection(db, 'onlineOrders'), where('storeId', '==', selectedStore.id))),
-          getDocs(query(collection(db, 'kotItems'), where('storeId', '==', selectedStore.id))),
-          getDocs(query(collection(db, 'stockMovements'), where('storeId', '==', selectedStore.id))),
+          getDocs(eventQueries.kotItems),
+          getDocs(eventQueries.stockMovements),
           getDocs(query(collection(db, 'pendingInventoryConsumption'), where('storeId', '==', selectedStore.id))),
           getDoc(doc(db, 'appSettings', GST_CONFIG_DOC_ID)),
           getDoc(doc(db, 'dayClosings', `${selectedStore.id}_${dateRange.endKey}`)),
         ]);
 
-        const startDate = startOfDay(dateRange.startKey);
-        const endDate = endOfDay(dateRange.endKey);
         const inRange = (value: unknown) => {
           const date = toDate(value);
-          return !!date && date >= startDate && date <= endDate;
+          return !!date && dateIsInReportRange(date, dateRange);
         };
 
         const allOrders = orderSnap.docs.map((item) => ({ id: item.id, ...item.data() } as Order));
@@ -1252,16 +1187,13 @@ export default function InventoryControl() {
           finishedGoods: fgSnap.docs.map((item) => ({ id: item.id, ...item.data() } as FinishedGood)),
           storeStock: stockSnap.docs.map((item) => ({ id: item.id, ...item.data() } as StoreStock)),
           orders: allOrders
-            .filter((order) => inRange(order.createdAt))
             .sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)),
           onlineOrders: allOnlineOrders
             .filter((order) => inRange(order.createdAt))
             .sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)),
           kotItems: allKotItems
-            .filter((item) => inRange(item.createdAt))
             .sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)),
           stockMovements: allMovements
-            .filter((movement) => inRange(movement.createdAt))
             .sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)),
           pendingInventoryConsumption: allPendingConsumption
             .filter((item) => inRange(item.soldAt || item.createdAt || item.resolvedAt))
@@ -1297,7 +1229,7 @@ export default function InventoryControl() {
     return () => {
       active = false;
     };
-  }, [hasAccess, selectedStore, dateRange.startKey, dateRange.endKey, dateRange.startTs, dateRange.endTs, refreshNonce]);
+  }, [hasAccess, selectedStore, dateRange.startKey, dateRange.endKey, refreshNonce]);
 
   const rawByCode = useMemo(() => new Map(data.rawIngredients.map((item) => [item.code, item])), [data.rawIngredients]);
   const prepByCode = useMemo(() => new Map(data.prepItems.map((item) => [item.code, item])), [data.prepItems]);
@@ -1307,13 +1239,8 @@ export default function InventoryControl() {
   const periodMovements = useMemo(() => data.stockMovements, [data.stockMovements]);
   const periodKotItems = useMemo(() => data.kotItems, [data.kotItems]);
   const currentOnlineOrders = useMemo(
-    () => data.onlineOrders.filter((order) => {
-      const orderDate = toDate(order.createdAt);
-      const start = startOfDay(dateRange.startKey);
-      const end = endOfDay(dateRange.endKey);
-      return !!orderDate && orderDate >= start && orderDate <= end;
-    }),
-    [data.onlineOrders, dateRange.endKey, dateRange.startKey],
+    () => data.onlineOrders,
+    [data.onlineOrders],
   );
   const pendingConsumptionRows = useMemo(() => data.pendingInventoryConsumption, [data.pendingInventoryConsumption]);
 
@@ -1538,7 +1465,8 @@ export default function InventoryControl() {
               <p className="mt-1 text-xs font-bold text-neutral-500">Movement type, item type, and search affect the Stock Movement Audit table and reversal count.</p>
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+          <ReportDateRangeControl value={dateRange} onApply={setDateRange} className="mb-3 bg-neutral-50" />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
             <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
               Store
               <div className="relative">
@@ -1551,17 +1479,6 @@ export default function InventoryControl() {
                   {accessibleStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                 </select>
               </div>
-            </label>
-
-            <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-              Date range
-              <select
-                value={datePreset}
-                onChange={(event) => setDatePreset(event.target.value as DatePreset)}
-                className="w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-              >
-                {RANGE_PRESETS.map((preset) => <option key={preset} value={preset}>{preset.replace('_', ' ')}</option>)}
-              </select>
             </label>
 
             <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
@@ -1600,34 +1517,14 @@ export default function InventoryControl() {
             </label>
           </div>
 
-          {datePreset === 'CUSTOM' && (
-            <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-                Start date
-                <input
-                  type="date"
-                  value={customStart}
-                  onChange={(event) => setCustomStart(event.target.value)}
-                  className="rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                />
-              </label>
-              <label className="grid gap-1 text-xs font-black uppercase tracking-[0.16em] text-neutral-500">
-                End date
-                <input
-                  type="date"
-                  value={customEnd}
-                  onChange={(event) => setCustomEnd(event.target.value)}
-                  className="rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm font-bold text-[#3e2723] outline-none focus:border-[#5c4033]"
-                />
-              </label>
-            </div>
-          )}
-
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-neutral-500">
             <span>Range: {dateRange.label}</span>
             <span>{selectedStore ? selectedStore.name : 'Select a store'}</span>
             <span>Last refresh: {lastRefreshedAt || '—'}</span>
           </div>
+          <p className="mt-2 text-xs font-semibold text-neutral-500">
+            Sales, KOT, online-order, movement, and cost audit rows use this range. Stock-on-hand and setup sections are current snapshots.
+          </p>
         </div>
 
         {error && (

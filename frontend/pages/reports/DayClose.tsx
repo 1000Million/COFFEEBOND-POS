@@ -7,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, Order, PaymentMethod, Store } from '../../types';
 import { summarizeCollections } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
+import { reportDateKey, resolveReportDateRange } from '../../lib/reportDateRange';
 
 const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER'];
 
@@ -34,7 +35,7 @@ type DayCloseSummary = {
 };
 
 function todayIso(): string {
-  return new Date().toISOString().split('T')[0];
+  return reportDateKey(new Date());
 }
 
 function moneyNumber(value: unknown): number {
@@ -199,18 +200,21 @@ export default function DayClose() {
       setError(null);
       setMessage(null);
 
-      const [year, month, day] = dateStr.split('-').map(Number);
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-      const startTs = Timestamp.fromDate(startOfDay);
-      const endTs = Timestamp.fromDate(endOfDay);
+      const result = resolveReportDateRange({ preset: 'CUSTOM', customStart: dateStr, customEnd: dateStr });
+      if (result.ok === false) {
+        setLoading(false);
+        setError(result.error);
+        return;
+      }
+      const startTs = Timestamp.fromDate(result.range.startInclusive);
+      const endExclusiveTs = Timestamp.fromDate(result.range.endExclusive);
 
       try {
         const ordersSnap = await getDocs(query(
           collection(db, 'orders'),
           where('storeId', '==', selectedStoreId),
           where('createdAt', '>=', startTs),
-          where('createdAt', '<=', endTs),
+          where('createdAt', '<', endExclusiveTs),
         ));
         const loadedOrders = ordersSnap.docs.map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as Order));
 

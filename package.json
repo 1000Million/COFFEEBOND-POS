@@ -37,6 +37,8 @@
     "test:complimentary-orders": "esbuild scripts/test-complimentary-orders.ts --bundle --platform=node --format=esm --outfile=/tmp/complimentary-orders-test.mjs && node /tmp/complimentary-orders-test.mjs",
     "test:customer-ordering": "esbuild scripts/test-customer-order-state.ts --bundle --platform=node --format=esm --outfile=/tmp/customer-order-state-test.mjs && node /tmp/customer-order-state-test.mjs",
     "test:franchise-viewer": "esbuild scripts/test-franchise-viewer.ts --bundle --platform=node --format=esm --outfile=/tmp/franchise-viewer-test.mjs && node /tmp/franchise-viewer-test.mjs",
+    "test:report-date-range": "esbuild scripts/test-report-date-range.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/coffee-bond-tests/report-date-range-test.mjs && node node_modules/.cache/coffee-bond-tests/report-date-range-test.mjs",
+    "test:report-date-range-ui": "esbuild scripts/test-report-date-range-ui.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/coffee-bond-tests/report-date-range-ui-test.mjs && node node_modules/.cache/coffee-bond-tests/report-date-range-ui-test.mjs",
     "audit:packaging-applicability": "node scripts/audit-packaging-applicability.mjs"
   },
   "dependencies": {
@@ -61,11 +63,14 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^22.14.0",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "jsdom": "^29.0.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2"

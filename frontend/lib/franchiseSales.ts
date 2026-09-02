@@ -1,3 +1,5 @@
+import { reportFileName } from './reportDateRange';
+
 export type FranchisePermissions = {
   viewDailySales: boolean;
   exportSales: boolean;
@@ -114,7 +116,7 @@ export function downloadFranchiseSalesCsv(report: FranchiseDailySalesResponse): 
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `coffee-bond-franchise-sales-${report.date}.csv`;
+  anchor.download = reportFileName('franchise-sales', { startKey: report.date, endKey: report.date });
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

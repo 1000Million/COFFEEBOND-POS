@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { DayClosing, KotItem, OnlineOrder, Order, PaymentMethod, Store } from '../../types';
 import { summarizeCollections } from '../../lib/paymentReversal';
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
+import { dateIsInReportRange, reportDateKey, resolveReportDateRange } from '../../lib/reportDateRange';
 
 type AuditStatus = 'PASS' | 'WARNING' | 'FAIL';
 
@@ -54,11 +55,7 @@ const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRa
 const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
 
 function todayIso(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return reportDateKey(new Date());
 }
 
 function dayClosingId(storeId: string, businessDate: string): string {
@@ -312,11 +309,14 @@ export default function AuditControl() {
       setLoading(true);
       setError('');
 
-      const [year, month, day] = dateStr.split('-').map(Number);
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-      const startTs = Timestamp.fromDate(startOfDay);
-      const endTs = Timestamp.fromDate(endOfDay);
+      const result = resolveReportDateRange({ preset: 'CUSTOM', customStart: dateStr, customEnd: dateStr });
+      if (result.ok === false) {
+        setLoading(false);
+        setError(result.error);
+        return;
+      }
+      const startTs = Timestamp.fromDate(result.range.startInclusive);
+      const endExclusiveTs = Timestamp.fromDate(result.range.endExclusive);
 
       try {
         const [ordersSnap, onlineSnap, kotSnap, closingSnap, gstSnap] = await Promise.all([
@@ -324,7 +324,7 @@ export default function AuditControl() {
             collection(db, 'orders'),
             where('storeId', '==', selectedStore.id),
             where('createdAt', '>=', startTs),
-            where('createdAt', '<=', endTs),
+            where('createdAt', '<', endExclusiveTs),
           )),
           getDocs(query(
             collection(db, 'onlineOrders'),
@@ -334,7 +334,7 @@ export default function AuditControl() {
             collection(db, 'kotItems'),
             where('storeId', '==', selectedStore.id),
             where('createdAt', '>=', startTs),
-            where('createdAt', '<=', endTs),
+            where('createdAt', '<', endExclusiveTs),
           )),
           getDoc(doc(db, 'dayClosings', dayClosingId(selectedStore.id, dateStr))),
           getDoc(doc(db, 'appSettings', 'gstConfig')),
@@ -363,7 +363,7 @@ export default function AuditControl() {
             .map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as OnlineOrder))
             .filter(order => {
               const createdAt = toDate(order.createdAt);
-              return createdAt ? createdAt >= startOfDay && createdAt <= endOfDay : false;
+              return createdAt ? dateIsInReportRange(createdAt, result.range) : false;
             }));
           setKotItems(kotSnap.docs.map(kotDoc => ({ id: kotDoc.id, ...kotDoc.data() } as KotItem)));
           setDayClosing(closingSnap.exists() ? ({ id: closingSnap.id, ...closingSnap.data() } as DayClosing) : null);

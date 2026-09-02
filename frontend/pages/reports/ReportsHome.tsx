@@ -3,10 +3,25 @@ import { useAuth } from '../../contexts/AuthContext';
 import { auth, db } from '../../lib/firebase';
 import { collection, query, where, getDocs, Timestamp, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { Order, OrderItem, KotItem, Store, PaymentMethod } from '../../types';
-import { Calendar, Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck, Wrench } from 'lucide-react';
+import { Download, Store as StoreIcon, Loader2, ArrowLeft, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { buildPaymentReversalAudit, orderItemDisplayStatus, orderPaymentReversalAudit, paymentOutcomeLabel, summarizeCollections } from '../../lib/paymentReversal';
 import { isComplimentaryOrder, summarizeComplimentaryOrders } from '../../lib/complimentaryOrders';
+import ReportDateRangeControl from '../../components/reporting/ReportDateRangeControl';
+import { createReportDateRange, reportFileName, REPORTING_TIME_ZONE } from '../../lib/reportDateRange';
+
+const REPORT_DATE_FORMATTER = new Intl.DateTimeFormat('en-IN', { timeZone: REPORTING_TIME_ZONE });
+const REPORT_TIME_FORMATTER = new Intl.DateTimeFormat('en-IN', {
+  timeZone: REPORTING_TIME_ZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+const REPORT_HOUR_FORMATTER = new Intl.DateTimeFormat('en-IN', {
+  timeZone: REPORTING_TIME_ZONE,
+  hour: '2-digit',
+  hourCycle: 'h23',
+});
 
 type ReportPaymentBreakdown = {
   method: PaymentMethod | string;
@@ -101,14 +116,13 @@ function isVoidedOrder(order: Order): boolean {
 
 function formatOrderDateTime(order: Order): string {
   const date = order.createdAt?.toDate ? order.createdAt.toDate() : null;
-  return date ? `${date.toLocaleDateString()} ${date.toLocaleTimeString()}` : 'Unknown time';
+  return date ? `${REPORT_DATE_FORMATTER.format(date)} ${REPORT_TIME_FORMATTER.format(date)}` : 'Unknown time';
 }
 
 export default function ReportsHome() {
   const { staffProfile } = useAuth();
   
-  // Date State
-  const [dateStr, setDateStr] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [dateRange, setDateRange] = useState(() => createReportDateRange('TODAY'));
   
   // Filters State
   const [selectedStoreId, setSelectedStoreId] = useState<string>('ALL');
@@ -124,7 +138,7 @@ export default function ReportsHome() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderItems, setOrderItems] = useState<(OrderItem & { orderId: string })[]>([]);
   const [kotItems, setKotItems] = useState<KotItem[]>([]);
-  const [newCustomersToday, setNewCustomersToday] = useState<number>(0);
+  const [newCustomersInRange, setNewCustomersInRange] = useState<number>(0);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [voidConfirmation, setVoidConfirmation] = useState('');
@@ -174,12 +188,9 @@ export default function ReportsHome() {
       setLoading(true);
       setErrorMsg(null);
 
-      const [year, month, day] = dateStr.split('-').map(Number);
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-      
-      const startTs = Timestamp.fromDate(startOfDay);
-      const endTs = Timestamp.fromDate(endOfDay);
+      // Report queries use a half-open IST range: >= start and < midnight after the end date.
+      const startTs = Timestamp.fromDate(dateRange.startInclusive);
+      const endExclusiveTs = Timestamp.fromDate(dateRange.endExclusive);
 
       try {
         let loadedOrders: Order[] = [];
@@ -188,7 +199,7 @@ export default function ReportsHome() {
           const qOrders = query(
             collection(db, 'orders'),
             where('createdAt', '>=', startTs),
-            where('createdAt', '<=', endTs)
+            where('createdAt', '<', endExclusiveTs)
           );
           const ordersSnap = await getDocs(qOrders);
           loadedOrders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
@@ -199,7 +210,7 @@ export default function ReportsHome() {
               collection(db, 'orders'),
               where('storeId', '==', storeId),
               where('createdAt', '>=', startTs),
-              where('createdAt', '<=', endTs)
+              where('createdAt', '<', endExclusiveTs)
             ))));
             loadedOrders = orderSnaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
           }
@@ -224,7 +235,7 @@ export default function ReportsHome() {
             const qKot = query(
               collection(db, 'kotItems'),
               where('createdAt', '>=', startTs),
-              where('createdAt', '<=', endTs)
+              where('createdAt', '<', endExclusiveTs)
             );
             const kotSnap = await getDocs(qKot);
             loadedKots = kotSnap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem));
@@ -235,7 +246,7 @@ export default function ReportsHome() {
                 collection(db, 'kotItems'),
                 where('storeId', '==', storeId),
                 where('createdAt', '>=', startTs),
-                where('createdAt', '<=', endTs)
+                where('createdAt', '<', endExclusiveTs)
               ))));
               loadedKots = kotSnaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem)));
             }
@@ -246,7 +257,7 @@ export default function ReportsHome() {
           const qCust = query(
             collection(db, 'customers'),
             where('createdAt', '>=', startTs),
-            where('createdAt', '<=', endTs)
+            where('createdAt', '<', endExclusiveTs)
           );
           const custSnap = await getDocs(qCust);
           newCustCount = custSnap.docs.length;
@@ -257,7 +268,7 @@ export default function ReportsHome() {
           setOrders(loadedOrders);
           setOrderItems(allItems);
           setKotItems(loadedKots);
-          setNewCustomersToday(newCustCount);
+          setNewCustomersInRange(newCustCount);
           setLoading(false);
         }
 
@@ -276,7 +287,7 @@ export default function ReportsHome() {
     
     loadReportData();
     return () => { active = false; };
-  }, [dateStr, staffProfile, selectedStoreId]);
+  }, [dateRange.startKey, dateRange.endKey, staffProfile, selectedStoreId]);
 
   // Derived filtered orders
   const filteredOrders = useMemo(() => {
@@ -446,7 +457,7 @@ export default function ReportsHome() {
     completedOrders.forEach(o => {
        if (o.createdAt) {
          const date = o.createdAt.toDate();
-         const h = date.getHours();
+         const h = Number(REPORT_HOUR_FORMATTER.format(date));
          hours[h].count += 1;
          hours[h].total += o.grandTotal || 0;
        }
@@ -458,24 +469,21 @@ export default function ReportsHome() {
   const { walkInOrders, customerOrders, topCustomers } = useMemo(() => {
     let walkIn = 0;
     let custOrds = 0;
-    const custSpend: Record<string, { name: string, total: number }> = {};
+    const custSpend: Record<string, number> = {};
     
     completedOrders.forEach(o => {
       if (!o.customerId) {
         walkIn++;
       } else {
         custOrds++;
-        if (!custSpend[o.customerId]) {
-          custSpend[o.customerId] = { name: o.customerName || 'Unknown', total: 0 };
-        }
-        custSpend[o.customerId].total += (o.grandTotal || 0);
+        custSpend[o.customerId] = (custSpend[o.customerId] || 0) + (o.grandTotal || 0);
       }
     });
     
     const top = Object.entries(custSpend)
-      .sort((a,b) => b[1].total - a[1].total)
+      .sort((a,b) => b[1] - a[1])
       .slice(0, 5)
-      .map(([id, data]) => ({ id, ...data }));
+      .map(([id, total]) => ({ id, total }));
       
     return { walkInOrders: walkIn, customerOrders: custOrds, topCustomers: top };
   }, [completedOrders]);
@@ -707,16 +715,16 @@ export default function ReportsHome() {
   const handleExportCSV = (type: 'orders' | 'payments' | 'categories' | 'items') => {
     let rows: string[] = [];
     if (type === 'orders') {
-      rows.push(['Date', 'Time', 'Order #', 'Store', 'Type', 'Customer', 'Subtotal', 'Discount %', 'Discount', 'Taxable', 'GST', 'Total', 'Payment', 'Status'].join(','));
+      rows.push(['Date', 'Time', 'Order #', 'Store', 'Type', 'Customer Type', 'Subtotal', 'Discount %', 'Discount', 'Taxable', 'GST', 'Total', 'Payment', 'Status'].join(','));
       filteredOrders.forEach(o => {
         const d = o.createdAt?.toDate();
         rows.push([
-          d?.toLocaleDateString() || '',
-          d?.toLocaleTimeString() || '',
+          d ? REPORT_DATE_FORMATTER.format(d) : '',
+          d ? REPORT_TIME_FORMATTER.format(d) : '',
           o.orderNumber,
           o.storeName,
           o.orderType,
-          o.customerName || 'Walk-in',
+          o.customerId ? 'Registered' : 'Walk-in',
           o.subtotal,
           o.discountPercent ?? 0,
           orderDiscountTotal(o),
@@ -748,7 +756,7 @@ export default function ReportsHome() {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${type}_report_${dateStr}.csv`);
+    link.setAttribute("download", reportFileName(`${type}-report`, dateRange));
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -811,17 +819,6 @@ export default function ReportsHome() {
               Purchase Entry
             </Link>
 
-            <div className="relative">
-              <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
-              <input 
-                type="date"
-                value={dateStr}
-                onChange={e => setDateStr(e.target.value)}
-                disabled={staffProfile.role === 'CASHIER'}
-                className="pl-9 pr-4 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] disabled:opacity-70 disabled:cursor-not-allowed"
-              />
-            </div>
-            
             {staffProfile.role !== 'CASHIER' && (
               <div className="relative">
                 <StoreIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={16} />
@@ -841,6 +838,14 @@ export default function ReportsHome() {
             )}
             
           </div>
+        </div>
+
+        <div className="mx-auto max-w-7xl px-4 pb-4 md:px-8">
+          <ReportDateRangeControl
+            value={dateRange}
+            onApply={setDateRange}
+            disabled={staffProfile.role === 'CASHIER'}
+          />
         </div>
         
         {/* Secondary filters */}
@@ -886,7 +891,7 @@ export default function ReportsHome() {
         ) : filteredOrders.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 shadow-sm border border-neutral-200 text-center">
             <h2 className="text-xl font-bold text-neutral-800 mb-2">No sales found</h2>
-            <p className="text-neutral-500">There are no orders matching your filters for this date.</p>
+            <p className="text-neutral-500">There are no orders matching your store and filters for {dateRange.label}.</p>
           </div>
         ) : (
           <div className="space-y-6">
@@ -1145,7 +1150,7 @@ export default function ReportsHome() {
                         <td className="px-4 py-3 text-right font-mono">₹{row.gst.toFixed(2)}</td>
                         <td className="px-4 py-3 text-right font-mono font-bold">₹{row.net.toFixed(2)}</td>
                         <td className="px-4 py-3">{[...row.stores].join(', ')}</td>
-                        <td className="px-4 py-3">{dateStr}</td>
+                        <td className="px-4 py-3">{dateRange.label}</td>
                       </tr>
                     ))}
                     {addOnSales.length === 0 && (
@@ -1192,7 +1197,7 @@ export default function ReportsHome() {
                           <td className="px-4 py-3 font-mono font-bold text-neutral-900">{order.orderNumber}</td>
                           <td className="px-4 py-3 text-neutral-500">{formatOrderDateTime(order)}</td>
                           <td className="px-4 py-3 text-neutral-700">{order.storeName}</td>
-                          <td className="px-4 py-3 text-neutral-600">{order.customerName || 'Walk-in'}</td>
+                          <td className="px-4 py-3 text-neutral-600">{order.customerId ? 'Registered' : 'Walk-in'}</td>
                           <td className="px-4 py-3 text-neutral-600 max-w-[220px] truncate">{isVoided ? paymentOutcomeLabel(order) : orderPaymentLabel(order)}</td>
                           <td className={`px-4 py-3 text-right font-mono font-bold ${isVoided ? 'line-through text-red-500' : 'text-[#5c4033]'}`}>₹{(order.grandTotal || 0).toFixed(2)}</td>
                           <td className="px-4 py-3">
@@ -1262,7 +1267,7 @@ export default function ReportsHome() {
                      <div className="grid grid-cols-2 gap-4 pt-2">
                         <div>
                            <p className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1">New Signups</p>
-                           <p className="text-2xl font-black font-mono text-neutral-900">{newCustomersToday}</p>
+                           <p className="text-2xl font-black font-mono text-neutral-900">{newCustomersInRange}</p>
                         </div>
                         <div>
                            <p className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1">Customer Orders</p>
@@ -1283,7 +1288,7 @@ export default function ReportsHome() {
                           <div className="space-y-1.5">
                              {topCustomers.map(c => (
                                <div key={c.id} className="flex justify-between text-xs font-medium">
-                                 <span>{c.name}</span>
+                                 <span>Registered customer {topCustomers.indexOf(c) + 1}</span>
                                  <span className="font-mono text-[#5c4033]">₹{Math.round(c.total)}</span>
                                </div>
                              ))}
@@ -1368,7 +1373,7 @@ export default function ReportsHome() {
                 </div>
                 <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
                   <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Customer</p>
-                  <p className="mt-1 font-bold text-neutral-800">{selectedOrder.customerName || 'Walk-in'}</p>
+                  <p className="mt-1 font-bold text-neutral-800">{selectedOrder.customerId ? 'Registered customer' : 'Walk-in'}</p>
                 </div>
                 <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3">
                   <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Order Type</p>
