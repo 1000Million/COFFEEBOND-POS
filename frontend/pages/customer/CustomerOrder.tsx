@@ -80,9 +80,10 @@ import {
   requestedCustomerStore,
   trustedDietaryClassification,
 } from '../../lib/customerMenuPresentation';
-import { CUSTOMER_ACCOUNT_PATH, CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
+import { CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
 import CustomerProductCard from '../../components/customer/CustomerProductCard';
 import CustomerStoreCard from '../../components/customer/CustomerStoreCard';
+import CustomerBasketBar from '../../components/customer/CustomerBasketBar';
 import { maskedPhone } from '../../components/customer/CustomerAccountSheet';
 import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
@@ -126,7 +127,7 @@ type CartLine = {
  */
 type MyUsualDialog =
   | null
-  | { type: 'SIGN_IN' }
+  | { type: 'SIGN_IN'; source?: 'JOIN' }
   | { type: 'CONFIRM_PENDING_SAVE' }
   | { type: 'SAVE_NEW' }
   | { type: 'REPLACE_USUAL' }
@@ -683,8 +684,7 @@ export default function CustomerOrder() {
   const requestedDemoKey = explicitBondDemoKey(routerLocation.search);
   const demoRequested = Boolean(requestedDemoKey);
   const displayedBondSummary = demoRequested ? previewBondSummary : bondSummary;
-  // Lets the bottom-navigation Search action focus the existing menu search input
-  // rather than introducing a second search control.
+  // Owns focus for the existing menu search control; the shell adds no second search.
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const fullMenuRef = useRef<HTMLDivElement | null>(null);
   const submittingRef = useRef(false);
@@ -693,6 +693,30 @@ export default function CustomerOrder() {
   const initialStoreSearchRef = useRef(routerLocation.search);
   const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
   const hydrationAppliedRef = useRef(false);
+
+  /* Home and Menu share this one existing screen. The four-tab shell uses hashes only
+     to choose the view position; no menu, basket or checkout state is duplicated. */
+  useEffect(() => {
+    if (routerLocation.hash === '#cb-home') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return undefined;
+    }
+    if (routerLocation.hash !== '#cb-full-menu') return undefined;
+    if (searchActive || search) {
+      setSearchActive(false);
+      setSearch('');
+      return undefined;
+    }
+    if (category !== 'ALL') {
+      setCategory('ALL');
+      return undefined;
+    }
+    if (loading || !fullMenuRef.current) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      fullMenuRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [routerLocation.hash, loading, category, searchActive, search]);
 
   const alignExistingStoreQuery = (store: Store) => {
     const params = new URLSearchParams(routerLocation.search);
@@ -2615,13 +2639,18 @@ export default function CustomerOrder() {
   }
 
   return (
-    <div className="cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]">
+    <div
+      id="cb-home"
+      className={`cb-app cb-customer-page-bottom min-h-[100dvh] min-w-0 overflow-x-hidden bg-[#fbf7f1] font-sans text-[#271a16]${itemCount > 0 ? ' has-basket-bar' : ''}`}
+    >
       <CustomerHeader
         sticky
+        homeShell
         title="Order ahead"
         profile={verifiedCustomer}
         authRestored={customerAuthRestored}
         pointsBalance={displayedBondSummary?.enabled ? Number(displayedBondSummary.pointsBalance || 0) : null}
+        pointsLoading={Boolean(verifiedCustomer && (bondSummaryLoading || (demoRequested && !displayedBondSummary)))}
         onProfileUpdated={(profile) => {
           setVerifiedCustomer(profile);
           setCustomerName(profile.displayName);
@@ -2632,7 +2661,10 @@ export default function CustomerOrder() {
           setCustomerPhone('');
           setBondSummary(null);
         }}
-        onSignedOutAccountPress={() => navigate(CUSTOMER_ACCOUNT_PATH)}
+        onJoin={() => {
+          pendingMyUsualSaveRef.current = false;
+          setMyUsualDialog({ type: 'SIGN_IN', source: 'JOIN' });
+        }}
         /* Account's "My Usual" row reveals the existing home card — Stage 2 is not
            re-implemented or duplicated inside the account panel. */
         onOpenMyUsual={() => {
@@ -2640,8 +2672,8 @@ export default function CustomerOrder() {
           myUsualSectionRef.current?.focus();
         }}
         rightSlot={(
-          /* The mobile bar owns Orders and Cart below lg. Desktop keeps one route link
-             and the existing basket opener so neither destination disappears. */
+          /* Mobile uses the four-tab shell plus the contextual basket bar. Desktop
+             keeps one Orders link and the existing basket opener. */
           <>
             <Link
               to={CUSTOMER_MY_ORDERS_PATH}
@@ -2966,25 +2998,35 @@ export default function CustomerOrder() {
         </aside>
       </main>
 
-      <CustomerBottomNav
+      <CustomerBasketBar
         itemCount={itemCount}
+        totalLabel={formatMoney(totals.grandTotal)}
         onOpenBasket={() => setBasketOpen(true)}
-        basketOpen={basketOpen}
       />
+      <CustomerBottomNav />
 
       <p className="sr-only" role="status" aria-live="polite">{basketAnnouncement}</p>
 
       {/* My Usual confirmations. Every consequence is stated before it happens, and
           none of these actions submits an order, OTP or payment. */}
       {myUsualDialog && (
-        <div className="cb-customer-sheet-scrim cb-customer-layer-modal fixed inset-0 flex items-end justify-center" role="dialog" aria-modal="true" aria-label="My Usual">
+        <div
+          className="cb-customer-sheet-scrim cb-customer-layer-modal fixed inset-0 flex items-end justify-center"
+          role="dialog"
+          aria-modal="true"
+          aria-label={myUsualDialog.type === 'SIGN_IN' && myUsualDialog.source === 'JOIN' ? 'Join Coffee Bond' : 'My Usual'}
+        >
           <button type="button" className="absolute inset-0 h-full w-full" aria-label="Dismiss" onClick={() => setMyUsualDialog(null)} />
           <div ref={myUsualDialogRef} className="cb-customer-sheet relative w-full max-w-md p-5">
             {myUsualDialog.type === 'SIGN_IN' && (
               <>
-                <h2 className="cb-customer-title text-lg font-black">Sign in to save My Usual</h2>
+                <h2 className="cb-customer-title text-lg font-black">
+                  {myUsualDialog.source === 'JOIN' ? 'Join Coffee Bond' : 'Sign in to save My Usual'}
+                </h2>
                 <p className="cb-customer-muted mt-1 text-sm font-bold">
-                  My Usual lives in your Coffee Bond profile so it follows you across devices. Your basket is kept exactly as it is, and nothing is ordered or paid for here.
+                  {myUsualDialog.source === 'JOIN'
+                    ? 'Verify your mobile number using the same secure sign-in as checkout. Nothing is ordered or paid for here.'
+                    : 'My Usual lives in your Coffee Bond profile so it follows you across devices. Your basket is kept exactly as it is, and nothing is ordered or paid for here.'}
                 </p>
                 {/* The existing customer OTP panel — there is no second OTP path. */}
                 <div className="mt-4">

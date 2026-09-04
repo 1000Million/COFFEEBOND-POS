@@ -134,7 +134,7 @@ export default function CustomerPwaStatusUI() {
       }
     };
     return (
-      <aside className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[95] mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-[#dfd0c2] bg-white p-3 shadow-xl" aria-label="Install the Coffee Bond app">
+      <aside className="cb-customer-pwa-install-banner fixed inset-x-3 z-[95] mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-[#dfd0c2] bg-white p-3 shadow-xl" aria-label="Install the Coffee Bond app">
         <Download size={19} className="shrink-0 text-[#5c4033]" />
         <p className="min-w-0 flex-1 text-sm font-bold text-neutral-800">Install Coffee Bond</p>
         <button type="button" onClick={() => void install()} disabled={installing} className="min-h-11 rounded-xl bg-[#4a3026] px-3 text-sm font-black text-white disabled:opacity-60">
@@ -148,7 +148,7 @@ export default function CustomerPwaStatusUI() {
   }
 
   return (
-    <aside className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[95] mx-auto max-w-md rounded-2xl border border-[#dfd0c2] bg-white p-4 shadow-xl" aria-label="Add Coffee Bond to your iPhone or iPad Home Screen">
+    <aside className="cb-customer-pwa-install-banner fixed inset-x-3 z-[95] mx-auto max-w-md rounded-2xl border border-[#dfd0c2] bg-white p-4 shadow-xl" aria-label="Add Coffee Bond to your iPhone or iPad Home Screen">
       <div className="flex items-start gap-3">
         <Share2 size={19} className="mt-0.5 shrink-0 text-[#5c4033]" />
         <div className="min-w-0 flex-1">

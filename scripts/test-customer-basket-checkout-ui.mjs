@@ -424,8 +424,7 @@ check('layer-1/3. My Usual sits on a strictly higher layer than the basket',
   && layerOf('cb-customer-layer-basket') !== null
   && layerOf('cb-customer-layer-modal') > layerOf('cb-customer-layer-basket'));
 check('layer-2. both overlays use the named scale, not inline z-index',
-  /aria-label="My Usual"/.test(home)
-  && /cb-customer-layer-modal[\s\S]{0,120}aria-label="My Usual"/.test(home)
+  /cb-customer-layer-modal[\s\S]{0,320}aria-label=\{[\s\S]{0,180}'My Usual'/.test(home)
   && homeCode.includes('cb-customer-layer-basket')
   && !/fixed inset-0 z-\[7[05]\]/.test(homeCode));
 check('layer-2. the two overlays remain siblings, so the scale actually decides paint order',

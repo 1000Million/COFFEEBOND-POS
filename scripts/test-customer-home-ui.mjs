@@ -22,6 +22,7 @@ const rail = read('frontend/components/customer/CustomerCategoryRail.tsx');
 const store = read('frontend/components/customer/CustomerStoreCard.tsx');
 const nav = read('frontend/components/customer/CustomerBottomNav.tsx');
 const header = read('frontend/components/customer/CustomerHeader.tsx');
+const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
 const productImage = read('frontend/components/customer/CustomerProductImage.tsx');
 const usual = read('frontend/components/customer/CustomerMyUsualCard.tsx');
 const bondCard = read('frontend/components/customer/CustomerBondSummaryCard.tsx');
@@ -32,6 +33,10 @@ const customerMain = read('frontend/customer-main.tsx');
 
 // --- Wiring -----------------------------------------------------------------
 check('home renders the new store card', home.includes('<CustomerStoreCard'));
+check('store chip preserves selected-store data and opens the existing selector',
+  home.includes('storeName={selectedStoreCustomerName}')
+  && home.includes('statusLabel={customerOrderingState.statusLabel}')
+  && home.includes('onOpenSelector={() => setStoreSelectorOpen(true)}'));
 check('home renders the new category rail', home.includes('<CustomerCategoryRail'));
 check('home renders the new product card', home.includes('<CustomerProductCard'));
 check('home renders the persistent bottom navigation', home.includes('<CustomerBottomNav'));
@@ -92,56 +97,65 @@ check('dietary marker still comes from authoritative data only',
 check('bottom nav uses the shared customer route helper',
   nav.includes("from '../../lib/customerRoutes'")
   && nav.includes('CUSTOMER_MY_ORDERS_PATH')
-  && nav.includes('CUSTOMER_HOME_PATH'));
+  && nav.includes('CUSTOMER_HOME_PATH')
+  && nav.includes('CUSTOMER_BOND_PATH'));
 check('bottom nav hardcodes no customer path', !/["']\/order|["']\/my-orders/.test(nav));
-check('bottom nav basket opens the existing basket sheet',
-  home.includes('onOpenBasket={() => setBasketOpen(true)}'));
-/* Search remains in the page, while the raised Cart is now the sole mobile basket
-   doorway. The desktop header button is mutually exclusive at the lg breakpoint. */
+check('contextual basket bar opens the existing basket sheet',
+  home.includes('<CustomerBasketBar')
+  && home.includes('onOpenBasket={() => setBasketOpen(true)}'));
+/* Search remains in the page. Basket access appears contextually only when the existing
+   cart has contents; the navigation is reserved for four destinations. */
 check('the menu screen still owns exactly one search field',
   (home.match(/aria-label="Search the menu"/g) || []).length === 1);
-check('the raised Cart replaces the contextual mobile basket bar',
-  (home.match(/<CustomerBasketBar/g) || []).length === 0
-  && nav.includes('cb-customer-nav-cart')
-  && nav.includes('aria-label={cartLabel}'));
+check('basket access is contextual and absent from the four-tab navigation',
+  (home.match(/<CustomerBasketBar/g) || []).length === 1
+  && basketBar.includes('if (itemCount <= 0) return null;')
+  && !/ShoppingBag|Cart/.test(nav));
 const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-check('Account is a real route, not a sheet-only callback',
-  /to=\{CUSTOMER_ACCOUNT_PATH\}/.test(navCode) && !navCode.includes('onOpenAccount'));
-check('the Cart tab is only a doorway to the existing basket state',
-  navCode.includes('onClick={onOpenBasket}')
-  && !/setCart|commitCartItem|setLineQuantity|useState/.test(navCode));
+check('Account remains a real route but is not duplicated in the Home bottom nav',
+  !/CUSTOMER_ACCOUNT_PATH|>\s*Account\s*</.test(navCode));
+check('the bottom navigation owns no basket or ordering state',
+  !/onOpenBasket|setCart|commitCartItem|setLineQuantity|useState/.test(navCode));
+check('the contextual bar is only a doorway to existing basket state',
+  basketBar.includes('onClick={onOpenBasket}')
+  && !/setCart|commitCartItem|setLineQuantity|useState/.test(basketBar));
 
 /* ===========================================================================
- * Reference navigation — Menu, Orders, raised Cart, real BOND, real Account.
+ * Bite 1 navigation — Home, Menu, Orders and real BOND.
  *
- * Search remains a single field on Menu. Cart is always reachable and delegates to the
- * existing basket sheet; BOND and Account remain route-backed destinations.
+ * Home and Menu share the existing screen and use hashes to select its two positions.
+ * Basket access remains contextual and delegates to the existing basket sheet.
  * ======================================================================== */
 const tracking = read('frontend/components/customer/CustomerTrackingScreen.tsx');
 const customerApp = read('frontend/CustomerApp.tsx');
 const staffApp = read('frontend/App.tsx');
 const routes = read('frontend/lib/customerRoutes.ts');
 
-check('P0-1. bottom navigation is exactly Menu, Orders, Cart, Bond, Account at runtime',
-  ['Menu', 'Orders', 'Cart', 'Bond', 'Account'].every(l => new RegExp(`>\\s*${l}\\s*<`).test(navCode))
-  && navCode.includes('onHome && onOpenBasket ? (')
-  && (navCode.match(/<button/g) || []).length === 1);
-check('P0-2. Search stays in the page and permanent Cart is centred in the bar',
-  !/Search/.test(navCode)
-  && /ShoppingBag|Cart/.test(navCode)
-  && navCode.includes('cb-customer-nav-cart-disc'));
-check('P0-3. Menu is active at /',
-  navCode.includes('const onHome = pathname === CUSTOMER_HOME_PATH')
-  && /to=\{CUSTOMER_HOME_PATH\}[\s\S]{0,160}aria-current=\{onHome \? 'page' : undefined\}/.test(navCode));
+check('P0-1. bottom navigation is exactly Home, Menu, Orders and Bond at runtime',
+  ['Home', 'Menu', 'Orders', 'Bond'].every(l => new RegExp(`>\\s*${l}\\s*<`).test(navCode))
+  && !/>\s*(Cart|Account)\s*</.test(navCode)
+  && (navCode.match(/<Link/g) || []).length === 4);
+check('P0-2. Search and basket actions stay outside destination navigation',
+  !/Search|ShoppingBag|Cart/.test(navCode)
+  && home.includes('aria-label="Search the menu"')
+  && home.includes('<CustomerBasketBar'));
+check('P0-3. Home is active on the shared route outside the menu hash',
+  navCode.includes('const onHomeRoute = pathname === CUSTOMER_HOME_PATH')
+  && navCode.includes('const onHome = onHomeRoute && !onMenu')
+  && /hash: '#cb-home'[\s\S]{0,180}aria-current=\{onHome \? 'page' : undefined\}/.test(navCode));
+check('P0-3a. Menu is active only at the existing full-menu anchor',
+  navCode.includes("const MENU_HASH = '#cb-full-menu'")
+  && navCode.includes('const onMenu = onHomeRoute && hash === MENU_HASH')
+  && /hash: MENU_HASH[\s\S]{0,180}aria-current=\{onMenu \? 'page' : undefined\}/.test(navCode)
+  && home.includes('id="cb-full-menu"'));
 check('P0-4. Orders is active at /my-orders',
   /pathname === CUSTOMER_MY_ORDERS_PATH/.test(navCode)
   && /to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,160}aria-current=\{onMyOrders \? 'page' : undefined\}/.test(navCode));
 check('P0-5. Orders is active at /status/:id',
   /onMyOrders = pathname === CUSTOMER_MY_ORDERS_PATH \|\| \/\(\^\|\\\/\)status\\\/\/\.test\(pathname\)/.test(navCode));
-check('P0-6. Account is active at /account',
-  /pathname === CUSTOMER_ACCOUNT_PATH/.test(navCode)
-  && /to=\{CUSTOMER_ACCOUNT_PATH\}[\s\S]{0,160}aria-current=\{onAccount \? 'page' : undefined\}/.test(navCode));
-check('P0-7. /account is a real customer route',
+check('P0-6. Account is deliberately absent from the four-tab shell',
+  !/CUSTOMER_ACCOUNT_PATH|onAccount|>\s*Account\s*</.test(navCode));
+check('P0-7. /account remains a real customer route',
   customerApp.includes('path="/account"')
   && customerApp.includes("import('./pages/customer/CustomerAccount')")
   && routes.includes('CUSTOMER_ACCOUNT_PATH'));
@@ -170,18 +184,19 @@ check('P0-10. tracking renders the bottom navigation',
 check('P0-11. tracking payment-safety copy is unchanged',
   tracking.includes('Payment confirmation is in progress. Please do not pay again.')
   && tracking.includes('Payment was received. The store is reviewing fulfilment; no further payment is required.'));
-check('P0-12. the Order screen keeps the approved real account avatar',
-  !home.includes('hideAccountAction')
+check('P0-12. the Home header uses the real points summary or signed-out Join action',
+  home.includes('homeShell')
   && home.includes('pointsBalance={displayedBondSummary?.enabled')
-  && header.includes('aria-label={`Open customer account'));
-check('P0-13. Cart remains a destination at zero while its badge stays honest',
-  navCode.includes("typeof itemCount === 'number' && itemCount > 0")
-  && navCode.includes("typeof itemCount === 'number'")
-  && navCode.includes('Open cart with ${itemCount} item')
-  && navCode.includes("'Open cart'"));
-check('P0-14. Cart receives the real basket count and opens the existing sheet',
-  /<CustomerBottomNav[\s\S]{0,180}itemCount=\{itemCount\}[\s\S]{0,180}onOpenBasket=\{\(\) => setBasketOpen\(true\)\}/.test(home)
-  && navCode.includes('onClick={onOpenBasket}'));
+  && header.includes('cb-customer-header-points')
+  && header.includes('cb-customer-header-join')
+  && home.includes("setMyUsualDialog({ type: 'SIGN_IN', source: 'JOIN' })"));
+check('P0-13. contextual basket remains absent at zero and honest when visible',
+  basketBar.includes('if (itemCount <= 0) return null;')
+  && basketBar.includes('Open basket with ${itemCount} item')
+  && basketBar.includes('{totalLabel}'));
+check('P0-14. contextual basket receives real count/total and opens the existing sheet',
+  /<CustomerBasketBar[\s\S]{0,180}itemCount=\{itemCount\}[\s\S]{0,180}totalLabel=\{formatMoney\(totals\.grandTotal\)\}[\s\S]{0,180}onOpenBasket=\{\(\) => setBasketOpen\(true\)\}/.test(home)
+  && basketBar.includes('onClick={onOpenBasket}'));
 check('P0-15. the basket survives navigation via the existing persisted draft',
   // Cart is written to localStorage and rehydrated (revalidated) on mount, so leaving
   // Order for Orders/Account and returning does not lose it. No new state layer added.
@@ -190,19 +205,18 @@ check('P0-15. the basket survives navigation via the existing persisted draft',
   && home.includes('applyRestoredDraft(draft, restored)')
   && home.includes('setCart(restored.lines)'));
 check('P0-18. bottom-navigation controls meet the 44px minimum',
-  navCode.includes('min-h-[44px] min-w-[44px]')
-  && navCode.includes('min-h-[64px] min-w-[58px]'));
+  navCode.includes('min-h-[44px] min-w-[44px]'));
 check('P0-19. the product CTA meets the 44px minimum',
   card.includes('cb-customer-add-button flex h-11 w-full'));
-check('P0-20. the raised Cart and bar clear the safe area without a second basket bar',
+check('P0-20. bottom navigation and contextual basket clear the safe area',
   /\.cb-customer-bottom-nav \{[^}]*min-height: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\)\)/.test(homeRedesignCss)
-  && /\.cb-customer-nav-cart-disc \{[^}]*margin-top: -17px/.test(homeRedesignCss)
-  && tokens.includes('--cb-fab-overhang')
-  && !home.includes('<CustomerBasketBar'));
+  && /\.cb-customer-basket-bar \{[^}]*bottom: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\)\)/.test(tokens)
+  && tokens.includes('.cb-customer-page-bottom.has-basket-bar')
+  && !tokens.includes('--cb-fab-overhang'));
 
 // --- Accessibility ----------------------------------------------------------
 check('category selection is announced, not colour-only', rail.includes('aria-pressed={isActive}'));
-check('store status is announced with its label', store.includes('aria-label={`${contextLabel} ${storeName}. ${statusLabel}'));
+check('store status is announced with its visible label', store.includes('aria-label={`${contextLabel} ${storeName}. ${visibleStatus}'));
 check('quantity controls have accessible names',
   card.includes('aria-label={`Decrease ${name}`}') && card.includes('aria-label={`Increase ${name}`}'));
 check('add control names the product and its behaviour',
@@ -302,9 +316,9 @@ check('the gold selected-chip treatment is retained beyond phone width',
 
 check('the chip row keeps its gutter when snapped',
   /\.cb-customer-rail\s*\{[^}]*scroll-padding-inline:\s*var\(--cb-page-gutter\)/.test(tokens));
-check('the page reserves room for the raised basket button, not just the bar',
-  tokens.includes('--cb-fab-overhang')
-  && /--cb-content-bottom:\s*calc\(\s*var\(--cb-bottom-nav-h\) \+ var\(--cb-fab-overhang\)/.test(tokens));
+check('the page reserves room for the four-tab bar and contextual basket independently',
+  /--cb-content-bottom:\s*calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\) \+ 12px\)/.test(tokens)
+  && /\.cb-customer-page-bottom\.has-basket-bar \{ padding-bottom: calc\(var\(--cb-content-bottom\) \+ 62px\); \}/.test(tokens));
 check('product card controls meet the 44px touch target',
   // The stepper's two controls and the featured circular action are 44x44; the full
   // menu action remains 44px tall and full width.
@@ -359,7 +373,7 @@ check('long compound names break instead of forcing an overflow',
   /\.cb-customer-product-name \{[^}]*overflow-wrap: anywhere/.test(tokens)
   && card.includes('cb-clamp-2'));
 // The store block used to be a 76 px card whose third line was the pickup estimate,
-// and it sat directly between the customer and the menu. It is now a two-line row and
+// and it sat directly between the customer and the menu. It is now a one-line chip and
 // the estimate is gone from this surface — but NOT from the product: the basket's
 // pickup summary still shows the same authoritative prep window at the point where the
 // customer is choosing a collection time.
@@ -368,14 +382,16 @@ check('the compact store row carries no pickup estimate and the basket still doe
   && !store.includes('flex-wrap')
   && read('frontend/components/customer/CustomerPickupSummary.tsx').includes('{prepLabel}'));
 const storeCode = store.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-check('the pickup block is one compact rounded card, not a tall panel',
+check('the pickup block is one compact single-line chip, not a tall panel',
   store.includes('cb-customer-store-card')
-  && /\.cb-customer-store-card \{[^}]*min-height: 66px/.test(homeRedesignCss)
+  && /\.cb-customer-store-card \{[^}]*min-height: 52px/.test(homeRedesignCss)
+  && store.includes('cb-customer-store-summary')
+  && !store.includes('MapPin')
   && (store.match(/<ChevronRight/g) || []).length === 1);
 check('the pickup card never fabricates live capacity',
   !/capacity/i.test(storeCode) && !/capacity/i.test(homeCode));
 check('store status is still stated in words, not by colour alone',
-  /statusLabel\}/.test(store) && /cb-customer-tone-(green|amber|red)/.test(store));
+  /\{visibleStatus\}/.test(store) && /cb-customer-tone-(green|amber|red)/.test(store));
 // Landscape phones matched only the min-width rule, which reserved 200px of a 360px
 // screen for the hero and left a 56px window to choose options in.
 check('short viewports shrink the customization hero',
@@ -475,13 +491,11 @@ check('search adds no second query, index or filter',
 check('Menu action clears the filter and returns to the top',
   home.includes("setCategory('ALL');") && home.includes("setSearch('');"));
 
-// --- Five bottom-nav entries -------------------------------------------------
-// Four entries are routes; the raised centre Cart is an action on home and a route-state
-// handoff elsewhere. In either branch the customer sees the same five labels.
-check('bottom nav exposes Menu, Orders, Cart, Bond and Account exactly once at runtime',
-  ['Menu', 'Orders', 'Cart', 'Bond', 'Account']
-    .every(label => new RegExp(`>\\s*${label}\\s*<`).test(navCode))
-  && (navCode.match(/<span className="cb-customer-nav-cart-label">Cart<\/span>/g) || []).length === 1);
+// --- Four bottom-nav destinations -------------------------------------------
+check('bottom nav exposes Home, Menu, Orders and Bond exactly once at runtime',
+  ['Home', 'Menu', 'Orders', 'Bond']
+    .every(label => (navCode.match(new RegExp(`>\\s*${label}\\s*<`, 'g')) || []).length === 1)
+  && !/>\s*(Cart|Account)\s*</.test(navCode));
 
 // --- Style isolation --------------------------------------------------------
 check('customer tokens are imported only by the customer entry',
@@ -493,43 +507,38 @@ for (const [label, source] of [['card', card], ['rail', rail], ['store', store],
 check('semantic customer classes are declared in customer.css',
   ['.cb-customer-card', '.cb-customer-accent-button', '.cb-customer-chip-active',
    '.cb-customer-bottom-nav', '.cb-customer-store-card', '.cb-customer-usual-hero',
-   '.cb-customer-featured-track', '.cb-customer-nav-cart', '.cb-customer-stepper']
+   '.cb-customer-featured-track', '.cb-customer-basket-bar', '.cb-customer-stepper']
     .every((cls) => tokens.includes(cls)));
 check('shared stylesheet was not modified for the customer app',
   !read('frontend/index.css').includes('cb-customer'));
 
-// --- Single My Orders destination on the home screen ------------------------
-// The bottom navigation owns the My Orders link on screens that show it. The header
-// must not present a second adjacent one, but must keep it where there is no bottom
-// navigation, so account access is never lost.
+// --- Header identity and destination ownership ------------------------------
 check('bottom navigation renders exactly one My Orders link',
   (nav.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 1);
-check('header exposes an opt-out for its My Orders link',
-  header.includes('onSignedOutAccountPress'));
-check('signed-out header control is a button when the opt-out is supplied',
-  /onSignedOutAccountPress \?[\s\S]{0,400}<button/.test(header));
-check('home screen routes the header avatar to Account without duplicating My Orders',
-  home.includes('onSignedOutAccountPress={() => navigate(CUSTOMER_ACCOUNT_PATH)}')
-  && !home.includes('hideAccountAction'));
-check('mobile header no longer shows "Sign in / My Orders" wording',
-  !header.includes('Sign in or view My Orders') && !header.includes('>Sign in<'));
-check('header keeps a compact accessible account control',
-  header.includes('aria-label="Customer account"') && header.includes('h-11 w-11'));
+check('Home header renders authenticated real points as a BOND link',
+  header.includes('to={CUSTOMER_BOND_PATH}')
+  && header.includes('Number(pointsBalance).toLocaleString')
+  && !/pointsBalance\s*=\s*[1-9][0-9]*/.test(header));
+check('Home header renders a quiet signed-out Join action',
+  header.includes('onClick={onJoin || onSignedOutAccountPress}')
+  && />\s*Join\s*</.test(header));
+check('Join reuses the existing customer OTP path without ordering or payment',
+  home.includes("setMyUsualDialog({ type: 'SIGN_IN', source: 'JOIN' })")
+  && home.includes('<CustomerOtpPanel')
+  && home.includes('Nothing is ordered or paid for here.'));
 check('My Orders remains reachable from screens without the bottom navigation',
   header.includes('to={CUSTOMER_MY_ORDERS_PATH}'));
-// The mobile bar is lg:hidden. Desktop home therefore carries one explicit Orders link,
-// while the signed-out avatar remains the Account destination rather than masquerading
-// as Orders.
 check('desktop keeps Orders when the mobile bottom bar is hidden',
   /rightSlot=\{\([\s\S]{0,450}to=\{CUSTOMER_MY_ORDERS_PATH\}[\s\S]{0,200}lg:inline-flex/.test(home));
-check('signed-out desktop header routes honestly to Account',
-  /onSignedOutAccountPress \?[\s\S]{0,700}to=\{CUSTOMER_ACCOUNT_PATH\}[\s\S]{0,220}lg:inline-flex/.test(header));
 check('screens without the bottom bar retain the My Orders fallback',
   header.includes('to={CUSTOMER_MY_ORDERS_PATH}'));
 check('sign-out behaviour is untouched', header.includes('onSignedOut'));
 
-// --- Exactly one basket control per breakpoint ------------------------------
+// --- Contextual basket and responsive chrome --------------------------------
 check('bottom navigation is mobile-only', nav.includes('lg:hidden'));
+check('contextual basket bar is mobile-only and absent at zero',
+  basketBar.includes('cb-customer-basket-bar lg:hidden')
+  && basketBar.includes('if (itemCount <= 0) return null;'));
 check('header basket entry is desktop-only',
   /rightSlot=\{\([\s\S]{0,600}lg:inline-flex/.test(home));
 check('page reserves space for the bottom bar and releases it on desktop',

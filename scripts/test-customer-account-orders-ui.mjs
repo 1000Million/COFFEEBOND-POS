@@ -29,6 +29,7 @@ const passed = [];
 const check = (name, condition) => { assert(condition, name); passed.push(name); };
 
 const nav = read('frontend/components/customer/CustomerBottomNav.tsx');
+const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
 const header = read('frontend/components/customer/CustomerHeader.tsx');
 const account = read('frontend/components/customer/CustomerAccountSheet.tsx');
 const ordersScreen = read('frontend/components/customer/CustomerOrdersScreen.tsx');
@@ -55,32 +56,22 @@ const orders = ordersScreen + ordersPage;
 const ordersCode = ordersScreenCode + ordersPageCode;
 const statusCode = trackScreenCode + trackPageCode;
 
-// --- 1-3. The five bottom-navigation entries exist exactly once ---------------
-// Count navigation TARGETS, not identifier mentions: the import and the active-state
-// comparison are not extra entry points.
+// --- 1-3. The four bottom-navigation destinations exist exactly once ----------
 check('1. Orders appears exactly once in the bottom navigation',
   (nav.match(/to=\{CUSTOMER_MY_ORDERS_PATH\}/g) || []).length === 1);
-/* P0: Account became a route, so it is counted by its navigation target rather than by
-   an aria-label on a button. Still exactly one entry point. */
-check('2. Account appears exactly once in the bottom navigation',
-  (nav.match(/to=\{CUSTOMER_ACCOUNT_PATH\}/g) || []).length === 1);
-/* The approved composition restores Cart as the raised centre entry. It is still only a
-   doorway: home raises the existing basket sheet callback, while other routes hand the
-   intent back through router state. The navigation owns no cart state or mutation. */
-check('3. Cart hands off to the existing basket instead of creating another cart',
-  navCode.includes('onClick={onOpenBasket}')
-  && navCode.includes('state={{ openBasket: true }}')
-  && !/setCart|commitCartItem|setLineQuantity|useState/.test(navCode));
-check('3a. the bar exposes exactly Menu, Orders, Cart, Bond and Account at runtime',
-  ['Menu', 'Orders', 'Cart', 'Bond', 'Account']
+check('2. Account is not duplicated in the Home bottom navigation',
+  !/CUSTOMER_ACCOUNT_PATH|>\s*Account\s*</.test(navCode));
+check('3. contextual basket hands off to the existing basket instead of creating another cart',
+  basketBar.includes('onClick={onOpenBasket}')
+  && basketBar.includes('if (itemCount <= 0) return null;')
+  && !/setCart|commitCartItem|setLineQuantity|useState/.test(basketBar));
+check('3a. the bar exposes exactly Home, Menu, Orders and Bond at runtime',
+  ['Home', 'Menu', 'Orders', 'Bond']
     .every(label => new RegExp(`>\\s*${label}\\s*<`).test(navCode))
-  && navCode.includes('onHome && onOpenBasket ? (')
-  && !/Search/.test(navCode));
-check('3b. the centre Cart exposes the real count and an accessible 44px-plus target',
-  navCode.includes('Open cart with ${itemCount} item')
-  && navCode.includes("typeof itemCount === 'number' && itemCount > 0")
-  && navCode.includes("'Open cart'")
-  && navCode.includes('min-h-[64px] min-w-[58px]'));
+  && !/Search|ShoppingBag|Cart|>\s*Account\s*</.test(navCode)
+  && (navCode.match(/<Link/g) || []).length === 4);
+check('3b. every bottom-tab target is at least 44px',
+  navCode.includes('min-h-[44px] min-w-[44px]'));
 
 // --- 4-5. The duplicated account destinations are gone ------------------------
 check('4. My Orders is removed from the account surface',

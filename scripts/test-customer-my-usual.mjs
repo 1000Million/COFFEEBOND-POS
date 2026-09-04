@@ -611,7 +611,7 @@ check('the visible and accessible saved-usual CTA labels agree',
   card.includes("aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}")
   && /<span>\{busy \? 'Checking\.\.\.' : blockerMessage \? 'Review My Usual' : 'Order My Usual'\}<\/span>/.test(card));
 check('validation messages use a live region', card.includes('role="status" aria-live="polite"'));
-check('dialogs are modal and labelled', home.includes('role="dialog" aria-modal="true"'));
+check('dialogs are modal and labelled', /role="dialog"\s+aria-modal="true"\s+aria-label=/.test(home));
 check('no Tailwind arbitrary CSS-variable utilities in the My Usual UI',
   !/\[color:var\(--cb-|bg-\[var\(--cb-|shadow-\[var\(--cb-/.test(card));
 check('My Usual styles are semantic classes in customer.css',

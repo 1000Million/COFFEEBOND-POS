@@ -250,6 +250,17 @@ const pageBottomCoversSafeArea =
   && /\.cb-customer-page-bottom\s*\{\s*padding-bottom:\s*var\(--cb-content-bottom\)/.test(customerTokens);
 assert.ok(pageBottomCoversSafeArea, 'the page-bottom token chain must end in the home-indicator inset');
 
+assert.equal(
+  (customerPwaUi.match(/cb-customer-pwa-install-banner/g) || []).length,
+  2,
+  'both customer install guidance variants must use the navigation-aware offset',
+);
+assert.match(
+  customerTokens,
+  /@media \(max-width: 1023px\)[\s\S]{0,160}\.cb-customer-pwa-install-banner \{[\s\S]{0,120}bottom: calc\(var\(--cb-bottom-nav-h\) \+ var\(--cb-safe-bottom\) \+ 12px\)/,
+  'customer install guidance must clear the existing mobile nav-height and safe-area tokens',
+);
+
 for (const [label, screen] of [['CustomerTrackingScreen', orderStatus], ['CustomerOrdersScreen', myOrders]] as const) {
   assert.ok(
     /env\(safe-area-inset-bottom\)/.test(screen) || /cb-customer-page-bottom/.test(screen),

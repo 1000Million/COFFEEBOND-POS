@@ -5,6 +5,7 @@ import { CustomerProfile } from '../../lib/customerAuth';
 import CustomerAccountSheet from './CustomerAccountSheet';
 import {
   CUSTOMER_ACCOUNT_PATH,
+  CUSTOMER_BOND_PATH,
   CUSTOMER_HOME_PATH,
   CUSTOMER_MY_ORDERS_PATH,
   IS_CUSTOMER_ORIGIN_BUILD,
@@ -19,6 +20,12 @@ type Props = {
   rightSlot?: ReactNode;
   /** Real balance from getCustomerBondSummary. Omitted when the summary is unavailable. */
   pointsBalance?: number | null;
+  /** True only for the Home shell: points/Join replace the account avatar. */
+  homeShell?: boolean;
+  /** Distinguishes an in-flight real balance from an unavailable BOND summary. */
+  pointsLoading?: boolean;
+  /** Opens the Home screen's existing customer OTP flow. */
+  onJoin?: () => void;
   /**
    * Suppresses the header's own account control.
    *
@@ -53,6 +60,9 @@ export default function CustomerHeader({
   onSignedOut,
   rightSlot,
   pointsBalance = null,
+  homeShell = false,
+  pointsLoading = false,
+  onJoin,
   hideAccountAction = false,
   sticky = false,
   onSignedOutAccountPress,
@@ -93,7 +103,7 @@ export default function CustomerHeader({
 
   return (
     <>
-      <header className={`${sticky ? 'sticky top-0 z-30' : ''} cb-customer-header`}>
+      <header className={`${sticky ? 'sticky top-0 z-30' : ''} cb-customer-header${homeShell ? ' is-home-shell' : ''}`}>
         <div className="mx-auto flex h-[58px] w-full min-w-0 items-center justify-between gap-2 px-4 lg:max-w-6xl lg:px-6">
           <Link to={CUSTOMER_HOME_PATH} className="cb-customer-brand flex min-h-11 min-w-0 items-center gap-2 focus:outline-none">
             <span
@@ -119,7 +129,31 @@ export default function CustomerHeader({
           </Link>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {hideAccountAction ? null : !authRestored ? (
+            {homeShell ? (
+              !authRestored || (profile && pointsLoading) ? (
+                <span className="cb-customer-header-session-loading" aria-label={profile ? 'Loading BOND points' : 'Restoring customer session'}>
+                  <Loader2 size={17} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                </span>
+              ) : profile ? (
+                <Link
+                  to={CUSTOMER_BOND_PATH}
+                  className="cb-customer-header-points"
+                  aria-label={showPointsBadge
+                    ? `${Number(pointsBalance).toLocaleString('en-IN')} BOND points. View BOND`
+                    : 'View BOND'}
+                >
+                  {showPointsBadge ? `${Number(pointsBalance).toLocaleString('en-IN')} pts` : 'Bond'}
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onJoin || onSignedOutAccountPress}
+                  className="cb-customer-header-join"
+                >
+                  Join
+                </button>
+              )
+            ) : hideAccountAction ? null : !authRestored ? (
               <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#8b5e42]" aria-label="Restoring customer session">
                 <Loader2 size={17} className="animate-spin" />
               </span>
