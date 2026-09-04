@@ -24,6 +24,12 @@ const POINT_LEDGER = 'loyaltyPointLedger';
 const ACCOUNTS = 'loyaltyAccounts';
 const VISIT_EVENTS = 'qualifyingVisitEvents';
 const VISIT_DAYS = 'qualifyingVisitDays';
+/**
+ * Provenance types that may earn BOND points. Online payment completed in the
+ * customer app only - PRIVATE_CUSTOMER_SUBMISSION (Pay at Counter) is excluded by
+ * policy. Qualifying visits use the broader origin.eligible check and are unaffected.
+ */
+const POINT_EARN_EVIDENCE_TYPES = new Set(['PRIVATE_CHECKOUT_SESSION']);
 const MEMBERSHIPS = 'clubMemberships';
 const SHADOW_LOGS = 'loyaltyShadowLogs';
 
@@ -377,6 +383,22 @@ function createBondLoyaltyService({ admin, db, logger = console }) {
         await writeShadowLog({ orderId, order, origin, calculation, status: 'INELIGIBLE_CHANNEL' });
       }
       return { status: 'INELIGIBLE_CHANNEL', writes: 0, exclusionReasons: origin.exclusionReasons };
+    }
+    // Points are earned only when payment completed online in the customer app.
+    // PRIVATE_CHECKOUT_SESSION is the server-side proof of that: it is written solely
+    // by the Razorpay payment-first flow, after signature + provider verification.
+    // PRIVATE_CUSTOMER_SUBMISSION (Pay at Counter placed in the app) and POS/staff
+    // orders therefore earn nothing. Applied here, at the point-earn path only, so
+    // qualifying-visit eligibility is deliberately left untouched.
+    if (!POINT_EARN_EVIDENCE_TYPES.has(origin.originEvidenceType)) {
+      if (effectiveFlags.shadowEnabled) {
+        await writeShadowLog({ orderId, order, origin, calculation, status: 'INELIGIBLE_PAYMENT_ORIGIN' });
+      }
+      return {
+        status: 'INELIGIBLE_PAYMENT_ORIGIN',
+        writes: 0,
+        exclusionReasons: ['PAYMENT_NOT_COMPLETED_ONLINE'],
+      };
     }
     if (!isFinalSettledOrder(order)) {
       if (effectiveFlags.shadowEnabled) {

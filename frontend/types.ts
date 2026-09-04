@@ -1,3 +1,5 @@
+import type { CanonicalCompositeComponent } from './types/menu-management';
+
 export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE" | "FRANCHISE_VIEWER";
 
 export type AuthStatus = 
@@ -28,6 +30,21 @@ export interface StaffProfile {
   mustChangePassword?: boolean;
   createdAt: any; // Firestore Timestamp
   updatedAt: any; // Firestore Timestamp
+}
+
+export interface CustomerStorePresentation {
+  conceptName?: string;
+  locationLabel?: string;
+  tagline?: string;
+  orderContextLabel?: string;
+  orderActionLabel?: string;
+  searchPlaceholder?: string;
+  searchPromptTitle?: string;
+  searchPromptDescription?: string;
+  featuredLabel?: string;
+  fullMenuLabel?: string;
+  selectorEyebrow?: string;
+  selectorDescription?: string;
 }
 
 export interface Store {
@@ -68,6 +85,7 @@ export interface Store {
     disabledReason?: string;
   };
   inventoryMode?: "FINISHED_GOODS";
+  inventoryStoreId?: string;
   latitude?: number;
   longitude?: number;
   lat?: number;
@@ -79,6 +97,8 @@ export interface Store {
   acceptingOrders?: boolean;
   isAcceptingOrders?: boolean;
   onlineOrderingPaused?: boolean;
+  excludeFromNearestSelection?: boolean;
+  customerPresentation?: CustomerStorePresentation;
   estimatedPrepMinutes?: number;
   onlineOrderingMessage?: string;
   legalEntityName?: string;
@@ -311,6 +331,7 @@ export interface OrderItem {
   baseUnitPrice?: number;
   addOnTotal?: number;
   unitPriceWithAddOns?: number;
+  components?: CanonicalCompositeComponent[];
 }
 
 export type KotStatus = "PENDING" | "PREPARING" | "READY" | "SERVED" | "RETURNED" | "WASTAGE_RECORDED" | "REMAKE_REQUESTED" | "CANCELLED";
@@ -352,6 +373,7 @@ export interface KotItem {
   createdByUserId: string;
   createdByName: string;
   addOns?: AddOnSelection[];
+  component?: CanonicalCompositeComponent;
 }
 
 export interface OrderPayment {
@@ -419,6 +441,7 @@ export interface OnlineOrderItem {
   baseUnitPrice?: number;
   addOnTotal?: number;
   unitPriceWithAddOns?: number;
+  components?: CanonicalCompositeComponent[];
 }
 
 export interface OnlineOrder {
@@ -631,6 +654,10 @@ export interface StockMovement {
   storeId: string;
   storeCode?: string;
   storeName: string;
+  inventoryStoreId?: string;
+  logicalSalesStoreId?: string;
+  logicalSalesStoreCode?: string;
+  logicalSalesStoreName?: string;
   inventoryItemId: string;
   inventoryItemName: string;
   movementType: "PURCHASE" | "PURCHASE_INWARD" | "SALE_DEDUCTION" | "ORDER_BOM_BACKFILL" | "WASTAGE" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT" | "OPENING_STOCK" | "STOCK_CORRECTION" | "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT" | "ORDER_VOID_REVERSAL";

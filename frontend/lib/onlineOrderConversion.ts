@@ -1,11 +1,13 @@
 import { collection, doc, getDoc, runTransaction, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { OnlineOrder, Order, OrderItem, OrderPayment, PrepStation, StaffProfile, Store } from '../types';
-import { FinishedGood } from '../types/menu-management';
+import { CanonicalCompositeComponent, FinishedGood } from '../types/menu-management';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from './inventoryDeduction';
 import { addOnTaxForLine, addOnTotal } from './addOns';
 import { authorizePosAddOns, selectedAddOnIds } from './posAddOnAuthorization';
 import { publicStatusMessage, publicTrackingDocRef, updatePublicOrderTracking } from './publicOrderTracking';
+import { buildKotTasks, CompositeKotTask, expandCompositeInventoryLines, summarizeParentInventory } from './compositeFulfillment';
+import { immutableCompositeComponentSnapshotsEqual } from './immutableCompositeSnapshot';
 
 type TaxConfig = {
   rate: number;
@@ -30,6 +32,7 @@ type CalculatedLine = {
   lineTax: number;
   lineTotal: number;
   appliedTaxRate: number;
+  components: CanonicalCompositeComponent[];
 };
 
 const GST_CONFIG_DOC_ID = 'gstConfig';
@@ -141,6 +144,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       storeId: preflightOnlineOrder.storeId,
       orderId: newOrderRef.id,
       orderNumber: null,
+      sourceOnlineOrderId: preflightOnlineOrder.id,
       items: preflightOnlineOrder.items.map((item, index) => ({
         orderItemId: lineRefs[index].id,
         parentProductId: item.finishedGoodCode,
@@ -210,6 +214,12 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       ) {
         throw new Error('Online order add-on authorization no longer matches the live menu. Please retry.');
       }
+      if (!immutableCompositeComponentSnapshotsEqual(
+        storedOnlineItem.components,
+        canonicalItem.components,
+      )) {
+        throw new Error('Online order component snapshot no longer matches the submitted order. Please retry.');
+      }
       const onlineItem = {
         ...storedOnlineItem,
         baseUnitPrice: canonicalItem.baseUnitPrice,
@@ -233,6 +243,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         lineTax,
         lineTotal: lineTaxable + lineTax,
         appliedTaxRate,
+        components: canonicalItem.components || [],
       });
     });
 
@@ -259,6 +270,13 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     const sequence = counterSnap.exists() ? (Number(counterSnap.data().lastSequence) || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${sequence.toString().padStart(4, '0')}`;
     const orderType = buildOrderType(onlineOrder);
+    const expandedInventoryLines = expandCompositeInventoryLines(calculatedLines.map((line, index) => ({
+      lineKey: lineRefs[index].id,
+      quantity: line.quantity,
+      finishedGood: line.finishedGood,
+      addOns: line.onlineItem.addOns,
+      components: line.components,
+    })), store.id);
     const deductionPlan = await planInventoryDeductionForSale({
       transaction,
       store,
@@ -271,16 +289,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         uid: staffProfile.uid,
         name: staffProfile.name,
       },
-      lines: calculatedLines.map((line, index) => ({
-        lineKey: lineRefs[index].id,
-        quantity: line.quantity,
-        finishedGood: {
-          ...(line.finishedGood as FinishedGood & { id: string } & Record<string, unknown>),
-          code: line.finishedGood.code,
-          name: line.finishedGood.name,
-        },
-        addOns: line.onlineItem.addOns,
-      })),
+      lines: expandedInventoryLines,
     });
 
     if (deductionPlan.blockers.length > 0) {
@@ -389,6 +398,12 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     calculatedLines.forEach((line, index) => {
       const lineRef = lineRefs[index];
       const linePrepStation = normalizePrepStation(line.finishedGood.prepStation);
+      const parentInventory = summarizeParentInventory({
+        parentLineKey: lineRef.id,
+        expandedLines: expandedInventoryLines,
+        perLineCogs: deductionPlan.perLineCogs,
+        perLineConsumptionStatus: deductionPlan.perLineConsumptionStatus,
+      });
       const itemData: OrderItem = {
         menuItemId: line.finishedGood.code,
         itemName: line.finishedGood.displayName || line.finishedGood.name,
@@ -409,18 +424,19 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         lineTaxable: line.lineTaxable,
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
-        cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
-        inventoryConsumptionStatus: deductionPlan.perLineConsumptionStatus[lineRef.id] || 'APPLIED',
+        cogsAmount: parentInventory.cogsAmount,
+        inventoryConsumptionStatus: parentInventory.inventoryConsumptionStatus,
         prepStation: linePrepStation,
         status: 'PENDING',
         createdAt: serverTimestamp(),
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.finishedGood.code,
         itemType: line.finishedGood.itemType,
+        ...(line.components.length > 0 ? { components: line.components } : {}),
       };
       transaction.set(lineRef, itemData);
 
-      const createKot = (station: 'BARISTA' | 'KITCHEN') => {
+      const createKot = (task: CompositeKotTask) => {
         const kotRef = doc(collection(db, 'kotItems'));
         kotCount += 1;
         transaction.set(kotRef, {
@@ -430,11 +446,12 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
           storeId: store.id,
           storeCode: store.code,
           storeName: store.name,
-          station,
-          itemName: line.finishedGood.displayName || line.finishedGood.name,
-          itemCode: line.finishedGood.code,
-          quantity: line.quantity,
+          station: task.station,
+          itemName: task.itemName,
+          itemCode: task.itemCode,
+          quantity: task.quantity,
           addOns: line.onlineItem.addOns || [],
+          ...(task.component ? { component: task.component } : {}),
           orderType,
           tableNumber,
           customerName,
@@ -449,8 +466,12 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         });
       };
 
-      if (linePrepStation === 'BARISTA' || linePrepStation === 'BOTH') createKot('BARISTA');
-      if (linePrepStation === 'KITCHEN' || linePrepStation === 'BOTH') createKot('KITCHEN');
+      buildKotTasks({
+        quantity: line.quantity,
+        finishedGood: line.finishedGood,
+        prepStation: linePrepStation,
+        components: line.components,
+      }).forEach(createKot);
     });
 
     const paymentRef = doc(collection(newOrderRef, 'payments'));

@@ -15,6 +15,11 @@ function isAuthorizedStaffProfile(profile, storeId) {
   return profile.role === 'ADMIN' || assignedStoreIds(profile).has(storeId);
 }
 
+function isAuthorizedStaffForStorePair(profile, logicalStoreId, inventoryStoreId) {
+  if (!isAuthorizedStaffProfile(profile, logicalStoreId)) return false;
+  return isAuthorizedStaffProfile(profile, inventoryStoreId);
+}
+
 function isVerifiedPhoneToken(token, expectedPhoneE164) {
   return token?.firebase?.sign_in_provider === 'phone'
     && String(token.phone_number || '').trim() === expectedPhoneE164;
@@ -23,6 +28,7 @@ function isVerifiedPhoneToken(token, expectedPhoneE164) {
 module.exports = {
   AUTHORIZED_ROLES,
   assignedStoreIds,
+  isAuthorizedStaffForStorePair,
   isAuthorizedStaffProfile,
   isVerifiedPhoneToken,
 };

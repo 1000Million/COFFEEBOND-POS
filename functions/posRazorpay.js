@@ -4,12 +4,25 @@ const { randomBytes } = require('node:crypto');
 const Razorpay = require('razorpay');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret, defineString } = require('firebase-functions/params');
-const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
+const {
+  isAuthorizedStaffForStorePair,
+  isAuthorizedStaffProfile,
+} = require('./complimentaryAuthorizationPolicy');
+const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
 const {
   canonicalizeRequestedCart,
   sanitizeCartItems,
 } = require('./posAddOnAuthorization');
+const {
+  CompositeProductPolicyError,
+  collectRequiredComponentFinishedGoodIds,
+} = require('./compositeProductPolicy');
+const {
+  buildKotTasks,
+  expandCompositeInventoryLines,
+  summarizeParentInventory,
+} = require('./compositeFulfillment');
 const {
   CURRENCY,
   PROVIDER,
@@ -156,8 +169,8 @@ async function createIdempotentProviderRefund({
   return result;
 }
 
-function deterministicKotId(orderId, lineId, station) {
-  return safeDocId(`${orderId}_KOT_${station}_${sha256(lineId).slice(0, 16).toUpperCase()}`, 220);
+function deterministicKotId(orderId, lineId, taskKey) {
+  return safeDocId(`${orderId}_KOT_${taskKey}_${sha256(lineId).slice(0, 16).toUpperCase()}`, 220);
 }
 
 function deterministicMovementId(orderId, movement) {
@@ -301,6 +314,18 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     if (store.isActive !== true || store.posEnabled === false) {
       fail('failed-precondition', 'The selected store is not active for staff POS.');
     }
+    let inventoryStore;
+    try {
+      inventoryStore = await resolveInventoryStore(store, async inventoryStoreId => {
+        const snapshot = await transaction.get(db.collection('stores').doc(inventoryStoreId));
+        return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+      });
+    } catch (_error) {
+      fail('failed-precondition', 'The selected store inventory configuration is invalid.');
+    }
+    if (!isAuthorizedStaffForStorePair(staff.profile, store.id, inventoryStore.id)) {
+      fail('permission-denied', 'This staff account must be assigned to both the sales and inventory stores.');
+    }
     if (productSnapshots.some(snapshot => !snapshot.exists)) {
       fail('failed-precondition', 'One or more products are no longer available.');
     }
@@ -315,6 +340,27 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     const groupsById = Object.fromEntries(
       groupSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }]),
     );
+    let componentProductIds;
+    try {
+      componentProductIds = collectRequiredComponentFinishedGoodIds({
+        products: productsById,
+        groupsById,
+      });
+    } catch (error) {
+      if (error instanceof CompositeProductPolicyError) {
+        fail('failed-precondition', error.message);
+      }
+      throw error;
+    }
+    const componentProductSnapshots = await Promise.all(
+      componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
+    );
+    const componentProductsById = {
+      ...productsById,
+      ...Object.fromEntries(componentProductSnapshots
+        .filter(snapshot => snapshot.exists)
+        .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+    };
     const canonical = canonicalizeRequestedCart({
       storeId,
       store,
@@ -322,6 +368,7 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
       requestedItems,
       productsById,
       groupsById,
+      componentProductsById,
     });
 
     const subtotal = requestedItems.reduce((sum, requestedItem) => {
@@ -355,6 +402,7 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
         taxRate: item.taxRate,
         addOns: item.addOns,
         addOnTotal: item.addOnTotal,
+        components: item.components || [],
         lineSubtotal: roundMoney(lineSubtotal),
         lineDiscount: roundMoney(lineDiscount),
         lineTaxable: roundMoney(lineTaxable),
@@ -391,6 +439,13 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     };
     const amountPaise = rupeesToPaise(totals.grandTotal);
     const businessDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const expandedInventoryLines = expandCompositeInventoryLines(lines.map(line => ({
+      lineKey: line.lineId,
+      quantity: line.quantity,
+      finishedGood: line.finishedGood,
+      addOns: line.addOns,
+      components: line.components,
+    })), store.id);
     const preflight = await planOnlineOrderInventory({
       transaction,
       db,
@@ -401,12 +456,7 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
       orderType,
       businessDate,
       staff: { uid: staff.uid, name: staff.name },
-      lines: lines.map(line => ({
-        lineKey: line.lineId,
-        quantity: line.quantity,
-        finishedGood: line.finishedGood,
-        addOns: line.addOns,
-      })),
+      lines: expandedInventoryLines,
       requireAvailableStock: true,
       source: 'POS_RAZORPAY',
     });
@@ -432,6 +482,7 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
         baseUnitPrice: line.baseUnitPrice,
         taxRate: line.taxRate,
         addOns: line.addOns,
+        ...(line.components.length > 0 ? { components: line.components } : {}),
       })),
       totals,
     };
@@ -795,7 +846,11 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
       fail('aborted', 'The payment session changed before finalisation.');
     }
     const storeRef = db.collection('stores').doc(session.storeId);
-    const storeSnapshot = await transaction.get(storeRef);
+    const currentStaffRef = db.collection('users').doc(session.staffUid);
+    const [storeSnapshot, currentStaffSnapshot] = await Promise.all([
+      transaction.get(storeRef),
+      transaction.get(currentStaffRef),
+    ]);
     if (!storeSnapshot.exists || storeSnapshot.data().isActive !== true || storeSnapshot.data().posEnabled === false) {
       transaction.set(sessionRef, {
         status: 'PAYMENT_REVIEW_REQUIRED',
@@ -807,11 +862,45 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
       return { reviewRequired: true, code: 'STORE_NOT_ACTIVE_AFTER_PAYMENT' };
     }
     const store = { id: storeSnapshot.id, ...storeSnapshot.data() };
+    let inventoryStore;
+    try {
+      inventoryStore = await resolveInventoryStore(store, async inventoryStoreId => {
+        const snapshot = await transaction.get(db.collection('stores').doc(inventoryStoreId));
+        return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+      });
+    } catch (_error) {
+      transaction.set(sessionRef, {
+        status: 'PAYMENT_REVIEW_REQUIRED',
+        failureCode: 'INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT',
+        providerPaymentId: providerPayment.id,
+        providerOrderId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return { reviewRequired: true, code: 'INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT' };
+    }
+    const currentStaffProfile = currentStaffSnapshot.exists ? currentStaffSnapshot.data() : null;
+    if (!isAuthorizedStaffForStorePair(currentStaffProfile, store.id, inventoryStore.id)) {
+      transaction.set(sessionRef, {
+        status: 'PAYMENT_REVIEW_REQUIRED',
+        failureCode: 'STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT',
+        providerPaymentId: providerPayment.id,
+        providerOrderId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return { reviewRequired: true, code: 'STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT' };
+    }
     const dateKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const counterRef = db.collection('counters').doc(`${store.code || store.storeCode || store.id}_${dateKey}`);
     const counterSnapshot = await transaction.get(counterRef);
     const sequence = counterSnapshot.exists ? Number(counterSnapshot.data().lastSequence || 0) + 1 : 1;
     const orderNumber = `CB-${store.code || store.storeCode || store.id}-${dateKey}-${String(sequence).padStart(4, '0')}`;
+    const expandedInventoryLines = expandCompositeInventoryLines(session.items.map(line => ({
+      lineKey: line.lineId,
+      quantity: line.quantity,
+      finishedGood: line.finishedGood,
+      addOns: line.addOns,
+      components: line.components,
+    })), store.id);
     const inventoryPlan = await planOnlineOrderInventory({
       transaction,
       db,
@@ -822,12 +911,7 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
       orderType: session.orderType,
       businessDate: dateKey,
       staff: { uid: session.staffUid, name: session.staffName },
-      lines: session.items.map(line => ({
-        lineKey: line.lineId,
-        quantity: line.quantity,
-        finishedGood: line.finishedGood,
-        addOns: line.addOns,
-      })),
+      lines: expandedInventoryLines,
       requireAvailableStock: true,
       source: 'POS_RAZORPAY',
     });
@@ -935,6 +1019,12 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
 
     let kotCount = 0;
     session.items.forEach(line => {
+      const parentInventory = summarizeParentInventory({
+        parentLineKey: line.lineId,
+        expandedLines: expandedInventoryLines,
+        perLineCogs: inventoryPlan.perLineCogs,
+        perLineConsumptionStatus: inventoryPlan.perLineConsumptionStatus,
+      });
       transaction.create(orderRef.collection('items').doc(line.lineId), {
         menuItemId: line.parentProductId,
         itemName: line.itemName,
@@ -953,29 +1043,31 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
         lineTaxable: line.lineTaxable,
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
-        cogsAmount: inventoryPlan.perLineCogs[line.lineId] || 0,
-        inventoryConsumptionStatus: inventoryPlan.perLineConsumptionStatus[line.lineId] || 'APPLIED',
+        cogsAmount: parentInventory.cogsAmount,
+        inventoryConsumptionStatus: parentInventory.inventoryConsumptionStatus,
         prepStation: line.prepStation,
         status: 'PENDING',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.parentProductCode,
         itemType: line.finishedGood.itemType,
+        ...(Array.isArray(line.components) && line.components.length > 0 ? { components: line.components } : {}),
       });
-      const createKot = station => {
+      const createKot = task => {
         kotCount += 1;
-        transaction.create(db.collection('kotItems').doc(deterministicKotId(session.orderId, line.lineId, station)), {
+        transaction.create(db.collection('kotItems').doc(deterministicKotId(session.orderId, line.lineId, task.taskKey)), {
           orderId: session.orderId,
           orderNumber,
           orderItemId: line.lineId,
           storeId: store.id,
           storeCode: store.code || store.storeCode || store.id,
           storeName: store.name,
-          station,
-          itemName: line.itemName,
-          itemCode: line.parentProductCode,
-          quantity: line.quantity,
+          station: task.station,
+          itemName: task.itemName,
+          itemCode: task.itemCode,
+          quantity: task.quantity,
           addOns: line.addOns,
+          ...(task.component ? { component: task.component } : {}),
           orderType: session.orderType,
           tableNumber: session.orderType === 'DINE_IN' ? session.tableNumber : null,
           customerName: session.customerName || null,
@@ -986,8 +1078,12 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
           createdByName: session.staffName,
         });
       };
-      if (line.prepStation === 'BARISTA' || line.prepStation === 'BOTH') createKot('BARISTA');
-      if (line.prepStation === 'KITCHEN' || line.prepStation === 'BOTH') createKot('KITCHEN');
+      buildKotTasks({
+        quantity: line.quantity,
+        finishedGood: line.finishedGood,
+        prepStation: line.prepStation,
+        components: line.components,
+      }).forEach(createKot);
     });
 
     const paymentId = safeDocId(`${session.orderId}_PAY_01_RAZORPAY`, 220);
@@ -1177,7 +1273,41 @@ async function requestPosRefund({ request, db, admin, keyId, keySecret, fetchImp
   ) {
     fail('failed-precondition', 'Only a captured, non-voided in-store Razorpay order can be refunded here.');
   }
-  const paymentSnapshot = await orderRef.collection('payments').where('provider', '==', PROVIDER).limit(2).get();
+  const [salesStoreSnapshot, paymentSnapshot, originalMovementSnapshot] = await Promise.all([
+    db.collection('stores').doc(order.storeId).get(),
+    orderRef.collection('payments').where('provider', '==', PROVIDER).limit(2).get(),
+    db.collection('stockMovements').where('referenceId', '==', orderId).get(),
+  ]);
+  if (!salesStoreSnapshot.exists) fail('failed-precondition', 'The order store configuration no longer exists.');
+  const salesStore = { id: salesStoreSnapshot.id, ...salesStoreSnapshot.data() };
+  let currentInventoryStore;
+  try {
+    currentInventoryStore = await resolveInventoryStore(salesStore, async inventoryStoreId => {
+      const snapshot = await db.collection('stores').doc(inventoryStoreId).get();
+      return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+    });
+  } catch (_error) {
+    fail('failed-precondition', 'The order inventory store configuration is invalid.');
+  }
+  if (!isAuthorizedStaffForStorePair(staff.profile, salesStore.id, currentInventoryStore.id)) {
+    fail('permission-denied', 'Refunding this order requires access to both its sales and inventory stores.');
+  }
+  const originalInventoryStoreIds = new Set();
+  for (const movementSnapshot of originalMovementSnapshot.docs) {
+    const movement = movementSnapshot.data() || {};
+    if (!['SALE_DEDUCTION', 'ORDER_BOM_BACKFILL'].includes(movement.movementType)) continue;
+    if (movement.orderId && movement.orderId !== orderId) continue;
+    const physicalStoreId = cleanText(movement.inventoryStoreId || movement.storeId, 120);
+    if (!physicalStoreId) {
+      fail('failed-precondition', 'An original inventory movement is missing its physical store attribution.');
+    }
+    originalInventoryStoreIds.add(physicalStoreId);
+  }
+  if ([...originalInventoryStoreIds].some(inventoryStoreId => (
+    !isAuthorizedStaffForStorePair(staff.profile, salesStore.id, inventoryStoreId)
+  ))) {
+    fail('permission-denied', 'Refunding this order requires access to every physical store recorded by its inventory movements.');
+  }
   if (paymentSnapshot.size !== 1) fail('failed-precondition', 'The authoritative Razorpay payment record is missing or ambiguous.');
   const paymentDocument = paymentSnapshot.docs[0];
   const payment = paymentDocument.data();

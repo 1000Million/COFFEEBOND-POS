@@ -2,12 +2,20 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, runTransaction, getDoc, getDocs, addDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { Store, KotItem } from '../../types';
+import { Store, KotItem, OrderItem } from '../../types';
+import type { FinishedGood } from '../../types/menu-management';
 import { Loader2, CheckCircle, Clock, Store as StoreIcon, AlertCircle, RefreshCw, Trash2, Bell, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 import { beginCriticalOperation, requireOnlineAction } from '../../lib/connectivity';
 import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
+import { planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
+import {
+  buildFinishedGoodsRemakeLine,
+  canonicalComponentForRemake,
+  deterministicRemakeKotId,
+  deterministicRemakeMovementId,
+  nextRemakeCount,
+} from '../../lib/remakeInventory';
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -61,6 +69,7 @@ const RETURN_REASONS = [
 
 export default function ReadyToServe() {
   const { staffProfile } = useAuth();
+  const canManageReturns = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<string>('ALL');
   const [items, setItems] = useState<KotItem[]>([]);
@@ -151,12 +160,28 @@ export default function ReadyToServe() {
       setLoading(false);
     };
 
+    const stationScope = staffProfile.role === 'BARISTA'
+      ? 'BARISTA'
+      : staffProfile.role === 'KITCHEN'
+        ? 'KITCHEN'
+        : null;
+
     const unsubs = storeIdsToQuery.map(storeId => {
-      const readyQuery = query(
-        collection(db, 'kotItems'),
-        where('storeId', '==', storeId),
-        where('status', 'in', ['READY', 'SERVED'])
-      );
+      // Firestore rules restrict station staff to their own department. The
+      // station predicate is required on the query itself; client filtering
+      // cannot make an over-broad query authorized.
+      const readyQuery = stationScope
+        ? query(
+          collection(db, 'kotItems'),
+          where('storeId', '==', storeId),
+          where('station', '==', stationScope),
+          where('status', 'in', ['READY', 'SERVED']),
+        )
+        : query(
+          collection(db, 'kotItems'),
+          where('storeId', '==', storeId),
+          where('status', 'in', ['READY', 'SERVED']),
+        );
 
       return onSnapshot(readyQuery, (snap) => {
         itemsByStore.set(storeId, snap.docs.map(d => ({ id: d.id, ...d.data() } as KotItem)));
@@ -233,27 +258,8 @@ export default function ReadyToServe() {
         handledByName: staffProfile?.name || null,
         updatedAt: serverTimestamp()
       });
-
-      // Update parent orderItem sync logic as in prior code if required, but requirements specify don't change existing POS checkout. We should at least update order item to SERVED.
-      const oItemRef = doc(db, 'orders', item.orderId, 'items', item.orderItemId);
-      await updateDoc(oItemRef, { status: 'SERVED' });
-
-      if (item.onlineOrderTrackingToken) {
-        const orderKotSnap = await getDocs(query(
-          collection(db, 'kotItems'),
-          where('storeId', '==', item.storeId),
-          where('orderId', '==', item.orderId),
-        ));
-        const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
-        const allServed = relatedItems.length > 0
-          && relatedItems.every(related => ['SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? 'SERVED' : related.status));
-
-        await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
-          publicStatus: allServed ? 'SERVED' : 'READY',
-          customerStatusMessage: allServed ? publicStatusMessage('SERVED') : publicStatusMessage('READY'),
-          ...(allServed ? { servedAt: serverTimestamp() } : {}),
-        });
-      }
+      // Parent-line and public-order aggregation runs with server authority so
+      // station users never need permission to read sibling-station tickets.
     } catch (e: any) {
       console.error(e);
       alert("Error marking served: " + e.message);
@@ -264,6 +270,10 @@ export default function ReadyToServe() {
 
   const executeReturn = async (actionType: 'WASTAGE' | 'REMAKE') => {
     if (!returnModalItem?.id || !staffProfile) return;
+    if (!canManageReturns) {
+      setReturnError('Only an admin or store manager can record wastage or request a remake.');
+      return;
+    }
     if (!requireOnlineAction()) return;
     const endCriticalOperation = beginCriticalOperation();
     setReturnLoading(true);
@@ -276,6 +286,182 @@ export default function ReadyToServe() {
       const qty = returnModalItem.quantity;
       
       const newStatus = actionType === 'WASTAGE' ? 'WASTAGE_RECORDED' : 'REMAKE_REQUESTED';
+
+      if (actionType === 'REMAKE') {
+        const orderItemRef = doc(db, 'orders', orderId, 'items', returnModalItem.orderItemId);
+        const orderItemSnapshot = await getDoc(orderItemRef);
+        const orderItem = orderItemSnapshot.exists()
+          ? ({ id: orderItemSnapshot.id, ...orderItemSnapshot.data() } as OrderItem)
+          : null;
+
+        if (orderItem?.sourceSystem === 'FINISHED_GOODS') {
+          const remakeKotId = deterministicRemakeKotId(returnModalItem);
+          const remakeCount = nextRemakeCount(returnModalItem);
+
+          await runTransaction(db, async (t) => {
+            const originalKotRef = doc(db, 'kotItems', returnModalItem.id!);
+            const remakeKotRef = doc(db, 'kotItems', remakeKotId);
+            const orderRef = doc(db, 'orders', orderId);
+            const logicalStoreRef = doc(db, 'stores', storeId);
+            const [originalKotSnapshot, remakeKotSnapshot, orderSnapshot, freshOrderItemSnapshot, logicalStoreSnapshot] = await Promise.all([
+              t.get(originalKotRef),
+              t.get(remakeKotRef),
+              t.get(orderRef),
+              t.get(orderItemRef),
+              t.get(logicalStoreRef),
+            ]);
+
+            if (remakeKotSnapshot.exists()) {
+              const existingRemake = remakeKotSnapshot.data() as Partial<KotItem>;
+              if (existingRemake.orderId !== orderId || existingRemake.remakeOfKotItemId !== returnModalItem.id) {
+                throw new Error(`Remake id ${remakeKotId} is already in use by another KOT.`);
+              }
+              return;
+            }
+            if (!originalKotSnapshot.exists()) throw new Error('The original KOT no longer exists.');
+            if (originalKotSnapshot.data().status !== 'SERVED') {
+              throw new Error('This KOT is no longer served and cannot be remade. Refresh Ready to Serve.');
+            }
+            if (!orderSnapshot.exists()) throw new Error('The original order no longer exists.');
+            if (!freshOrderItemSnapshot.exists()) throw new Error('The original order item no longer exists.');
+            if (!logicalStoreSnapshot.exists()) throw new Error(`Store ${storeId} no longer exists.`);
+
+            const orderData = orderSnapshot.data() as Record<string, unknown>;
+            if (String(orderData.storeId || '') !== storeId) {
+              throw new Error('The KOT store no longer matches the original order.');
+            }
+            const freshOrderItem = { id: freshOrderItemSnapshot.id, ...freshOrderItemSnapshot.data() } as OrderItem;
+            if (freshOrderItem.sourceSystem !== 'FINISHED_GOODS') {
+              throw new Error('The order item inventory source changed. Refresh Ready to Serve.');
+            }
+            const freshOriginalKot = { id: originalKotSnapshot.id, ...originalKotSnapshot.data() } as KotItem;
+            if (nextRemakeCount(freshOriginalKot) !== remakeCount) {
+              throw new Error('The KOT remake count changed. Refresh Ready to Serve.');
+            }
+
+            const logicalStore = { id: logicalStoreSnapshot.id, ...logicalStoreSnapshot.data() } as Store;
+            const canonicalComponent = canonicalComponentForRemake(freshOrderItem, freshOriginalKot);
+            let liveFinishedGood: FinishedGood | null = null;
+            if (!canonicalComponent) {
+              const finishedGoodCode = String(freshOrderItem.finishedGoodCode || freshOrderItem.itemCode || '').trim();
+              if (!finishedGoodCode) throw new Error('The order item is missing its finished good code.');
+              const finishedGoodSnapshot = await t.get(doc(db, 'finishedGoods', finishedGoodCode));
+              liveFinishedGood = finishedGoodSnapshot.exists()
+                ? ({ id: finishedGoodSnapshot.id, ...finishedGoodSnapshot.data() } as FinishedGood)
+                : null;
+            }
+
+            const remakeLine = buildFinishedGoodsRemakeLine({
+              orderItem: freshOrderItem,
+              kot: freshOriginalKot,
+              remakeKotId,
+              liveFinishedGood,
+              logicalStoreId: logicalStore.id,
+            });
+            const businessDate = String(orderData.businessDate || returnModalItem.orderNumber.match(/\d{8}/)?.[0] || '').trim();
+            if (!businessDate) throw new Error('The original order is missing its business date.');
+            const inventoryPlan = await planInventoryDeductionForSale({
+              transaction: t,
+              store: logicalStore,
+              orderId,
+              orderNumber: returnModalItem.orderNumber,
+              orderType: returnModalItem.orderType,
+              businessDate,
+              source: 'REMAKE',
+              staffProfile: {
+                uid: staffProfile.uid,
+                name: staffProfile.name,
+              },
+              lines: [remakeLine],
+            });
+
+            if (inventoryPlan.blockers.length > 0) {
+              throw new Error(inventoryPlan.blockers
+                .map(blocker => `${blocker.itemName}: ${blocker.blockerType}`)
+                .join('; '));
+            }
+            if (inventoryPlan.pendingConsumptionPayloads.length > 0) {
+              throw new Error('A remake cannot be issued while its BOM consumption is pending. Complete the BOM first.');
+            }
+
+            inventoryPlan.stockUpdates.forEach((update) => {
+              if (update.existed) {
+                t.update(update.stockRef, {
+                  currentStock: update.newQty,
+                  updatedAt: serverTimestamp(),
+                });
+                return;
+              }
+              t.set(update.stockRef, {
+                ...update.seedData,
+                currentStock: update.newQty,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            });
+
+            inventoryPlan.movementPayloads.forEach((movement) => {
+              const movementRef = doc(db, 'stockMovements', deterministicRemakeMovementId(remakeKotId, movement));
+              t.set(movementRef, {
+                ...movement,
+                movementType: 'WASTAGE',
+                source: 'REMAKE',
+                referenceId: orderId,
+                orderId,
+                notes: `Remake deduction: ${returnReason} - ${returnNotes}`,
+                remakeKotItemId: remakeKotId,
+                remakeOfKotItemId: returnModalItem.id,
+                originalKotItemId: returnModalItem.originalKotItemId || returnModalItem.id,
+                returnReason,
+                returnNotes: returnNotes.trim() || null,
+              });
+            });
+
+            t.update(originalKotRef, {
+              status: newStatus,
+              returnedAt: serverTimestamp(),
+              returnReason,
+              remakeRequestedAt: serverTimestamp(),
+              remakeReason: returnNotes,
+              updatedAt: serverTimestamp(),
+            });
+            t.set(remakeKotRef, {
+              orderId: returnModalItem.orderId,
+              orderNumber: returnModalItem.orderNumber,
+              orderItemId: returnModalItem.orderItemId,
+              storeId: returnModalItem.storeId,
+              storeCode: returnModalItem.storeCode || '',
+              storeName: returnModalItem.storeName,
+              station: returnModalItem.station,
+              itemName: returnModalItem.itemName,
+              itemCode: returnModalItem.itemCode,
+              quantity: returnModalItem.quantity,
+              addOns: Array.isArray(freshOrderItem.addOns) ? freshOrderItem.addOns : [],
+              ...(canonicalComponent ? { component: canonicalComponent } : {}),
+              orderType: returnModalItem.orderType,
+              tableNumber: returnModalItem.tableNumber,
+              customerName: returnModalItem.customerName,
+              onlineOrderId: returnModalItem.onlineOrderId || null,
+              onlineOrderTrackingToken: returnModalItem.onlineOrderTrackingToken || null,
+              onlineOrderReference: returnModalItem.onlineOrderReference || null,
+              status: 'PENDING',
+              originalKotItemId: returnModalItem.originalKotItemId || returnModalItem.id,
+              remakeOfKotItemId: returnModalItem.id,
+              remakeCount,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              createdByUserId: staffProfile.uid,
+              createdByName: staffProfile.name,
+            });
+            t.update(orderItemRef, { status: 'PENDING' });
+          });
+
+          setReturnModalItem(null);
+          setReturnReason(RETURN_REASONS[0]);
+          setReturnNotes('');
+          return;
+        }
+      }
       
       let recipeItems: any[] = [];
       
@@ -598,12 +784,14 @@ export default function ReadyToServe() {
                                 </td>
                                 <td className="px-4 py-3 whitespace-nowrap text-neutral-500">{item.handledByName || '-'}</td>
                                 <td className="px-4 py-3 whitespace-nowrap text-right">
-                                  <button
-                                     onClick={() => setReturnModalItem(item)}
-                                     className="text-xs font-bold px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                                  >
-                                    Customer Return
-                                  </button>
+                                  {canManageReturns && (
+                                    <button
+                                       onClick={() => setReturnModalItem(item)}
+                                       className="text-xs font-bold px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                    >
+                                      Customer Return
+                                    </button>
+                                  )}
                                 </td>
                              </tr>
                            )
@@ -617,7 +805,7 @@ export default function ReadyToServe() {
       )}
 
       {/* Return Modal */}
-      {returnModalItem && (
+      {canManageReturns && returnModalItem && (
         <div className="fixed inset-0 z-[100] bg-neutral-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
            <div className="flex max-h-[94dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200">
               <div className="p-6 border-b border-neutral-100">

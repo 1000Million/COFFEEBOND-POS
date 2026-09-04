@@ -79,6 +79,11 @@ const kotCreateBody = extractFunction(rules, 'isValidKotCreate');
 const kotUpdateBody = extractFunction(rules, 'isValidKotUpdate');
 const storeStockDeductionBody = extractFunction(rules, 'isCheckoutStoreStockDeduction');
 const storeInventoryDeductionBody = extractFunction(rules, 'isCheckoutStoreInventoryDeduction');
+const inventoryStoreAttributionBody = extractFunction(rules, 'hasValidInventoryStoreAttribution');
+const voidReversalInventoryAttributionBody = extractFunction(rules, 'hasValidVoidReversalInventoryAttribution');
+const configuredInventoryStorePairBody = extractFunction(rules, 'isConfiguredInventoryStorePair');
+const optionalInventoryStoreAttributionBody = extractFunction(rules, 'hasValidOptionalInventoryStoreAttribution');
+const inventoryRecordStoreAccessBody = extractFunction(rules, 'hasInventoryRecordStoreAccess');
 const usersBlock = extractMatchBlock(rules, 'match /users/{userId}');
 const franchiseAccessAuditBlock = extractMatchBlock(rules, 'match /franchiseAccessAudit/{auditId}');
 const storesBlock = extractMatchBlock(rules, 'match /stores/{storeId}');
@@ -144,6 +149,9 @@ assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productAddOnAuditBlock), '
 assert(/isAdmin\(\)/.test(hasStoreAccessBody), 'Admins should retain all-store access.');
 assert(/isActiveUserProfile\(\)/.test(hasStoreAccessBody), 'Non-admin store access must require an active profile.');
 assert(/storeId in userData\(\)\.storeIds/.test(hasStoreAccessBody), 'Non-admin store access must be limited to assigned storeIds.');
+assert(/storeId in userData\(\)\.assignedStoreIds/.test(hasStoreAccessBody), 'The established assignedStoreIds profile field must grant the same direct store access as storeIds.');
+assert(/userData\(\)\.storeIds is list/.test(hasStoreAccessBody), 'storeIds access must remain list-shaped.');
+assert(/userData\(\)\.assignedStoreIds is list/.test(hasStoreAccessBody), 'assignedStoreIds access must remain list-shaped.');
 
 assert(/allow\s+read:\s*if\s+isAdmin\(\)/.test(storesBlock), 'Draft stores must be readable only by active Admin users.');
 assert(/!isSignedIn\(\)\s*&&\s*resource\.data\.isActive\s*==\s*true/.test(storesBlock), 'Anonymous customer ordering must retain active-store discovery.');
@@ -206,6 +214,7 @@ assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(posRazor
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(inventoryReservationsBlock), 'Inventory reservations must be server-only.');
 assert(/allow\s+read,\s*create,\s*update,\s*delete:\s*if\s+false;/.test(razorpayRefundsBlock), 'Razorpay refunds must be server-only.');
 assert(/resource\.data\.paymentProvider\s*!=\s*'RAZORPAY'/.test(onlineOrdersBlock), 'All Razorpay online-order mutations must use secured backend callables.');
+assert(/request\.resource\.data\.items\s*==\s*resource\.data\.items/.test(onlineOrdersBlock), 'Submitted online-order item/component snapshots must be immutable during staff updates.');
 assert(/allow\s+delete:\s*if\s+isAdmin\(\)\s*&&\s*resource\.data\.paymentProvider\s*!=\s*'RAZORPAY'/.test(onlineOrdersBlock), 'Even Admin must not directly delete a Razorpay online order.');
 
 assert(/allow\s+create:\s*if\s+isValidOrderCreate\(orderId\);/.test(ordersBlock), 'Order creation must use the hardened order create helper with the exact order ID.');
@@ -243,6 +252,7 @@ assert(/orderNumber\s*==\s*data\.orderNumber/.test(posAddOnAuthorizationBody), '
 assert(/canonicalAddOnTotal\s*==\s*data\.addOnTotal/.test(posAddOnAuthorizationBody), 'Order add-on total must match the server-issued canonical total.');
 assert(/expiresAt\s*>\s*request\.time/.test(posAddOnAuthorizationBody), 'Expired POS add-on authorizations must be denied.');
 assert(/used\s*==\s*true/.test(posAddOnAuthorizationBody), 'Order creation must observe the authorization as atomically consumed.');
+assert(/sourceOnlineOrderId/.test(posAddOnAuthorizationBody) && /data\.onlineOrderId/.test(posAddOnAuthorizationBody), 'Customer Web POS authorization must bind the exact source online order.');
 assert(/allow\s+create,\s*delete:\s*if\s+false;/.test(posAddOnAuthorizationsBlock), 'POS add-on authorizations must be server-created and never client-deleted.');
 assert(/allow\s+update:\s*if\s+isValidPosAddOnAuthorizationConsume\(authorizationId\);/.test(posAddOnAuthorizationsBlock), 'POS add-on authorization updates must use the restricted consume helper.');
 assert(/resource\.data\.used\s*==\s*false/.test(posAddOnAuthorizationConsumeBody), 'Used POS add-on authorizations cannot be reused.');
@@ -286,6 +296,8 @@ assert(/allow\s+update:\s*if\s+isOrderItemStatusUpdate\(orderId\);/.test(orderIt
 assert(/allow\s+delete:\s*if\s+isAdmin\(\);/.test(orderItemsBlock), 'Only Admin may delete order items.');
 assert(/hasStoreAccess\(orderAfter\(orderId\)\.storeId\)/.test(orderItemCreateBody), 'Order item create must use the parent order store.');
 assert(/affectedKeys\(\)\.hasOnly\(\['status'\]\)/.test(orderItemStatusBody), 'Order item updates must only affect status.');
+assert(/canonicalItems\[itemId\]\.components/.test(orderItemCreateBody), 'Composite order item components must exactly match the server-issued canonical snapshot.');
+assert(/request\.resource\.data\.components is list/.test(orderItemCreateBody), 'Composite order item components must be list-shaped and bounded.');
 
 assert(/allow\s+create:\s*if\s+isValidPaymentCreate\(orderId\);/.test(orderPaymentsBlock), 'Payment creation must use the payment create helper.');
 assert(/allow\s+update:\s*if\s+isPayAtCounterPlaceholderUpdate\(orderId\);/.test(orderPaymentsBlock), 'Payment updates must be limited to PAY_AT_COUNTER placeholder settlement cleanup.');
@@ -305,11 +317,30 @@ assert(/request\.resource\.data\.createdByUserId\s*==\s*request\.auth\.uid/.test
 assert(/canReadKot\(resource\.data\)/.test(kotUpdateBody), 'KOT updates must respect station/store role access.');
 assert(/request\.resource\.data\.storeId\s*==\s*resource\.data\.storeId/.test(kotUpdateBody), 'KOT updates must preserve storeId.');
 assert(/request\.resource\.data\.createdAt\s*==\s*resource\.data\.createdAt/.test(kotUpdateBody), 'KOT updates must preserve createdAt.');
+assert(/request\.resource\.data\.component in orderItemAfter/.test(kotCreateBody), 'Composite KOTs must reference an exact canonical order-item component.');
+assert(/componentFinishedGoodCode/.test(kotCreateBody) && /component\.quantity/.test(kotCreateBody), 'Composite KOT item code and quantity must derive from the canonical component.');
 
 assert(/allow\s+delete:\s*if\s+false;/.test(stockMovementsBlock), 'Stock movements must not be deletable.');
 assert(/allow\s+update:\s*if\s+false;/.test(stockMovementsBlock), 'Stock movements must not be mutable.');
 assert(/isSaleDeductionMovement\(\)/.test(stockMovementsBlock), 'Checkout stock movements must use the sale deduction helper.');
 assert(/createdByUserId\s*==\s*request\.auth\.uid/.test(extractFunction(rules, 'isSaleDeductionMovement')), 'Sale deduction movements must bind createdByUserId to the caller.');
+assert(/data\.inventoryStoreId\s*==\s*data\.storeId/.test(inventoryStoreAttributionBody), 'Attributed inventory mutations must bind inventoryStoreId to the physical movement storeId.');
+assert(/hasStoreAccess\(data\.inventoryStoreId\)/.test(inventoryStoreAttributionBody), 'Attributed inventory mutations must require direct access to the physical inventory store.');
+assert(/hasStoreAccess\(data\.logicalSalesStoreId\)/.test(inventoryStoreAttributionBody), 'Attributed inventory mutations must require access to the logical sales store.');
+assert(/data\.logicalSalesStoreId\s*==\s*orderAfter\(data\.orderId\)\.storeId/.test(inventoryStoreAttributionBody), 'Attributed inventory mutations must bind their logical store to the parent order.');
+assert(/isConfiguredInventoryStorePair\(data\.logicalSalesStoreId, data\.inventoryStoreId\)/.test(inventoryStoreAttributionBody), 'Attributed inventory mutations must match the logical store configured inventory alias.');
+assert(/documents\/stores\/\$\(logicalStoreId\)/.test(configuredInventoryStorePairBody), 'Inventory alias validation must read the authoritative logical store document.');
+assert(/documents\/stores\/\$\(inventoryStoreId\)/.test(configuredInventoryStorePairBody), 'Inventory alias validation must verify the physical target store exists and is not a chained alias.');
+assert(/!data\.keys\(\)\.hasAny/.test(optionalInventoryStoreAttributionBody) && /hasValidInventoryStoreAttribution\(data\)/.test(optionalInventoryStoreAttributionBody), 'Legacy manager movements may omit attribution, but an attributed non-void mutation must pass the canonical alias guard.');
+assert(/data\.movementType\s*==\s*'ORDER_VOID_REVERSAL'/.test(optionalInventoryStoreAttributionBody) && /hasValidVoidReversalInventoryAttribution\(data\)/.test(optionalInventoryStoreAttributionBody), 'Attributed void reversals must use the immutable-original-movement guard.');
+assert(/documents\/stockMovements\/\$\(data\.originalMovementId\)/.test(voidReversalInventoryAttributionBody), 'Void attribution must read the immutable original sale movement.');
+assert(/data\.storeId\s*==\s*get\([\s\S]*originalMovementId[\s\S]*\.data\.storeId/.test(voidReversalInventoryAttributionBody), 'A void must restore the physical store recorded by its original movement.');
+assert(/data\.logicalSalesStoreId\s*==\s*orderAfter\(data\.orderId\)\.storeId/.test(voidReversalInventoryAttributionBody), 'A void must remain attributed to its parent order logical store.');
+assert(!/isConfiguredInventoryStorePair/.test(voidReversalInventoryAttributionBody), 'A later alias change must not redirect or block restoration of the original physical movement.');
+assert(/hasValidOptionalInventoryStoreAttribution\(request\.resource\.data\)/.test(stockMovementsBlock), 'Attributed manager-created stock movements must enforce physical/logical alias authorization.');
+assert(/!data\.keys\(\)\.hasAny/.test(inventoryStoreAttributionBody) && /data\.storeId\s*==\s*orderAfter\(data\.orderId\)\.storeId/.test(inventoryStoreAttributionBody), 'Legacy self-store sale mutations must remain backward-compatible only when movement store equals order store.');
+assert(/hasStoreAccess\(data\.storeId\)/.test(inventoryRecordStoreAccessBody) && /hasStoreAccess\(data\.logicalSalesStoreId\)/.test(inventoryRecordStoreAccessBody), 'Attributed inventory records must require access to both physical and logical stores.');
+assert(/hasInventoryRecordStoreAccess\(resource\.data\)/.test(pendingConsumptionBlock), 'Attributed pending BOM reads and cancellation must retain both-store access enforcement.');
 
 assert(/isCheckoutStoreStockDeduction\(\)/.test(storeStockBlock), 'Checkout storeStock updates must use the narrowed deduction helper.');
 assert(/affectedKeys\(\)\.hasOnly\(\['currentStock', 'updatedAt'\]\)/.test(storeStockDeductionBody), 'Checkout storeStock updates must only affect currentStock and updatedAt.');
@@ -361,7 +392,7 @@ const cases = [
   'inactive ADMIN denied: hasRole() requires isActive == true',
   'CASHIER denied from admin writes: users/{uid} write is guarded by isAdmin()',
   'user cannot promote themselves: self-profile rule is read-only',
-  'cross-store access denied: non-admin store access requires storeId in users/{uid}.storeIds',
+  'cross-store access denied: non-admin store access requires storeId in users/{uid}.storeIds or assignedStoreIds',
   'FRANCHISE_VIEWER is excluded from operational active-staff permissions',
   'franchise profiles are managed through Admin SDK callables, not direct client writes',
   'unauthenticated direct onlineOrders creation denied: create requires isCheckoutStaff()',
@@ -383,10 +414,13 @@ const cases = [
   'Complimentary authorizations are server-created and only atomically consumed by their exact order',
   'POS add-on authorizations are server-created, short-lived, staff/store/order-bound, and single-use',
   'Order item add-on names, prices, tax, and inventory snapshots must exactly match the server authorization',
+  'Composite order-item and KOT component snapshots must exactly match server authorization',
+  'Customer Web acceptance binds immutable online-order components to the exact server authorization',
   'KOT add-ons must exactly match the authorized order item snapshot',
   'Complimentary orders cannot create payment rows or settlement writes',
   'KOT creates and status updates preserve immutable ticket fields',
   'Stock movements cannot be updated or deleted',
+  'Aliased inventory attribution requires direct logical and physical assignment and the authoritative store alias while legacy self-store writes remain compatible',
   'Checkout storeStock updates can only reduce currentStock',
   'Checkout storeInventory updates can only reduce currentStock',
   'Pending BOM client updates can only cancel, never apply',

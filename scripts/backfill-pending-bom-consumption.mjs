@@ -1,9 +1,18 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import process from 'node:process';
 import { applicationDefault, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+
+const require = createRequire(import.meta.url);
+const {
+  inventoryStoreAttribution,
+  logicalSalesStoreAttribution,
+  resolveInventoryStore,
+  storeIdentity,
+} = require('../functions/inventoryStoreResolver.js');
 
 const PROJECT_ID = 'coffee-bond-pos';
 const REPORT_DIR = 'reports';
@@ -173,6 +182,40 @@ function orderValue(order) {
   return number(order?.grandTotal || order?.total || order?.netTotal);
 }
 
+async function readStore(firestore, storeId, transaction = null) {
+  const ref = firestore.collection('stores').doc(storeId);
+  const snapshot = transaction ? await transaction.get(ref) : await ref.get();
+  return snapshot.exists ? { ...snapshot.data(), id: snapshot.id } : null;
+}
+
+async function resolvePendingStoreContext(firestore, pending, order, transaction = null) {
+  const logicalSalesStoreId = text(pending.logicalSalesStoreId || order.storeId || pending.storeId);
+  if (!logicalSalesStoreId) throw new Error(`Pending record ${pending.id || ''} has no logical sales store.`);
+
+  const storedSalesStore = await readStore(firestore, logicalSalesStoreId, transaction);
+  const logicalSalesStore = storedSalesStore || {
+    id: logicalSalesStoreId,
+    code: pending.logicalSalesStoreCode || order.storeCode || pending.storeCode || logicalSalesStoreId,
+    name: pending.logicalSalesStoreName || order.storeName || pending.storeName || logicalSalesStoreId,
+  };
+  const snapshottedInventoryStoreId = text(pending.inventoryStoreId);
+  if (snapshottedInventoryStoreId && text(pending.storeId) && pending.storeId !== snapshottedInventoryStoreId) {
+    throw new Error(`Pending inventory store mismatch: storeId=${pending.storeId}, inventoryStoreId=${snapshottedInventoryStoreId}.`);
+  }
+
+  const inventoryStore = await resolveInventoryStore({
+    ...logicalSalesStore,
+    inventoryStoreId: snapshottedInventoryStoreId || logicalSalesStore.inventoryStoreId,
+  }, inventoryStoreId => readStore(firestore, inventoryStoreId, transaction));
+
+  return {
+    inventoryStore,
+    logicalSalesStore: storeIdentity(logicalSalesStore),
+    inventoryAttribution: inventoryStoreAttribution(inventoryStore),
+    logicalSalesAttribution: logicalSalesStoreAttribution(logicalSalesStore),
+  };
+}
+
 function csvEscape(value) {
   const raw = String(value ?? '');
   if (/[",\n]/.test(raw)) return `"${raw.replace(/"/g, '""')}"`;
@@ -194,7 +237,12 @@ async function loadPendingRecords(firestore, filters) {
 
   return snap.docs
     .map((doc) => ({ id: doc.id, ref: doc.ref, data: doc.data() || {} }))
-    .filter((doc) => !filters.store || doc.data.storeId === filters.store || doc.data.storeCode === filters.store)
+    .filter((doc) => !filters.store
+      || doc.data.storeId === filters.store
+      || doc.data.storeCode === filters.store
+      || doc.data.inventoryStoreId === filters.store
+      || doc.data.logicalSalesStoreId === filters.store
+      || doc.data.logicalSalesStoreCode === filters.store)
     .filter((doc) => !filters.finishedGood || doc.data.finishedGoodCode === filters.finishedGood)
     .filter((doc) => {
       const soldAt = toDate(doc.data.soldAt || doc.data.createdAt);
@@ -286,14 +334,27 @@ async function planBackfillForPending(firestore, pendingDoc) {
     return { action: 'FAILED_REVIEW', reason: `Order status is ${order.status}`, pendingDoc, order, movements: [] };
   }
 
+  let storeContext;
+  try {
+    storeContext = await resolvePendingStoreContext(firestore, pending, order);
+  } catch (error) {
+    return {
+      action: 'FAILED_REVIEW',
+      reason: error instanceof Error ? error.message : String(error),
+      pendingDoc,
+      order,
+      movements: [],
+    };
+  }
+
   const fgSnap = await firestore.collection('finishedGoods').doc(pending.finishedGoodCode).get();
   if (!fgSnap.exists) {
-    return { action: 'FAILED_REVIEW', reason: `Finished good ${pending.finishedGoodCode} not found`, pendingDoc, order, movements: [] };
+    return { action: 'FAILED_REVIEW', reason: `Finished good ${pending.finishedGoodCode} not found`, pendingDoc, order, storeContext, movements: [] };
   }
   const finishedGood = fgSnap.data() || {};
   const bom = Array.isArray(finishedGood.bom) ? finishedGood.bom : [];
   if (bom.length === 0) {
-    return { action: 'PENDING_BOM', reason: 'Finished good still has no BOM', pendingDoc, order, movements: [] };
+    return { action: 'PENDING_BOM', reason: 'Finished good still has no BOM', pendingDoc, order, storeContext, movements: [] };
   }
 
   try {
@@ -308,6 +369,7 @@ async function planBackfillForPending(firestore, pendingDoc) {
       reason: 'Complete BOM is available',
       pendingDoc,
       order,
+      storeContext,
       finishedGood,
       appliedBomVersion: number(finishedGood.bomVersion),
       movements: movementTargets,
@@ -318,6 +380,7 @@ async function planBackfillForPending(firestore, pendingDoc) {
       reason: error instanceof Error ? error.message : String(error),
       pendingDoc,
       order,
+      storeContext,
       finishedGood,
       movements: [],
     };
@@ -342,10 +405,13 @@ async function applyBackfillPlan(firestore, plan) {
       });
       return;
     }
+    const order = orderSnap.data() || {};
+    const storeContext = await resolvePendingStoreContext(firestore, pending, order, transaction);
+    const { inventoryStore, inventoryAttribution, logicalSalesAttribution } = storeContext;
 
     const stockReads = [];
     for (const movement of plan.movements) {
-      const stockId = getStockDocId(pending.storeId, movement.stockItemType, movement.stockItemCode);
+      const stockId = getStockDocId(inventoryStore.id, movement.stockItemType, movement.stockItemCode);
       const stockRef = firestore.collection('storeStock').doc(stockId);
       stockReads.push({ movement, stockId, stockRef, snap: await transaction.get(stockRef) });
     }
@@ -364,9 +430,9 @@ async function applyBackfillPlan(firestore, plan) {
         });
       } else {
         transaction.set(stockRead.stockRef, {
-          storeId: pending.storeId,
-          storeCode: pending.storeCode,
-          storeName: pending.storeName,
+          storeId: inventoryStore.id,
+          storeCode: inventoryStore.code,
+          storeName: inventoryStore.name,
           stockItemType: stockRead.movement.stockItemType,
           stockItemCode: stockRead.movement.stockItemCode,
           stockItemName: stockRead.movement.stockItemName,
@@ -381,9 +447,8 @@ async function applyBackfillPlan(firestore, plan) {
       }
 
       transaction.set(movementRef, {
-        storeId: pending.storeId,
-        storeCode: pending.storeCode,
-        storeName: pending.storeName,
+        ...inventoryAttribution,
+        ...logicalSalesAttribution,
         inventoryItemId: stockRead.movement.stockItemCode,
         inventoryItemName: stockRead.movement.stockItemName,
         movementType: 'ORDER_BOM_BACKFILL',
@@ -415,6 +480,8 @@ async function applyBackfillPlan(firestore, plan) {
     }
 
     transaction.update(plan.pendingDoc.ref, {
+      ...inventoryAttribution,
+      ...logicalSalesAttribution,
       status: 'APPLIED',
       resolvedAt: FieldValue.serverTimestamp(),
       resolvedBy: 'SYSTEM_BACKFILL',
@@ -443,6 +510,14 @@ async function loadNegativeBalances(firestore, store) {
     }));
 }
 
+async function resolveInventoryStoreFilter(firestore, storeFilter) {
+  if (!storeFilter) return storeFilter;
+  const store = await readStore(firestore, storeFilter);
+  if (!store) return storeFilter;
+  const inventoryStore = await resolveInventoryStore(store, inventoryStoreId => readStore(firestore, inventoryStoreId));
+  return inventoryStore.id;
+}
+
 async function main() {
   const filters = {
     store: argValue('--store', DEFAULT_STORE),
@@ -463,10 +538,13 @@ async function main() {
     }
   }
 
-  const negativeBalances = await loadNegativeBalances(firestore, filters.store);
+  const inventoryStoreFilter = await resolveInventoryStoreFilter(firestore, filters.store);
+  const negativeBalances = await loadNegativeBalances(firestore, inventoryStoreFilter);
   const detailRows = plans.map((plan) => ({
     pendingId: plan.pendingDoc.id,
     storeId: plan.pendingDoc.data.storeId,
+    inventoryStoreId: plan.storeContext?.inventoryStore.id || plan.pendingDoc.data.inventoryStoreId || plan.pendingDoc.data.storeId,
+    logicalSalesStoreId: plan.storeContext?.logicalSalesStore.id || plan.pendingDoc.data.logicalSalesStoreId || plan.order?.storeId || plan.pendingDoc.data.storeId,
     orderId: plan.pendingDoc.data.orderId,
     orderNumber: plan.pendingDoc.data.orderNumber,
     orderLineId: plan.pendingDoc.data.orderLineId,
@@ -518,6 +596,8 @@ async function main() {
   await writeCsv(path.join(REPORT_DIR, 'pending-bom-consumption-detail.csv'), detailRows, [
     'pendingId',
     'storeId',
+    'inventoryStoreId',
+    'logicalSalesStoreId',
     'orderId',
     'orderNumber',
     'orderLineId',

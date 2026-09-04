@@ -20,6 +20,12 @@ import {
   selectedAddOnIds,
 } from '../../lib/posAddOnAuthorization';
 import {
+  buildKotTasks,
+  CompositeKotTask,
+  expandCompositeInventoryLines,
+  summarizeParentInventory,
+} from '../../lib/compositeFulfillment';
+import {
   cancelPosRazorpaySession,
   createPosRazorpaySession,
   getPosRazorpayStatus,
@@ -377,8 +383,8 @@ function deterministicOrderItemId(
   return sanitizeFirestoreId(`${orderId}_ITEM_${productCode}_${occurrence}_${shortHash(identity)}`, 180);
 }
 
-function deterministicKotId(orderId: string, orderItemId: string, station: 'BARISTA' | 'KITCHEN'): string {
-  return sanitizeFirestoreId(`${orderId}_KOT_${station}_${shortHash(orderItemId)}`, 220);
+function deterministicKotId(orderId: string, orderItemId: string, taskKey: string): string {
+  return sanitizeFirestoreId(`${orderId}_KOT_${taskKey}_${shortHash(orderItemId)}`, 220);
 }
 
 function deterministicPaymentId(orderId: string, payment: ReceiptPaymentSnapshot, index: number): string {
@@ -2130,6 +2136,7 @@ export default function POSHome() {
             taxRate: canonicalItem.taxRate,
           },
           canonicalAddOns: canonicalItem.addOns,
+          components: canonicalItem.components || [],
         };
       });
       const posAddOnAuthorizationRef = doc(
@@ -2361,19 +2368,8 @@ export default function POSHome() {
 
         const orderNumber = `CB-${selectedStore.code}-${dateKey}-${seq.toString().padStart(4, '0')}`;
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction validation complete - order number generated: ${orderNumber}`);
-        const deductionPlan = await planInventoryDeductionForSale({
-          transaction,
-          store: selectedStore,
-          orderId: newOrderRef.id,
-          orderNumber,
-          orderType,
-          businessDate: dateKey,
-          source: 'POS',
-          staffProfile: {
-            uid: auth.currentUser!.uid,
-            name: staffProfile.name,
-          },
-          lines: validatedCart.map(({ cartItem, liveItem, canonicalAddOns }, index) => {
+        const expandedInventoryLines = expandCompositeInventoryLines(
+          validatedCart.map(({ cartItem, liveItem, canonicalAddOns, components }, index) => {
             const liveItemData = liveItem as unknown as Record<string, unknown>;
             return {
               lineKey: orderLineRefs[index].id,
@@ -2389,8 +2385,24 @@ export default function POSHome() {
                 finishedGoodCode: liveItemData.finishedGoodCode || cartItem.finishedGoodCode || liveItem.code,
               } as any,
               addOns: canonicalAddOns,
+              components,
             };
           }),
+          selectedStore.id,
+        );
+        const deductionPlan = await planInventoryDeductionForSale({
+          transaction,
+          store: selectedStore,
+          orderId: newOrderRef.id,
+          orderNumber,
+          orderType,
+          businessDate: dateKey,
+          source: 'POS',
+          staffProfile: {
+            uid: auth.currentUser!.uid,
+            name: staffProfile.name,
+          },
+          lines: expandedInventoryLines,
         });
 
         if (deductionPlan.blockers.length > 0) {
@@ -2562,7 +2574,7 @@ export default function POSHome() {
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
         const newItems: OrderItem[] = [];
-        validatedCart.forEach(({ cartItem: item, liveItem, canonicalAddOns }, index) => {
+        validatedCart.forEach(({ cartItem: item, liveItem, canonicalAddOns, components }, index) => {
           const lineRef = orderLineRefs[index];
           const lineAddOnTotal = addOnTotal(canonicalAddOns);
           const lineUnitPrice = liveItem.price + lineAddOnTotal;
@@ -2575,6 +2587,12 @@ export default function POSHome() {
             ? 0
             : baseTaxable * (appliedTaxRate / 100) + addOnTaxForLine(canonicalAddOns, item.quantity, trueDiscountRatio);
           const linePrepStation = normalizePrepStation(liveItem.prepStation);
+          const parentInventory = summarizeParentInventory({
+            parentLineKey: lineRef.id,
+            expandedLines: expandedInventoryLines,
+            perLineCogs: deductionPlan.perLineCogs,
+            perLineConsumptionStatus: deductionPlan.perLineConsumptionStatus,
+          });
 
           const itemData: OrderItem = {
             menuItemId: liveItem.id,
@@ -2595,14 +2613,15 @@ export default function POSHome() {
             lineTaxable,
             lineTax: lineTax,
             lineTotal: lineTaxable + lineTax,
-            cogsAmount: deductionPlan.perLineCogs[lineRef.id] || 0,
-            inventoryConsumptionStatus: deductionPlan.perLineConsumptionStatus[lineRef.id] || 'APPLIED',
+            cogsAmount: parentInventory.cogsAmount,
+            inventoryConsumptionStatus: parentInventory.inventoryConsumptionStatus,
             prepStation: linePrepStation,
             status: 'PENDING',
             createdAt: serverTimestamp(),
             sourceSystem: 'FINISHED_GOODS',
             itemType: item.itemType,
-            finishedGoodCode: item.finishedGoodCode
+            finishedGoodCode: item.finishedGoodCode,
+            ...(components.length > 0 ? { components } : {}),
           };
 
           if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set lineItem ${lineRef.id}`);
@@ -2611,10 +2630,10 @@ export default function POSHome() {
           newItems.push({ id: lineRef.id, ...itemData });
 
           // Create KOT items
-          const createKotItem = (station: "BARISTA" | "KITCHEN") => {
-            const kotRef = doc(db, 'kotItems', deterministicKotId(newOrderRef.id, lineRef.id, station));
-            if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set kotItem ${kotRef.id} for station: ${station}`);
-            traceCheckoutWrite(`KOT save ${station}`, 'create', kotRef.path);
+          const createKotItem = (task: CompositeKotTask) => {
+            const kotRef = doc(db, 'kotItems', deterministicKotId(newOrderRef.id, lineRef.id, task.taskKey));
+            if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: set kotItem ${kotRef.id} for station: ${task.station}`);
+            traceCheckoutWrite(`KOT save ${task.station}`, 'create', kotRef.path);
             transaction.set(kotRef, {
               orderId: newOrderRef.id,
               orderNumber,
@@ -2622,11 +2641,12 @@ export default function POSHome() {
               storeId: selectedStore.id,
               storeCode: selectedStore.code,
               storeName: selectedStore.name,
-              station,
-              itemName: liveItem.name,
-              itemCode: liveItem.code || '',
-              quantity: item.quantity,
+              station: task.station,
+              itemName: task.itemName,
+              itemCode: task.itemCode,
+              quantity: task.quantity,
               addOns: canonicalAddOns,
+              ...(task.component ? { component: task.component } : {}),
               orderType,
               tableNumber: orderType === 'DINE_IN' ? tableNumber.trim() : null,
               customerName: customerNameFinal,
@@ -2638,12 +2658,16 @@ export default function POSHome() {
             });
           };
 
-          if (linePrepStation === "BARISTA" || linePrepStation === "BOTH") {
-            createKotItem("BARISTA");
-          }
-          if (linePrepStation === "KITCHEN" || linePrepStation === "BOTH") {
-            createKotItem("KITCHEN");
-          }
+          buildKotTasks({
+            quantity: item.quantity,
+            finishedGood: {
+              code: liveItem.code,
+              name: liveItem.name,
+              displayName: liveItem.name,
+              prepStation: linePrepStation,
+            },
+            components,
+          }).forEach(createKotItem);
         });
 
         // Prep payment

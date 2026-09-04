@@ -14,6 +14,12 @@ const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 const { createBondLoyaltyService } = require('./bondLoyalty');
+const { createKotStatusAggregationHandler } = require('./kotStatusAggregation');
+const {
+  CompositeProductPolicyError,
+  collectRequiredComponentFinishedGoodIds,
+  resolveCanonicalCompositeComponents,
+} = require('./compositeProductPolicy');
 
 admin.initializeApp();
 
@@ -63,6 +69,19 @@ exports.requestPosRazorpayRefund = posRazorpayFunctions.requestPosRazorpayRefund
 exports.posRazorpayWebhook = posRazorpayFunctions.posRazorpayWebhook;
 
 const bondLoyaltyService = createBondLoyaltyService({ admin, db });
+const handleKotStatusAggregation = createKotStatusAggregationHandler({ admin, db });
+
+// KOT users can read only their assigned station. Aggregate sibling component
+// tickets with server authority after the station-scoped status write commits.
+exports.aggregateKotOrderStatus = onDocumentUpdated({
+  document: 'kotItems/{kotId}',
+  region: REGION,
+  retry: true,
+}, event => handleKotStatusAggregation({
+  kotId: event.params.kotId,
+  before: event.data.before.data(),
+  after: event.data.after.data(),
+}));
 
 // Loyalty observes authoritative records only after the order/KOT transactions have
 // committed. Trigger failure therefore cannot roll back payment, KOT, stock or reports.
@@ -352,6 +371,13 @@ function canonicalAddOnsForItem(item, requestedAddOns, publicGroups, privateGrou
     const maximum = privateGroup.maximumSelections === null || privateGroup.maximumSelections === undefined
       ? Number.POSITIVE_INFINITY
       : Math.max(minimum, toNumber(privateGroup.maximumSelections));
+    if (
+      privateGroup.selectionMode === 'EXACT_DISTINCT'
+      && (requestedForGroup.some((selected) => selected.quantity !== 1)
+        || new Set(requestedForGroup.map((selected) => selected.optionId)).size !== requestedForGroup.length)
+    ) {
+      fail('failed-precondition', `Select ${minimum} different options for ${privateGroup.name || 'this item'}.`);
+    }
     if (selectionCount < minimum || selectionCount > maximum) {
       fail('failed-precondition', `Selected add-ons for ${privateGroup.name || 'this item'} are invalid.`);
     }
@@ -553,9 +579,32 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     const publicAddOnGroups = availability.addOnGroups || {};
     const gstConfig = gstSnap.exists ? gstSnap.data() : null;
     const storeTaxRate = calculateStoreTaxRate(store, gstConfig);
+    const requestedProductCodes = [...new Set(requestedItems.map((item) => item.itemCode))];
+    const privateProductSnaps = await Promise.all(
+      requestedProductCodes.map((productCode) => (
+        transaction.get(db.collection('finishedGoods').doc(productCode))
+      )),
+    );
+    if (privateProductSnaps.some((snapshot) => !snapshot.exists)) {
+      fail('failed-precondition', 'One or more products are no longer available. Please update your basket.');
+    }
+    const privateProductsByCode = Object.fromEntries(privateProductSnaps.map((snapshot) => {
+      const product = { id: snapshot.id, ...snapshot.data() };
+      const productCode = cleanText(product.code || snapshot.id, 80);
+      if (!requestedProductCodes.includes(productCode)) {
+        fail('failed-precondition', 'One or more product references changed. Please update your basket.');
+      }
+      return [productCode, product];
+    }));
+    const privateProductsById = Object.fromEntries(
+      Object.values(privateProductsByCode).map((product) => [product.id, product]),
+    );
     const requestedGroupIds = [...new Set(requestedItems.flatMap((requestedItem) => [
       ...(Array.isArray(menuItems[requestedItem.itemCode]?.addOnGroupIds)
         ? menuItems[requestedItem.itemCode].addOnGroupIds
+        : []),
+      ...(Array.isArray(privateProductsByCode[requestedItem.itemCode]?.addOnGroupIds)
+        ? privateProductsByCode[requestedItem.itemCode].addOnGroupIds
         : []),
       ...requestedItem.addOns.map((addOn) => addOn.groupId),
     ]))];
@@ -567,7 +616,51 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       return acc;
     }, {});
 
-    const onlineItems = requestedItems.map((requested) => {
+    let componentProductIds;
+    try {
+      componentProductIds = collectRequiredComponentFinishedGoodIds({
+        products: privateProductsById,
+        groupsById: privateAddOnGroups,
+      });
+    } catch (error) {
+      if (error instanceof CompositeProductPolicyError) {
+        fail('failed-precondition', error.message);
+      }
+      throw error;
+    }
+    const missingComponentProductIds = componentProductIds.filter(
+      (productId) => !privateProductsById[productId],
+    );
+    const componentProductSnaps = await Promise.all(
+      missingComponentProductIds.map((productId) => (
+        transaction.get(db.collection('finishedGoods').doc(productId))
+      )),
+    );
+    const componentProductsById = {
+      ...privateProductsById,
+      ...Object.fromEntries(componentProductSnaps
+        .filter((snapshot) => snapshot.exists)
+        .map((snapshot) => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+    };
+    let componentsByRequestedIndex;
+    try {
+      componentsByRequestedIndex = requestedItems.map((requested) => (
+        resolveCanonicalCompositeComponents({
+          parentProduct: privateProductsByCode[requested.itemCode],
+          requestedSelections: requested.addOns,
+          groupsById: privateAddOnGroups,
+          componentProductsById,
+          storeId: store.id,
+        })
+      ));
+    } catch (error) {
+      if (error instanceof CompositeProductPolicyError) {
+        fail('failed-precondition', error.message);
+      }
+      throw error;
+    }
+
+    const onlineItems = requestedItems.map((requested, index) => {
       const item = menuItems[requested.itemCode];
       const itemAvailability = availabilityItems[requested.itemCode];
       if (!isItemPubliclyOrderable(item, store, itemAvailability)) {
@@ -591,6 +684,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         sum + addOn.totalPrice * requested.quantity * addOn.taxRate / 100
       ), 0);
       const lineTax = baseLineTax + addOnLineTax;
+      const components = componentsByRequestedIndex[index];
       return {
         finishedGoodCode: item.code || requested.itemCode,
         itemName: item.displayName || item.name || requested.itemCode,
@@ -609,6 +703,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         lineTotal: lineSubtotal + lineTax,
         prepStation: item.prepStation || 'NONE',
         itemType: item.itemType,
+        ...(components.length > 0 ? { components } : {}),
       };
     });
 

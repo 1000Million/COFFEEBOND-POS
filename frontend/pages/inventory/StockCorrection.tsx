@@ -12,12 +12,14 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react';
-import { collection, doc, getDocs, query, serverTimestamp, writeBatch, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, writeBatch, where } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { RawIngredient, PrepItem, StoreStock } from '../../types/menu-management';
 import { Store, StockMovement } from '../../types';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
+import { assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 type ItemTypeFilter = 'ALL' | 'RAW_INGREDIENT' | 'PREP_ITEM';
 type IssueFilter = 'ALL' | 'NEGATIVE_STOCK' | 'MISSING_COST' | 'MISSING_STOCK_ROW';
@@ -102,7 +104,7 @@ function itemKey(itemType: string, itemCode: string): string {
 }
 
 function allowedStoreIds(profile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
-  return profile.assignedStoreIds?.length ? profile.assignedStoreIds : (profile.storeIds || []);
+  return assignedStoreIdentifiers(profile);
 }
 
 function reviewFlagged(notes: string): boolean {
@@ -164,15 +166,18 @@ export default function StockCorrection() {
       if (!staffProfile) return;
       setStoresLoading(true);
       try {
-        const snap = await getDocs(staffProfile.role === 'ADMIN'
-          ? collection(db, 'stores')
-          : query(collection(db, 'stores'), where('isActive', '==', true)));
-        let loaded = snap.docs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+        const assignedIds = allowedStoreIds(staffProfile);
+        const storeDocs = staffProfile.role === 'ADMIN'
+          ? (await getDocs(collection(db, 'stores'))).docs
+          : (await Promise.all(assignedIds.map(storeId => getDoc(doc(db, 'stores', storeId)))))
+            .filter(snapshot => snapshot.exists() && snapshot.data().isActive === true);
+        let loaded = storeDocs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
         loaded.sort((a, b) => a.name.localeCompare(b.name));
         if (staffProfile.role !== 'ADMIN') {
           const ids = allowedStoreIds(staffProfile);
           loaded = loaded.filter((store) => ids.includes(store.id));
         }
+        loaded = loaded.filter((store) => effectiveInventoryStoreId(store) === store.id);
 
         if (!active) return;
         setStores(loaded);

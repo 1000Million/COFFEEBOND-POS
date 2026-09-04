@@ -11,6 +11,7 @@ const paymentFirst = require(resolve(root, 'functions/razorpayPaymentFirst.js'))
 const checkoutBackend = require(resolve(root, 'functions/razorpayCheckout.js'));
 const checkoutCanonicalization = require(resolve(root, 'functions/customerCheckoutCanonicalization.js'));
 const onlineOrderInventory = require(resolve(root, 'functions/onlineOrderInventory.js'));
+const compositeFulfillment = require(resolve(root, 'functions/compositeFulfillment.js'));
 const reporting = await import(resolve(root, 'functions/reportingCore.mjs'));
 
 const source = path => readFileSync(resolve(root, path), 'utf8');
@@ -124,6 +125,67 @@ test('20. Staff acceptance creates POS, KOT and stock through the operational fi
   assert.match(legacyBackend, /collection\('kotItems'\)/);
   assert.match(legacyBackend, /collection\('stockMovements'\)/);
 });
+test('20a. Staff acceptance authorizes both logical and physical stores before finalization', () => {
+  const acceptSection = backend.slice(backend.indexOf('async function acceptPaidOrder'), backend.indexOf('async function cancelAndRefund'));
+  const aliasResolution = acceptSection.indexOf('resolveInventoryStore(salesStore');
+  const pairAuthorization = acceptSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, salesStore.id, inventoryStore.id)');
+  const acceptanceClaim = acceptSection.indexOf('const acceptanceClaim = await db.runTransaction');
+  const acceptedWrite = acceptSection.indexOf('transaction.update(orderRef, {', acceptanceClaim);
+  const finalization = acceptSection.indexOf('finalizePaidOnlineOrder({');
+  assert.ok(aliasResolution >= 0);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(acceptanceClaim > pairAuthorization);
+  assert.ok(acceptedWrite > acceptanceClaim);
+  assert.match(acceptSection.slice(acceptedWrite, finalization), /acceptedBy,[\s\S]*acceptedByName/);
+  assert.ok(finalization > acceptedWrite);
+});
+test('20b. Operational finalizer transaction revalidates accepting staff and current inventory alias', () => {
+  const finalizerSection = legacyBackend.slice(
+    legacyBackend.indexOf('async function finalizePaidOnlineOrder'),
+    legacyBackend.indexOf('async function verifyAndFinalize'),
+  );
+  const acceptingStaffRead = finalizerSection.indexOf("db.collection('users').doc(acceptedBy)");
+  const aliasResolution = finalizerSection.indexOf('resolveInventoryStore(store');
+  const pairAuthorization = finalizerSection.indexOf('isAuthorizedStaffForStorePair(acceptedByProfile, store.id, inventoryStore.id)');
+  const inventoryPlanning = finalizerSection.indexOf('planOnlineOrderInventory({');
+  const stockWrites = finalizerSection.indexOf('inventoryPlan.stockUpdates.forEach');
+  assert.ok(acceptingStaffRead >= 0);
+  assert.ok(aliasResolution > acceptingStaffRead);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(inventoryPlanning > pairAuthorization);
+  assert.ok(stockWrites > inventoryPlanning);
+  assert.match(finalizerSection, /INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizerSection, /STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizerSection, /status: REVIEW_STATUS,[\s\S]*paymentStatus: PAID_STATUS/);
+});
+test('20c. Acceptance and refund claims serialize before fulfillment or provider refund', () => {
+  const acceptSection = backend.slice(backend.indexOf('async function acceptPaidOrder'), backend.indexOf('async function cancelAndRefund'));
+  const refundSection = backend.slice(backend.indexOf('async function cancelAndRefund'), backend.indexOf('async function listMyOrders'));
+  const finalizerSection = legacyBackend.slice(
+    legacyBackend.indexOf('async function finalizePaidOnlineOrder'),
+    legacyBackend.indexOf('async function verifyAndFinalize'),
+  );
+  assert.match(acceptSection, /db\.runTransaction\(async transaction =>[\s\S]*transaction\.get\(orderRef\)/);
+  assert.match(acceptSection, /acceptanceClaimId/);
+  assert.match(acceptSection, /acceptanceClaimExpiresAt/);
+  assert.match(acceptSection, /differentClaimant && liveAcceptanceClaim/);
+  assert.match(acceptSection, /\['ADMIN', 'STORE_MANAGER'\]\.includes\(staff\.role\)/);
+  assert.match(acceptSection, /refundBlocksPaidOrderFulfilment\(freshOrder\)/);
+  const refundClaim = refundSection.slice(
+    refundSection.indexOf('const claim = await db.runTransaction'),
+    refundSection.indexOf('const client = razorpayClient'),
+  );
+  assert.match(refundClaim, /transaction\.set\(refundRef/);
+  assert.match(refundClaim, /transaction\.update\(orderRef, \{[\s\S]*status: 'REFUND_REQUESTING'/);
+  assert.match(finalizerSection, /refundBlocksPaidOrderFulfilment\(onlineOrder\)/);
+  assert.doesNotMatch(acceptSection, /status: 'ACCEPTANCE_PROCESSING'/);
+  assert.match(refundClaim, /acceptanceClaimExpiresAt > now/);
+  assert.match(refundClaim, /acceptanceClaimId: admin\.firestore\.FieldValue\.delete\(\)/);
+  assert.match(refundSection, /freshOrder\.data\(\)\.status !== 'REFUND_REQUESTING'/);
+  assert.equal(checkoutBackend.refundBlocksPaidOrderFulfilment({ status: 'REFUND_REQUESTING' }), true);
+  assert.equal(checkoutBackend.refundBlocksPaidOrderFulfilment({ refundStatus: 'REFUND_PENDING' }), true);
+  assert.equal(checkoutBackend.refundBlocksPaidOrderFulfilment({ status: 'PAID_PENDING_ACCEPTANCE', paymentStatus: 'PAID' }), false);
+});
 test('21. Repeated acceptance is idempotent', () => {
   assert.match(backend, /order\.status === 'CONVERTED' && order\.linkedOrderId/);
   assert.match(legacyBackend, /alreadyFinalized: true/);
@@ -143,6 +205,8 @@ test('24. Cashier cannot cancel or refund', () => {
 });
 test('25. Manager cannot refund another store order', () => {
   assert.match(backend, /This manager cannot refund another store’s order/);
+  assert.match(backend, /if \(!isAuthorizedStaffProfile\(staff\.profile, order\.storeId\)\)/);
+  assert.doesNotMatch(backend, /function allowedStoreIds\(/);
 });
 test('26. Refund requires a reason', () => {
   assert.match(backend, /if \(!onlineOrderId \|\| !reason\)/);
@@ -781,7 +845,16 @@ test('96. Golden I setup-incomplete status is warning-only only for the exact st
 test('97. Existing deterministic POS, payment, KOT and movement IDs remain unchanged', () => {
   assert.match(legacyBackend, /deterministicPosOrderId/);
   assert.match(legacyBackend, /collection\('payments'\)\.doc\('razorpay'\)/);
-  assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_\$\{line\.lineId\}_\$\{kotStation\}`\)/);
+  assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_\$\{line\.lineId\}_\$\{task\.taskKey\}`\)/);
+  assert.deepEqual(
+    compositeFulfillment.buildKotTasks({
+      quantity: 1,
+      itemName: 'Legacy BOTH item',
+      itemCode: 'LEGACY_BOTH',
+      prepStation: 'BOTH',
+    }).map(task => task.taskKey),
+    ['BARISTA', 'KITCHEN'],
+  );
   assert.match(legacyBackend, /doc\(`\$\{posOrderId\}_SALE_\$\{String\(index \+ 1\)\.padStart\(3, '0'\)\}`\)/);
 });
 
@@ -811,5 +884,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 99);
+assert.equal(tests.length, 102);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

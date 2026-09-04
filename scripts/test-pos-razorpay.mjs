@@ -42,6 +42,17 @@ test('server ignores browser-supplied amount and calculates canonical totals', (
   assert.match(canonicalSection, /amountPaise = rupeesToPaise\(totals\.grandTotal\)/);
 });
 
+test('POS session authorization covers both logical sales and physical inventory stores', () => {
+  const canonicalSection = backend.slice(backend.indexOf('async function canonicalizePosRequest'), backend.indexOf('async function findExistingProviderRequest'));
+  const storeLoad = canonicalSection.indexOf("const store = { id: storeSnapshot.id");
+  const aliasResolution = canonicalSection.indexOf('resolveInventoryStore(store');
+  const pairAuthorization = canonicalSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, store.id, inventoryStore.id)');
+  const inventoryPreflight = canonicalSection.indexOf('planOnlineOrderInventory({');
+  assert.ok(storeLoad >= 0 && aliasResolution > storeLoad);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(inventoryPreflight > pairAuthorization);
+});
+
 test('stable idempotency key produces one deterministic session and order', () => {
   assert.equal(posRazorpay.sessionIdFor('checkout-123'), posRazorpay.sessionIdFor('checkout-123'));
   assert.notEqual(posRazorpay.sessionIdFor('checkout-123'), posRazorpay.sessionIdFor('checkout-124'));
@@ -134,6 +145,21 @@ test('captured payment finalises deterministic order payment KOT and inventory o
   assert.match(backend, /captured payment does not belong to this Razorpay request/);
 });
 
+test('captured payment revalidates staff and alias before stock or safely requires review', () => {
+  const finalizeSection = backend.slice(backend.indexOf('async function finalizeCapturedPosPayment'), backend.indexOf('async function verifyAndFinalizeSession'));
+  const staffReload = finalizeSection.indexOf("db.collection('users').doc(session.staffUid)");
+  const aliasResolution = finalizeSection.indexOf('resolveInventoryStore(store');
+  const pairAuthorization = finalizeSection.indexOf('isAuthorizedStaffForStorePair(currentStaffProfile, store.id, inventoryStore.id)');
+  const stockWrites = finalizeSection.indexOf('inventoryPlan.stockUpdates.forEach');
+  assert.ok(staffReload >= 0);
+  assert.ok(aliasResolution > staffReload);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(stockWrites > pairAuthorization);
+  assert.match(finalizeSection, /INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizeSection, /STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizeSection, /status: 'PAYMENT_REVIEW_REQUIRED'/);
+});
+
 test('lost browser callback recovers through status fetch and signed webhook', () => {
   assert.match(helper, /getPosRazorpayStatus/);
   assert.match(posHome, /setInterval\(\(\) => void refreshRazorpayStatus\(false\), 5000\)/);
@@ -187,6 +213,23 @@ test('Cashier cannot refund while Admin and Manager can', () => {
   assert.doesNotMatch(refundSection.match(/staffIdentity[\s\S]{0,100}/)?.[0] || '', /CASHIER/);
   assert.match(refundSection, /assertStoreAccess\(staff, order\.storeId\)/);
   assert.match(runningOrders, /requestPosRazorpayRefund/);
+});
+
+test('POS refund requires logical, current physical, and historical physical store access before provider API', () => {
+  const refundSection = backend.slice(backend.indexOf('async function requestPosRefund'), backend.indexOf('async function processPosPaymentWebhook'));
+  const currentAlias = refundSection.indexOf('resolveInventoryStore(salesStore');
+  const currentPairAuthorization = refundSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, salesStore.id, currentInventoryStore.id)');
+  const movementQuery = refundSection.indexOf("collection('stockMovements').where('referenceId', '==', orderId)");
+  const historicalAuthorization = refundSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, salesStore.id, inventoryStoreId)');
+  const refundClaim = refundSection.indexOf('const claim = await db.runTransaction');
+  const providerRefund = refundSection.indexOf('createIdempotentProviderRefund({');
+  assert.ok(movementQuery >= 0);
+  assert.ok(currentAlias >= 0 && currentPairAuthorization > currentAlias);
+  assert.ok(historicalAuthorization > currentPairAuthorization);
+  assert.ok(refundClaim > historicalAuthorization);
+  assert.ok(providerRefund > refundClaim);
+  assert.match(refundSection, /Refunding this order requires access to both its sales and inventory stores/);
+  assert.match(refundSection, /requires access to every physical store recorded by its inventory movements/);
 });
 
 test('refund is reasoned idempotent and provider-confirmed', async () => {

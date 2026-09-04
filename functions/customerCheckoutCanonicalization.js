@@ -5,6 +5,10 @@ const {
   canonicalizeRequestedCart,
   sanitizeCartItems,
 } = require('./posAddOnAuthorization');
+const {
+  CompositeProductPolicyError,
+  collectRequiredComponentFinishedGoodIds,
+} = require('./compositeProductPolicy');
 
 const MAX_NAME_LENGTH = 80;
 const MAX_NOTE_LENGTH = 200;
@@ -12,6 +16,13 @@ const MAX_TABLE_LENGTH = 20;
 
 function fail(code, message) {
   throw new HttpsError(code, message);
+}
+
+function failCompositePolicy(error) {
+  if (error instanceof CompositeProductPolicyError) {
+    fail('failed-precondition', error.message);
+  }
+  throw error;
 }
 
 function cleanText(value, maxLength = 160) {
@@ -152,6 +163,28 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
       .filter(snapshot => snapshot.exists)
       .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }]),
   );
+  let componentProductIds;
+  try {
+    componentProductIds = collectRequiredComponentFinishedGoodIds({
+      products: productsById,
+      groupsById,
+    });
+  } catch (error) {
+    failCompositePolicy(error);
+  }
+  const missingComponentProductIds = componentProductIds.filter(productId => !productsById[productId]);
+  const componentProductSnapshots = await Promise.all(
+    missingComponentProductIds.map(productId => db.collection('finishedGoods').doc(productId).get()),
+  );
+  const componentProductsById = {
+    ...productsById,
+    ...Object.fromEntries(
+      componentProductSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [
+        snapshot.id,
+        { id: snapshot.id, ...snapshot.data() },
+      ]),
+    ),
+  };
   const canonical = canonicalizeRequestedCart({
     storeId: store.id,
     store,
@@ -159,6 +192,7 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
     requestedItems,
     productsById,
     groupsById,
+    componentProductsById,
   });
 
   const items = requestedItems.map(requested => {
@@ -194,6 +228,7 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
       lineTotal: roundMoney(lineSubtotal + lineTax),
       prepStation: product.prepStation || 'NONE',
       itemType: product.itemType,
+      ...(canonicalItem.components ? { components: canonicalItem.components } : {}),
     };
   });
   const subtotal = roundMoney(items.reduce((sum, item) => sum + item.lineSubtotal, 0));

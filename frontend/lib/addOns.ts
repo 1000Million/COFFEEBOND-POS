@@ -1,5 +1,9 @@
 import type { AddOnSelection } from '../types';
-import type { AddOnGroup, AddOnOption } from '../types/menu-management';
+import type {
+  AddOnGroup,
+  AddOnOption,
+  FinishedGoodComponentReference,
+} from '../types/menu-management';
 
 export type AddOnQuantityByOption = Record<string, number>;
 
@@ -12,6 +16,14 @@ export type AddOnValidationResult = {
 function number(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function isCompositeChoiceGroup(group: AddOnGroup): boolean {
+  return group.purpose === 'COMPOSITE_CHOICE';
+}
+
+export function isExactDistinctAddOnGroup(group: AddOnGroup): boolean {
+  return group.selectionMode === 'EXACT_DISTINCT';
 }
 
 export function uniqueAddOnGroupIds(value: unknown): string[] {
@@ -68,6 +80,30 @@ export function validateAddOnQuantities(
   ));
   if (invalid) {
     return { ok: false, message: 'One or more selected add-ons are unavailable.', selectionCount: 0 };
+  }
+
+  if (isExactDistinctAddOnGroup(group)) {
+    const minimum = number(group.minimumSelections);
+    const maximum = number(group.maximumSelections);
+    if (
+      !Number.isInteger(minimum)
+      || minimum <= 0
+      || !Number.isInteger(maximum)
+      || maximum !== minimum
+    ) {
+      return {
+        ok: false,
+        message: `${group.name} is not configured for an exact number of choices.`,
+        selectionCount: 0,
+      };
+    }
+    if (Object.values(quantities).some(quantity => number(quantity) > 1)) {
+      return {
+        ok: false,
+        message: `Choose ${minimum} different options from ${group.name}.`,
+        selectionCount: 0,
+      };
+    }
   }
 
   const selectionCount = Object.values(quantities).reduce((sum, quantity) => sum + Math.max(0, number(quantity)), 0);
@@ -196,32 +232,63 @@ export function addOnTaxForLine(
 export function sanitizeAddOnGroupsForPublic(groups: AddOnGroup[]): AddOnGroup[] {
   return groups
     .filter(group => group.id && group.isActive !== false)
-    .map(group => ({
-      id: group.id,
-      name: group.name,
-      isActive: true,
-      isRequired: group.isRequired === true,
-      minimumSelections: Math.max(0, number(group.minimumSelections)),
-      maximumSelections: group.maximumSelections === null || group.maximumSelections === undefined
-        ? null
-        : Math.max(0, number(group.maximumSelections)),
-      selectionMode: group.selectionMode === 'SINGLE' ? 'SINGLE' : 'MULTIPLE',
-      options: (group.options || [])
-        .filter(option => option.isActive !== false)
-        .map(option => {
-          const taxRate = number(option.taxRate);
-          return {
-            id: option.id,
-            code: option.code || option.id,
-            name: option.name,
-            price: Math.max(0, number(option.price)),
-            ...(option.attribute ? { attribute: option.attribute } : {}),
-            ...(taxRate > 0 ? { taxRate } : {}),
-            isActive: true,
-            sortOrder: number(option.sortOrder),
-          };
-        }),
-    }));
+    .map(group => {
+      const compositeChoice = isCompositeChoiceGroup(group);
+      const selectionMode = group.selectionMode === 'SINGLE'
+        ? 'SINGLE'
+        : group.selectionMode === 'EXACT_DISTINCT'
+          ? 'EXACT_DISTINCT'
+          : 'MULTIPLE';
+      return {
+        id: group.id,
+        name: group.name,
+        isActive: true,
+        isRequired: group.isRequired === true,
+        minimumSelections: Math.max(0, number(group.minimumSelections)),
+        maximumSelections: group.maximumSelections === null || group.maximumSelections === undefined
+          ? null
+          : Math.max(0, number(group.maximumSelections)),
+        selectionMode,
+        ...(compositeChoice ? { purpose: 'COMPOSITE_CHOICE' as const } : {}),
+        options: (group.options || [])
+          .filter(option => option.isActive !== false)
+          .map(option => {
+            const taxRate = number(option.taxRate);
+            const component = sanitizedFinishedGoodComponent(option.finishedGoodComponent);
+            return {
+              id: option.id,
+              code: option.code || option.id,
+              name: option.name,
+              price: Math.max(0, number(option.price)),
+              ...(option.attribute ? { attribute: option.attribute } : {}),
+              ...(taxRate > 0 ? { taxRate } : {}),
+              isActive: true,
+              sortOrder: number(option.sortOrder),
+              ...(compositeChoice && component ? { finishedGoodComponent: component } : {}),
+            };
+          }),
+      };
+    });
+}
+
+function sanitizedFinishedGoodComponent(value: unknown): FinishedGoodComponentReference | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<FinishedGoodComponentReference>;
+  const finishedGoodId = typeof candidate.finishedGoodId === 'string'
+    ? candidate.finishedGoodId.trim()
+    : '';
+  const finishedGoodCode = typeof candidate.finishedGoodCode === 'string'
+    ? candidate.finishedGoodCode.trim()
+    : '';
+  const quantity = number(candidate.quantity);
+  if (
+    !finishedGoodId
+    || !finishedGoodCode
+    || !Number.isInteger(quantity)
+    || quantity <= 0
+    || quantity > 100
+  ) return null;
+  return { finishedGoodId, finishedGoodCode, quantity };
 }
 
 export function sanitizedAddOnSnapshot(addOns: AddOnSelection[] | undefined) {

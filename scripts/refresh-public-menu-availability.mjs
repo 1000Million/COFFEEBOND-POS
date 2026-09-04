@@ -6,6 +6,7 @@ import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 const PROJECT_ID = 'coffee-bond-pos';
 const DEFAULT_STORE_CODE = 'GOLDEN_I';
 const DEFAULT_SOURCE_STORE_CODE = 'NOIDA_29';
+const PREVIEW_ONLY_STORE_CODES = new Set(['TASTING_ROOM_29']);
 const APPLY = process.argv.includes('--apply');
 const DRY_RUN = !APPLY;
 
@@ -138,6 +139,7 @@ function sanitizedDisplayItem(store, item) {
 }
 
 function sanitizedAddOnGroup(groupId, group) {
+  const compositeChoice = group.purpose === 'COMPOSITE_CHOICE';
   return {
     id: groupId,
     name: String(group.name || ''),
@@ -147,18 +149,32 @@ function sanitizedAddOnGroup(groupId, group) {
     maximumSelections: group.maximumSelections === null || group.maximumSelections === undefined
       ? null
       : Math.max(0, toNumber(group.maximumSelections)),
-    selectionMode: group.selectionMode === 'SINGLE' ? 'SINGLE' : 'MULTIPLE',
+    selectionMode: group.selectionMode === 'SINGLE'
+      ? 'SINGLE'
+      : group.selectionMode === 'EXACT_DISTINCT'
+        ? 'EXACT_DISTINCT'
+        : 'MULTIPLE',
+    ...(compositeChoice ? { purpose: 'COMPOSITE_CHOICE' } : {}),
     options: (Array.isArray(group.options) ? group.options : [])
       .filter((option) => option && option.isActive !== false)
-      .map((option) => ({
-        id: String(option.id || option.code || ''),
-        code: String(option.code || option.id || ''),
-        name: String(option.name || ''),
-        price: Math.max(0, toNumber(option.price)),
-        attribute: option.attribute === 'EGG' ? 'EGG' : 'VEG',
-        isActive: true,
-        sortOrder: toNumber(option.sortOrder),
-      })),
+      .map((option) => {
+        const component = option.finishedGoodComponent;
+        const finishedGoodId = String(component?.finishedGoodId || '').trim();
+        const finishedGoodCode = String(component?.finishedGoodCode || '').trim();
+        const quantity = toNumber(component?.quantity);
+        return {
+          id: String(option.id || option.code || ''),
+          code: String(option.code || option.id || ''),
+          name: String(option.name || ''),
+          price: Math.max(0, toNumber(option.price)),
+          attribute: option.attribute === 'EGG' ? 'EGG' : 'VEG',
+          isActive: true,
+          sortOrder: toNumber(option.sortOrder),
+          ...(compositeChoice && finishedGoodId && finishedGoodCode && quantity > 0 ? {
+            finishedGoodComponent: { finishedGoodId, finishedGoodCode, quantity },
+          } : {}),
+        };
+      }),
   };
 }
 
@@ -290,6 +306,9 @@ function diffSnapshot(current, next) {
 }
 
 async function main() {
+  if (PREVIEW_ONLY_STORE_CODES.has(TARGET_STORE_CODE)) {
+    fail(`${TARGET_STORE_CODE} is preview-only. This production refresh script cannot publish it.`);
+  }
   const firestore = initializeAdmin();
   const [targetStore, sourceStore] = await Promise.all([
     getStoreByIdOrCode(firestore, TARGET_STORE_CODE),

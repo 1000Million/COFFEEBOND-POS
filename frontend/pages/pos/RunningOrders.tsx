@@ -35,6 +35,7 @@ import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplaySt
 import { isComplimentaryOrder } from '../../lib/complimentaryOrders';
 import { requestPosRazorpayRefund } from '../../lib/posRazorpay';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { resolveInventoryStore } from '../../lib/inventoryStoreResolver';
 import {
   DRAFT_SETUP_TEST_STORE_ID,
   isActiveRunningOrdersAdmin,
@@ -68,7 +69,12 @@ type OrderBundle = {
 type StockMovementDoc = {
   id?: string;
   storeId: string;
+  storeCode?: string;
   storeName?: string;
+  inventoryStoreId?: string;
+  logicalSalesStoreId?: string;
+  logicalSalesStoreCode?: string;
+  logicalSalesStoreName?: string;
   inventoryItemId?: string;
   inventoryItemName?: string;
   movementType: string;
@@ -725,6 +731,10 @@ export default function RunningOrders() {
     setError('');
     setSuccess('');
     try {
+      const inventoryStore = await resolveInventoryStore(orderStore, async inventoryStoreId => {
+        const snapshot = await getDoc(doc(db, 'stores', inventoryStoreId));
+        return snapshot.exists() ? ({ ...snapshot.data(), id: snapshot.id } as Store) : null;
+      });
       const capturedPosRazorpay = isCapturedPosRazorpayOrder(voidBundle.order, voidBundle.payments);
       const razorpayRefund = capturedPosRazorpay
         ? await requestPosRazorpayRefund({
@@ -745,7 +755,7 @@ export default function RunningOrders() {
       ]);
       const pendingSnap = await getDocs(query(
         collection(db, 'pendingInventoryConsumption'),
-        where('storeId', '==', voidBundle.order.storeId),
+        where('storeId', '==', inventoryStore.id),
         where('orderId', '==', voidBundle.order.id),
       ));
       const movementDocs = movementSnap.docs.map(movementDoc => ({ id: movementDoc.id, ...movementDoc.data() } as StockMovementDoc));
@@ -813,8 +823,12 @@ export default function RunningOrders() {
           });
           transaction.set(target.reversalRef, {
             storeId: target.movement.storeId,
-            storeCode: freshOrder.storeCode,
-            storeName: target.movement.storeName || freshOrder.storeName,
+            storeCode: target.movement.storeCode || (target.movement.storeId === inventoryStore.id ? inventoryStore.code : target.movement.storeId),
+            storeName: target.movement.storeName || (target.movement.storeId === inventoryStore.id ? inventoryStore.name : target.movement.storeId),
+            inventoryStoreId: target.movement.inventoryStoreId || target.movement.storeId,
+            logicalSalesStoreId: target.movement.logicalSalesStoreId || freshOrder.storeId,
+            logicalSalesStoreCode: target.movement.logicalSalesStoreCode || freshOrder.storeCode || orderStore.code,
+            logicalSalesStoreName: target.movement.logicalSalesStoreName || freshOrder.storeName || orderStore.name,
             inventoryItemId: target.stockItemCode,
             inventoryItemName: target.movement.inventoryItemName || target.stockItemCode,
             movementType: 'ORDER_VOID_REVERSAL',

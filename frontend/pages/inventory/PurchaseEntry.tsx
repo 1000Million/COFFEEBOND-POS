@@ -16,7 +16,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { ref as storageRef, uploadBytesResumable } from 'firebase/storage';
 import { db, functions, storage } from '../../lib/firebase';
@@ -34,6 +34,8 @@ import {
 import { Store, StockMovement } from '../../types';
 import { PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
+import { assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 type PurchaseLineType = 'RAW_INGREDIENT' | 'PREP_ITEM';
 
@@ -269,7 +271,7 @@ function itemKey(itemType: string, itemCode: string): string {
 }
 
 function allowedStoreIds(profile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
-  return profile.assignedStoreIds?.length ? profile.assignedStoreIds : (profile.storeIds || []);
+  return assignedStoreIdentifiers(profile);
 }
 
 function newLine(defaultType: PurchaseLineType = 'RAW_INGREDIENT'): PurchaseLineForm {
@@ -600,22 +602,25 @@ export default function PurchaseEntry() {
       setLoading(true);
       setError('');
       try {
-        const [storeSnap, rawSnap, prepSnap] = await Promise.all([
-          getDocs(staffProfile.role === 'ADMIN'
-            ? collection(db, 'stores')
-            : query(collection(db, 'stores'), where('isActive', '==', true))),
+        const assignedIds = allowedStoreIds(staffProfile);
+        const [storeDocs, rawSnap, prepSnap] = await Promise.all([
+          staffProfile.role === 'ADMIN'
+            ? getDocs(collection(db, 'stores')).then(snapshot => snapshot.docs)
+            : Promise.all(assignedIds.map(storeId => getDoc(doc(db, 'stores', storeId))))
+              .then(snapshots => snapshots.filter(snapshot => snapshot.exists() && snapshot.data().isActive === true)),
           getDocs(collection(db, 'rawIngredients')),
           getDocs(collection(db, 'prepItems')),
         ]);
 
         if (!active) return;
 
-        let loadedStores = storeSnap.docs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+        let loadedStores = storeDocs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
         loadedStores.sort((a, b) => a.name.localeCompare(b.name));
         if (staffProfile.role !== 'ADMIN') {
           const ids = allowedStoreIds(staffProfile);
           loadedStores = loadedStores.filter((store) => ids.includes(store.id));
         }
+        loadedStores = loadedStores.filter((store) => effectiveInventoryStoreId(store) === store.id);
 
         setStores(loadedStores);
         setRawIngredients(rawSnap.docs.map((snap) => ({ id: snap.id, ...snap.data() } as RawIngredient & { id: string })));

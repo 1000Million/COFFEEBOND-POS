@@ -1,5 +1,6 @@
 import { httpsCallable } from 'firebase/functions';
 import type { AddOnSelection } from '../types';
+import type { CanonicalCompositeComponent } from '../types/menu-management';
 import { functions } from './firebase';
 
 export type PosAddOnAuthorizationItemRequest = {
@@ -19,6 +20,7 @@ export type PosAddOnCanonicalItem = {
   taxRate: number;
   addOns: AddOnSelection[];
   addOnTotal: number;
+  components?: CanonicalCompositeComponent[];
 };
 
 export type PosAddOnAuthorization = {
@@ -32,6 +34,8 @@ type AuthorizePosAddOnsRequest = {
   storeId: string;
   orderId: string;
   orderNumber: string | null;
+  /** Server-read source used to bind Customer Web acceptance to its submitted snapshot. */
+  sourceOnlineOrderId?: string;
   checkoutMode?: 'STANDARD_POS' | 'SETUP_TEST';
   checkoutSource?: 'POS';
   paymentMethod?: string | null;

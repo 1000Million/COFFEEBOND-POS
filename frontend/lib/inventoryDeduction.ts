@@ -2,10 +2,15 @@ import { collection, doc, serverTimestamp, Transaction } from 'firebase/firestor
 import { db } from './firebase';
 import { isPackagingComponentApplicable } from './packagingApplicability';
 import { isGoldenISalesFirstOrderingStore } from './publicMenuAvailability';
+import {
+  inventoryStoreAttribution,
+  logicalSalesStoreAttribution,
+  resolveInventoryStore,
+} from './inventoryStoreResolver';
 import { AddOnSelection, OrderType, StaffProfile, Store } from '../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../types/menu-management';
 
-export type InventoryDeductionSource = 'POS' | 'CUSTOMER_WEB_ACCEPT';
+export type InventoryDeductionSource = 'POS' | 'CUSTOMER_WEB_ACCEPT' | 'REMAKE';
 export type InventoryPolicy = 'STRICT' | 'ALLOW_NEGATIVE' | 'ALLOW_NEGATIVE_DEFER_BOM';
 export type InventoryConsumptionStatus = 'APPLIED' | 'PENDING_BOM' | 'NOT_REQUIRED';
 
@@ -62,9 +67,9 @@ export type InventoryDeductionLineInput = {
   lineKey: string;
   quantity: number;
   finishedGood: Partial<FinishedGood> & {
+    id?: string;
     code: string;
     name: string;
-    [key: string]: unknown;
   };
   addOns?: AddOnSelection[];
 };
@@ -104,6 +109,10 @@ export type InventoryMovementPayload = {
   storeId: string;
   storeCode: string;
   storeName: string;
+  inventoryStoreId: string;
+  logicalSalesStoreId: string;
+  logicalSalesStoreCode: string;
+  logicalSalesStoreName: string;
   inventoryItemId: string;
   inventoryItemName: string;
   movementType: 'SALE_DEDUCTION';
@@ -136,6 +145,10 @@ export type PendingInventoryConsumptionPayload = {
   storeId: string;
   storeCode: string;
   storeName: string;
+  inventoryStoreId: string;
+  logicalSalesStoreId: string;
+  logicalSalesStoreCode: string;
+  logicalSalesStoreName: string;
   orderId: string;
   orderNumber: string;
   orderLineId: string;
@@ -286,22 +299,22 @@ function convertQuantity(quantity: number, fromUom: string, toUom: string): { qu
   };
 }
 
-function usesBom(item: Partial<FinishedGood> & Record<string, unknown>): boolean {
+function usesBom(item: Partial<FinishedGood>): boolean {
   return item.itemType === 'MADE_TO_ORDER'
     || (item.itemType === 'DIRECT_STOCK' && Array.isArray(item.bom) && item.bom.length > 0)
     || item.productionMode === 'MADE_TO_ORDER'
     || item.productionMode === 'ASSEMBLED_TO_ORDER';
 }
 
-function isDirectStockSale(item: Partial<FinishedGood> & Record<string, unknown>): boolean {
+function isDirectStockSale(item: Partial<FinishedGood>): boolean {
   return item.itemType === 'DIRECT_STOCK' || item.productionMode === 'BOUGHT_AND_SOLD';
 }
 
-function isNoStockItem(item: Partial<FinishedGood> & Record<string, unknown>): boolean {
+function isNoStockItem(item: Partial<FinishedGood>): boolean {
   return item.itemType === 'NO_STOCK' || item.productionMode === 'NO_STOCK';
 }
 
-function isStoreAssigned(item: Partial<FinishedGood> & Record<string, unknown>, storeId: string): boolean {
+function isStoreAssigned(item: Partial<FinishedGood>, storeId: string): boolean {
   const availableStoreIds = Array.isArray(item.availableStoreIds) ? item.availableStoreIds : [];
   return availableStoreIds.length === 0 || availableStoreIds.includes(storeId);
 }
@@ -311,9 +324,9 @@ function getStockDocId(storeId: string, stockItemType: string, stockItemCode: st
 }
 
 function buildSaleNote(source: InventoryDeductionSource, orderNumber: string): string {
-  return source === 'CUSTOMER_WEB_ACCEPT'
-    ? `Online order ${orderNumber}`
-    : `Order ${orderNumber}`;
+  if (source === 'CUSTOMER_WEB_ACCEPT') return `Online order ${orderNumber}`;
+  if (source === 'REMAKE') return `Remake for order ${orderNumber}`;
+  return `Order ${orderNumber}`;
 }
 
 function effectiveInventoryPolicy(store: Store): InventoryPolicy {
@@ -330,6 +343,12 @@ function pendingConsumptionDocId(storeId: string, orderId: string, orderLineId: 
 
 export async function planInventoryDeductionForSale(input: PlanInput): Promise<InventoryDeductionPlan> {
   const { transaction, store, orderId, orderNumber, orderType, businessDate, source, staffProfile, lines } = input;
+  const inventoryStore = await resolveInventoryStore(store, async inventoryStoreId => {
+    const snapshot = await transaction.get(doc(db, 'stores', inventoryStoreId));
+    return snapshot.exists() ? ({ ...snapshot.data(), id: snapshot.id } as Store) : null;
+  });
+  const inventoryAttribution = inventoryStoreAttribution(inventoryStore);
+  const logicalSalesAttribution = logicalSalesStoreAttribution(store);
   const inventoryPolicy = effectiveInventoryPolicy(store);
   const allowDeferredBom = inventoryPolicy === 'ALLOW_NEGATIVE_DEFER_BOM';
 
@@ -394,9 +413,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     const idempotencyKey = pendingConsumptionDocId(store.id, orderId, line.lineKey);
 
     pendingConsumptionPayloads.push({
-      storeId: store.id,
-      storeCode: store.code,
-      storeName: store.name,
+      ...inventoryAttribution,
+      ...logicalSalesAttribution,
       orderId,
       orderNumber,
       orderLineId: line.lineKey,
@@ -419,8 +437,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     pushWarning({
       type: 'PENDING_BOM_DEFERRED',
       message: `${lineMeta.finishedGoodName}: inventory will be reconciled after BOM completion.`,
-      storeId: store.id,
-      storeName: store.name,
+      storeId: inventoryStore.id,
+      storeName: inventoryStore.name,
       finishedGoodCode: lineMeta.finishedGoodCode,
       finishedGoodName: lineMeta.finishedGoodName,
       unit: 'BOM',
@@ -462,7 +480,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       costPerUnit?: number;
     },
   ): Promise<StockRowSnapshot | null> => {
-    const directId = getStockDocId(store.id, stockItemType, stockItemCode);
+    const directId = getStockDocId(inventoryStore.id, stockItemType, stockItemCode);
     if (stockCache.has(directId)) return stockCache.get(directId) || null;
 
     let stockRef = doc(db, 'storeStock', directId);
@@ -470,7 +488,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     let resolvedType = stockItemType as StockItemType;
 
     if (!stockSnap.exists() && stockItemType === 'PACKAGING') {
-      const fallbackId = getStockDocId(store.id, 'RAW_INGREDIENT', stockItemCode);
+      const fallbackId = getStockDocId(inventoryStore.id, 'RAW_INGREDIENT', stockItemCode);
       stockRef = doc(db, 'storeStock', fallbackId);
       stockSnap = await transaction.get(stockRef);
       resolvedType = 'RAW_INGREDIENT';
@@ -501,7 +519,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       }
 
       const resolvedType = fallback.stockItemType || (stockItemType as StockItemType);
-      const resolvedId = getStockDocId(store.id, resolvedType, stockItemCode);
+      const resolvedId = getStockDocId(inventoryStore.id, resolvedType, stockItemCode);
       const syntheticRef = doc(db, 'storeStock', resolvedId);
       const synthetic = {
         id: resolvedId,
@@ -575,7 +593,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         requiredQuantity: requiredQuantity,
         availableQuantity: 0,
         unit: normalizeUom(fromUnit),
-        suggestedAdminAction: context.suggestedAction || `Create a storeStock row for ${context.componentType} / ${stockItemCode} at ${store.name}.`,
+        suggestedAdminAction: context.suggestedAction || `Create a storeStock row for ${context.componentType} / ${stockItemCode} at ${inventoryStore.name}.`,
       });
       return;
     }
@@ -584,9 +602,9 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     if (!stockRow.exists) {
       pushWarning({
         type: 'MISSING_STOCK_ROW_CREATED',
-        message: `${context.finishedGoodName}: created missing store stock row for ${stockRow.stockItemType} / ${stockItemCode} at ${store.name} with a starting quantity of 0 ${stockUnit}.`,
-        storeId: store.id,
-        storeName: store.name,
+        message: `${context.finishedGoodName}: created missing store stock row for ${stockRow.stockItemType} / ${stockItemCode} at ${inventoryStore.name} with a starting quantity of 0 ${stockUnit}.`,
+        storeId: inventoryStore.id,
+        storeName: inventoryStore.name,
         stockItemType: stockRow.stockItemType,
         stockItemCode,
         stockItemName,
@@ -620,8 +638,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       pushWarning({
         type: 'UNIT_NORMALIZED',
         message: `${context.finishedGoodName}: normalized ${stockItemCode} from ${normalizeUom(fromUnit)} to ${stockUnit}.`,
-        storeId: store.id,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeName: inventoryStore.name,
         stockItemType: stockRow.stockItemType,
         stockItemCode,
         stockItemName,
@@ -636,8 +654,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       pushWarning({
         type: 'MISSING_COST',
         message: `${context.finishedGoodName}: ${stockItemName} has no cost configured, so COGS was recorded as 0 for this component.`,
-        storeId: store.id,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeName: inventoryStore.name,
         stockItemType: stockRow.stockItemType,
         stockItemCode,
         stockItemName,
@@ -1212,9 +1230,9 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
         if (!stockRow.exists) {
           pushWarning({
             type: 'STOCK_ROW_CREATED_NEGATIVE',
-            message: `${entry.finishedGoodName}: created ${entry.stockItemName} store stock at ${store.name} and immediately deducted it below zero (${previousQty.toFixed(2)} → ${newQty.toFixed(2)} ${entry.unit}).`,
-            storeId: store.id,
-            storeName: store.name,
+            message: `${entry.finishedGoodName}: created ${entry.stockItemName} store stock at ${inventoryStore.name} and immediately deducted it below zero (${previousQty.toFixed(2)} → ${newQty.toFixed(2)} ${entry.unit}).`,
+            storeId: inventoryStore.id,
+            storeName: inventoryStore.name,
             stockItemType: entry.stockItemType,
             stockItemCode: entry.stockItemCode,
             stockItemName: entry.stockItemName,
@@ -1228,8 +1246,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
           pushWarning({
             type: 'NEGATIVE_STOCK',
             message: `${entry.finishedGoodName}: ${entry.stockItemName} dropped below zero (${previousQty.toFixed(2)} → ${newQty.toFixed(2)} ${entry.unit}).`,
-            storeId: store.id,
-            storeName: store.name,
+            storeId: inventoryStore.id,
+            storeName: inventoryStore.name,
             stockItemType: entry.stockItemType,
             stockItemCode: entry.stockItemCode,
             stockItemName: entry.stockItemName,
@@ -1244,9 +1262,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
 
       movementPayloads.push({
         stockDocId,
-        storeId: store.id,
-        storeCode: store.code,
-        storeName: store.name,
+        ...inventoryAttribution,
+        ...logicalSalesAttribution,
         inventoryItemId: entry.stockItemCode,
         inventoryItemName: entry.stockItemName,
         movementType: 'SALE_DEDUCTION',
@@ -1283,9 +1300,9 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       newQty: roundValue(runningQty),
       existed: stockRow.exists,
       seedData: {
-        storeId: store.id,
-        storeCode: store.code,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeCode: inventoryStore.code,
+        storeName: inventoryStore.name,
         stockItemType: stockRow.stockItemType,
         stockItemCode: stockRow.stockItemCode,
         stockItemName: stockRow.stockItemName,

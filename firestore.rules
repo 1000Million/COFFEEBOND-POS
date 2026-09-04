@@ -57,7 +57,14 @@ service cloud.firestore {
     }
 
     function hasStoreAccess(storeId) {
-      return isAdmin() || (isActiveUserProfile() && userData().keys().hasAll(['storeIds']) && storeId in userData().storeIds);
+      return isAdmin() || (isActiveUserProfile() && (
+        (userData().keys().hasAll(['storeIds'])
+          && userData().storeIds is list
+          && storeId in userData().storeIds)
+        || (userData().keys().hasAll(['assignedStoreIds'])
+          && userData().assignedStoreIds is list
+          && storeId in userData().assignedStoreIds)
+      ));
     }
 
     function isSaleCreatedStoreStock(stockId) {
@@ -210,7 +217,12 @@ service cloud.firestore {
         && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.expiresAt is timestamp
         && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.expiresAt > request.time
         && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.used == true
-        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.usedAt is timestamp;
+        && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.usedAt is timestamp
+        && ((!data.keys().hasAny(['source']) || data.source != 'CUSTOMER_WEB')
+          || (data.keys().hasAll(['onlineOrderId'])
+            && data.onlineOrderId is string
+            && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.keys().hasAll(['sourceOnlineOrderId'])
+            && getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data.sourceOnlineOrderId == data.onlineOrderId));
     }
 
     function orderTotalsUnchanged() {
@@ -398,6 +410,13 @@ service cloud.firestore {
         && request.resource.data.addOnTotal == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].addOnTotal
         && request.resource.data.addOns is list
         && request.resource.data.addOns.size() <= 40
+        && ((!getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].keys().hasAny(['components'])
+            && !request.resource.data.keys().hasAny(['components']))
+          || (getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].keys().hasAll(['components'])
+            && request.resource.data.keys().hasAll(['components'])
+            && request.resource.data.components is list
+            && request.resource.data.components.size() <= 40
+            && request.resource.data.components == getAfter(posAddOnAuthorizationPath(request.resource.data.addOnAuthorizationId)).data.canonicalItems[itemId].components))
         && request.resource.data.baseUnitPrice is number
         && request.resource.data.baseUnitPrice >= 0
         && request.resource.data.addOnTotal is number
@@ -456,11 +475,153 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'reference']);
     }
 
+    function isConfiguredInventoryStorePair(logicalStoreId, inventoryStoreId) {
+      return logicalStoreId is string
+        && inventoryStoreId is string
+        && exists(/databases/$(database)/documents/stores/$(logicalStoreId))
+        && exists(/databases/$(database)/documents/stores/$(inventoryStoreId))
+        && (
+          (get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.keys().hasAll(['inventoryStoreId'])
+            && get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.inventoryStoreId is string
+            && get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.inventoryStoreId.size() > 0
+            && get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.inventoryStoreId == inventoryStoreId)
+          || (!get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.keys().hasAny(['inventoryStoreId'])
+            && logicalStoreId == inventoryStoreId)
+          || (get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.keys().hasAll(['inventoryStoreId'])
+            && get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.inventoryStoreId is string
+            && get(/databases/$(database)/documents/stores/$(logicalStoreId)).data.inventoryStoreId.size() == 0
+            && logicalStoreId == inventoryStoreId)
+        )
+        && (
+          !get(/databases/$(database)/documents/stores/$(inventoryStoreId)).data.keys().hasAny(['inventoryStoreId'])
+          || (get(/databases/$(database)/documents/stores/$(inventoryStoreId)).data.inventoryStoreId is string
+            && (get(/databases/$(database)/documents/stores/$(inventoryStoreId)).data.inventoryStoreId.size() == 0
+              || get(/databases/$(database)/documents/stores/$(inventoryStoreId)).data.inventoryStoreId == inventoryStoreId))
+        );
+    }
+
+    function hasValidInventoryStoreAttribution(data) {
+      return (data.keys().hasAll([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName'
+        ])
+        && data.inventoryStoreId == data.storeId
+        && data.logicalSalesStoreId is string
+        && hasStoreAccess(data.inventoryStoreId)
+        && hasStoreAccess(data.logicalSalesStoreId)
+        && isConfiguredInventoryStorePair(data.logicalSalesStoreId, data.inventoryStoreId)
+        && data.storeCode == get(/databases/$(database)/documents/stores/$(data.inventoryStoreId)).data.code
+        && data.storeName == get(/databases/$(database)/documents/stores/$(data.inventoryStoreId)).data.name
+        && data.logicalSalesStoreCode == get(/databases/$(database)/documents/stores/$(data.logicalSalesStoreId)).data.code
+        && data.logicalSalesStoreName == get(/databases/$(database)/documents/stores/$(data.logicalSalesStoreId)).data.name
+        && data.orderId is string
+        && data.logicalSalesStoreId == orderAfter(data.orderId).storeId)
+        || (!data.keys().hasAny([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          && data.orderId is string
+          && data.storeId == orderAfter(data.orderId).storeId
+          && hasStoreAccess(data.storeId)
+          && isConfiguredInventoryStorePair(data.storeId, data.storeId));
+    }
+
+    // A void must restore the exact physical pool recorded by the immutable
+    // original sale movement. It deliberately does not re-resolve the store's
+    // current alias or mutable display names: either may legitimately change
+    // after the sale, while the historical movement remains authoritative.
+    function hasValidVoidReversalInventoryAttribution(data) {
+      return data.movementType == 'ORDER_VOID_REVERSAL'
+        && data.keys().hasAll([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName',
+          'originalMovementId',
+          'originalMovementType'
+        ])
+        && data.originalMovementId is string
+        && data.originalMovementId.size() > 0
+        && exists(/databases/$(database)/documents/stockMovements/$(data.originalMovementId))
+        && get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.movementType in [
+          'SALE_DEDUCTION',
+          'ORDER_BOM_BACKFILL'
+        ]
+        && data.originalMovementType == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.movementType
+        && data.orderId is string
+        && data.orderId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.orderId
+        && data.storeId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.storeId
+        && data.inventoryStoreId == data.storeId
+        && data.logicalSalesStoreId == orderAfter(data.orderId).storeId
+        && (
+          (get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.keys().hasAll([
+              'inventoryStoreId',
+              'logicalSalesStoreId'
+            ])
+            && data.inventoryStoreId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.inventoryStoreId
+            && data.logicalSalesStoreId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.logicalSalesStoreId)
+          || (!get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.keys().hasAny([
+              'inventoryStoreId',
+              'logicalSalesStoreId'
+            ])
+            && data.inventoryStoreId == data.logicalSalesStoreId)
+        )
+        && hasStoreAccess(data.inventoryStoreId)
+        && hasStoreAccess(data.logicalSalesStoreId);
+    }
+
+    function hasValidOptionalInventoryStoreAttribution(data) {
+      return !data.keys().hasAny([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName'
+        ])
+        || (data.keys().hasAll([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          && (
+            (data.movementType == 'ORDER_VOID_REVERSAL'
+              && hasValidVoidReversalInventoryAttribution(data))
+            || (data.movementType != 'ORDER_VOID_REVERSAL'
+              && hasValidInventoryStoreAttribution(data))
+          ));
+    }
+
+    function hasInventoryRecordStoreAccess(data) {
+      return hasStoreAccess(data.storeId)
+        && (
+          !data.keys().hasAny([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          || (data.keys().hasAll([
+              'inventoryStoreId',
+              'logicalSalesStoreId',
+              'logicalSalesStoreCode',
+              'logicalSalesStoreName'
+            ])
+            && data.inventoryStoreId == data.storeId
+            && hasStoreAccess(data.logicalSalesStoreId)
+            && isConfiguredInventoryStorePair(data.logicalSalesStoreId, data.inventoryStoreId))
+        );
+    }
+
     function isSaleDeductionMovement() {
       return request.resource.data.movementType == 'SALE_DEDUCTION'
       && request.resource.data.referenceType == 'ORDER'
       && request.resource.data.storeId is string
       && hasStoreAccess(request.resource.data.storeId)
+      && hasValidInventoryStoreAttribution(request.resource.data)
       && request.resource.data.stockSystem == 'MENU_MANAGEMENT'
       && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM', 'FINISHED_GOOD', 'PACKAGING', 'BOUGHT_COMPONENT']
       && request.resource.data.quantity is number
@@ -501,7 +662,30 @@ service cloud.firestore {
         && request.resource.data.addOns == orderItemAfter(
           request.resource.data.orderId,
           request.resource.data.orderItemId
-        ).addOns;
+        ).addOns
+        && ((!orderItemAfter(
+            request.resource.data.orderId,
+            request.resource.data.orderItemId
+          ).keys().hasAny(['components'])
+            && !request.resource.data.keys().hasAny(['component']))
+          || (orderItemAfter(
+              request.resource.data.orderId,
+              request.resource.data.orderItemId
+            ).keys().hasAll(['components'])
+            && request.resource.data.keys().hasAll(['component'])
+            && request.resource.data.component is map
+            && request.resource.data.component in orderItemAfter(
+              request.resource.data.orderId,
+              request.resource.data.orderItemId
+            ).components
+            && request.resource.data.itemName == request.resource.data.component.componentName
+            && request.resource.data.itemCode == request.resource.data.component.componentFinishedGoodCode
+            && request.resource.data.quantity == orderItemAfter(
+              request.resource.data.orderId,
+              request.resource.data.orderItemId
+            ).quantity * request.resource.data.component.quantity
+            && (request.resource.data.component.prepStation == request.resource.data.station
+              || request.resource.data.component.prepStation == 'BOTH')));
     }
 
     function isValidKotUpdate() {
@@ -714,6 +898,7 @@ service cloud.firestore {
       allow update: if isCheckoutStaff()
         && (isAdmin() || hasStoreAccess(resource.data.storeId))
         && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.items == resource.data.items
         // Paid gateway orders are accepted or refunded only by secured callables.
         && resource.data.paymentProvider != 'RAZORPAY';
       allow delete: if isAdmin() && resource.data.paymentProvider != 'RAZORPAY';
@@ -935,21 +1120,28 @@ service cloud.firestore {
 
     match /stockMovements/{movementId} {
       allow read: if isActiveStaff();
-      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId) && (
+      allow create: if isCheckoutStaff()
+        && hasStoreAccess(request.resource.data.storeId)
+        && hasValidOptionalInventoryStoreAttribution(request.resource.data)
+        && (
           (isAdmin() || isStoreManager()) || 
           isSaleDeductionMovement()
-      );
+        );
       allow delete: if false; // no deletions
       allow update: if false; // no modifications
     }
 
     match /pendingInventoryConsumption/{pendingId} {
-      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow read: if isActiveStaff() && (isAdmin() || hasInventoryRecordStoreAccess(resource.data));
       allow create: if isCheckoutStaff()
         && request.resource.data.keys().hasOnly([
           'storeId',
           'storeCode',
           'storeName',
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName',
           'orderId',
           'orderNumber',
           'orderLineId',
@@ -970,10 +1162,11 @@ service cloud.firestore {
         ])
         && request.resource.data.storeId is string
         && hasStoreAccess(request.resource.data.storeId)
-        && request.resource.data.status == 'PENDING_BOM'
-        && request.resource.data.idempotencyKey == pendingId
         && request.resource.data.orderId is string
         && request.resource.data.orderId.size() > 0
+        && hasValidInventoryStoreAttribution(request.resource.data)
+        && request.resource.data.status == 'PENDING_BOM'
+        && request.resource.data.idempotencyKey == pendingId
         && request.resource.data.orderNumber is string
         && request.resource.data.orderNumber.size() > 0
         && request.resource.data.orderLineId is string
@@ -997,7 +1190,7 @@ service cloud.firestore {
         && request.resource.data.inventoryMovementIds is list
         && request.resource.data.inventoryMovementIds.size() == 0;
       allow update: if (isAdmin() || isStoreManager())
-        && (isAdmin() || hasStoreAccess(resource.data.storeId))
+        && (isAdmin() || hasInventoryRecordStoreAccess(resource.data))
         && resource.data.status == 'PENDING_BOM'
         && request.resource.data.status == 'CANCELLED'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([

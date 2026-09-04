@@ -1,5 +1,11 @@
 'use strict';
 
+const {
+  inventoryStoreAttribution,
+  logicalSalesStoreAttribution,
+  resolveInventoryStore,
+} = require('./inventoryStoreResolver');
+
 const UOM_ALIASES = {
   G: 'G', GRAM: 'G', GRAMS: 'G',
   KG: 'KG', KGS: 'KG', KILOGRAM: 'KG', KILOGRAMS: 'KG',
@@ -67,8 +73,11 @@ function inventoryPolicy(store) {
     : 'STRICT';
 }
 
+// Stock shortage only blocks a sale for STRICT stores. A store opts out per-store by
+// setting inventoryPolicy to ALLOW_NEGATIVE or ALLOW_NEGATIVE_DEFER_BOM; Golden I keeps
+// its historical behaviour through the inventoryPolicy() fallback.
 function shouldRequireAvailableStock(store, requested) {
-  return requested === true && !isGoldenISalesFirstOrderingStore(store);
+  return requested === true && inventoryPolicy(store) === 'STRICT';
 }
 
 function usesBom(item) {
@@ -154,6 +163,12 @@ async function planOnlineOrderInventory({
   requireAvailableStock = false,
   source = 'CUSTOMER_WEB_ACCEPT',
 }) {
+  const inventoryStore = await resolveInventoryStore(store, async inventoryStoreId => {
+    const snapshot = await transaction.get(db.collection('stores').doc(inventoryStoreId));
+    return snapshot.exists ? { ...snapshot.data(), id: snapshot.id } : null;
+  });
+  const inventoryAttribution = inventoryStoreAttribution(inventoryStore);
+  const logicalSalesAttribution = logicalSalesStoreAttribution(store);
   const blockers = [];
   const warnings = [];
   const movements = [];
@@ -192,7 +207,7 @@ async function planOnlineOrderInventory({
   });
 
   const getStock = async (type, code, fallback) => {
-    const directId = stockId(store.id, type, code);
+    const directId = stockId(inventoryStore.id, type, code);
     if (stockCache.has(directId)) return stockCache.get(directId);
     let resolvedId = directId;
     let resolvedType = type;
@@ -200,7 +215,7 @@ async function planOnlineOrderInventory({
     let snapshot = await transaction.get(ref);
     if (!snapshot.exists && type === 'PACKAGING') {
       resolvedType = 'RAW_INGREDIENT';
-      resolvedId = stockId(store.id, resolvedType, code);
+      resolvedId = stockId(inventoryStore.id, resolvedType, code);
       ref = db.collection('storeStock').doc(resolvedId);
       snapshot = await transaction.get(ref);
     }
@@ -254,8 +269,8 @@ async function planOnlineOrderInventory({
       warn({
         type: 'MISSING_STOCK_ROW_CREATED',
         message: `${name}: missing store stock row will be created at zero before deduction.`,
-        storeId: store.id,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeName: inventoryStore.name,
         stockItemType: row.type,
         stockItemCode: code,
         stockItemName: name,
@@ -270,8 +285,8 @@ async function planOnlineOrderInventory({
       warn({
         type: 'MISSING_COST',
         message: `${name} has no configured cost; this component COGS is zero.`,
-        storeId: store.id,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeName: inventoryStore.name,
         stockItemType: row.type,
         stockItemCode: code,
         stockItemName: name,
@@ -454,9 +469,8 @@ async function planOnlineOrderInventory({
         perLineConsumptionStatus[line.lineKey] = 'PENDING_BOM';
         pending.push({
           idempotencyKey,
-          storeId: store.id,
-          storeCode: store.code,
-          storeName: store.name,
+          ...inventoryAttribution,
+          ...logicalSalesAttribution,
           orderId,
           orderNumber,
           orderLineId: line.lineKey,
@@ -477,8 +491,8 @@ async function planOnlineOrderInventory({
         warn({
           type: 'PENDING_BOM_DEFERRED',
           message: `${item.displayName || item.name}: inventory will be reconciled after BOM completion.`,
-          storeId: store.id,
-          storeName: store.name,
+          storeId: inventoryStore.id,
+          storeName: inventoryStore.name,
           finishedGoodCode: item.code,
           finishedGoodName: item.displayName || item.name,
           unit: 'BOM',
@@ -516,7 +530,7 @@ async function planOnlineOrderInventory({
     grouped.get(movement.stock.id).push(movement);
   }
   if (shouldRequireAvailableStock(store, requireAvailableStock)) {
-    blockers.push(...insufficientStockBlockers(grouped, store));
+    blockers.push(...insufficientStockBlockers(grouped, inventoryStore));
     if (blockers.length > 0) {
       return {
         blockers, warnings, stockUpdates: [], movementPayloads: [], pendingConsumptionPayloads: [],
@@ -539,8 +553,8 @@ async function planOnlineOrderInventory({
         warn({
           type: row.exists ? 'NEGATIVE_STOCK' : 'STOCK_ROW_CREATED_NEGATIVE',
           message: `${row.name} moved below zero (${previousQty.toFixed(2)} to ${newQty.toFixed(2)} ${row.unit}).`,
-          storeId: store.id,
-          storeName: store.name,
+          storeId: inventoryStore.id,
+          storeName: inventoryStore.name,
           stockItemType: row.type,
           stockItemCode: row.code,
           stockItemName: row.name,
@@ -552,9 +566,8 @@ async function planOnlineOrderInventory({
         });
       }
       movementPayloads.push({
-        storeId: store.id,
-        storeCode: store.code,
-        storeName: store.name,
+        ...inventoryAttribution,
+        ...logicalSalesAttribution,
         inventoryItemId: row.code,
         inventoryItemName: row.name,
         movementType: 'SALE_DEDUCTION',
@@ -592,9 +605,9 @@ async function planOnlineOrderInventory({
       newQty: running,
       existed: row.exists,
       seedData: {
-        storeId: store.id,
-        storeCode: store.code,
-        storeName: store.name,
+        storeId: inventoryStore.id,
+        storeCode: inventoryStore.code,
+        storeName: inventoryStore.name,
         stockItemType: row.type,
         stockItemCode: row.code,
         stockItemName: row.name,

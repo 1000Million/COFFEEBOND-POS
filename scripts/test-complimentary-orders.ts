@@ -124,7 +124,10 @@ assert(!authorizationModule.isVerifiedPhoneToken({ phone_number: '+919999999999'
 
 assert(/const paymentsToWrite:[\s\S]{0,120}= isComplimentaryCheckout\s*\? \[\]/.test(posSource), 'Complimentary checkout must create no payment rows.');
 assert(posSource.includes('planInventoryDeductionForSale'), 'Complimentary checkout must retain the standard inventory deduction path.');
-assert(posSource.includes('createKotItem("BARISTA")') && posSource.includes('createKotItem("KITCHEN")'), 'Complimentary checkout must retain KOT creation.');
+assert(
+  /buildKotTasks\(\{[\s\S]*?prepStation: linePrepStation,[\s\S]*?components,[\s\S]*?\}\)\.forEach\(createKotItem\)/.test(posSource),
+  'Complimentary checkout must retain ordinary and composite KOT creation.',
+);
 assert(posSource.includes('COMPLIMENTARY — NO PAYMENT REQUIRED'), 'Receipt must state that no payment is required.');
 assert(posSource.includes('receiptLegalDetailsFromStore(selectedStore)'), 'Receipt GST/legal details must be sourced from store configuration.');
 assert(posSource.includes('function receiptGstSplit'), 'Receipt GST split helper must be present.');

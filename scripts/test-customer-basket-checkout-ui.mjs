@@ -49,7 +49,7 @@ check('2. Browse menu closes the basket and returns to the menu',
 check('3. the line renders the live image with the existing fallback',
   itemCard.includes('<CustomerProductImage')
   && homeCode.includes('imageUrl={getItemImage(line.item)}')
-  && homeCode.includes('fallbackIcon={visualMeta(line.item).icon}')
+  && homeCode.includes('fallbackIcon={visualMeta(line.item, selectedStore?.code).icon}')
   && read('frontend/components/customer/CustomerProductImage.tsx').includes('image unavailable'));
 check('4. the line renders the current product name',
   homeCode.includes('productName={line.item.displayName || line.item.name}')
@@ -272,8 +272,23 @@ check('4b-13. Pay at Counter copy never implies the order is paid',
   paymentSelector.includes('Pay when you collect your order.')
   && !/already paid|payment complete|paid order/i.test(strip(paymentSelector)));
 check('4b-14. Pay Online copy states security AND pending acceptance, never success',
-  paymentSelector.includes('Pay securely online before the cafe accepts your order.')
+  paymentSelector.includes('Pay securely in the app before the café accepts your order.')
   && !/payment successful|paid successfully|order confirmed/i.test(strip(paymentSelector)));
+
+/* 4b-14e-g. BOND point earning requires payment completed online in the app, so the
+   two cards say so up front and the counter selection carries an explicit warning.
+   Asserted here because this is a promise to the customer: if the server policy in
+   functions/bondLoyalty.js ever stops excluding PRIVATE_CUSTOMER_SUBMISSION, this copy
+   becomes false and these checks should be revisited alongside it. */
+check('4b-14e. Pay at Counter card states no points are earned',
+  paymentSelector.includes('No BOND points are earned on counter or staff payments. Pay online in the app to earn points.'));
+check('4b-14f. Pay Online card states points are earned on eligible orders',
+  paymentSelector.includes('Earn BOND points on eligible orders.'));
+check('4b-14g. the counter warning renders only while Pay at Counter is selected',
+  paymentSelector.includes("value === 'PAY_AT_COUNTER' && (")
+  && paymentSelector.includes('BOND points won’t be earned on this order.')
+  && paymentSelector.includes('To earn points, choose Pay Online and complete payment in the app.')
+  && paymentSelector.includes('role="status"'));
 
 /* 4b-14a-d. The pre-payment caveat.
    Online payment is captured before the store decides, so the customer must be told

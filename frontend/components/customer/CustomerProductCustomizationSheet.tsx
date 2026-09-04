@@ -75,6 +75,9 @@ function groupRuleLabel(group: AddOnGroup): string {
   const maximum = group.maximumSelections === null || group.maximumSelections === undefined
     ? null
     : Math.max(0, Number(group.maximumSelections));
+  if (group.selectionMode === 'EXACT_DISTINCT' && minimum > 0 && maximum === minimum) {
+    return `Required · Choose exactly ${minimum} different options`;
+  }
   const parts: string[] = [];
   if (minimum > 0) parts.push(`Required · Choose ${minimum}`);
   else parts.push('Optional');
@@ -173,7 +176,11 @@ export default function CustomerProductCustomizationSheet({
     const groupId = group.id || '';
     setQuantities(current => {
       const groupQuantities = current[groupId] || {};
-      const value = Math.max(0, next);
+      // Exact-distinct choices are a set, never a quantity. This mirrors the
+      // server rule and prevents a flight slot being filled by repeating one drink.
+      const value = group.selectionMode === 'EXACT_DISTINCT'
+        ? (next > 0 ? 1 : 0)
+        : Math.max(0, next);
       const updated = { ...groupQuantities, [optionId]: value };
       // Single-select groups behave like radios: choosing one clears the rest.
       if (group.selectionMode === 'SINGLE' && value > 0) {
@@ -253,6 +260,7 @@ export default function CustomerProductCustomizationSheet({
               const groupId = group.id || '';
               const entry = validation.find(candidate => candidate.group.id === group.id);
               const single = group.selectionMode === 'SINGLE';
+              const exactDistinct = group.selectionMode === 'EXACT_DISTINCT';
               const maximum = group.maximumSelections === null || group.maximumSelections === undefined
                 ? null
                 : Math.max(0, Number(group.maximumSelections));
@@ -312,9 +320,9 @@ export default function CustomerProductCustomizationSheet({
                             </span>
                           </button>
 
-                          {/* Multi-select options may be taken more than once, exactly as
-                              the existing model allows. Single-select stays at one. */}
-                          {!single && selected && !unavailable && (
+                          {/* Ordinary multi-select options retain their existing quantity
+                              control. Single and exact-distinct choices stay at one. */}
+                          {!single && !exactDistinct && selected && !unavailable && (
                             <CustomerQuantityControl
                               value={optionQuantity}
                               min={0}

@@ -12,6 +12,7 @@ import {
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
 import { DayClosing, OnlineOrder, Order, Role, StaffProfile, StockMovement, Store } from '../../types';
 import { BOMComponent, FinishedGood, PrepItem, RawIngredient, StoreStock } from '../../types/menu-management';
 
@@ -34,6 +35,7 @@ type SetupBlocker = {
 
 type StoreGoLiveReadiness = {
   store: Store;
+  inventoryStoreId: string;
   status: Status;
   blockers: string[];
   warnings: string[];
@@ -362,8 +364,9 @@ function canUseOpsRoutes(role: Role): boolean {
 function buildStoreReadiness(data: LoadedData, staffProfile: StaffProfile): StoreGoLiveReadiness[] {
   const todayStart = startOfToday();
   return data.stores.map((store) => {
+    const inventoryStoreId = effectiveInventoryStoreId(store);
     const activeFinishedGoods = data.finishedGoods.filter((item) => isActiveFinishedGood(item, store.id));
-    const storeStock = data.storeStock.filter((stock) => stock.storeId === store.id);
+    const storeStock = data.storeStock.filter((stock) => stock.storeId === inventoryStoreId);
     const setupBlockers = buildSetupBlockers(store, data.rawIngredients, data.prepItems, data.finishedGoods);
     const staffForStore = data.staff.filter((person) => isStaffAssignedToStore(person, store.id));
     const managerCount = staffForStore.filter((person) => person.role === 'STORE_MANAGER').length;
@@ -372,8 +375,13 @@ function buildStoreReadiness(data: LoadedData, staffProfile: StaffProfile): Stor
     const gstStatus = storeGstStatus(store, activeFinishedGoods, data.gstConfig);
     const ordersForStore = data.orders.filter((order) => order.storeId === store.id);
     const onlineOrdersForStore = data.onlineOrders.filter((order) => order.storeId === store.id);
-    const movementsForStore = data.stockMovements.filter((movement) => movement.storeId === store.id);
-    const purchasesForStore = data.purchaseEntries.filter((purchase) => purchase.storeId === store.id);
+    const movementsForStore = data.stockMovements.filter((movement) => {
+      if (movement.storeId !== inventoryStoreId) return false;
+      return movement.logicalSalesStoreId
+        ? movement.logicalSalesStoreId === store.id
+        : inventoryStoreId === store.id;
+    });
+    const purchasesForStore = data.purchaseEntries.filter((purchase) => purchase.storeId === inventoryStoreId);
     const pendingOnlineOrders = onlineOrdersForStore.filter((order) => order.status === 'PENDING');
     const unsettledPayAtCounterOrders = ordersForStore.filter((order) => {
       const hasPayAtCounter = order.paymentMethod === 'PAY_AT_COUNTER'
@@ -414,6 +422,7 @@ function buildStoreReadiness(data: LoadedData, staffProfile: StaffProfile): Stor
 
     return {
       store,
+      inventoryStoreId,
       status: blockers.length > 0 ? 'BLOCKED' : warnings.length > 0 ? 'WARNING' : 'READY',
       blockers,
       warnings,
@@ -540,13 +549,18 @@ export default function GoLiveReadiness() {
           const snaps = await Promise.all(stores.map((store) => getDocs(query(collection(db, collectionName), where('storeId', '==', store.id)))));
           return snaps.flatMap((snap) => snap.docs.map((item) => mapper(item.id, item.data() as Record<string, unknown>)));
         };
+        const inventoryStoreIds = Array.from(new Set(stores.map((store) => effectiveInventoryStoreId(store))));
+        const inventoryStoreScoped = async <T,>(collectionName: string, mapper: (id: string, data: Record<string, unknown>) => T): Promise<T[]> => {
+          const snaps = await Promise.all(inventoryStoreIds.map((storeId) => getDocs(query(collection(db, collectionName), where('storeId', '==', storeId)))));
+          return snaps.flatMap((snap) => snap.docs.map((item) => mapper(item.id, item.data() as Record<string, unknown>)));
+        };
 
         const [staffResult, orders, onlineOrders, stockMovements, purchaseEntries, dayClosings, publicSnapshots] = await Promise.all([
           staffPromise,
           storeScoped('orders', (id, item) => ({ id, ...item } as Order)),
           storeScoped('onlineOrders', (id, item) => ({ id, ...item } as OnlineOrder)),
-          storeScoped('stockMovements', (id, item) => ({ id, ...item } as StockMovement)),
-          storeScoped('purchaseEntries', (id, item) => ({ id, ...item })),
+          inventoryStoreScoped('stockMovements', (id, item) => ({ id, ...item } as StockMovement)),
+          inventoryStoreScoped('purchaseEntries', (id, item) => ({ id, ...item })),
           Promise.all(stores.map(async (store) => {
             const closing = await getDoc(doc(db, 'dayClosings', `${store.id}_${todayKey()}`));
             return closing.exists() ? ({ id: closing.id, ...closing.data() } as DayClosing) : null;

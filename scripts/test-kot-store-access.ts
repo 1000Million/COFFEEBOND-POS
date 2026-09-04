@@ -70,10 +70,9 @@ assert.match(
   'Station subscriptions remain store-, department-, and active-status scoped.',
 );
 
-assert.match(posSource, /const createKotItem = \(station: "BARISTA" \| "KITCHEN"\)/);
-assert.match(posSource, /linePrepStation === "BARISTA" \|\| linePrepStation === "BOTH"[\s\S]*?createKotItem\("BARISTA"\)/);
-assert.match(posSource, /linePrepStation === "KITCHEN" \|\| linePrepStation === "BOTH"[\s\S]*?createKotItem\("KITCHEN"\)/);
-assert.match(posSource, /deterministicKotId\(newOrderRef\.id, lineRef\.id, station\)/, 'KOT IDs remain deterministic.');
+assert.match(posSource, /const createKotItem = \(task: CompositeKotTask\)/);
+assert.match(posSource, /buildKotTasks\(\{[\s\S]*?prepStation: linePrepStation,[\s\S]*?components,[\s\S]*?\}\)\.forEach\(createKotItem\)/);
+assert.match(posSource, /deterministicKotId\(newOrderRef\.id, lineRef\.id, task\.taskKey\)/, 'KOT IDs remain deterministic for ordinary and component tasks.');
 assert.doesNotMatch(
   posSource.match(/const holdCurrentBill = \(\) => \{([\s\S]*?)\n  \};/)?.[1] || '',
   /kotItems|createKotItem|runTransaction/,

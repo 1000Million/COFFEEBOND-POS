@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { httpsCallable } from 'firebase/functions';
-import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { AlertCircle, CheckCircle2, Clock, Loader2, Phone, RefreshCw, ShoppingBag, StickyNote, Store as StoreIcon, XCircle } from 'lucide-react';
 import { db, functions } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -8,6 +8,7 @@ import { OnlineOrder, Store } from '../../types';
 import { acceptOnlineOrder, isOnlineOrderAcceptError, OnlineOrderAcceptBlocker } from '../../lib/onlineOrderConversion';
 import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 const acceptPaidRazorpayOrder = httpsCallable<
   { onlineOrderId: string },
@@ -54,10 +55,6 @@ function elapsedLabel(value: any, now: Date): string {
   return `${hours}h ${remaining}m ago`;
 }
 
-function allowedStoreIds(staffProfile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
-  return staffProfile.assignedStoreIds?.length ? staffProfile.assignedStoreIds : staffProfile.storeIds || [];
-}
-
 function blockerSummary(blocker: OnlineOrderAcceptBlocker): string {
   const component = blocker.componentCode ? `${blocker.componentType || 'Component'} / ${blocker.componentCode}` : blocker.itemCode;
   const quantities = blocker.requiredQuantity !== undefined
@@ -81,21 +78,25 @@ export default function IncomingOnlineOrders() {
   const [now, setNow] = useState(new Date());
 
   const accessibleStores = useMemo(() => {
-    if (!staffProfile) return [];
-    if (staffProfile.role === 'ADMIN') return stores;
-    const allowedIds = allowedStoreIds(staffProfile);
-    return stores.filter(store => allowedIds.includes(store.id));
+    return accessiblePosStores(stores, staffProfile);
   }, [staffProfile, stores]);
 
   const selectedStore = accessibleStores.find(store => store.id === selectedStoreId) || null;
 
   const loadStores = async () => {
     if (!staffProfile) return;
-    const snap = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
-    const loadedStores = snap.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
+    const loadedStores = (staffProfile.role === 'ADMIN'
+      ? (await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)))).docs
+        .map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
+      : (await Promise.all(
+        assignedStoreIdentifiers(staffProfile)
+          .map(storeId => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+      ))
+        .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap?.exists()))
+        .map(snap => ({ id: snap.id, ...snap.data() } as Store)))
       .sort((a, b) => a.name.localeCompare(b.name));
     setStores(loadedStores);
-    const allowed = staffProfile.role === 'ADMIN' ? loadedStores : loadedStores.filter(store => allowedStoreIds(staffProfile).includes(store.id));
+    const allowed = accessiblePosStores(loadedStores, staffProfile);
     setSelectedStoreId(prev => prev || allowed[0]?.id || '');
   };
 
@@ -349,6 +350,9 @@ export default function IncomingOnlineOrders() {
                       {isNew && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">NEW</span>}
                       <span className={`rounded-full px-3 py-1 text-xs font-black ${requiresPaymentReview ? 'bg-red-100 text-red-800' : order.status === 'NEEDS_ATTENTION' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                         {order.status.replaceAll('_', ' ')}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#f4ece3] px-3 py-1 text-xs font-black text-[#5c4033]">
+                        <StoreIcon size={12} /> {order.storeName || selectedStore?.name || order.storeId}
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-sm font-bold text-neutral-600">

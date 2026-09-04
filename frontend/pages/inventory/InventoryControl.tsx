@@ -50,6 +50,8 @@ import {
   StockItemType,
   StoreStock,
 } from '../../types/menu-management';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 type DatePreset = 'TODAY' | 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
 type MovementTypeFilter = 'ALL' | 'SALE_DEDUCTION' | 'ORDER_BOM_BACKFILL' | 'PURCHASE_INWARD' | 'ORDER_VOID_REVERSAL' | 'ADJUSTMENT' | 'OPENING_STOCK' | 'STOCK_CORRECTION';
@@ -62,6 +64,10 @@ type PendingInventoryConsumption = {
   storeId: string;
   storeCode?: string;
   storeName?: string;
+  inventoryStoreId?: string;
+  logicalSalesStoreId?: string;
+  logicalSalesStoreCode?: string;
+  logicalSalesStoreName?: string;
   orderId: string;
   orderNumber: string;
   orderLineId: string;
@@ -274,10 +280,6 @@ function ageMinutes(value: any): number {
   const date = toDate(value);
   if (!date) return 0;
   return Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
-}
-
-function allowedStoreIds(profile: NonNullable<ReturnType<typeof useAuth>['staffProfile']>): string[] {
-  return profile.assignedStoreIds?.length ? profile.assignedStoreIds : (profile.storeIds || []);
 }
 
 function parseRate(value: unknown): number {
@@ -1160,15 +1162,18 @@ export default function InventoryControl() {
 
   const hasAccess = staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER';
   const accessibleStores = useMemo(() => {
-    if (!staffProfile) return [];
-    if (staffProfile.role === 'ADMIN') return stores;
-    const ids = allowedStoreIds(staffProfile);
-    return stores.filter((store) => ids.includes(store.id));
+    return accessiblePosStores(stores, staffProfile);
   }, [staffProfile, stores]);
 
   const selectedStore = useMemo(
     () => accessibleStores.find((store) => store.id === selectedStoreId) || null,
     [accessibleStores, selectedStoreId],
+  );
+  const selectedInventoryStoreId = selectedStore ? effectiveInventoryStoreId(selectedStore) : '';
+  const selectedInventoryStore = useMemo(
+    () => stores.find((store) => store.id === selectedInventoryStoreId)
+      || (selectedStore ? { ...selectedStore, id: selectedInventoryStoreId } : null),
+    [selectedInventoryStoreId, selectedStore, stores],
   );
 
   const dateRange = useMemo(() => resolveDateRange(datePreset, customStart, customEnd), [datePreset, customStart, customEnd]);
@@ -1180,15 +1185,17 @@ export default function InventoryControl() {
       setStoresLoading(true);
       setError('');
       try {
-        const snap = await getDocs(staffProfile.role === 'ADMIN'
-          ? collection(db, 'stores')
-          : query(collection(db, 'stores'), where('isActive', '==', true)));
-        let loaded = snap.docs.map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+        let loaded = staffProfile.role === 'ADMIN'
+          ? (await getDocs(collection(db, 'stores'))).docs
+            .map((storeDoc) => ({ id: storeDoc.id, ...storeDoc.data() } as Store))
+          : (await Promise.all(
+            assignedStoreIdentifiers(staffProfile)
+              .map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+          ))
+            .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot?.exists()))
+            .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() } as Store));
         loaded.sort((a, b) => a.name.localeCompare(b.name));
-        if (staffProfile.role !== 'ADMIN') {
-          const ids = allowedStoreIds(staffProfile);
-          loaded = loaded.filter((store) => ids.includes(store.id));
-        }
+        loaded = accessiblePosStores(loaded, staffProfile);
         if (!active) return;
         setStores(loaded);
         setSelectedStoreId((prev) => {
@@ -1225,12 +1232,12 @@ export default function InventoryControl() {
           getDocs(collection(db, 'rawIngredients')),
           getDocs(collection(db, 'prepItems')),
           getDocs(collection(db, 'finishedGoods')),
-          getDocs(collection(db, 'storeStock')),
+          getDocs(query(collection(db, 'storeStock'), where('storeId', '==', selectedInventoryStoreId))),
           getDocs(query(collection(db, 'orders'), where('storeId', '==', selectedStore.id))),
           getDocs(query(collection(db, 'onlineOrders'), where('storeId', '==', selectedStore.id))),
           getDocs(query(collection(db, 'kotItems'), where('storeId', '==', selectedStore.id))),
-          getDocs(query(collection(db, 'stockMovements'), where('storeId', '==', selectedStore.id))),
-          getDocs(query(collection(db, 'pendingInventoryConsumption'), where('storeId', '==', selectedStore.id))),
+          getDocs(query(collection(db, 'stockMovements'), where('storeId', '==', selectedInventoryStoreId))),
+          getDocs(query(collection(db, 'pendingInventoryConsumption'), where('storeId', '==', selectedInventoryStoreId))),
           getDoc(doc(db, 'appSettings', GST_CONFIG_DOC_ID)),
           getDoc(doc(db, 'dayClosings', `${selectedStore.id}_${dateRange.endKey}`)),
         ]);
@@ -1245,8 +1252,15 @@ export default function InventoryControl() {
         const allOrders = orderSnap.docs.map((item) => ({ id: item.id, ...item.data() } as Order));
         const allOnlineOrders = onlineOrderSnap.docs.map((item) => ({ id: item.id, ...item.data() } as OnlineOrder));
         const allKotItems = kotSnap.docs.map((item) => ({ id: item.id, ...item.data() } as KotItem));
-        const allMovements = movementSnap.docs.map((item) => ({ id: item.id, ...item.data() } as StockMovement));
-        const allPendingConsumption = pendingConsumptionSnap.docs.map((item) => ({ id: item.id, ...item.data() } as PendingInventoryConsumption));
+        const isSelectedLogicalSource = (value: { storeId: string; logicalSalesStoreId?: string }) => value.logicalSalesStoreId
+          ? value.logicalSalesStoreId === selectedStore.id
+          : selectedInventoryStoreId === selectedStore.id && value.storeId === selectedStore.id;
+        const allMovements = movementSnap.docs
+          .map((item) => ({ id: item.id, ...item.data() } as StockMovement))
+          .filter(isSelectedLogicalSource);
+        const allPendingConsumption = pendingConsumptionSnap.docs
+          .map((item) => ({ id: item.id, ...item.data() } as PendingInventoryConsumption))
+          .filter(isSelectedLogicalSource);
 
         const loaded: InventoryControlData = {
           rawIngredients: rawSnap.docs.map((item) => ({ id: item.id, ...item.data() } as RawIngredient)),
@@ -1299,7 +1313,7 @@ export default function InventoryControl() {
     return () => {
       active = false;
     };
-  }, [hasAccess, selectedStore, dateRange.startKey, dateRange.endKey, dateRange.startTs, dateRange.endTs, refreshNonce]);
+  }, [hasAccess, selectedInventoryStoreId, selectedStore, dateRange.startKey, dateRange.endKey, dateRange.startTs, dateRange.endTs, refreshNonce]);
 
   const rawByCode = useMemo(() => new Map(data.rawIngredients.map((item) => [item.code, item])), [data.rawIngredients]);
   const prepByCode = useMemo(() => new Map(data.prepItems.map((item) => [item.code, item])), [data.prepItems]);
@@ -1369,7 +1383,7 @@ export default function InventoryControl() {
     if (movement.referenceId === order.id || movement.orderId === order.id) return true;
     return movementOrderReference(movement, orderReferenceLookup) === order.orderNumber;
   })).length, [orderReferenceLookup, periodMovements, voidedOrders]);
-  const negativeStockRows = useMemo(() => buildNegativeStockRows(selectedStore || ({ id: '', name: '', code: '', address: '', isActive: true, createdAt: null, updatedAt: null } as Store), data.storeStock, periodMovements), [selectedStore, data.storeStock, periodMovements]);
+  const negativeStockRows = useMemo(() => buildNegativeStockRows(selectedInventoryStore || ({ id: '', name: '', code: '', address: '', isActive: true, createdAt: null, updatedAt: null } as Store), data.storeStock, periodMovements), [selectedInventoryStore, data.storeStock, periodMovements]);
   const missingStockCreatedRows = useMemo(() => buildMissingStockCreatedRows(periodMovements), [periodMovements]);
   const missingCostRows = useMemo(() => buildMissingCostRows(periodMovements), [periodMovements]);
   const rawConsumptionRows = useMemo(() => buildInventoryRawConsumptionRows(periodMovements), [periodMovements]);
@@ -1833,10 +1847,11 @@ export default function InventoryControl() {
             description="Filtered movement log for the selected store and date range."
           >
             <DataTable
-              headers={['Date/time', 'Store', 'Item name', 'Item code', 'Item type', 'Movement type', 'Quantity change', 'Unit', 'Stock before', 'Stock after', 'Source', 'Order/reference', 'Reason']}
+              headers={['Date/time', 'Physical inventory store', 'Logical sales store', 'Item name', 'Item code', 'Item type', 'Movement type', 'Quantity change', 'Unit', 'Stock before', 'Stock after', 'Source', 'Order/reference', 'Reason']}
               rows={movementAuditRows.map((row: InventoryMovementAuditRow) => [
                 formatDateTime(row.dateTimeSource),
-                row.storeName,
+                row.physicalInventoryStoreName,
+                row.logicalSalesStoreName,
                 row.itemName,
                 row.itemCode,
                 row.itemType,

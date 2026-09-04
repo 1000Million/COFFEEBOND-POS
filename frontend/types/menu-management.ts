@@ -19,6 +19,53 @@ export type PackagingApplicability = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'ALL'
 
 export type AddOnInventoryItemType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'PACKAGING';
 
+/**
+ * A reference to a Finished Good that is prepared/consumed as one component of
+ * a composite parent. The reference carries no recipe or cost data: checkout
+ * resolves those fields from the current authoritative child Finished Good.
+ */
+export interface FinishedGoodComponentReference {
+  finishedGoodId: string;
+  finishedGoodCode: string;
+  /** Quantity required for one unit of the composite parent. */
+  quantity: number;
+}
+
+export interface CompositeFinishedGoodDefinition {
+  schemaVersion: 1;
+  /** Stable array order becomes the canonical preparation order. */
+  staticComponents: FinishedGoodComponentReference[];
+  /** Existing add-on groups used only as server-authoritative component choices. */
+  choiceGroupIds: string[];
+}
+
+export interface UnresolvedCompositeRequirement {
+  name: string;
+  quantity: number;
+  reason: string;
+}
+
+/** Server-resolved snapshot stored on an order line for preparation/inventory. */
+export interface CanonicalCompositeComponent {
+  sequence: number;
+  source: 'STATIC' | 'CHOICE';
+  groupId?: string;
+  groupName?: string;
+  optionId?: string;
+  optionName?: string;
+  componentFinishedGoodId: string;
+  componentFinishedGoodCode: string;
+  componentName: string;
+  /** Quantity per one unit of the parent order line. */
+  quantity: number;
+  prepStation: PrepStation;
+  itemType: FinishedGoodItemType | null;
+  productionMode: ProductionMode | null;
+  /** Operational fields only; recipe cost fields are deliberately excluded. */
+  bom: Array<Omit<BOMComponent, 'costPerUnit' | 'lineCost'>>;
+  bomVersion: number | null;
+}
+
 export interface AddOnOption {
   id: string;
   code: string;
@@ -32,6 +79,8 @@ export interface AddOnOption {
   inventoryItemCode?: string;
   consumptionQuantity?: number;
   consumptionUnit?: string;
+  /** Required for options in a COMPOSITE_CHOICE group. */
+  finishedGoodComponent?: FinishedGoodComponentReference;
 }
 
 export interface BOMComponent {
@@ -88,6 +137,10 @@ export interface FinishedGood {
   previousImageStoragePath?: string | null;
   addOnGroupIds?: string[];
   addOnOptionIdsByGroup?: Record<string, string[]>;
+  /** Present only on an explicitly modelled composite/bundle parent. */
+  composite?: CompositeFinishedGoodDefinition;
+  /** Explicit owner-data gaps keep an otherwise valid composite fail-closed. */
+  unresolvedCompositeRequirements?: UnresolvedCompositeRequirement[];
   categoryId?: string;
   categoryCode?: string;
   category?: string | { code?: string; id?: string; name?: string } | null;
@@ -130,7 +183,13 @@ export interface AddOnGroup {
   isRequired?: boolean;
   minimumSelections?: number;
   maximumSelections?: number | null;
-  selectionMode?: 'SINGLE' | 'MULTIPLE';
+  /**
+   * EXACT_DISTINCT means exactly minimumSelections === maximumSelections
+   * different options, with quantity one for every selected option.
+   */
+  selectionMode?: 'SINGLE' | 'MULTIPLE' | 'EXACT_DISTINCT';
+  /** Omitted/ADD_ON preserves the existing ordinary add-on behaviour. */
+  purpose?: 'ADD_ON' | 'COMPOSITE_CHOICE';
   options: AddOnOption[];
   createdAt?: any;
   updatedAt?: any;

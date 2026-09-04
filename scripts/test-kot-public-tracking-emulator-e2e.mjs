@@ -125,12 +125,14 @@ process.env.GOOGLE_CLOUD_PROJECT = PROJECT_ID;
 const kotSource = readFileSync(resolve('frontend/pages/kot/KOTScreen.tsx'), 'utf8');
 const readySource = readFileSync(resolve('frontend/pages/kot/ReadyToServe.tsx'), 'utf8');
 const runningOrdersSource = readFileSync(resolve('frontend/pages/pos/RunningOrders.tsx'), 'utf8');
+const functionsIndexSource = readFileSync(resolve('functions/index.js'), 'utf8');
+const aggregationSource = readFileSync(resolve('functions/kotStatusAggregation.js'), 'utf8');
 
 const scopedSiblingQuery = /const orderKotSnap = await getDocs\(query\(\s*collection\(db, 'kotItems'\),\s*where\('storeId', '==', item\.storeId\),\s*where\('orderId', '==', item\.orderId\),\s*\)\);/;
 const legacyOrderOnlyQuery = /getDocs\(query\(collection\(db, 'kotItems'\), where\('orderId', '==', item\.orderId\)\)\)/;
 
-check('READY uses the item assigned-store scope before the order id', scopedSiblingQuery.test(kotSource));
-check('SERVED uses the item assigned-store scope before the order id', scopedSiblingQuery.test(readySource));
+check('READY no longer reads cross-station sibling KOTs in the client', !scopedSiblingQuery.test(kotSource));
+check('SERVED no longer reads cross-station sibling KOTs in the client', !scopedSiblingQuery.test(readySource));
 check('the READY order-only sibling query is removed', !legacyOrderOnlyQuery.test(kotSource));
 check('the SERVED order-only sibling query is removed', !legacyOrderOnlyQuery.test(readySource));
 check(
@@ -144,16 +146,14 @@ check(
   /const storeIdsToQuery = stores\.map\(store => store\.id\)/.test(readySource),
 );
 check(
-  'READY preserves the existing READY-or-PREPARING mapping',
-  /publicStatus: allDone \? 'READY' : 'PREPARING'/.test(kotSource)
-    && /publicStatusMessage\('READY'\)/.test(kotSource)
-    && /publicStatusMessage\('PREPARING'\)/.test(kotSource),
+  'READY delegates parent and public aggregation to the secured trigger',
+  !/updatePublicOrderTracking|syncPublicTrackingFromKotStatus/.test(kotSource)
+    && /aggregateKotOrderStatus = onDocumentUpdated/.test(functionsIndexSource),
 );
 check(
-  'SERVED preserves the existing SERVED-or-READY mapping',
-  /publicStatus: allServed \? 'SERVED' : 'READY'/.test(readySource)
-    && /publicStatusMessage\('SERVED'\)/.test(readySource)
-    && /publicStatusMessage\('READY'\)/.test(readySource),
+  'SERVED delegates parent and public aggregation to the secured trigger',
+  !/updatePublicOrderTracking|aggregateKotTaskStatus/.test(readySource)
+    && /db\.runTransaction/.test(aggregationSource),
 );
 check(
   'the same equality-only query shape already exists in Running Orders',
@@ -163,6 +163,8 @@ check(
 const admin = require('firebase-admin');
 if (!admin.apps.length) admin.initializeApp({ projectId: PROJECT_ID });
 const adminDb = admin.firestore();
+const { createKotStatusAggregationHandler } = require('../functions/kotStatusAggregation');
+const handleKotStatusAggregation = createKotStatusAggregationHandler({ admin, db: adminDb });
 
 async function flushFirestore() {
   const response = await fetch(
@@ -427,25 +429,24 @@ async function run() {
   const baristaItemRef = doc(assigned.firestore, 'orders', ORDER_ID, 'items', BARISTA_ITEM_ID);
   const trackingRef = doc(assigned.firestore, 'publicOrderTracking', TRACKING_TOKEN);
 
-  const markReadyAndSync = async (kotRef, orderItemRef) => {
+  const markReadyAndSync = async (kotRef) => {
+    const before = (await getDoc(kotRef)).data();
     await updateDoc(kotRef, {
       status: 'READY',
       readyAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-    await updateDoc(orderItemRef, { status: 'READY' });
-    const relatedKots = await getDocs(scopedOrderKots(assigned.firestore, ASSIGNED_STORE_ID, ORDER_ID));
-    const allReady = relatedKots.size > 0
-      && relatedKots.docs.every((snapshot) => ['READY', 'SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(snapshot.data().status));
-    await updateDoc(trackingRef, {
-      publicStatus: allReady ? 'READY' : 'PREPARING',
-      customerStatusMessage: allReady ? 'Your order is ready for pickup.' : 'Your order is being prepared.',
-      ...(allReady ? { readyAt: serverTimestamp() } : {}),
+    const after = (await getDoc(kotRef)).data();
+    await handleKotStatusAggregation({
+      kotId: kotRef.id,
+      before,
+      after,
     });
-    return relatedKots;
+    return getDocs(scopedOrderKots(assigned.firestore, ASSIGNED_STORE_ID, ORDER_ID));
   };
 
-  const markServedAndSync = async (kotRef, orderItemRef) => {
+  const markServedAndSync = async (kotRef) => {
+    const before = (await getDoc(kotRef)).data();
     await updateDoc(kotRef, {
       status: 'SERVED',
       servedAt: serverTimestamp(),
@@ -453,19 +454,16 @@ async function run() {
       handledByName: 'Assigned Manager',
       updatedAt: serverTimestamp(),
     });
-    await updateDoc(orderItemRef, { status: 'SERVED' });
-    const relatedKots = await getDocs(scopedOrderKots(assigned.firestore, ASSIGNED_STORE_ID, ORDER_ID));
-    const allServed = relatedKots.size > 0
-      && relatedKots.docs.every((snapshot) => ['SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(snapshot.data().status));
-    await updateDoc(trackingRef, {
-      publicStatus: allServed ? 'SERVED' : 'READY',
-      customerStatusMessage: allServed ? 'Your order has been completed.' : 'Your order is ready for pickup.',
-      ...(allServed ? { servedAt: serverTimestamp() } : {}),
+    const after = (await getDoc(kotRef)).data();
+    await handleKotStatusAggregation({
+      kotId: kotRef.id,
+      before,
+      after,
     });
-    return relatedKots;
+    return getDocs(scopedOrderKots(assigned.firestore, ASSIGNED_STORE_ID, ORDER_ID));
   };
 
-  const firstReadyKots = await markReadyAndSync(kitchenKotRef, kitchenItemRef);
+  const firstReadyKots = await markReadyAndSync(kitchenKotRef);
   check(
     'the first READY transition changes only its intended KOT and order item',
     firstReadyKots.size === 2
@@ -476,7 +474,7 @@ async function run() {
   );
   check('one unfinished sibling keeps public tracking PREPARING', (await getDoc(trackingRef)).data()?.publicStatus === 'PREPARING');
 
-  const finalReadyKots = await markReadyAndSync(baristaKotRef, baristaItemRef);
+  const finalReadyKots = await markReadyAndSync(baristaKotRef);
   const readyTracking = (await getDoc(trackingRef)).data();
   check(
     'the final READY transition leaves exactly two READY KOTs and items',
@@ -487,7 +485,7 @@ async function run() {
   );
   check('the final READY sibling moves public tracking to READY', readyTracking?.publicStatus === 'READY' && Boolean(readyTracking?.readyAt));
 
-  const firstServedKots = await markServedAndSync(kitchenKotRef, kitchenItemRef);
+  const firstServedKots = await markServedAndSync(kitchenKotRef);
   check(
     'the first SERVED transition changes only its intended KOT and order item',
     firstServedKots.size === 2
@@ -498,7 +496,7 @@ async function run() {
   );
   check('one unserved sibling keeps public tracking READY', (await getDoc(trackingRef)).data()?.publicStatus === 'READY');
 
-  const finalServedKots = await markServedAndSync(baristaKotRef, baristaItemRef);
+  const finalServedKots = await markServedAndSync(baristaKotRef);
   check(
     'the final SERVED transition leaves exactly two SERVED KOTs and items',
     finalServedKots.size === 2
@@ -515,7 +513,7 @@ async function run() {
     adminDb.collection('orders').doc(ORDER_ID).collection('items').doc(BARISTA_ITEM_ID).get(),
     adminDb.collection('publicOrderTracking').doc(TRACKING_TOKEN).get(),
   ]);
-  const retryKots = await markServedAndSync(baristaKotRef, baristaItemRef);
+  const retryKots = await markServedAndSync(baristaKotRef);
   const retryTracking = (await getDoc(trackingRef)).data();
   const retryArtifactsAfter = await Promise.all([
     adminDb.collection('kotItems').doc(BARISTA_KOT_ID).get(),

@@ -22,6 +22,7 @@ const METHODS: Array<{
   value: PaymentProvider;
   title: string;
   description: string;
+  loyaltyNote: string;
   Icon: typeof Store;
 }> = [
   {
@@ -29,6 +30,10 @@ const METHODS: Array<{
     title: 'Pay at Counter',
     // Deliberately not "paid": nothing is collected until collection.
     description: 'Pay when you collect your order.',
+    /* BOND points require payment completed online in the app, so this method earns
+       none. Stated on the card as well as in the selected-state warning below, so the
+       customer sees it while comparing rather than only after choosing. */
+    loyaltyNote: 'No BOND points are earned on counter or staff payments. Pay online in the app to earn points.',
     Icon: Store,
   },
   {
@@ -38,7 +43,8 @@ const METHODS: Array<{
        says so. Shortening this to "Pay securely online." removed the only place the
        customer was told that before paying — the action bar's footnote is about the
        cart, and the tracking screen only exists after the money has moved. */
-    description: 'Pay securely online before the cafe accepts your order.',
+    description: 'Pay securely in the app before the café accepts your order.',
+    loyaltyNote: 'Earn BOND points on eligible orders.',
     Icon: CreditCard,
   },
 ];
@@ -48,7 +54,7 @@ export default function CustomerPaymentSelector({ value, disabled = false, onCha
     <fieldset className="mt-4" disabled={disabled}>
       <legend className="cb-customer-eyebrow">Payment</legend>
       <div className="mt-2 space-y-2" role="radiogroup" aria-label="Payment method">
-        {METHODS.map(({ value: methodValue, title, description, Icon }) => {
+        {METHODS.map(({ value: methodValue, title, description, loyaltyNote, Icon }) => {
           const selected = value === methodValue;
           return (
             <button
@@ -65,6 +71,7 @@ export default function CustomerPaymentSelector({ value, disabled = false, onCha
               <span className="min-w-0 flex-1">
                 <span className="block cb-customer-title text-sm font-black">{title}</span>
                 <span className="block cb-customer-muted break-words text-[12px] font-semibold">{description}</span>
+                <span className="mt-1 block cb-customer-muted break-words text-[11px] font-semibold opacity-80">{loyaltyNote}</span>
               </span>
               <span
                 className={`cb-customer-payment-tick flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? 'is-on' : ''}`}
@@ -77,6 +84,21 @@ export default function CustomerPaymentSelector({ value, disabled = false, onCha
           );
         })}
       </div>
+      {/* Rendered only while Pay at Counter is the selection, immediately below the
+          options. role="status" announces it to screen readers when the customer
+          switches to it, without stealing focus the way an alert would. */}
+      {value === 'PAY_AT_COUNTER' && (
+        <p
+          role="status"
+          data-testid="cb-counter-loyalty-warning"
+          className="cb-customer-muted mt-2 break-words rounded-lg border border-amber-300/60 bg-amber-50/60 p-3 text-[12px] font-semibold leading-snug text-amber-900"
+        >
+          BOND points won’t be earned on this order.
+          <span className="mt-0.5 block font-medium">
+            To earn points, choose Pay Online and complete payment in the app.
+          </span>
+        </p>
+      )}
     </fieldset>
   );
 }

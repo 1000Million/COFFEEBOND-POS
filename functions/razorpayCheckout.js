@@ -1,10 +1,19 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
 const Razorpay = require('razorpay');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret, defineString } = require('firebase-functions/params');
+const { isAuthorizedStaffForStorePair } = require('./complimentaryAuthorizationPolicy');
 const { canonicalizeRequestedCart } = require('./posAddOnAuthorization');
+const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
+const { collectRequiredComponentFinishedGoodIds } = require('./compositeProductPolicy');
+const {
+  buildKotTasks,
+  expandCompositeInventoryLines,
+  summarizeParentInventory,
+} = require('./compositeFulfillment');
 const {
   ACCEPTED_RAZORPAY_STATUS,
   CURRENCY,
@@ -37,6 +46,12 @@ const RAZORPAY_WEBHOOK_SECRET = defineSecret('RAZORPAY_WEBHOOK_SECRET');
 const PAYMENT_INTENT_COLLECTION = 'razorpayPaymentIntents';
 const WEBHOOK_AUDIT_COLLECTION = 'razorpayWebhookEvents';
 const PAYMENT_EXPIRY_MINUTES = 30;
+const FULFILMENT_BLOCKING_REFUND_STATUSES = new Set([
+  'REFUND_REQUESTING',
+  'REFUND_PENDING',
+  'REFUNDED',
+  'CANCELLED_REFUNDED',
+]);
 
 function fail(code, message) {
   throw new HttpsError(code, message);
@@ -287,6 +302,27 @@ function selectedAddOns(addOns) {
   }));
 }
 
+/**
+ * Components are an immutable, server-canonical checkout snapshot. Firestore
+ * returns plain arrays/objects, so deep strict equality compares every nested
+ * identity, provenance, preparation and BOM field while preserving array order.
+ * Missing and empty are deliberately different: composite checkout never stores
+ * an empty component array, and accepting either shape would weaken fail-closed
+ * handling for a malformed paid order.
+ */
+function immutableCompositeComponentSnapshotsEqual(storedComponents, currentComponents) {
+  if (storedComponents === undefined || currentComponents === undefined) {
+    return storedComponents === undefined && currentComponents === undefined;
+  }
+  if (!Array.isArray(storedComponents) || !Array.isArray(currentComponents)) return false;
+  return isDeepStrictEqual(storedComponents, currentComponents);
+}
+
+function refundBlocksPaidOrderFulfilment(order) {
+  return [order?.status, order?.paymentStatus, order?.refundStatus]
+    .some(status => FULFILMENT_BLOCKING_REFUND_STATUSES.has(cleanText(status, 40)));
+}
+
 async function finalizePaidOnlineOrder({
   db,
   admin,
@@ -294,6 +330,7 @@ async function finalizePaidOnlineOrder({
   intentId,
   providerPayment,
   providerOrder,
+  acceptanceClaimId = null,
 }) {
   const onlineOrderRef = db.collection('onlineOrders').doc(onlineOrderId);
   const intentRef = db.collection(PAYMENT_INTENT_COLLECTION).doc(intentId);
@@ -317,6 +354,9 @@ async function finalizePaidOnlineOrder({
         orderNumber: existingPosOrderSnapshot.data().orderNumber,
       };
     }
+    if (refundBlocksPaidOrderFulfilment(onlineOrder)) {
+      fail('failed-precondition', 'This paid order has an active or completed refund and cannot be fulfilled.');
+    }
     if (intent.providerOrderId !== providerOrder.id || providerPayment.order_id !== intent.providerOrderId) {
       fail('failed-precondition', 'Provider order does not match this payment intent.');
     }
@@ -332,6 +372,12 @@ async function finalizePaidOnlineOrder({
     if (existingPosOrderSnapshot.exists) {
       fail('already-exists', 'A POS order already exists for this payment.');
     }
+    if (
+      acceptanceClaimId
+      && cleanText(onlineOrder.acceptanceClaimId, 120) !== cleanText(acceptanceClaimId, 120)
+    ) {
+      fail('aborted', 'The paid-order acceptance claim changed before finalisation.');
+    }
 
     const storeRef = db.collection('stores').doc(onlineOrder.storeId);
     const gstRef = db.collection('appSettings').doc('gstConfig');
@@ -343,6 +389,65 @@ async function finalizePaidOnlineOrder({
       fail('failed-precondition', 'The selected store is not active.');
     }
     const store = { id: storeSnapshot.id, ...storeSnapshot.data() };
+    const clearedAcceptanceClaim = {
+      acceptanceClaimId: admin.firestore.FieldValue.delete(),
+      acceptanceClaimExpiresAt: admin.firestore.FieldValue.delete(),
+    };
+    const acceptedBy = cleanText(onlineOrder.acceptedBy, 128);
+    const acceptedByName = cleanText(onlineOrder.acceptedByName, 120);
+    if (!acceptedBy || !acceptedByName) {
+      fail('failed-precondition', 'Staff acceptance is required before operational fulfilment.');
+    }
+    const acceptedBySnapshot = await transaction.get(db.collection('users').doc(acceptedBy));
+    let inventoryStore;
+    try {
+      inventoryStore = await resolveInventoryStore(store, async inventoryStoreId => {
+        const snapshot = await transaction.get(db.collection('stores').doc(inventoryStoreId));
+        return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+      });
+    } catch (_error) {
+      transaction.update(intentRef, {
+        status: PAID_STATUS,
+        failureCode: 'INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT',
+        safeProviderPaymentId: providerPayment.id,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
+        status: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        paymentReviewCode: 'INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
+        publicStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
+      }, { merge: true });
+      return { reviewRequired: true, code: 'INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT' };
+    }
+    const acceptedByProfile = acceptedBySnapshot.exists ? acceptedBySnapshot.data() : null;
+    if (!isAuthorizedStaffForStorePair(acceptedByProfile, store.id, inventoryStore.id)) {
+      transaction.update(intentRef, {
+        status: PAID_STATUS,
+        failureCode: 'STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT',
+        safeProviderPaymentId: providerPayment.id,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
+        status: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        paymentReviewCode: 'STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
+        publicStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
+      }, { merge: true });
+      return { reviewRequired: true, code: 'STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT' };
+    }
     const finishedGoodRefs = onlineOrder.items.map(item => (
       db.collection('finishedGoods').doc(item.finishedGoodId || item.finishedGoodCode)
     ));
@@ -355,6 +460,7 @@ async function finalizePaidOnlineOrder({
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
         status: REVIEW_STATUS,
         paymentStatus: REVIEW_STATUS,
         paymentReviewCode: 'FINISHED_GOOD_MISSING_AFTER_PAYMENT',
@@ -376,6 +482,25 @@ async function finalizePaidOnlineOrder({
       groupSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }]),
     );
     const productsById = Object.fromEntries(finishedGoods.map(item => [item.id, item]));
+    let componentProductIds = [];
+    try {
+      componentProductIds = collectRequiredComponentFinishedGoodIds({
+        products: productsById,
+        groupsById,
+      });
+    } catch {
+      // Canonicalization below repeats authoritative composite validation and
+      // routes any changed/invalid menu definition into payment review.
+    }
+    const componentProductSnapshots = await Promise.all(
+      componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
+    );
+    const componentProductsById = {
+      ...productsById,
+      ...Object.fromEntries(componentProductSnapshots
+        .filter(snapshot => snapshot.exists)
+        .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+    };
     const lineIds = onlineOrder.items.map((_, index) => deterministicLineId(onlineOrder.id, index));
     const requestedItems = onlineOrder.items.map((item, index) => ({
       orderItemId: lineIds[index],
@@ -393,6 +518,7 @@ async function finalizePaidOnlineOrder({
         requestedItems,
         productsById,
         groupsById,
+        componentProductsById,
       });
     } catch {
       transaction.update(intentRef, {
@@ -402,6 +528,7 @@ async function finalizePaidOnlineOrder({
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
         status: REVIEW_STATUS,
         paymentStatus: REVIEW_STATUS,
         paymentReviewCode: 'MENU_REVALIDATION_FAILED_AFTER_PAYMENT',
@@ -413,6 +540,37 @@ async function finalizePaidOnlineOrder({
         customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
       }, { merge: true });
       return { reviewRequired: true, code: 'MENU_REVALIDATION_FAILED_AFTER_PAYMENT' };
+    }
+
+    const componentSnapshotChanged = onlineOrder.items.some((storedItem, index) => (
+      !immutableCompositeComponentSnapshotsEqual(
+        storedItem.components,
+        canonical.canonicalItems[lineIds[index]]?.components,
+      )
+    ));
+    if (componentSnapshotChanged) {
+      transaction.update(intentRef, {
+        status: PAID_STATUS,
+        failureCode: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
+        safeProviderPaymentId: providerPayment.id,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
+        status: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        paymentReviewCode: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
+        publicStatus: REVIEW_STATUS,
+        paymentStatus: PAID_STATUS,
+        customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
+      }, { merge: true });
+      return {
+        reviewRequired: true,
+        code: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
+      };
     }
 
     const calculatedLines = onlineOrder.items.map((storedItem, index) => {
@@ -434,6 +592,7 @@ async function finalizePaidOnlineOrder({
         addOnTotal: canonicalItem.addOnTotal,
         baseUnitPrice: canonicalItem.baseUnitPrice,
         taxRate: canonicalItem.taxRate,
+        components: canonicalItem.components || [],
         lineSubtotal: roundMoney(lineSubtotal),
         lineTaxable: roundMoney(lineSubtotal),
         lineTax: roundMoney(lineTax),
@@ -454,6 +613,7 @@ async function finalizePaidOnlineOrder({
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
         status: REVIEW_STATUS,
         paymentStatus: REVIEW_STATUS,
         paymentReviewCode: 'CANONICAL_TOTAL_CHANGED_AFTER_PAYMENT',
@@ -472,11 +632,13 @@ async function finalizePaidOnlineOrder({
     const counterSnapshot = await transaction.get(counterRef);
     const sequence = counterSnapshot.exists ? Number(counterSnapshot.data().lastSequence || 0) + 1 : 1;
     const orderNumber = `CB-${store.code}-${dateKey}-${String(sequence).padStart(4, '0')}`;
-    const acceptedBy = cleanText(onlineOrder.acceptedBy, 128);
-    const acceptedByName = cleanText(onlineOrder.acceptedByName, 120);
-    if (!acceptedBy || !acceptedByName) {
-      fail('failed-precondition', 'Staff acceptance is required before operational fulfilment.');
-    }
+    const expandedInventoryLines = expandCompositeInventoryLines(calculatedLines.map(line => ({
+      lineKey: line.lineId,
+      quantity: line.quantity,
+      finishedGood: line.finishedGood,
+      addOns: line.addOns,
+      components: line.components,
+    })), store.id);
     const inventoryPlan = await planOnlineOrderInventory({
       transaction,
       db,
@@ -487,12 +649,7 @@ async function finalizePaidOnlineOrder({
       orderType: toOrderType(onlineOrder),
       businessDate: dateKey,
       staff: { uid: acceptedBy, name: acceptedByName },
-      lines: calculatedLines.map(line => ({
-        lineKey: line.lineId,
-        quantity: line.quantity,
-        finishedGood: line.finishedGood,
-        addOns: line.addOns,
-      })),
+      lines: expandedInventoryLines,
       requireAvailableStock: true,
     });
     if (inventoryPlan.blockers.length > 0) {
@@ -504,6 +661,7 @@ async function finalizePaidOnlineOrder({
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       transaction.update(onlineOrderRef, {
+        ...clearedAcceptanceClaim,
         status: REVIEW_STATUS,
         paymentStatus: PAID_STATUS,
         paymentReviewCode: `INVENTORY_${blockerCode}`,
@@ -616,6 +774,12 @@ async function finalizePaidOnlineOrder({
     let kotCount = 0;
     calculatedLines.forEach(line => {
       const station = normalizePrepStation(line.finishedGood.prepStation);
+      const parentInventory = summarizeParentInventory({
+        parentLineKey: line.lineId,
+        expandedLines: expandedInventoryLines,
+        perLineCogs: inventoryPlan.perLineCogs,
+        perLineConsumptionStatus: inventoryPlan.perLineConsumptionStatus,
+      });
       const itemRef = posOrderRef.collection('items').doc(line.lineId);
       transaction.create(itemRef, {
         menuItemId: line.finishedGood.code,
@@ -635,29 +799,31 @@ async function finalizePaidOnlineOrder({
         lineTaxable: line.lineTaxable,
         lineTax: line.lineTax,
         lineTotal: line.lineTotal,
-        cogsAmount: inventoryPlan.perLineCogs[line.lineId] || 0,
-        inventoryConsumptionStatus: inventoryPlan.perLineConsumptionStatus[line.lineId] || 'APPLIED',
+        cogsAmount: parentInventory.cogsAmount,
+        inventoryConsumptionStatus: parentInventory.inventoryConsumptionStatus,
         prepStation: station,
         status: 'PENDING',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.finishedGood.code,
         itemType: line.finishedGood.itemType,
+        ...(line.components.length > 0 ? { components: line.components } : {}),
       });
-      const createKot = kotStation => {
+      const createKot = task => {
         kotCount += 1;
-        transaction.create(db.collection('kotItems').doc(`${posOrderId}_${line.lineId}_${kotStation}`), {
+        transaction.create(db.collection('kotItems').doc(`${posOrderId}_${line.lineId}_${task.taskKey}`), {
           orderId: posOrderId,
           orderNumber,
           orderItemId: line.lineId,
           storeId: store.id,
           storeCode: store.code,
           storeName: store.name,
-          station: kotStation,
-          itemName: line.finishedGood.displayName || line.finishedGood.name,
-          itemCode: line.finishedGood.code,
-          quantity: line.quantity,
+          station: task.station,
+          itemName: task.itemName,
+          itemCode: task.itemCode,
+          quantity: task.quantity,
           addOns: line.addOns,
+          ...(task.component ? { component: task.component } : {}),
           orderType: toOrderType(onlineOrder),
           tableNumber: onlineOrder.orderType === 'DINE_IN' ? cleanText(onlineOrder.tableNumber, 20) || 'ONLINE' : null,
           customerName: cleanText(onlineOrder.customerName, 80) || 'Online Guest',
@@ -671,8 +837,12 @@ async function finalizePaidOnlineOrder({
           createdByName: acceptedByName,
         });
       };
-      if (station === 'BARISTA' || station === 'BOTH') createKot('BARISTA');
-      if (station === 'KITCHEN' || station === 'BOTH') createKot('KITCHEN');
+      buildKotTasks({
+        quantity: line.quantity,
+        finishedGood: line.finishedGood,
+        prepStation: station,
+        components: line.components,
+      }).forEach(createKot);
     });
 
     transaction.create(posOrderRef.collection('payments').doc('razorpay'), {
@@ -700,6 +870,7 @@ async function finalizePaidOnlineOrder({
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     transaction.update(onlineOrderRef, {
+      ...clearedAcceptanceClaim,
       status: 'CONVERTED',
       paymentStatus: PAID_STATUS,
       linkedOrderId: posOrderId,
@@ -1122,7 +1293,9 @@ module.exports = {
   createProviderOrder,
   createRazorpayCheckoutFunctions,
   finalizePaidOnlineOrder,
+  immutableCompositeComponentSnapshotsEqual,
   publicStatusMessage,
+  refundBlocksPaidOrderFulfilment,
   resolveOnlineOrderByTracking,
   resolveWebhookPaymentId,
   razorpayClient,

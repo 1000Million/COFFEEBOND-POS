@@ -8,8 +8,12 @@ const {
 } = require('firebase-admin/firestore');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { defineString } = require('firebase-functions/params');
-const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
+const {
+  isAuthorizedStaffForStorePair,
+  isAuthorizedStaffProfile,
+} = require('./complimentaryAuthorizationPolicy');
 const { canonicalizeCustomerCheckout, cleanText } = require('./customerCheckoutCanonicalization');
+const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const {
   CURRENCY,
   PROVIDER,
@@ -32,6 +36,7 @@ const {
   WEBHOOK_AUDIT_COLLECTION,
   finalizePaidOnlineOrder,
   razorpayClient,
+  refundBlocksPaidOrderFulfilment,
   resolveWebhookPaymentId,
 } = require('./razorpayCheckout');
 const { createBondLoyaltyService } = require('./bondLoyalty');
@@ -45,6 +50,7 @@ const CHECKOUT_SESSION_TTL_MS = 30 * 60 * 1000;
 const RESERVATION_TTL_MS = 20 * 60 * 1000;
 const PROVIDER_CREATION_LEASE_MS = 60 * 1000;
 const REFUND_REQUEST_LEASE_MS = 2 * 60 * 1000;
+const ACCEPTANCE_CLAIM_LEASE_MS = 2 * 60 * 1000;
 const MAGIC_CHECKOUT_ENABLED = defineString('RAZORPAY_MAGIC_CHECKOUT_ENABLED', { default: 'false' });
 const PHONE_PATTERN = /^\+91[6-9][0-9]{9}$/;
 
@@ -779,12 +785,6 @@ async function verifySessionPayment({ request, db, admin, keyId, keySecret, Razo
   }
 }
 
-function allowedStoreIds(profile) {
-  return Array.isArray(profile.assignedStoreIds) && profile.assignedStoreIds.length > 0
-    ? profile.assignedStoreIds
-    : Array.isArray(profile.storeIds) ? profile.storeIds : [];
-}
-
 async function staffIdentity(request, db, allowedRoles) {
   const uid = cleanText(request.auth?.uid, 128);
   if (!uid) fail('unauthenticated', 'Staff sign-in is required.');
@@ -819,6 +819,9 @@ async function acceptPaidOrder({ request, db, admin }) {
       orderNumber: order.linkedOrderNumber,
     };
   }
+  if (refundBlocksPaidOrderFulfilment(order)) {
+    fail('failed-precondition', 'This paid order has an active or completed refund and cannot be accepted.');
+  }
   if (
     !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS].includes(order.status)
     || order.paymentStatus !== 'PAID'
@@ -829,23 +832,101 @@ async function acceptPaidOrder({ request, db, admin }) {
   if (!intentSnapshot.exists || intentSnapshot.data()?.status !== 'PAID') {
     fail('failed-precondition', 'Verified payment intent was not found.');
   }
-  await orderRef.set({
-    acceptedBy: staff.uid,
-    acceptedByName: staff.name,
-    acceptedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+  const salesStoreSnapshot = await db.collection('stores').doc(order.storeId).get();
+  if (!salesStoreSnapshot.exists) {
+    fail('failed-precondition', 'The order store configuration is no longer available.');
+  }
+  const salesStore = { id: salesStoreSnapshot.id, ...salesStoreSnapshot.data() };
+  let inventoryStore;
+  try {
+    inventoryStore = await resolveInventoryStore(salesStore, async inventoryStoreId => {
+      const snapshot = await db.collection('stores').doc(inventoryStoreId).get();
+      return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+    });
+  } catch (_error) {
+    fail('failed-precondition', 'The order inventory store configuration is invalid.');
+  }
+  if (!isAuthorizedStaffForStorePair(staff.profile, salesStore.id, inventoryStore.id)) {
+    fail('permission-denied', 'This staff account cannot fulfil orders for both the sales and inventory stores.');
+  }
+  const acceptanceClaimId = `accept_${randomBytes(12).toString('hex')}`;
+  const acceptanceClaimNow = Date.now();
+  const acceptanceClaim = await db.runTransaction(async transaction => {
+    const freshOrderSnapshot = await transaction.get(orderRef);
+    if (!freshOrderSnapshot.exists) fail('not-found', 'Paid online order was not found.');
+    const freshOrder = { id: freshOrderSnapshot.id, ...freshOrderSnapshot.data() };
+    if (freshOrder.status === 'CONVERTED' && freshOrder.linkedOrderId) {
+      return { kind: 'FINALIZED', order: freshOrder };
+    }
+    if (refundBlocksPaidOrderFulfilment(freshOrder)) {
+      fail('aborted', 'A refund started before this order could be accepted.');
+    }
+    if (
+      !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS].includes(freshOrder.status)
+      || freshOrder.paymentStatus !== 'PAID'
+      || freshOrder.checkoutSessionId !== intentSnapshot.id
+    ) {
+      fail('aborted', 'Order status changed before acceptance could be claimed.');
+    }
+    const existingAcceptedBy = cleanText(freshOrder.acceptedBy, 128);
+    const acceptanceClaimExpiresAt = timestampMillis(freshOrder.acceptanceClaimExpiresAt);
+    const liveAcceptanceClaim = Boolean(
+      cleanText(freshOrder.acceptanceClaimId, 120)
+      && acceptanceClaimExpiresAt
+      && acceptanceClaimExpiresAt > acceptanceClaimNow,
+    );
+    const differentClaimant = Boolean(existingAcceptedBy && existingAcceptedBy !== staff.uid);
+    if (differentClaimant && liveAcceptanceClaim) {
+      fail('aborted', 'Another staff member currently holds the acceptance claim for this paid order.');
+    }
+    if (
+      differentClaimant
+      && freshOrder.status === REVIEW_STATUS
+      && !['ADMIN', 'STORE_MANAGER'].includes(staff.role)
+    ) {
+      fail('permission-denied', 'Only an Admin or Store Manager can take over a reviewed paid order.');
+    }
+    const acceptedBy = differentClaimant ? staff.uid : existingAcceptedBy || staff.uid;
+    const acceptedByName = differentClaimant
+      ? staff.name
+      : cleanText(freshOrder.acceptedByName, 120) || staff.name;
+    transaction.update(orderRef, {
+      acceptedBy,
+      acceptedByName,
+      acceptedAt: differentClaimant || !freshOrder.acceptedAt
+        ? admin.firestore.FieldValue.serverTimestamp()
+        : freshOrder.acceptedAt,
+      acceptanceClaimId,
+      acceptanceClaimExpiresAt: admin.firestore.Timestamp.fromMillis(
+        acceptanceClaimNow + ACCEPTANCE_CLAIM_LEASE_MS,
+      ),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return {
+      kind: 'CLAIMED',
+      order: { ...freshOrder, acceptedBy, acceptedByName, acceptanceClaimId },
+    };
+  });
+  if (acceptanceClaim.kind === 'FINALIZED') {
+    return {
+      alreadyFinalized: true,
+      orderId: acceptanceClaim.order.linkedOrderId,
+      orderNumber: acceptanceClaim.order.linkedOrderNumber,
+    };
+  }
+  const claimedOrder = acceptanceClaim.order;
   const result = await finalizePaidOnlineOrder({
     db,
     admin,
     onlineOrderId,
     intentId: intentSnapshot.id,
     providerPayment: {
-      id: order.providerPaymentId,
-      order_id: order.providerOrderId,
-      method: String(order.providerMethod || 'OTHER').toLowerCase(),
+      id: claimedOrder.providerPaymentId,
+      order_id: claimedOrder.providerOrderId,
+      method: String(claimedOrder.providerMethod || 'OTHER').toLowerCase(),
     },
-    providerOrder: { id: order.providerOrderId },
+    providerOrder: { id: claimedOrder.providerOrderId },
+    acceptanceClaimId,
   });
   if (!result.reviewRequired) {
     await db.collection(RESERVATION_COLLECTION).doc(onlineOrderId).set({
@@ -874,16 +955,20 @@ async function cancelAndRefund({
   const orderSnapshot = await orderRef.get();
   if (!orderSnapshot.exists) fail('not-found', 'Paid online order was not found.');
   const order = { id: orderSnapshot.id, ...orderSnapshot.data() };
-  if (staff.role !== 'ADMIN' && !allowedStoreIds(staff.profile).includes(order.storeId)) {
+  if (!isAuthorizedStaffProfile(staff.profile, order.storeId)) {
     fail('permission-denied', 'This manager cannot refund another store’s order.');
   }
   if (!['REFUND', order.publicOrderReference].includes(confirmation)) {
     fail('failed-precondition', 'Type REFUND or the order reference to confirm the full refund.');
   }
+  const existingRefundWorkflow = ['REFUND_REQUESTING', 'REFUND_PENDING', 'REFUNDED', 'CANCELLED_REFUNDED']
+    .some(status => [order.status, order.paymentStatus, order.refundStatus].includes(status));
   if (
     order.paymentProvider !== PROVIDER
-    || !['PAID', 'REFUND_FAILED'].includes(order.paymentStatus)
-    || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(order.status)
+    || (!existingRefundWorkflow && (
+      !['PAID', 'REFUND_FAILED'].includes(order.paymentStatus)
+      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(order.status)
+    ))
   ) {
     fail('failed-precondition', 'Only an unaccepted captured Razorpay order can be refunded here.');
   }
@@ -896,12 +981,6 @@ async function cancelAndRefund({
       transaction.get(orderRef),
       transaction.get(refundRef),
     ]);
-    if (
-      !freshOrder.exists
-      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(freshOrder.data().status)
-    ) {
-      fail('aborted', 'Order status changed before the refund could be requested.');
-    }
     const existing = existingRefund.exists ? existingRefund.data() : null;
     if (existing && ['REFUND_PENDING', 'REFUNDED'].includes(existing.status)) {
       return { kind: 'EXISTING', refund: existing };
@@ -914,6 +993,20 @@ async function cancelAndRefund({
       && leaseUntil > now
     ) {
       return { kind: 'IN_PROGRESS', refund: existing };
+    }
+    if (
+      !freshOrder.exists
+      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED', 'REFUND_REQUESTING'].includes(freshOrder.data().status)
+    ) {
+      fail('aborted', 'Order status changed before the refund could be requested.');
+    }
+    const acceptanceClaimExpiresAt = timestampMillis(freshOrder.data().acceptanceClaimExpiresAt);
+    if (
+      cleanText(freshOrder.data().acceptanceClaimId, 120)
+      && acceptanceClaimExpiresAt
+      && acceptanceClaimExpiresAt > now
+    ) {
+      fail('aborted', 'This paid order is currently being accepted and cannot be refunded yet.');
     }
     const requestReason = cleanText(existing?.reason, 240) || reason;
     transaction.set(refundRef, {
@@ -933,6 +1026,17 @@ async function cancelAndRefund({
       requestLeaseUntil: admin.firestore.Timestamp.fromMillis(now + REFUND_REQUEST_LEASE_MS),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+    transaction.update(orderRef, {
+      status: 'REFUND_REQUESTING',
+      refundStatus: 'REFUND_REQUESTING',
+      refundReason: requestReason,
+      refundRequestedBy: staff.uid,
+      refundRequestedByName: staff.name,
+      refundRequestedAt: existing?.requestedAt || admin.firestore.FieldValue.serverTimestamp(),
+      acceptanceClaimId: admin.firestore.FieldValue.delete(),
+      acceptanceClaimExpiresAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
     return { kind: 'CREATE', refund: existing, reason: requestReason };
   });
   if (claim.kind === 'EXISTING') {
@@ -1002,7 +1106,7 @@ async function cancelAndRefund({
     ]);
     if (
       !freshOrder.exists
-      || !['PAID_PENDING_ACCEPTANCE', REVIEW_STATUS, 'REFUND_FAILED'].includes(freshOrder.data().status)
+      || freshOrder.data().status !== 'REFUND_REQUESTING'
       || freshRefund.data()?.requestLeaseId !== requestLeaseId
       || freshRefund.data()?.refundRequestId !== refundRequestId
     ) {

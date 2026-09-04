@@ -24,7 +24,8 @@ export type InventoryRawConsumptionRow = {
 
 export type InventoryMovementAuditRow = {
   dateTimeSource: unknown;
-  storeName: string;
+  physicalInventoryStoreName: string;
+  logicalSalesStoreName: string;
   movementType: string;
   source: string;
   orderNumber: string;
@@ -149,7 +150,8 @@ export function buildInventoryMovementAuditRows(
   return movements
     .map((movement) => ({
       dateTimeSource: movement.createdAt,
-      storeName: movement.storeName || '-',
+      physicalInventoryStoreName: movement.storeName || '-',
+      logicalSalesStoreName: movement.logicalSalesStoreName || movement.storeName || '-',
       movementType: movement.movementType || '-',
       source: movement.source || movement.referenceType || '-',
       orderNumber: movementOrderReference(movement, orderLookup),
@@ -177,7 +179,7 @@ export function filterInventoryMovementAuditRows(
     if (filters.movementType !== 'ALL' && row.movementType !== filters.movementType) return false;
     if (filters.itemType !== 'ALL' && row.itemType !== filters.itemType) return false;
     if (!search) return true;
-    return [row.orderNumber, row.itemName, row.itemCode]
+    return [row.orderNumber, row.itemName, row.itemCode, row.physicalInventoryStoreName, row.logicalSalesStoreName]
       .some((value) => String(value || '').toLowerCase().includes(search));
   });
 }

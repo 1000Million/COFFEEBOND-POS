@@ -4,7 +4,6 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Store, KotItem, KotStatus } from '../../types';
 import { Loader2, Clock, X, ChefHat, Coffee, Store as StoreIcon, Search, AlertTriangle } from 'lucide-react';
-import { publicStatusMessage, updatePublicOrderTracking } from '../../lib/publicOrderTracking';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
@@ -212,44 +211,8 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
     || staffProfile?.role === station;
   const canCancel = canUpdateStatus;
 
-  const syncPublicTrackingFromKotStatus = async (item: KotItem, newStatus: KotStatus) => {
-    if (!item.onlineOrderTrackingToken) return;
-
-    if (newStatus === 'CANCELLED') {
-      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
-        publicStatus: 'NEEDS_ATTENTION',
-        customerStatusMessage: publicStatusMessage('NEEDS_ATTENTION'),
-      });
-      return;
-    }
-
-    if (newStatus === 'PREPARING') {
-      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
-        publicStatus: 'PREPARING',
-        customerStatusMessage: publicStatusMessage('PREPARING'),
-      });
-      return;
-    }
-
-    if (newStatus === 'READY') {
-      const orderKotSnap = await getDocs(query(
-        collection(db, 'kotItems'),
-        where('storeId', '==', item.storeId),
-        where('orderId', '==', item.orderId),
-      ));
-      const relatedItems = orderKotSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as KotItem));
-      const allDone = relatedItems.length > 0
-        && relatedItems.every(related => ['READY', 'SERVED', 'CANCELLED', 'WASTAGE_RECORDED'].includes(related.id === item.id ? newStatus : related.status));
-
-      await updatePublicOrderTracking(item.onlineOrderTrackingToken, {
-        publicStatus: allDone ? 'READY' : 'PREPARING',
-        customerStatusMessage: allDone ? publicStatusMessage('READY') : publicStatusMessage('PREPARING'),
-        ...(allDone ? { readyAt: serverTimestamp() } : {}),
-      });
-    }
-  };
-
-  // A simplified helper that handles the status change and attempts to sync the parent order item.
+  // The client writes only the station-scoped KOT. A secured Firestore trigger
+  // aggregates every sibling task into the commercial line and public status.
   const handleStatusChange = async (item: KotItem, newStatus: KotStatus, reason?: string) => {
     if (!canUpdateStatus) {
       setError("You don't have permission to update this ticket.");
@@ -285,44 +248,6 @@ export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" 
       }
 
       await updateDoc(itemRef, updateData);
-
-      // Sync the parent order item
-      const oItemRef = doc(db, 'orders', item.orderId, 'items', item.orderItemId);
-      const oItemSnap = await getDoc(oItemRef);
-      if (oItemSnap.exists()) {
-        const oItemData = oItemSnap.data();
-        if (oItemData.prepStation !== 'BOTH') {
-          await updateDoc(oItemRef, { status: newStatus });
-        } else {
-          // If BOTH, we need to know the status of the *other* kot item(s) for this orderItemId
-          const qKot = query(
-            collection(db, 'kotItems'), 
-            where('orderItemId', '==', item.orderItemId),
-            where('storeId', '==', item.storeId)
-          );
-          const docs = await getDocs(qKot);
-          const relatedItems = docs.docs.map(d => d.data() as KotItem);
-          
-          let nextItemStatus = newStatus;
-
-          const hasPending = relatedItems.some(r => r.status === 'PENDING');
-          const hasPreparing = relatedItems.some(r => r.status === 'PREPARING');
-          const hasReady = relatedItems.some(r => r.status === 'READY');
-          
-          if (hasPending) nextItemStatus = 'PENDING';
-          else if (hasPreparing) nextItemStatus = 'PREPARING';
-          else if (hasReady) nextItemStatus = 'READY';
-          else nextItemStatus = 'SERVED';
-
-          // If one is cancelled... handle carefully or just stick to operational logic above
-          const hasCancelled = relatedItems.some(r => r.status === 'CANCELLED');
-          if (hasCancelled && relatedItems.length === 1) nextItemStatus = 'CANCELLED'; // Should have 2 though
-
-          await updateDoc(oItemRef, { status: nextItemStatus });
-        }
-      }
-
-      await syncPublicTrackingFromKotStatus(item, newStatus);
 
       setFeedback(`${item.itemName} updated to ${newStatus.replace('_', ' ').toLowerCase()}.`);
       if (newStatus === 'READY' && selectedTicketOrder === item.orderNumber) {

@@ -1,7 +1,7 @@
 import { ChevronRight, MapPin } from 'lucide-react';
 
 type Props = {
-  /** "Pickup" / "Dine-in" — decided by the screen, not here. */
+  /** "Pickup" / "Dine-in", or a store-authored neutral ordering label. */
   contextLabel: string;
   storeName: string;
   /** Authoritative status label: Accepting orders / Busy / Closed / Opens at… / Menu unavailable. */
@@ -51,7 +51,11 @@ export default function CustomerStoreCard({
       </span>
       <span className="min-w-0 flex-1">
         <span className="cb-customer-store-title block truncate">
-          {contextLabel === 'Dine-in' ? 'Dine in at' : 'Pickup from'} {storeName}
+          {contextLabel === 'Dine-in'
+            ? `Dine in at ${storeName}`
+            : contextLabel === 'Pickup'
+              ? `Pickup from ${storeName}`
+              : `${contextLabel} · ${storeName}`}
         </span>
         <span className="cb-customer-store-status block truncate">
           <span className={`cb-customer-store-status-dot ${TONE[tone]}`} aria-hidden="true" />

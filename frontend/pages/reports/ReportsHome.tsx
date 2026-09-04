@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import {
   BarChart3,
@@ -16,6 +16,7 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Store } from '../../types';
 import type { ReportDefinition } from '../../lib/reporting';
+import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
 
 const FAVOURITES_KEY = 'coffee-bond-report-favourites';
 const RECENTS_KEY = 'coffee-bond-report-recents';
@@ -71,22 +72,31 @@ export default function ReportsHome() {
 
   useEffect(() => {
     let active = true;
-    getDocs(query(collection(db, 'stores'), where('isActive', '==', true)))
-      .then(snapshot => {
+    const loadStores = async () => {
+      if (!staffProfile) return [];
+      if (staffProfile.role === 'ADMIN') {
+        const snapshot = await getDocs(query(collection(db, 'stores'), where('isActive', '==', true)));
+        return snapshot.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store));
+      }
+      const snapshots = await Promise.all(
+        assignedStoreIdentifiers(staffProfile)
+          .map(storeId => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
+      );
+      return snapshots
+        .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot?.exists()))
+        .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as Store));
+    };
+    loadStores()
+      .then(loaded => {
         if (!active) return;
-        setStores(snapshot.docs.map(storeDoc => ({ id: storeDoc.id, ...storeDoc.data() } as Store)));
+        setStores(loaded);
       })
       .catch(error => console.error('Failed to load report stores', error));
     return () => { active = false; };
-  }, []);
+  }, [staffProfile]);
 
   const accessibleStores = useMemo(() => {
-    if (!staffProfile) return [];
-    if (staffProfile.role === 'ADMIN') return stores;
-    const allowed = staffProfile.assignedStoreIds?.length
-      ? staffProfile.assignedStoreIds
-      : staffProfile.storeIds || [];
-    return stores.filter(store => allowed.includes(store.id));
+    return accessiblePosStores(stores, staffProfile);
   }, [staffProfile, stores]);
 
   useEffect(() => {

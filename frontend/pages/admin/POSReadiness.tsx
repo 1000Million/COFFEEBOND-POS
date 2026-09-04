@@ -21,8 +21,9 @@ import {
 import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
 import { useAuth } from '../../contexts/AuthContext';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
 import { Store } from '../../types';
-import { AddOnGroup, BOMComponent, FinishedGood, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
+import { AddOnGroup, BOMComponent, FinishedGood, FinishedGoodComponentReference, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
 import addOnApprovalManifest from '../../../data/imports/addon-product-reconciliation-approvals.json';
 
 type StatusTone = 'ready' | 'warning' | 'blocked';
@@ -57,6 +58,7 @@ type KotCoverage = {
 
 type StoreReadiness = {
   storeId: string;
+  inventoryStoreId: string;
   storeCode: string;
   storeName: string;
   posSource: 'FINISHED_GOODS';
@@ -106,7 +108,7 @@ type EspressoFixState = {
   message: string;
 };
 
-const TARGET_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51', 'GOLDEN_I'];
+const TARGET_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51', 'GOLDEN_I', 'TASTING_ROOM_29'];
 const ESPRESSO_STOCK_CODE = 'ESPRESSO_DOUBLE_RISTRETTO';
 const ESPRESSO_FIX_CONFIRMATION = 'RESTORE ESPRESSO STOCK';
 const AVAILABILITY_REFRESH_CONFIRMATION = 'REFRESH CUSTOMER AVAILABILITY';
@@ -177,6 +179,33 @@ function isStockItemType(value: string): value is StockItemType {
 
 function isStockTrackedFinishedGood(fg: FinishedGood): boolean {
   return fg.itemType === 'MADE_TO_ORDER' || fg.itemType === 'DIRECT_STOCK' || fg.productionMode === 'MADE_TO_ORDER' || fg.productionMode === 'ASSEMBLED_TO_ORDER' || fg.productionMode === 'BOUGHT_AND_SOLD';
+}
+
+function normalizedIds(value: unknown): string[] {
+  return Array.from(new Set(
+    (Array.isArray(value) ? value : [])
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim()),
+  ));
+}
+
+function componentReference(value: unknown): FinishedGoodComponentReference | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<FinishedGoodComponentReference>;
+  const finishedGoodId = cleanValue(candidate.finishedGoodId);
+  const finishedGoodCode = cleanValue(candidate.finishedGoodCode);
+  const quantity = toNumber(candidate.quantity);
+  if (!finishedGoodId || !finishedGoodCode || quantity <= 0 || quantity > 100) {
+    return null;
+  }
+  return { finishedGoodId, finishedGoodCode, quantity };
+}
+
+function optionIdsByGroup(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .map(([groupId, optionIds]) => [groupId.trim(), normalizedIds(optionIds)] as const)
+    .filter(([groupId]) => groupId.length > 0));
 }
 
 function usesBom(fg: FinishedGood): boolean {
@@ -373,12 +402,17 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
   const rawByCode = new Map(data.rawIngredients.map((raw) => [raw.code, raw]));
   const prepByCode = new Map(data.prepItems.map((prep) => [prep.code, prep]));
   const finishedByCode = new Map(data.finishedGoods.map((fg) => [fg.code, fg]));
+  const finishedById = new Map(data.finishedGoods.map((fg) => [fg.id, fg]));
+  const addOnGroupsById = new Map(data.addOnGroups
+    .filter((group): group is AddOnGroup & { id: string } => typeof group.id === 'string' && group.id.trim().length > 0)
+    .map((group) => [group.id.trim(), group]));
   const stockById = new Map(data.storeStock.map((row) => [row.id, row]));
 
   return data.stores.map((store) => {
     const posSource = 'FINISHED_GOODS' as const;
+    const inventoryStoreId = effectiveInventoryStoreId(store);
     const finishedGoods = data.finishedGoods.filter((fg) => isActiveSellableFinishedGood(fg, store.id));
-    const stockRowsForStore = data.storeStock.filter((stock) => stock.storeId === store.id);
+    const stockRowsForStore = data.storeStock.filter((stock) => stock.storeId === inventoryStoreId);
     const requiredStockRows = new Map<string, RequiredStockRow>();
     const stockBlockers: ReadinessBlocker[] = [];
     const bomBlockers: ReadinessBlocker[] = [];
@@ -389,7 +423,238 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
       }
     };
 
+    const addCompositeBlocker = (parent: FinishedGood, reason: string, child?: FinishedGoodComponentReference) => {
+      bomBlockers.push({
+        storeCode: store.code,
+        stockItemType: 'FINISHED_GOOD',
+        stockItemCode: child?.finishedGoodCode || parent.code,
+        stockItemName: child?.finishedGoodCode || parent.displayName || parent.name,
+        currentOpeningStock: null,
+        currentCurrentStock: null,
+        confirmedZero: false,
+        blockerReason: `${parent.displayName || parent.name}: ${reason}`,
+        severity: 'RED',
+      });
+    };
+
+    const addCompositeChildStockRequirements = (parent: FinishedGood, child: FinishedGood) => {
+      if (usesBom(child)) {
+        if (!Array.isArray(child.bom) || child.bom.length === 0) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no authoritative BOM.`, {
+            finishedGoodId: child.id || child.code,
+            finishedGoodCode: child.code,
+            quantity: 1,
+          });
+          return;
+        }
+        child.bom.forEach((line) => {
+          if (
+            !line.componentCode
+            || !isStockItemType(line.componentType)
+            || toNumber(line.quantity) <= 0
+            || !cleanValue(line.uom)
+          ) {
+            addCompositeBlocker(parent, `${child.displayName || child.name} has an incomplete BOM component.`);
+            return;
+          }
+          if (!componentMasterExists(line, rawByCode, prepByCode, finishedByCode)) {
+            addCompositeBlocker(
+              parent,
+              `${child.displayName || child.name} references missing ${line.componentType} / ${line.componentCode}.`,
+            );
+          }
+          const fallbackDocId = line.componentType === 'PACKAGING'
+            ? getStockDocId(inventoryStoreId, 'RAW_INGREDIENT', line.componentCode)
+            : undefined;
+          addRequiredStock({
+            docId: getStockDocId(inventoryStoreId, line.componentType, line.componentCode),
+            stockItemType: line.componentType,
+            stockItemCode: line.componentCode,
+            stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
+            fallbackDocId,
+          });
+        });
+        return;
+      }
+      if (child.itemType === 'DIRECT_STOCK' || child.productionMode === 'BOUGHT_AND_SOLD') {
+        addRequiredStock({
+          docId: getStockDocId(inventoryStoreId, 'FINISHED_GOOD', child.code),
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: child.code,
+          stockItemName: child.displayName || child.name,
+        });
+      }
+    };
+
+    const scanComposite = (parent: FinishedGood) => {
+      const composite = parent.composite;
+      if (
+        !composite
+        || Number(composite.schemaVersion) !== 1
+        || !Array.isArray(composite.staticComponents)
+        || !Array.isArray(composite.choiceGroupIds)
+      ) {
+        addCompositeBlocker(parent, 'composite definition is missing or uses an unsupported schema.');
+        return;
+      }
+      if (
+        parent.unresolvedCompositeRequirements !== undefined
+        && (
+          !Array.isArray(parent.unresolvedCompositeRequirements)
+          || parent.unresolvedCompositeRequirements.length > 0
+        )
+      ) {
+        addCompositeBlocker(parent, 'component requirements still need owner confirmation.');
+        return;
+      }
+
+      const staticReferences = composite.staticComponents.map(componentReference);
+      if (staticReferences.some((reference) => !reference)) {
+        addCompositeBlocker(parent, 'a static component has an invalid Finished Good reference.');
+        return;
+      }
+      const references = staticReferences as FinishedGoodComponentReference[];
+      if (new Set(references.map((reference) => reference.finishedGoodId)).size !== references.length) {
+        addCompositeBlocker(parent, 'repeated static components must use one reference with the required quantity.');
+        return;
+      }
+      if (references.some((reference) => reference.finishedGoodId === parent.id || reference.finishedGoodCode === parent.code)) {
+        addCompositeBlocker(parent, 'a composite cannot contain itself.');
+        return;
+      }
+
+      const rawChoiceGroupIds = composite.choiceGroupIds
+        .map((groupId) => cleanValue(groupId))
+        .filter(Boolean);
+      const choiceGroupIds = normalizedIds(rawChoiceGroupIds);
+      if (choiceGroupIds.length !== composite.choiceGroupIds.length) {
+        addCompositeBlocker(parent, 'choice group ids are missing or repeated.');
+        return;
+      }
+      const configuredGroupIds = normalizedIds(parent.addOnGroupIds);
+      const assignedCompositeGroupIds = configuredGroupIds.filter((groupId) => (
+        addOnGroupsById.get(groupId)?.purpose === 'COMPOSITE_CHOICE'
+      ));
+      if (
+        assignedCompositeGroupIds.length !== choiceGroupIds.length
+        || assignedCompositeGroupIds.some((groupId) => !choiceGroupIds.includes(groupId))
+      ) {
+        addCompositeBlocker(parent, 'assigned composite choice groups do not match the parent definition.');
+        return;
+      }
+
+      const enabledOptionIdsByGroup = optionIdsByGroup(parent.addOnOptionIdsByGroup);
+      for (const groupId of choiceGroupIds) {
+        if (!configuredGroupIds.includes(groupId)) {
+          addCompositeBlocker(parent, `choice group ${groupId} is not assigned to the parent.`);
+          return;
+        }
+        const group = addOnGroupsById.get(groupId);
+        if (!group || group.isActive !== true || group.purpose !== 'COMPOSITE_CHOICE') {
+          addCompositeBlocker(parent, `choice group ${groupId} is missing, inactive, or has the wrong purpose.`);
+          return;
+        }
+        const enabledOptionIds = enabledOptionIdsByGroup[groupId] || [];
+        if (enabledOptionIds.length === 0) {
+          addCompositeBlocker(parent, `choice group ${groupId} has no enabled options for this product.`);
+          return;
+        }
+        const minimumSelections = Math.max(0, toNumber(group.minimumSelections));
+        const maximumSelections = group.maximumSelections === null || group.maximumSelections === undefined
+          ? Number.POSITIVE_INFINITY
+          : Math.max(minimumSelections, toNumber(group.maximumSelections));
+        const selectionMode = cleanValue(group.selectionMode).toUpperCase();
+        if (!['SINGLE', 'EXACT_DISTINCT'].includes(selectionMode)) {
+          addCompositeBlocker(parent, `choice group ${groupId} must use SINGLE or EXACT_DISTINCT selection.`);
+          return;
+        }
+        if (
+          selectionMode === 'EXACT_DISTINCT'
+          && (
+            !Number.isInteger(minimumSelections)
+            || minimumSelections <= 0
+            || maximumSelections !== minimumSelections
+          )
+        ) {
+          addCompositeBlocker(parent, `exact-distinct group ${groupId} must require one exact positive selection count.`);
+          return;
+        }
+        if (
+          (selectionMode === 'SINGLE' && minimumSelections > 1)
+          || minimumSelections > enabledOptionIds.length
+        ) {
+          addCompositeBlocker(parent, `choice group ${groupId} cannot satisfy its configured selection count.`);
+          return;
+        }
+        const optionsById = new Map((Array.isArray(group.options) ? group.options : [])
+          .filter((option) => cleanValue(option.id))
+          .map((option) => [cleanValue(option.id), option]));
+        const groupReferences: FinishedGoodComponentReference[] = [];
+        for (const optionId of enabledOptionIds) {
+          const option = optionsById.get(optionId);
+          const reference = componentReference(option?.finishedGoodComponent);
+          if (!option || option.isActive !== true || !reference) {
+            addCompositeBlocker(parent, `choice option ${optionId} is missing, inactive, or has an invalid Finished Good reference.`);
+            return;
+          }
+          groupReferences.push(reference);
+        }
+        if (
+          selectionMode === 'EXACT_DISTINCT'
+          && new Set(groupReferences.map((reference) => reference.finishedGoodId)).size !== groupReferences.length
+        ) {
+          addCompositeBlocker(parent, `exact-distinct group ${groupId} contains repeated Finished Goods.`);
+          return;
+        }
+        references.push(...groupReferences);
+      }
+
+      if (references.length === 0 || references.length > 40) {
+        addCompositeBlocker(parent, 'composite must define between 1 and 40 possible components.');
+        return;
+      }
+
+      references.forEach((reference) => {
+        const child = finishedById.get(reference.finishedGoodId);
+        if (
+          !child
+          || cleanValue(child.id) !== reference.finishedGoodId
+          || cleanValue(child.code) !== reference.finishedGoodCode
+          || finishedByCode.get(reference.finishedGoodCode) !== child
+        ) {
+          addCompositeBlocker(parent, 'a component Finished Good reference is missing or changed.', reference);
+          return;
+        }
+        const childStoreIds = Array.isArray(child.availableStoreIds) ? child.availableStoreIds : [];
+        if (child.isActive !== true || child.isAvailable === false || !childStoreIds.includes(store.id)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} is unavailable at ${store.name}.`, reference);
+          return;
+        }
+        if (child.composite) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} is nested composite; only one level is supported.`, reference);
+          return;
+        }
+        if (!['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(child.prepStation)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid preparation station.`, reference);
+          return;
+        }
+        if (!['MADE_TO_ORDER', 'DIRECT_STOCK', 'NO_STOCK'].includes(child.itemType)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid item type.`, reference);
+          return;
+        }
+        if (child.productionMode && !['MADE_TO_ORDER', 'ASSEMBLED_TO_ORDER', 'BOUGHT_AND_SOLD', 'NO_STOCK'].includes(child.productionMode)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid production mode.`, reference);
+          return;
+        }
+        addCompositeChildStockRequirements(parent, child);
+      });
+    };
+
     finishedGoods.forEach((fg) => {
+      if (fg.composite) {
+        scanComposite(fg);
+        return;
+      }
       if (isStockTrackedFinishedGood(fg) && usesBom(fg) && (!fg.bom || fg.bom.length === 0)) {
         bomBlockers.push({
           storeCode: store.code,
@@ -420,9 +685,9 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
               severity: 'RED',
             });
           }
-          const fallbackDocId = line.componentType === 'PACKAGING' ? getStockDocId(store.id, 'RAW_INGREDIENT', line.componentCode) : undefined;
+          const fallbackDocId = line.componentType === 'PACKAGING' ? getStockDocId(inventoryStoreId, 'RAW_INGREDIENT', line.componentCode) : undefined;
           addRequiredStock({
-            docId: getStockDocId(store.id, line.componentType, line.componentCode),
+            docId: getStockDocId(inventoryStoreId, line.componentType, line.componentCode),
             stockItemType: line.componentType,
             stockItemCode: line.componentCode,
             stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
@@ -431,7 +696,7 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
         });
       } else if (fg.itemType === 'DIRECT_STOCK' || fg.productionMode === 'BOUGHT_AND_SOLD') {
         addRequiredStock({
-          docId: getStockDocId(store.id, 'FINISHED_GOOD', fg.code),
+          docId: getStockDocId(inventoryStoreId, 'FINISHED_GOOD', fg.code),
           stockItemType: 'FINISHED_GOOD',
           stockItemCode: fg.code,
           stockItemName: fg.displayName || fg.name,
@@ -502,6 +767,7 @@ function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
 
     return {
       storeId: store.id,
+      inventoryStoreId,
       storeCode: store.code,
       storeName: store.name,
       posSource,
@@ -545,7 +811,7 @@ function buildEspressoFixState(data: LoadedData | null): EspressoFixState {
   }
 
   const stockRow = data.storeStock.find((stock) => (
-    stock.storeId === udayStore.id
+    stock.storeId === effectiveInventoryStoreId(udayStore)
     && stock.stockItemType === 'PREP_ITEM'
     && stock.stockItemCode === ESPRESSO_STOCK_CODE
   )) || null;

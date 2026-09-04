@@ -1,7 +1,13 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
+const {
+  CompositeProductPolicyError,
+  collectRequiredComponentFinishedGoodIds,
+  resolveCanonicalCompositeComponents,
+} = require('./compositeProductPolicy');
 
 const AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
 const PROVIDER = 'SERVER_CANONICAL_ADD_ONS';
@@ -60,6 +66,13 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 function fail(code, message) {
   throw new HttpsError(code, message);
+}
+
+function failCompositePolicy(error) {
+  if (error instanceof CompositeProductPolicyError) {
+    fail('failed-precondition', error.message);
+  }
+  throw error;
 }
 
 function cleanText(value, maxLength) {
@@ -236,6 +249,50 @@ function sanitizeCartItems(value) {
   });
 }
 
+function assertImmutableSourceOnlineOrder({
+  sourceOnlineOrderSnapshot,
+  storeId,
+  requestedItems,
+  canonicalItems,
+}) {
+  if (!sourceOnlineOrderSnapshot?.exists) {
+    fail('failed-precondition', 'The source online order no longer exists.');
+  }
+  const sourceOrder = sourceOnlineOrderSnapshot.data() || {};
+  if (
+    sourceOrder.storeId !== storeId
+    || sourceOrder.source !== 'CUSTOMER_WEB'
+    || sourceOrder.paymentProvider !== 'PAY_AT_COUNTER'
+    || !['PENDING', 'NEEDS_ATTENTION'].includes(sourceOrder.status)
+    || !Array.isArray(sourceOrder.items)
+    || sourceOrder.items.length !== requestedItems.length
+  ) {
+    fail('failed-precondition', 'The source online order cannot be authorized for this checkout.');
+  }
+
+  sourceOrder.items.forEach((sourceItem, index) => {
+    const requestedItem = requestedItems[index];
+    const canonicalItem = canonicalItems[requestedItem.orderItemId];
+    const sourceSelections = sanitizeSelections((sourceItem?.addOns || []).map(addOn => ({
+      groupId: addOn?.groupId,
+      optionId: addOn?.optionId,
+      quantity: addOn?.quantity,
+    })));
+    if (
+      !canonicalItem
+      || cleanText(sourceItem?.finishedGoodCode, 80) !== requestedItem.parentProductCode
+      || Number(sourceItem?.quantity) !== requestedItem.quantity
+      || !isDeepStrictEqual(sourceSelections, requestedItem.selectedAddOns)
+      || !isDeepStrictEqual(sourceItem?.components, canonicalItem.components)
+    ) {
+      fail(
+        'failed-precondition',
+        'The online order component snapshot no longer matches its server-authorized checkout.',
+      );
+    }
+  });
+}
+
 function optionInventorySnapshot(option) {
   const inventoryItemType = cleanText(option.inventoryItemType, 40);
   const inventoryItemCode = cleanText(option.inventoryItemCode, 80);
@@ -263,6 +320,7 @@ function canonicalizeRequestedCart({
   requestedItems,
   productsById,
   groupsById,
+  componentProductsById = {},
 }) {
   const fallbackTaxRate = storeTaxRate({ id: storeId, ...store }, gstConfig);
   const canonicalItems = {};
@@ -338,6 +396,18 @@ function canonicalizeRequestedCart({
         const maximum = group.maximumSelections === null || group.maximumSelections === undefined
           ? Number.POSITIVE_INFINITY
           : Math.max(minimum, finiteNumber(group.maximumSelections));
+        if (
+          group.selectionMode === 'EXACT_DISTINCT'
+          && (!Number.isInteger(minimum) || minimum <= 0 || maximum !== minimum)
+        ) {
+          fail('failed-precondition', 'An exact-distinct add-on group is not configured with one exact selection count.');
+        }
+        if (
+          group.selectionMode === 'EXACT_DISTINCT'
+          && requestedForGroup.some(selection => selection.quantity !== 1)
+        ) {
+          fail('failed-precondition', 'Exact-distinct choices cannot repeat one option as a quantity.');
+        }
         if (selectionCount < minimum || selectionCount > maximum) {
           fail('failed-precondition', `Selected add-ons for ${cleanText(group.name, 120) || 'this item'} are invalid.`);
         }
@@ -376,6 +446,18 @@ function canonicalizeRequestedCart({
       || left.optionId.localeCompare(right.optionId)
     ));
     const addOnTotal = canonicalAddOns.reduce((sum, addOn) => sum + addOn.totalPrice, 0);
+    let components;
+    try {
+      components = resolveCanonicalCompositeComponents({
+        parentProduct: product,
+        requestedSelections: requestedItem.selectedAddOns,
+        groupsById,
+        componentProductsById,
+        storeId,
+      });
+    } catch (error) {
+      failCompositePolicy(error);
+    }
     canonicalAddOnTotal += addOnTotal * requestedItem.quantity;
     canonicalItems[requestedItem.orderItemId] = {
       orderItemId: requestedItem.orderItemId,
@@ -386,6 +468,7 @@ function canonicalizeRequestedCart({
       taxRate: positiveTaxRate(product, ITEM_TAX_RATE_KEYS) || fallbackTaxRate,
       addOns: canonicalAddOns,
       addOnTotal,
+      ...(components.length > 0 ? { components } : {}),
     };
   }
 
@@ -403,13 +486,17 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     const checkoutMode = cleanText(request.data?.checkoutMode, 40).toUpperCase();
     const checkoutSource = cleanText(request.data?.checkoutSource, 40).toUpperCase();
     const paymentMethod = cleanText(request.data?.paymentMethod, 40).toUpperCase();
+    const sourceOnlineOrderId = cleanText(request.data?.sourceOnlineOrderId, 120) || null;
     const requestedItems = sanitizeCartItems(request.data?.items);
     if (!storeId || !orderId) fail('invalid-argument', 'Store and order references are required.');
 
-    const [staffSnapshot, storeSnapshot, gstSnapshot] = await Promise.all([
+    const [staffSnapshot, storeSnapshot, gstSnapshot, sourceOnlineOrderSnapshot] = await Promise.all([
       db.collection('users').doc(staffUid).get(),
       db.collection('stores').doc(storeId).get(),
       db.collection('appSettings').doc('gstConfig').get(),
+      sourceOnlineOrderId
+        ? db.collection('onlineOrders').doc(sourceOnlineOrderId).get()
+        : Promise.resolve(null),
     ]);
     if (!staffSnapshot.exists) fail('permission-denied', 'Active staff profile is required.');
     const staff = staffSnapshot.data() || {};
@@ -452,6 +539,29 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
       ]),
     );
 
+    let componentProductIds;
+    try {
+      componentProductIds = collectRequiredComponentFinishedGoodIds({
+        products: productsById,
+        groupsById,
+      });
+    } catch (error) {
+      failCompositePolicy(error);
+    }
+    const missingComponentProductIds = componentProductIds.filter(productId => !productsById[productId]);
+    const componentProductSnapshots = await Promise.all(
+      missingComponentProductIds.map(productId => db.collection('finishedGoods').doc(productId).get()),
+    );
+    const componentProductsById = {
+      ...productsById,
+      ...Object.fromEntries(
+        componentProductSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [
+          snapshot.id,
+          { id: snapshot.id, ...snapshot.data() },
+        ]),
+      ),
+    };
+
     const { canonicalItems, canonicalAddOnTotal } = canonicalizeRequestedCart({
       storeId,
       store: { id: storeSnapshot.id, ...store },
@@ -459,7 +569,16 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
       requestedItems,
       productsById,
       groupsById,
+      componentProductsById,
     });
+    if (sourceOnlineOrderId) {
+      assertImmutableSourceOnlineOrder({
+        sourceOnlineOrderSnapshot,
+        storeId,
+        requestedItems,
+        canonicalItems,
+      });
+    }
     const createdAt = admin.firestore.Timestamp.now();
     const expiresAt = admin.firestore.Timestamp.fromMillis(createdAt.toMillis() + AUTHORIZATION_TTL_MS);
     const authorizationRef = db.collection('posAddOnAuthorizations').doc();
@@ -473,6 +592,7 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
       storeId,
       orderId,
       orderNumber: requestedOrderNumber,
+      ...(sourceOnlineOrderId ? { sourceOnlineOrderId } : {}),
       canonicalItems,
       canonicalAddOnTotal,
       provider: PROVIDER,
@@ -494,6 +614,7 @@ module.exports = {
   AUTHORIZATION_TTL_MS,
   DRAFT_SETUP_TEST_STORE_ID,
   PROVIDER,
+  assertImmutableSourceOnlineOrder,
   canonicalizeRequestedCart,
   createPosAddOnAuthorizationFunction,
   isDraftSetupTestAuthorizationAllowed,

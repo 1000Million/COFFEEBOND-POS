@@ -72,8 +72,12 @@ import {
 } from '../../lib/customerMyUsualApi';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE } from '../../lib/connectivity';
 import {
-  CUSTOMER_CATEGORY_ORDER,
+  TASTING_ROOM_BOND_TABLE_CATEGORY,
+  customerCategoryOrder,
   customerMenuCategory,
+  customerStorePresentation,
+  isTastingRoomStore,
+  requestedCustomerStore,
   trustedDietaryClassification,
 } from '../../lib/customerMenuPresentation';
 import { CUSTOMER_ACCOUNT_PATH, CUSTOMER_HOME_PATH, CUSTOMER_MY_ORDERS_PATH, customerStatusPath, customerTrackingUrl, normalizeTrackingPath } from '../../lib/customerRoutes';
@@ -265,6 +269,7 @@ const RAZORPAY_PRE_PAYMENT_CAVEAT =
 const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
+const STORE_CHANGE_CONFIRMATION = 'Changing store will clear your current basket so prices and availability stay correct. Continue?';
 
 type StoreCoordinate = {
   latitude: number;
@@ -339,6 +344,7 @@ function distanceKm(a: StoreCoordinate, b: StoreCoordinate): number {
 
 function closestStoreToPosition(stores: Store[], position: StoreCoordinate): { store: Store; distanceKm: number } | null {
   return stores.reduce<{ store: Store; distanceKm: number } | null>((closest, store) => {
+    if (store.excludeFromNearestSelection === true) return closest;
     const coordinate = storeCoordinate(store);
     if (!coordinate) return closest;
     const distance = distanceKm(position, coordinate);
@@ -445,13 +451,13 @@ function getItemImage(item: CustomerMenuItem): string | null {
   return null;
 }
 
-function visualMeta(item: CustomerMenuItem): {
+function visualMeta(item: CustomerMenuItem, storeCode?: string): {
   label: string;
   gradient: string;
   iconColor: string;
   icon: IconComponent;
 } {
-  const group = customerMenuCategory(item);
+  const group = customerMenuCategory(item, storeCode);
   if (group === 'Coffee') {
     return { label: 'Coffee', gradient: 'bg-[#f1dfca]', iconColor: 'text-[#6c4025]', icon: Coffee };
   }
@@ -472,6 +478,12 @@ function visualMeta(item: CustomerMenuItem): {
   }
   if (group === 'Add Ons') {
     return { label: 'Add on', gradient: 'bg-[#eee4da]', iconColor: 'text-[#705748]', icon: Sparkles };
+  }
+  if (group === 'Flights & Experiences') {
+    return { label: 'Tasting flight', gradient: 'bg-[#dcece4]', iconColor: 'text-[#2f6b4b]', icon: CupSoda };
+  }
+  if (group === 'A Sweet Finish') {
+    return { label: 'A sweet finish', gradient: 'bg-[#f3ddd3]', iconColor: 'text-[#8a4a38]', icon: CakeSlice };
   }
   return { label: group === 'Other' ? 'Other' : 'Food', gradient: 'bg-[#f0e0d4]', iconColor: 'text-[#7f5136]', icon: Utensils };
 }
@@ -650,8 +662,8 @@ export default function CustomerOrder() {
       searchInputRef.current?.focus();
       searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
-    navigate(routerLocation.pathname, { replace: true, state: null });
-  }, [routerLocation.state, routerLocation.pathname, navigate]);
+    navigate({ pathname: routerLocation.pathname, search: routerLocation.search }, { replace: true, state: null });
+  }, [routerLocation.state, routerLocation.pathname, routerLocation.search, navigate]);
   const [storeSelectorOpen, setStoreSelectorOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -678,8 +690,16 @@ export default function CustomerOrder() {
   const submittingRef = useRef(false);
   const userStoreChoiceRef = useRef(false);
   const triedAutoLocationRef = useRef(false);
+  const initialStoreSearchRef = useRef(routerLocation.search);
   const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
   const hydrationAppliedRef = useRef(false);
+
+  const alignExistingStoreQuery = (store: Store) => {
+    const params = new URLSearchParams(routerLocation.search);
+    if (!params.has('store')) return;
+    params.set('store', store.code);
+    navigate({ pathname: routerLocation.pathname, search: `?${params.toString()}` }, { replace: true, state: null });
+  };
 
   useEffect(() => {
     if (!demoRequested) {
@@ -755,14 +775,43 @@ export default function CustomerOrder() {
         const gstData = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : {};
 
         const savedStoreId = defaultStoreIdFromStorage(loadedStores);
+        const directStore = requestedCustomerStore(loadedStores, initialStoreSearchRef.current);
+        const directStoreRequested = new URLSearchParams(initialStoreSearchRef.current).has('store');
         const draftResult = readCustomerCheckoutDraft(window.localStorage);
         const draftStore = draftResult.draft
           ? loadedStores.find(store => store.id === draftResult.draft?.selectedStoreId)
           : null;
+        let draftToRestore = draftResult.draft && draftStore ? draftResult.draft : null;
+        let acceptedDirectStore = directStore;
+
+        if (acceptedDirectStore && draftToRestore && draftStore?.id !== acceptedDirectStore.id) {
+          const shouldSwitch = window.confirm(STORE_CHANGE_CONFIRMATION);
+          if (shouldSwitch) {
+            clearCustomerCheckoutDraft(window.localStorage);
+            draftToRestore = null;
+            setCheckoutDraftNotice('Your saved basket was cleared before switching to the store in this link.');
+          } else {
+            acceptedDirectStore = null;
+            setStorePreferenceMessage(`Kept your basket at ${draftStore?.name || 'its original store'}.`);
+          }
+        }
+
+        if (acceptedDirectStore) {
+          // A valid QR/deep link is explicit customer intent. It wins over saved/default
+          // preference and must not be replaced by the asynchronous nearest-store pass.
+          userStoreChoiceRef.current = true;
+          triedAutoLocationRef.current = true;
+        }
+
         if (draftResult.draft && draftStore) {
           triedAutoLocationRef.current = true;
-          pendingCheckoutDraftRef.current = draftResult.draft;
-          setCheckoutHydration('RESTORING');
+          if (draftToRestore) {
+            pendingCheckoutDraftRef.current = draftToRestore;
+            setCheckoutHydration('RESTORING');
+          } else {
+            pendingCheckoutDraftRef.current = null;
+            setCheckoutHydration('RESTORED');
+          }
         } else {
           if (draftResult.draft && !draftStore) {
             clearCustomerCheckoutDraft(window.localStorage);
@@ -771,10 +820,18 @@ export default function CustomerOrder() {
           pendingCheckoutDraftRef.current = null;
           setCheckoutHydration('RESTORED');
         }
-        const initialStoreId = draftStore?.id || savedStoreId || loadedStores[0]?.id || '';
+        const initialStoreId = acceptedDirectStore?.id
+          || (draftToRestore ? draftStore?.id : '')
+          || savedStoreId
+          || loadedStores[0]?.id
+          || '';
         setStores(loadedStores);
         setSelectedStoreId(prev => prev || initialStoreId);
-        if (!draftStore && savedStoreId) {
+        if (acceptedDirectStore) {
+          setStorePreferenceMessage(`Selected ${acceptedDirectStore.name} from your link.`);
+        } else if (directStoreRequested && !directStore) {
+          setStorePreferenceMessage('That store is not available for online ordering. Using another available store.');
+        } else if (!draftToRestore && savedStoreId) {
           const savedStore = loadedStores.find(store => store.id === savedStoreId);
           setStorePreferenceMessage(savedStore ? `Using your default store: ${savedStore.name}.` : '');
         }
@@ -843,7 +900,9 @@ export default function CustomerOrder() {
   const selectClosestStore = (options: { automatic?: boolean } = {}) => {
     if (locatingStore) return;
     if (stores.length === 0) return;
-    const storesWithCoordinates = stores.filter(store => storeCoordinate(store));
+    const storesWithCoordinates = stores.filter(store => (
+      store.excludeFromNearestSelection !== true && storeCoordinate(store)
+    ));
     if (storesWithCoordinates.length === 0) {
       if (!options.automatic) setStorePreferenceMessage('Nearest store needs store coordinates first.');
       return;
@@ -859,7 +918,7 @@ export default function CustomerOrder() {
       (position) => {
         setLocatingStore(false);
         if (options.automatic && userStoreChoiceRef.current) return;
-        const closest = closestStoreToPosition(stores, {
+        const closest = closestStoreToPosition(storesWithCoordinates, {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
         });
@@ -876,6 +935,7 @@ export default function CustomerOrder() {
           setCheckoutDraftNotice('');
         }
         setSelectedStoreId(closest.store.id);
+        alignExistingStoreQuery(closest.store);
         setCategory('ALL');
         setSearch('');
         setError(null);
@@ -898,18 +958,27 @@ export default function CustomerOrder() {
     if (checkoutHydration !== 'RESTORED') return;
     if (stores.length === 0 || triedAutoLocationRef.current) return;
     if (defaultStoreIdFromStorage(stores)) return;
-    if (!stores.some(store => storeCoordinate(store))) return;
+    if (!stores.some(store => store.excludeFromNearestSelection !== true && storeCoordinate(store))) return;
     triedAutoLocationRef.current = true;
     selectClosestStore({ automatic: true });
   }, [checkoutHydration, stores]);
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
+  const tastingRoomSelected = isTastingRoomStore(selectedStore);
+  const selectedStorePresentation = useMemo(() => customerStorePresentation(selectedStore), [selectedStore]);
+  const selectedStoreContextLabel = selectedStorePresentation.orderContextLabel
+    || (orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup');
+  const selectedStoreCustomerName = tastingRoomSelected
+    ? selectedStorePresentation.conceptName
+    : selectedStore?.name || 'Choose store';
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
   const addOnGroups = useMemo(
     () => Object.values(publicAvailability?.addOnGroups || {}),
     [publicAvailability],
   );
-  const selectedStoreMessage = storeOnlineMessage(selectedStore);
+  const selectedStoreMessage = tastingRoomSelected && !selectedStore?.onlineOrderingMessage?.trim()
+    ? 'Orders are prepared after store confirmation.'
+    : storeOnlineMessage(selectedStore);
   const availabilitySnapshotStale = isSnapshotStale(publicAvailability);
   const availabilityNotice = availabilitySnapshotStale
     ? 'Availability will be confirmed by the store.'
@@ -917,8 +986,12 @@ export default function CustomerOrder() {
 
   const storeItems = useMemo(() => {
     if (!selectedStoreId) return [];
-    return items.filter(item => isStoreAvailable(item, selectedStoreId));
-  }, [items, selectedStoreId]);
+    return items.filter(item => (
+      isStoreAvailable(item, selectedStoreId)
+      && !(tastingRoomSelected
+        && customerMenuCategory(item, selectedStore) === TASTING_ROOM_BOND_TABLE_CATEGORY)
+    ));
+  }, [items, selectedStore, selectedStoreId, tastingRoomSelected]);
 
   const itemAvailability = useMemo(() => {
     return storeItems.reduce<Record<string, ItemAvailability>>((acc, item) => {
@@ -1049,9 +1122,13 @@ export default function CustomerOrder() {
   }
 
   const categories = useMemo(() => {
-    const names = Array.from(new Set(storeItems.map(item => customerMenuCategory(item))));
-    return CUSTOMER_CATEGORY_ORDER.filter(name => name === 'ALL' || names.includes(name));
-  }, [storeItems]);
+    const names = new Set(storeItems.map(item => customerMenuCategory(item, selectedStore)));
+    return customerCategoryOrder(selectedStore).filter(name => (
+      name === 'ALL'
+      || names.has(name)
+      || (tastingRoomSelected && name === TASTING_ROOM_BOND_TABLE_CATEGORY)
+    ));
+  }, [storeItems, selectedStore, tastingRoomSelected]);
 
   // --- My Usual (profile-synced) ---------------------------------------------
   // The authenticated Coffee Bond profile is the source of truth. Nothing about a
@@ -1295,7 +1372,9 @@ export default function CustomerOrder() {
         quantity: saved.quantity,
         addOnSummary: saved.addOns.map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId)).join(', '),
         imageUrl: item ? getItemImage(item) : null,
-        isFood: item ? customerMenuCategory(item) === 'Food' : false,
+        isFood: item ? ![
+          'Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea', 'Flights & Experiences', 'Add Ons', 'Other',
+        ].includes(customerMenuCategory(item, selectedStore)) : false,
         unavailableReason: itemUnavailable
           ? `Unavailable at ${storeName}`
           : missingAddOns.length > 0
@@ -1477,14 +1556,16 @@ export default function CustomerOrder() {
         // the section attribute and the spy — one source of truth, no mapping table.
         id: name,
         category: name,
-        items: storeItems.filter(item => customerMenuCategory(item) === name),
+        items: storeItems.filter(item => customerMenuCategory(item, selectedStore) === name),
       }))
       .filter(section => section.items.length > 0);
-  }, [categories, storeItems, isSearching]);
+  }, [categories, storeItems, selectedStore, isSearching]);
 
   const visibleItems = useMemo(() => {
     return storeItems.filter(item => {
-      const matchesCategory = category === 'ALL' || customerMenuCategory(item) === category;
+      const matchesCategory = tastingRoomSelected
+        ? category === 'ALL' || customerMenuCategory(item, selectedStore) === category
+        : category === 'ALL' || customerMenuCategory(item) === category;
       /* UI-3: word-prefix matching over normalised tokens. The previous `includes()`
          over one joined string matched inside words, so "latte" returned "Mediterranean
          Mezze Platter". See frontend/lib/customerMenuSearch.ts. */
@@ -1493,7 +1574,7 @@ export default function CustomerOrder() {
         search,
       );
     });
-  }, [storeItems, category, search]);
+  }, [storeItems, selectedStore, tastingRoomSelected, category, search]);
 
   const orderableItems = useMemo(() => {
     return storeItems.filter(item => (itemAvailability[item.code] || getItemAvailability(item, selectedStoreId)).available);
@@ -1519,7 +1600,9 @@ export default function CustomerOrder() {
     orderableItemCount: orderableItems.length,
   }), [selectedStore, publicAvailability, availabilityLoading, orderableItems.length]);
   const selectedStoreOnline = customerOrderingState.canAcceptOrders;
-  const storesMissingCoordinates = useMemo(() => stores.filter(store => !storeCoordinate(store)), [stores]);
+  const storesMissingCoordinates = useMemo(() => stores.filter(store => (
+    store.excludeFromNearestSelection !== true && !storeCoordinate(store)
+  )), [stores]);
   const selectedStoreHasCoordinates = selectedStore ? !!storeCoordinate(selectedStore) : false;
 
   /**
@@ -1587,7 +1670,7 @@ export default function CustomerOrder() {
   const handleStoreChange = (nextStoreId: string) => {
     if (nextStoreId === selectedStoreId) return;
     if (cart.length > 0) {
-      const shouldSwitch = window.confirm('Changing store will clear your current basket so prices and availability stay correct. Continue?');
+      const shouldSwitch = window.confirm(STORE_CHANGE_CONFIRMATION);
       if (!shouldSwitch) return;
     }
     userStoreChoiceRef.current = true;
@@ -1603,6 +1686,7 @@ export default function CustomerOrder() {
     setError(null);
     setStoreSelectorOpen(false);
     const store = stores.find(item => item.id === nextStoreId);
+    if (store) alignExistingStoreQuery(store);
     setStorePreferenceMessage(store ? `Selected ${store.name}.` : '');
   };
 
@@ -1978,7 +2062,7 @@ export default function CustomerOrder() {
     const firstLine = itemLines[0];
     const availability = itemAvailability[item.code] || getItemAvailability(item, selectedStoreId);
     const canOrder = customerOrderingState.canAcceptOrders && availability.available;
-    const meta = visualMeta(item);
+    const meta = visualMeta(item, selectedStore?.code);
     const opensCustomization = activeAddOnGroupsForProduct(
       item.addOnGroupIds,
       item.addOnOptionIdsByGroup,
@@ -2007,6 +2091,45 @@ export default function CustomerOrder() {
   };
 
   /**
+   * Phase-one Bond Table treatment is intentionally informational. The disclosure
+   * neither adds a cart line nor starts payment, and therefore cannot create a booking
+   * that the current ordering architecture has no way to schedule or manage.
+   */
+  const renderBondTableInformation = () => (
+    <section
+      data-customer-category={TASTING_ROOM_BOND_TABLE_CATEGORY}
+      data-customer-informational-only="true"
+      aria-labelledby="cb-bond-table-heading"
+    >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 id="cb-bond-table-heading" className="cb-customer-menu-section-title">The Bond Table</h3>
+        <span className="rounded-full bg-[#f5ede5] px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-[#8b5e42]">
+          Experience
+        </span>
+      </div>
+      <div className="rounded-[24px] border border-[#decdb9] bg-[#fffaf4] p-5 shadow-sm">
+        <p className="text-sm font-black text-[#3b241c]">Private · 25 Minutes · Maximum 4 Guests</p>
+        <div className="mt-3 space-y-1 text-sm font-semibold text-[#6f625b]">
+          <p>₹5,000 for two guests</p>
+          <p>₹2,000 for each additional guest</p>
+          <p>Maximum four guests</p>
+        </div>
+        <p className="mt-3 text-xs font-black uppercase tracking-[0.08em] text-[#8b5e42]">
+          Advance booking and prepayment required
+        </p>
+        <details className="mt-4">
+          <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-2xl bg-[#3b241c] px-4 py-3 text-sm font-black text-white focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40">
+            Booking information
+          </summary>
+          <p className="mt-3 text-sm font-semibold leading-relaxed text-[#6f625b]">
+            Please speak with the Tasting Room team to enquire. This page does not create a reservation or take a booking payment.
+          </p>
+        </details>
+      </div>
+    </section>
+  );
+
+  /**
    * The checkout action's label, disabled state and the reason for it — derived
    * ENTIRELY from state that already existed. These are the same conditions the
    * previous button used; naming them lets the reason be announced instead of
@@ -2015,7 +2138,7 @@ export default function CustomerOrder() {
   const checkoutAction = (() => {
     const payLabel = paymentProvider === 'RAZORPAY'
       ? `Pay online \u00b7 ${formatMoney(totals.grandTotal)}`
-      : `Send order request \u00b7 ${formatMoney(totals.grandTotal)}`;
+      : `${selectedStorePresentation.orderActionLabel} \u00b7 ${formatMoney(totals.grandTotal)}`;
     if (saving) {
       return {
         label: paymentProvider === 'RAZORPAY' ? 'Creating secure checkout...' : 'Sending request...',
@@ -2078,8 +2201,8 @@ export default function CustomerOrder() {
         <>
           {/* Pickup context, from the parent's existing store state. */}
           <CustomerPickupSummary
-            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
-            storeName={selectedStore?.name || 'Choose store'}
+            contextLabel={selectedStoreContextLabel}
+            storeName={selectedStoreCustomerName}
             statusLabel={customerOrderingState.statusLabel}
             tone={customerOrderingState.tone}
             prepLabel={prepWindowLabel(selectedStore?.estimatedPrepMinutes)}
@@ -2097,7 +2220,7 @@ export default function CustomerOrder() {
                   quantity={line.quantity}
                   maxQuantity={CUSTOMER_MAX_LINE_QUANTITY}
                   imageUrl={getItemImage(line.item)}
-                  fallbackIcon={visualMeta(line.item).icon}
+                  fallbackIcon={visualMeta(line.item, selectedStore?.code).icon}
                   dietaryClassification={trustedDietaryClassification(line.item as unknown as Record<string, unknown>)}
                   addOns={line.addOns.map(addOn => ({
                     key: `${addOn.groupId}-${addOn.optionId}`,
@@ -2182,8 +2305,8 @@ export default function CustomerOrder() {
         <>
           {/* WHERE. One row, and the only place the store appears on this step. */}
           <CustomerPickupSummary
-            contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
-            storeName={selectedStore?.name || 'Choose store'}
+            contextLabel={selectedStoreContextLabel}
+            storeName={selectedStoreCustomerName}
             statusLabel={customerOrderingState.statusLabel}
             tone={customerOrderingState.tone}
             prepLabel={prepWindowLabel(selectedStore?.estimatedPrepMinutes)}
@@ -2549,9 +2672,22 @@ export default function CustomerOrder() {
               active. Its state remains mounted in React and returns unchanged. */}
           {!searchOpen && (
             <div className="cb-customer-home-overview">
+              {tastingRoomSelected && (
+                <section
+                  aria-label="Tasting Room ordering context"
+                  data-customer-store-experience="TASTING_ROOM_29"
+                  className="rounded-[24px] border border-[#decdb9] bg-[#fffaf4] px-5 py-5 text-center shadow-sm"
+                >
+                  <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[#8b5e42]">
+                    {selectedStorePresentation.conceptName}
+                  </p>
+                  <p className="mt-2 text-sm font-black text-[#3b241c]">{selectedStorePresentation.locationLabel}</p>
+                  <p className="mt-1 font-serif text-lg italic text-[#6f4b39]">{selectedStorePresentation.tagline}</p>
+                </section>
+              )}
               <CustomerStoreCard
-                contextLabel={orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup'}
-                storeName={selectedStore?.name || 'Choose store'}
+                contextLabel={selectedStoreContextLabel}
+                storeName={selectedStoreCustomerName}
                 statusLabel={customerOrderingState.statusLabel}
                 tone={customerOrderingState.tone}
                 onOpenSelector={() => setStoreSelectorOpen(true)}
@@ -2575,7 +2711,7 @@ export default function CustomerOrder() {
                   discoveryImageName={discoveryProduct?.displayName || discoveryProduct?.name || 'Coffee Bond menu'}
                   discoveryImageIsFood={Boolean(discoveryProduct && ![
                     'Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea',
-                  ].includes(customerMenuCategory(discoveryProduct)))}
+                  ].includes(customerMenuCategory(discoveryProduct, selectedStore)))}
                   totalLabel={
                     myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
                       ? formatMoney(myUsualPreview.totals.subtotal)
@@ -2658,7 +2794,9 @@ export default function CustomerOrder() {
                 /* h-full so the input itself is the full 48px target, not a 22px strip
                    inside it — tapping near the edge of the field must still focus it. */
                 className="h-full w-full min-w-0 bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
-                placeholder={searchOpen ? 'Search Coffee Bond...' : 'Search menu, drinks, or flavours...'}
+                placeholder={searchOpen
+                  ? `${selectedStorePresentation.searchPromptTitle}...`
+                  : selectedStorePresentation.searchPlaceholder}
                 aria-label="Search the menu"
                 enterKeyHint="search"
               />
@@ -2721,8 +2859,12 @@ export default function CustomerOrder() {
                 <section aria-label="Search results">
                   {!isSearching ? (
                     <div className="cb-customer-search-void">
-                      <p className="cb-customer-standfirst">Search Coffee Bond</p>
-                      <p className="cb-customer-lede mt-2">Coffee, food, smoothies and more.</p>
+                      <p className="cb-customer-standfirst">
+                        {selectedStorePresentation.searchPromptTitle || 'Search Coffee Bond'}
+                      </p>
+                      <p className="cb-customer-lede mt-2">
+                        {selectedStorePresentation.searchPromptDescription || 'Coffee, food, smoothies and more.'}
+                      </p>
                     </div>
                   ) : visibleItems.length === 0 ? (
                     <div className="cb-customer-search-void">
@@ -2747,7 +2889,9 @@ export default function CustomerOrder() {
                   {popularItems.length > 0 && (
                     <section className="cb-customer-featured-section" aria-labelledby="cb-featured-heading">
                       <div className="cb-customer-featured-heading">
-                        <h2 id="cb-featured-heading">Coffee Bond favourites</h2>
+                        <h2 id="cb-featured-heading">
+                          {selectedStorePresentation.featuredLabel || 'Coffee Bond favourites'}
+                        </h2>
                         <button
                           type="button"
                           onClick={() => {
@@ -2759,7 +2903,7 @@ export default function CustomerOrder() {
                         </button>
                       </div>
                       <HorizontalScroller
-                        ariaLabel="Coffee Bond favourites"
+                        ariaLabel={selectedStorePresentation.featuredLabel}
                         className="cb-customer-featured-rail"
                         contentClassName="cb-customer-featured-track"
                         itemGapClassName="gap-2.5"
@@ -2770,7 +2914,7 @@ export default function CustomerOrder() {
                   )}
 
                   <div ref={fullMenuRef} id="cb-full-menu" className="cb-customer-full-menu space-y-6">
-                    <h2 className="cb-customer-full-menu-heading">Full menu</h2>
+                    <h2 className="cb-customer-full-menu-heading">{selectedStorePresentation.fullMenuLabel}</h2>
                     {menuSections.map(section => (
                       <section key={section.id} data-customer-category={section.id}>
                         <div className="mb-3 flex items-center justify-between gap-3">
@@ -2782,8 +2926,11 @@ export default function CustomerOrder() {
                         </div>
                       </section>
                     ))}
+                    {tastingRoomSelected && renderBondTableInformation()}
                   </div>
                 </>
+              ) : tastingRoomSelected && category === TASTING_ROOM_BOND_TABLE_CATEGORY ? (
+                renderBondTableInformation()
               ) : (
                 /* A specific category: one compact vertical grid of just that category. */
                 <section data-customer-category={category}>
@@ -3008,11 +3155,11 @@ export default function CustomerOrder() {
         <CustomerProductCustomizationSheet
           productName={pendingAddOnItem.displayName || pendingAddOnItem.name}
           description={cleanProductDescription(pendingAddOnItem)}
-          categoryLabel={customerMenuCategory(pendingAddOnItem)}
+          categoryLabel={customerMenuCategory(pendingAddOnItem, selectedStore)}
           dietaryClassification={trustedDietaryClassification(pendingAddOnItem as unknown as Record<string, unknown>)}
           basePrice={toNumber(pendingAddOnItem.salePrice)}
           imageUrl={getItemImage(pendingAddOnItem)}
-          fallbackIcon={visualMeta(pendingAddOnItem).icon}
+          fallbackIcon={visualMeta(pendingAddOnItem, selectedStore?.code).icon}
           taxRate={itemTaxRate(pendingAddOnItem, selectedStoreTaxRate)}
           groups={activeAddOnGroupsForProduct(
             pendingAddOnItem.addOnGroupIds,
@@ -3069,9 +3216,11 @@ export default function CustomerOrder() {
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-[#d9cec3]" />
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#8b5e42]">Pickup store</p>
-                <h2 className="mt-1 text-2xl font-black text-[#271a16]">{selectedStore?.name || 'Choose store'}</h2>
-                <p className="mt-1 text-sm font-semibold text-[#71645d]">{customerOrderingState.message}</p>
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#8b5e42]">{selectedStorePresentation.selectorEyebrow}</p>
+                <h2 className="mt-1 text-2xl font-black text-[#271a16]">{selectedStoreCustomerName}</h2>
+                <p className="mt-1 text-sm font-semibold text-[#71645d]">
+                  {customerOrderingState.canAcceptOrders ? selectedStoreMessage : customerOrderingState.message}
+                </p>
               </div>
               <button onClick={() => setStoreSelectorOpen(false)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-[#3b241c] ring-1 ring-[#e7ddd3]" aria-label="Close store selector">
                 <X size={18} />
@@ -3083,7 +3232,10 @@ export default function CustomerOrder() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold text-[#71645d]">Current store</p>
-                    <p className="mt-1 font-black text-[#271a16]">{selectedStore?.name || 'Not selected'}</p>
+                    <p className="mt-1 font-black text-[#271a16]">{selectedStoreCustomerName || 'Not selected'}</p>
+                    {tastingRoomSelected && selectedStorePresentation.selectorDescription && (
+                      <p className="mt-1 text-xs font-bold text-[#71645d]">{selectedStorePresentation.selectorDescription}</p>
+                    )}
                   </div>
                   <span className={`rounded-full px-3 py-1.5 text-xs font-black ${
                     customerOrderingState.tone === 'green'
@@ -3115,7 +3267,7 @@ export default function CustomerOrder() {
                     Save default
                   </button>
                 </div>
-                {!selectedStoreHasCoordinates && selectedStore && (
+                {!selectedStoreHasCoordinates && selectedStore && selectedStore.excludeFromNearestSelection !== true && (
                   <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold leading-relaxed text-amber-800">
                     This store needs coordinates before it can be used by the nearest-store shortcut.
                   </p>
@@ -3138,6 +3290,8 @@ export default function CustomerOrder() {
                   });
                   const isSelected = store.id === selectedStoreId;
                   const hasCoordinates = !!storeCoordinate(store);
+                  const storeIsTastingRoom = isTastingRoomStore(store);
+                  const storePresentation = customerStorePresentation(store);
                   return (
                     <button
                       key={store.id}
@@ -3152,10 +3306,22 @@ export default function CustomerOrder() {
                       }`}
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-base font-black">{store.name}</p>
+                        <p className="truncate text-base font-black">
+                          {storeIsTastingRoom ? storePresentation.conceptName : store.name}
+                        </p>
+                        {storeIsTastingRoom && (
+                          <>
+                            <p className={`mt-1 truncate text-xs font-bold ${isSelected ? 'text-white/80' : 'text-[#71645d]'}`}>
+                              {storePresentation.locationLabel.replace(/^Coffee Bond\s*·\s*/i, '')}
+                            </p>
+                            <p className={`mt-1 truncate text-xs font-bold ${isSelected ? 'text-white/75' : 'text-[#8b5e42]'}`}>
+                              {storePresentation.selectorDescription}
+                            </p>
+                          </>
+                        )}
                         <p className={`mt-1 text-xs font-bold ${isSelected ? 'text-white/75' : 'text-[#71645d]'}`}>
                           {state.statusLabel}{estimatedPrepLabel(store) ? ` · ${estimatedPrepLabel(store)}` : ''}
-                          {!hasCoordinates ? ' · Coordinates needed' : ''}
+                          {!hasCoordinates && store.excludeFromNearestSelection !== true ? ' · Coordinates needed' : ''}
                         </p>
                       </div>
                       {isSelected ? <CheckCircle2 size={20} className="shrink-0" /> : <ChevronDown size={18} className="shrink-0 rotate-[-90deg] text-[#8b5e42]" />}
