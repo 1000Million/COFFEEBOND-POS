@@ -56,21 +56,29 @@ Authoritative provenance for point earning is `PRIVATE_CHECKOUT_SESSION`.
 
 ## Deployed functions (Tasting Room / customer path)
 
-`createCustomerCheckoutSession`, `verifyCustomerRazorpayPayment`, `razorpayWebhook`,
-`acceptPaidRazorpayOrder`, `aggregateKotOrderStatus`, `processBondOrderLoyalty`,
-`processBondPickupLoyalty`, `resolveCustomerProfile`, `updateCustomerProfile`.
+`submitCustomerOrder`, `authorizePosAddOns`, `createCustomerCheckoutSession`,
+`verifyCustomerRazorpayPayment`, `razorpayWebhook`, `acceptPaidRazorpayOrder`,
+`aggregateKotOrderStatus`, `processBondOrderLoyalty`, `processBondPickupLoyalty`,
+`resolveCustomerProfile`, `updateCustomerProfile`.
 
 `aggregateKotOrderStatus` was newly created in production during this work.
+
+The Phase 4 composite/PENDING_BOM hotfix deployed only `submitCustomerOrder`,
+`authorizePosAddOns`, `createCustomerCheckoutSession`, and `acceptPaidRazorpayOrder`,
+followed by the staff hosting target. Customer hosting, Firestore rules, Razorpay
+configuration, and BOND functions were unchanged.
 
 ## Git state
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
+PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_HOTFIX_PUSHED=NO
 ```
 
-The deployed source is preserved in commit `a8bff83`
-("feat: preserve tasting room production rollout", 84 files, +8572/-577) on branch
-`release/customer-order-bond-20260820`.
-
-Pushed to `origin/release/customer-order-bond-20260820`.
+The earlier rollout is preserved in commit `a8bff83`
+("feat: preserve tasting room production rollout", 84 files, +8572/-577). The Phase 4
+hotfix is preserved by this local commit; `THIS_COMMIT` is a deliberate self-reference,
+and `git rev-parse HEAD` supplies its concrete SHA. Origin remains at the pre-hotfix base
+until a separate push is explicitly approved.

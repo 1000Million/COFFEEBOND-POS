@@ -152,6 +152,49 @@ const incomplete = snapshot(
 check(incomplete.items.TR_PARENT.available, false);
 check(incomplete.items.TR_PARENT.publicStatus, 'SETUP_INCOMPLETE', 'one missing child BOM blocks its parent');
 
+const deferredStore = {
+  ...store(),
+  inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM',
+} as Store;
+const explicitlyDeferred = snapshot(
+  [parent([bun.code, incompleteChild.code]), bun, incompleteChild],
+  [raw('TR_BUN_RAW'), raw('TR_DIP_RAW')],
+  [],
+  deferredStore,
+);
+check(explicitlyDeferred.items.TR_PARENT.available, true, 'an explicit deferred-BOM store keeps the structurally valid parent available');
+check(explicitlyDeferred.items.TR_PARENT.publicStatus, 'AVAILABLE');
+
+const malformedNonEmptyChild = child('TR_DIP', {
+  bom: [{
+    componentType: 'RAW_INGREDIENT',
+    componentCode: 'MISSING_CHILD_RAW',
+    componentName: 'Missing child raw',
+    quantity: 1,
+    uom: 'PCS',
+    costPerUnit: 0,
+    lineCost: 0,
+  }],
+});
+const malformedNonEmpty = snapshot(
+  [parent([bun.code, malformedNonEmptyChild.code]), bun, malformedNonEmptyChild],
+  [raw('TR_BUN_RAW')],
+  [],
+  deferredStore,
+);
+check(malformedNonEmpty.items.TR_PARENT.available, false, 'non-empty BOMs with missing masters remain blocked at explicit deferred-BOM stores');
+check(malformedNonEmpty.items.TR_PARENT.publicStatus, 'SETUP_INCOMPLETE');
+
+const malformedBomContainerChild = child('TR_DIP', { bom: { unexpected: true } as never });
+const malformedBomContainer = snapshot(
+  [parent([bun.code, malformedBomContainerChild.code]), bun, malformedBomContainerChild],
+  [raw('TR_BUN_RAW')],
+  [],
+  deferredStore,
+);
+check(malformedBomContainer.items.TR_PARENT.available, false, 'a non-array child BOM is malformed, not missing');
+check(malformedBomContainer.items.TR_PARENT.publicStatus, 'SETUP_INCOMPLETE');
+
 const unavailableChild = child('TR_DIP', { isAvailable: false });
 const unavailable = snapshot(
   [parent([bun.code, unavailableChild.code]), bun, unavailableChild],

@@ -33,19 +33,24 @@ The four flights are live: `TR_COFFEE_THREE_WAYS`, `TR_COLD_BOND_FLIGHT`,
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
+PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_HOTFIX_PUSHED=NO
 ```
 
-The deployed production source is committed as `a8bff83` on
-`release/customer-order-bond-20260820` — 84 files, +8572/-577.
-
-Pushed to `origin/release/customer-order-bond-20260820`. The deployed production state is
-now preserved both locally and on the remote.
+The earlier Tasting Room rollout is preserved in `a8bff83`; the Phase 4 immutable
+composite/PENDING_BOM hotfix is deployed and preserved by this local commit, but is not
+yet pushed. `THIS_COMMIT` is intentionally symbolic because a commit cannot contain its
+own hash; use `git rev-parse HEAD` for the concrete SHA. Production has the scoped updates to
+`submitCustomerOrder`, `authorizePosAddOns`, `createCustomerCheckoutSession`, and
+`acceptPaidRazorpayOrder`, plus the matching staff hosting bundle. Firestore rules,
+customer hosting, Razorpay configuration, and BOND logic were not changed.
 
 ## High-priority TODO
 
-1. **Commit and push the exact deployed production code.** Review the delta, commit,
-   push, and record the resulting production commit SHA in `DEPLOYMENT_HISTORY.md`.
+1. **Push the preserved production hotfix only after explicit approval.** The exact
+   deployed delta is in the current local commit; origin intentionally remains at the
+   pre-hotfix base.
 2. **Complete real BOMs** for Tasting Room products.
 3. **Run the pending-BOM backfill** so inventory reflects sales already made.
 4. **Enable `TR_MINI_AFFOGATO`, `TR_SET_A`, `TR_SET_B`** — only once their structural

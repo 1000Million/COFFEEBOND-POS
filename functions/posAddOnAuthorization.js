@@ -5,8 +5,12 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
 const {
   CompositeProductPolicyError,
+  allowsDeferredComponentBom,
+  collectFrozenComponentFinishedGoodIds,
   collectRequiredComponentFinishedGoodIds,
+  isCompositeProduct,
   resolveCanonicalCompositeComponents,
+  validateFrozenCanonicalCompositeComponents,
 } = require('./compositeProductPolicy');
 
 const AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
@@ -313,6 +317,174 @@ function optionInventorySnapshot(option) {
   };
 }
 
+function canonicalStoredAddOns(value) {
+  if (!Array.isArray(value) || value.length > MAX_ADD_ON_SELECTIONS) {
+    fail('failed-precondition', 'The stored online-order add-on snapshot is malformed.');
+  }
+  return value.map(addOn => {
+    const quantity = Number(addOn?.quantity);
+    const unitPrice = Number(addOn?.unitPrice);
+    const totalPrice = Number(addOn?.totalPrice);
+    const taxRate = Number(addOn?.taxRate);
+    const inventoryTrackingStatus = cleanText(addOn?.inventoryTrackingStatus, 40);
+    if (
+      !cleanText(addOn?.groupId, 80)
+      || !cleanText(addOn?.optionId, 80)
+      || !Number.isInteger(quantity)
+      || quantity <= 0
+      || quantity > MAX_ADD_ON_QUANTITY
+      || !Number.isFinite(unitPrice)
+      || unitPrice < 0
+      || !Number.isFinite(totalPrice)
+      || totalPrice !== unitPrice * quantity
+      || !Number.isFinite(taxRate)
+      || taxRate < 0
+      || !['CONFIGURED', 'NOT_CONFIGURED'].includes(inventoryTrackingStatus)
+    ) {
+      fail('failed-precondition', 'The stored online-order add-on snapshot is malformed.');
+    }
+    const canonical = {
+      groupId: cleanText(addOn.groupId, 80),
+      groupName: cleanText(addOn.groupName, 120),
+      optionId: cleanText(addOn.optionId, 80),
+      optionName: cleanText(addOn.optionName, 120),
+      quantity,
+      unitPrice,
+      totalPrice,
+      taxRate,
+      inventoryTrackingStatus,
+      ...(inventoryTrackingStatus === 'CONFIGURED' ? {
+        inventoryItemType: cleanText(addOn.inventoryItemType, 40),
+        inventoryItemCode: cleanText(addOn.inventoryItemCode, 80),
+        consumptionQuantity: Number(addOn.consumptionQuantity),
+        consumptionUnit: cleanText(addOn.consumptionUnit, 20),
+      } : {}),
+    };
+    if (
+      inventoryTrackingStatus === 'CONFIGURED'
+      && (
+        !['RAW_INGREDIENT', 'PREP_ITEM', 'PACKAGING'].includes(canonical.inventoryItemType)
+        || !canonical.inventoryItemCode
+        || !Number.isFinite(canonical.consumptionQuantity)
+        || canonical.consumptionQuantity <= 0
+        || !canonical.consumptionUnit
+      )
+    ) {
+      fail('failed-precondition', 'The stored online-order add-on inventory snapshot is malformed.');
+    }
+    if (!isDeepStrictEqual(addOn, canonical)) {
+      fail('failed-precondition', 'The stored online-order add-on snapshot is malformed.');
+    }
+    return canonical;
+  });
+}
+
+/**
+ * Rebinds immutable, server-created online-order snapshots to new POS line ids.
+ * Current parent/child existence and manual availability are checked, but current
+ * composite definitions, choice mappings, preparation data and BOMs are not used to
+ * reinterpret what the customer already ordered.
+ */
+function canonicalizeFrozenOrderCart({
+  storeId,
+  store,
+  requestedItems,
+  sourceItems,
+  productsById,
+  componentProductsById = {},
+}) {
+  if (!Array.isArray(sourceItems) || sourceItems.length !== requestedItems.length) {
+    fail('failed-precondition', 'The stored online-order item snapshot is malformed.');
+  }
+  const canonicalItems = {};
+  let canonicalAddOnTotal = 0;
+
+  requestedItems.forEach((requestedItem, index) => {
+    const sourceItem = sourceItems[index];
+    const product = productsById[requestedItem.parentProductId];
+    if (!product) fail('failed-precondition', 'One or more products are no longer available.');
+    const productCode = cleanText(product.code || requestedItem.parentProductId, 80);
+    if (
+      productCode !== requestedItem.parentProductCode
+      || cleanText(sourceItem?.finishedGoodCode, 80) !== productCode
+      || (
+        sourceItem?.finishedGoodId !== undefined
+        && cleanText(sourceItem.finishedGoodId, 120) !== cleanText(product.id, 120)
+      )
+    ) {
+      fail('failed-precondition', 'One or more product references changed.');
+    }
+    if (
+      product.isActive !== true
+      || product.isSellable !== true
+      || product.isAvailable === false
+      || !isAvailableAtStore(product, storeId)
+    ) {
+      fail('failed-precondition', 'One or more products are no longer available at this store.');
+    }
+
+    const addOns = canonicalStoredAddOns(sourceItem?.addOns || []);
+    const sourceSelections = sanitizeSelections(addOns.map(addOn => ({
+      groupId: addOn.groupId,
+      optionId: addOn.optionId,
+      quantity: addOn.quantity,
+    })));
+    if (!isDeepStrictEqual(sourceSelections, requestedItem.selectedAddOns)) {
+      fail('failed-precondition', 'The stored online-order choices do not match this checkout.');
+    }
+    const addOnTotal = Number(sourceItem?.addOnTotal);
+    const expectedAddOnTotal = addOns.reduce((sum, addOn) => sum + addOn.totalPrice, 0);
+    const baseUnitPrice = Number(sourceItem?.baseUnitPrice);
+    const taxRate = Number(sourceItem?.taxRate);
+    if (
+      !Number.isFinite(addOnTotal)
+      || addOnTotal < 0
+      || addOnTotal !== expectedAddOnTotal
+      || !Number.isFinite(baseUnitPrice)
+      || baseUnitPrice < 0
+      || !Number.isFinite(taxRate)
+      || taxRate < 0
+      || Number(sourceItem?.quantity) !== requestedItem.quantity
+    ) {
+      fail('failed-precondition', 'The stored online-order price snapshot is malformed.');
+    }
+
+    let components;
+    if (sourceItem?.components !== undefined) {
+      try {
+        components = validateFrozenCanonicalCompositeComponents({
+          components: sourceItem.components,
+          componentProductsById,
+          store,
+          storeId,
+        });
+      } catch (error) {
+        failCompositePolicy(error);
+      }
+    } else if (isCompositeProduct(product)) {
+      fail(
+        'failed-precondition',
+        'This order predates its composite menu definition and must be placed again.',
+      );
+    }
+
+    canonicalAddOnTotal += addOnTotal * requestedItem.quantity;
+    canonicalItems[requestedItem.orderItemId] = {
+      orderItemId: requestedItem.orderItemId,
+      parentProductId: product.id || requestedItem.parentProductId,
+      parentProductCode: productCode,
+      quantity: requestedItem.quantity,
+      baseUnitPrice,
+      taxRate,
+      addOns,
+      addOnTotal,
+      ...(components ? { components } : {}),
+    };
+  });
+
+  return { canonicalItems, canonicalAddOnTotal };
+}
+
 function canonicalizeRequestedCart({
   storeId,
   store,
@@ -454,6 +626,7 @@ function canonicalizeRequestedCart({
         groupsById,
         componentProductsById,
         storeId,
+        allowDeferredComponentBom: allowsDeferredComponentBom(store),
       });
     } catch (error) {
       failCompositePolicy(error);
@@ -541,10 +714,12 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
 
     let componentProductIds;
     try {
-      componentProductIds = collectRequiredComponentFinishedGoodIds({
-        products: productsById,
-        groupsById,
-      });
+      componentProductIds = sourceOnlineOrderId
+        ? collectFrozenComponentFinishedGoodIds(sourceOnlineOrderSnapshot?.data()?.items)
+        : collectRequiredComponentFinishedGoodIds({
+          products: productsById,
+          groupsById,
+        });
     } catch (error) {
       failCompositePolicy(error);
     }
@@ -562,15 +737,25 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
       ),
     };
 
-    const { canonicalItems, canonicalAddOnTotal } = canonicalizeRequestedCart({
-      storeId,
-      store: { id: storeSnapshot.id, ...store },
-      gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
-      requestedItems,
-      productsById,
-      groupsById,
-      componentProductsById,
-    });
+    const storeWithId = { id: storeSnapshot.id, ...store };
+    const { canonicalItems, canonicalAddOnTotal } = sourceOnlineOrderId
+      ? canonicalizeFrozenOrderCart({
+        storeId,
+        store: storeWithId,
+        requestedItems,
+        sourceItems: sourceOnlineOrderSnapshot?.data()?.items,
+        productsById,
+        componentProductsById,
+      })
+      : canonicalizeRequestedCart({
+        storeId,
+        store: storeWithId,
+        gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
+        requestedItems,
+        productsById,
+        groupsById,
+        componentProductsById,
+      });
     if (sourceOnlineOrderId) {
       assertImmutableSourceOnlineOrder({
         sourceOnlineOrderSnapshot,
@@ -615,6 +800,7 @@ module.exports = {
   DRAFT_SETUP_TEST_STORE_ID,
   PROVIDER,
   assertImmutableSourceOnlineOrder,
+  canonicalizeFrozenOrderCart,
   canonicalizeRequestedCart,
   createPosAddOnAuthorizationFunction,
   isDraftSetupTestAuthorizationAllowed,

@@ -32,11 +32,15 @@ Module._load = function loadWithFirebaseFunctionsStub(request, parent, isMain) {
 };
 
 const {
+  allowsDeferredComponentBom,
+  collectFrozenComponentFinishedGoodIds,
   collectRequiredComponentFinishedGoodIds,
   resolveCanonicalCompositeComponents,
+  validateFrozenCanonicalCompositeComponents,
 } = require('../functions/compositeProductPolicy.js');
 const {
   assertImmutableSourceOnlineOrder,
+  canonicalizeFrozenOrderCart,
   canonicalizeRequestedCart,
 } = require('../functions/posAddOnAuthorization.js');
 const { canonicalizeCustomerCheckout } = require('../functions/customerCheckoutCanonicalization.js');
@@ -47,6 +51,7 @@ const {
 const {
   immutableCompositeComponentSnapshotsEqual,
 } = require('../functions/razorpayCheckout.js');
+const { planOnlineOrderInventory } = require('../functions/onlineOrderInventory.js');
 Module._load = originalLoad;
 
 const STORE_ID = 'TASTING_ROOM_29';
@@ -85,6 +90,9 @@ const children = Object.fromEntries([
   child('TR_TONIC', 'BARISTA'),
   child('TR_LEMONADE', 'BARISTA'),
   child('TR_CASCARA', 'BARISTA'),
+  child('TR_COMPONENT_MINI_ESPRESSO', 'BARISTA'),
+  child('TR_COMPONENT_MINI_CORTADO', 'BARISTA'),
+  child('TR_COMPONENT_COLD_BREW_MANUAL_BREW', 'BARISTA'),
 ].map(product => [product.id, product]));
 
 const setChoice = {
@@ -170,6 +178,28 @@ const setParent = parent('TR_SET_A', setChoice, [{
   quantity: 1,
 }]);
 const flightParent = parent('TR_COLD_BOND_FLIGHT', flightChoice);
+const coffeeThreeWaysComponentCodes = [
+  'TR_COMPONENT_MINI_ESPRESSO',
+  'TR_COMPONENT_MINI_CORTADO',
+  'TR_COMPONENT_COLD_BREW_MANUAL_BREW',
+];
+const coffeeThreeWaysParent = {
+  ...flightParent,
+  id: 'TR_COFFEE_THREE_WAYS',
+  code: 'TR_COFFEE_THREE_WAYS',
+  name: 'Coffee Three Ways',
+  addOnGroupIds: [],
+  addOnOptionIdsByGroup: {},
+  composite: {
+    schemaVersion: 1,
+    staticComponents: coffeeThreeWaysComponentCodes.map(finishedGoodId => ({
+      finishedGoodId,
+      finishedGoodCode: finishedGoodId,
+      quantity: 1,
+    })),
+    choiceGroupIds: [],
+  },
+};
 
 const requiredIds = collectRequiredComponentFinishedGoodIds({
   products: [setParent, flightParent],
@@ -582,6 +612,8 @@ assert.match(payAtCounterBackend, /components\.length > 0 \? \{ components \} : 
 const posAuthorizationBackend = readFileSync(resolve('functions/posAddOnAuthorization.js'), 'utf8');
 assert.match(posAuthorizationBackend, /sourceOnlineOrderId/);
 assert.match(posAuthorizationBackend, /assertImmutableSourceOnlineOrder/);
+assert.match(posAuthorizationBackend, /canonicalizeFrozenOrderCart/);
+assert.match(posAuthorizationBackend, /collectFrozenComponentFinishedGoodIds/);
 assert.match(posAuthorizationBackend, /sourceItem\?\.components, canonicalItem\.components/);
 
 const payAtCounterAcceptance = readFileSync(resolve('frontend/lib/onlineOrderConversion.ts'), 'utf8');
@@ -596,16 +628,424 @@ assert.match(posRazorpayBackend, /buildKotTasks/);
 
 const customerRazorpayBackend = readFileSync(resolve('functions/razorpayCheckout.js'), 'utf8');
 assert.match(customerRazorpayBackend, /immutableCompositeComponentSnapshotsEqual\(/);
-assert.match(customerRazorpayBackend, /storedItem\.components/);
-assert.match(customerRazorpayBackend, /COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT/);
-const snapshotGuardPosition = customerRazorpayBackend.indexOf('const componentSnapshotChanged');
-const calculatedLinesPosition = customerRazorpayBackend.indexOf('const calculatedLines', snapshotGuardPosition);
-const inventoryPlanPosition = customerRazorpayBackend.indexOf('const inventoryPlan', snapshotGuardPosition);
-assert.ok(snapshotGuardPosition > 0 && snapshotGuardPosition < calculatedLinesPosition);
-assert.ok(snapshotGuardPosition < inventoryPlanPosition);
-assert.match(
-  customerRazorpayBackend.slice(snapshotGuardPosition, calculatedLinesPosition),
-  /paymentStatus: PAID_STATUS/,
+assert.match(customerRazorpayBackend, /collectFrozenComponentFinishedGoodIds\(onlineOrder\.items\)/);
+assert.match(customerRazorpayBackend, /canonicalizeFrozenOrderCart\(\{/);
+assert.match(customerRazorpayBackend, /sourceItems: onlineOrder\.items/);
+assert.doesNotMatch(customerRazorpayBackend, /collectRequiredComponentFinishedGoodIds/);
+assert.doesNotMatch(customerRazorpayBackend, /const componentSnapshotChanged/);
+const frozenCanonicalPosition = customerRazorpayBackend.indexOf('canonicalizeFrozenOrderCart({');
+const calculatedLinesPosition = customerRazorpayBackend.indexOf('const calculatedLines', frozenCanonicalPosition);
+const inventoryPlanPosition = customerRazorpayBackend.indexOf('const inventoryPlan', frozenCanonicalPosition);
+assert.ok(frozenCanonicalPosition > 0 && frozenCanonicalPosition < calculatedLinesPosition);
+assert.ok(frozenCanonicalPosition < inventoryPlanPosition);
+
+const paymentFirstBackend = readFileSync(resolve('functions/razorpayPaymentFirst.js'), 'utf8');
+assert.match(paymentFirstBackend, /items: canonical\.items/);
+assert.match(paymentFirstBackend, /items: session\.items/);
+
+
+/* ---------------------------------------------------------------------------
+ * Deferred component BOM (ALLOW_NEGATIVE_DEFER_BOM)
+ *
+ * The Tasting Room flights ship with real component Finished Goods whose recipes have not
+ * been costed yet. For a store that has EXPLICITLY opted in, an empty child BOM must not
+ * block a commercially valid sale: it resolves carrying PENDING_BOM so inventory is
+ * reconciled later. Every other store, and every genuine structural fault, still fails closed.
+ * ------------------------------------------------------------------------- */
+
+const DEFER_STORE = { id: STORE_ID, inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM' };
+const STRICT_STORE = { id: STORE_ID, inventoryPolicy: 'STRICT' };
+
+// Representative Tasting Room flight children, including the current Coffee Three Ways
+// identities: valid in every respect except that their BOM is empty.
+const emptyBomChildren = {
+  ...children,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', { bom: [] }),
+  TR_TONIC: child('TR_TONIC', 'BARISTA', { bom: [] }),
+  TR_LEMONADE: child('TR_LEMONADE', 'BARISTA', { bom: [] }),
+  TR_COMPONENT_MINI_ESPRESSO: child('TR_COMPONENT_MINI_ESPRESSO', 'BARISTA', { bom: [] }),
+  TR_COMPONENT_MINI_CORTADO: child('TR_COMPONENT_MINI_CORTADO', 'BARISTA', { bom: [] }),
+  TR_COMPONENT_COLD_BREW_MANUAL_BREW: child('TR_COMPONENT_COLD_BREW_MANUAL_BREW', 'BARISTA', { bom: [] }),
+};
+
+function resolveFlight(store, componentProductsById = emptyBomChildren, selections = flightSelections) {
+  return resolveCanonicalCompositeComponents({
+    parentProduct: flightParent,
+    requestedSelections: selections,
+    groupsById: { [flightChoice.id]: flightChoice },
+    componentProductsById,
+    storeId: STORE_ID,
+    allowDeferredComponentBom: allowsDeferredComponentBom(store),
+  });
+}
+
+function resolveCoffeeThreeWays(store, componentProductsById = emptyBomChildren) {
+  return resolveCanonicalCompositeComponents({
+    parentProduct: coffeeThreeWaysParent,
+    requestedSelections: [],
+    groupsById: {},
+    componentProductsById,
+    storeId: STORE_ID,
+    allowDeferredComponentBom: allowsDeferredComponentBom(store),
+  });
+}
+
+// 1 + 5. An explicitly opted-in store resolves the flight and marks every empty-BOM child
+// for deferred consumption rather than rejecting the order.
+const deferredComponents = resolveFlight(DEFER_STORE);
+assert.equal(deferredComponents.length, 3);
+assert.deepEqual(
+  deferredComponents.map(component => component.componentFinishedGoodCode),
+  ['TR_COLD_BREW', 'TR_TONIC', 'TR_LEMONADE'],
 );
+assert.ok(deferredComponents.every(component => component.bomStatus === 'PENDING_BOM'));
+assert.ok(deferredComponents.every(component => Array.isArray(component.bom) && component.bom.length === 0));
+assert.deepEqual(collectFrozenComponentFinishedGoodIds([{ components: deferredComponents }]), [
+  'TR_COLD_BREW',
+  'TR_TONIC',
+  'TR_LEMONADE',
+]);
+assert.deepEqual(validateFrozenCanonicalCompositeComponents({
+  components: deferredComponents,
+  componentProductsById: emptyBomChildren,
+  store: DEFER_STORE,
+  storeId: STORE_ID,
+}), deferredComponents);
+
+const coffeeThreeWaysComponents = resolveCoffeeThreeWays(DEFER_STORE);
+assert.equal(coffeeThreeWaysComponents.length, 3);
+assert.deepEqual(
+  coffeeThreeWaysComponents.map(component => component.componentFinishedGoodCode),
+  coffeeThreeWaysComponentCodes,
+);
+assert.ok(coffeeThreeWaysComponents.every(component => component.bomStatus === 'PENDING_BOM'));
+assert.ok(coffeeThreeWaysComponents.every(component => component.bom.length === 0));
+assert.equal(coffeeThreeWaysComponents[0].source, 'STATIC');
+assert.equal(coffeeThreeWaysComponents[0].componentFinishedGoodId, 'TR_COMPONENT_MINI_ESPRESSO');
+assert.equal(coffeeThreeWaysComponents[0].componentFinishedGoodCode, 'TR_COMPONENT_MINI_ESPRESSO');
+assert.equal(coffeeThreeWaysComponents[0].quantity, 1);
+assert.equal(coffeeThreeWaysComponents[0].prepStation, 'BARISTA');
+assert.equal(coffeeThreeWaysComponents[0].itemType, 'MADE_TO_ORDER');
+assert.equal(coffeeThreeWaysComponents[0].productionMode, 'MADE_TO_ORDER');
+assert.equal(coffeeThreeWaysComponents[0].bomVersion, 3);
+
+// Pay at Counter's authoritative cart resolver receives the explicit policy for the real
+// Coffee Three Ways static-component shape.
+const deferredPayAtCounterCanonical = canonicalizeRequestedCart({
+  storeId: STORE_ID,
+  store: DEFER_STORE,
+  gstConfig: { defaultGstRate: 5 },
+  requestedItems: [{
+    orderItemId: 'PRIVATE_CUSTOMER_SUBMISSION_ITEM_01',
+    parentProductId: coffeeThreeWaysParent.id,
+    parentProductCode: coffeeThreeWaysParent.code,
+    quantity: 1,
+    selectedAddOns: [],
+  }],
+  productsById: { [coffeeThreeWaysParent.id]: coffeeThreeWaysParent },
+  groupsById: {},
+  componentProductsById: emptyBomChildren,
+});
+assert.deepEqual(
+  deferredPayAtCounterCanonical.canonicalItems.PRIVATE_CUSTOMER_SUBMISSION_ITEM_01.components,
+  coffeeThreeWaysComponents,
+);
+
+// Pay Online uses canonicalizeCustomerCheckout before PRIVATE_CHECKOUT_SESSION is written.
+// Its stored items therefore carry the identical frozen server snapshot.
+const deferredCustomerDb = fakeDb({
+  [`stores/${STORE_ID}`]: {
+    ...DEFER_STORE,
+    code: STORE_ID,
+    name: 'Tasting Room',
+    isActive: true,
+    onlineOrderingEnabled: true,
+    gstRate: 5,
+  },
+  'appSettings/gstConfig': { defaultGstRate: 5 },
+  [`publicMenuAvailability/${STORE_ID}`]: {
+    items: { [coffeeThreeWaysParent.code]: { available: true } },
+  },
+  [`finishedGoods/${coffeeThreeWaysParent.id}`]: coffeeThreeWaysParent,
+  ...Object.fromEntries(Object.values(emptyBomChildren).map(product => [
+    `finishedGoods/${product.id}`,
+    product,
+  ])),
+});
+const deferredCustomerCanonical = await canonicalizeCustomerCheckout({
+  db: deferredCustomerDb,
+  sessionId: 'PRIVATE_CHECKOUT_SESSION_1',
+  data: {
+    storeId: STORE_ID,
+    storeCode: STORE_ID,
+    customerName: 'Deferred BOM Customer',
+    orderType: 'PICKUP',
+    items: [{
+      itemCode: coffeeThreeWaysParent.code,
+      quantity: 1,
+      addOns: [],
+    }],
+  },
+});
+assert.deepEqual(deferredCustomerCanonical.items[0].components, coffeeThreeWaysComponents);
+
+// 8. The same product at a STRICT store is still blocked outright.
+assert.throws(() => resolveFlight(STRICT_STORE), /no authoritative BOM/i);
+assert.throws(() => resolveCoffeeThreeWays(STRICT_STORE), /no authoritative BOM/i);
+// ALLOW_NEGATIVE permits negative stock but is NOT consent to sell an unrecipied component.
+assert.throws(() => resolveFlight({ id: STORE_ID, inventoryPolicy: 'ALLOW_NEGATIVE' }), /no authoritative BOM/i);
+// An unset policy fails closed.
+assert.throws(() => resolveFlight({ id: STORE_ID }), /no authoritative BOM/i);
+// Store identity must never grant the bypass: only the explicit field does.
+assert.equal(allowsDeferredComponentBom({ id: 'GOLDEN_I', code: 'GOLDEN_I', name: 'Golden I' }), false);
+assert.throws(
+  () => resolveFlight({ id: 'GOLDEN_I', code: 'GOLDEN_I', storeCode: 'GOLDEN_I', name: 'Golden I' }),
+  /no authoritative BOM/i,
+);
+assert.equal(allowsDeferredComponentBom({ inventoryPolicy: '  allow_negative_defer_bom  ' }), true);
+
+// 9. A BOM that EXISTS but is malformed is a structural fault, not a missing recipe, and is
+// still rejected for the opted-in store.
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', {
+    bom: [{ componentType: 'RAW_INGREDIENT', componentCode: '', componentName: '', quantity: 0, uom: '' }],
+  }),
+}), /BOM line/i);
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', { bom: { unexpected: true } }),
+}), /invalid BOM/i);
+
+// 10. A missing child Finished Good is still rejected for the opted-in store.
+const withoutChild = { ...emptyBomChildren };
+delete withoutChild.TR_COLD_BREW;
+assert.throws(() => resolveFlight(DEFER_STORE, withoutChild), /Finished Good is missing/i);
+
+// 11. An invalid prep station is still rejected for the opted-in store.
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'NOT_A_STATION', { bom: [] }),
+}), /preparation station/i);
+
+// Remaining structural guards survive the relaxation for the opted-in store.
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', { bom: [], itemType: 'NOT_A_TYPE' }),
+}), /item type/i);
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', { bom: [], isAvailable: false }),
+}), /unavailable at this store/i);
+assert.throws(() => resolveFlight(DEFER_STORE, {
+  ...emptyBomChildren,
+  TR_COLD_BREW: child('TR_COLD_BREW', 'BARISTA', { bom: [], composite: { schemaVersion: 1, staticComponents: [], choiceGroupIds: [] } }),
+}), /Nested composite|at least one component/i);
+assert.throws(() => resolveFlight(DEFER_STORE, emptyBomChildren, [
+  { groupId: flightChoice.id, optionId: 'COLD_BREW', quantity: 1 },
+  { groupId: flightChoice.id, optionId: 'TONIC', quantity: 1 },
+]), /selected components/i);
+
+// 2 + 7. Acceptance validates and reuses the frozen order snapshot. It does not re-resolve
+// component mappings, prep data, or BOMs from today's parent/child definitions.
+const deferredAgain = resolveFlight(DEFER_STORE);
+assert.deepEqual(deferredAgain, deferredComponents);
+assert.ok(immutableCompositeComponentSnapshotsEqual(deferredComponents, deferredAgain));
+assertImmutableSourceOnlineOrder({
+  sourceOnlineOrderSnapshot: sourceOrderSnapshot(deferredComponents),
+  storeId: STORE_ID,
+  requestedItems: sourceRequestedItems,
+  canonicalItems: { LINE_1: { components: deferredComponents } },
+});
+const laterChangedParent = structuredClone(coffeeThreeWaysParent);
+laterChangedParent.composite.staticComponents = [];
+laterChangedParent.composite.choiceGroupIds = [];
+laterChangedParent.addOnGroupIds = [];
+laterChangedParent.addOnOptionIdsByGroup = {};
+const frozenAcceptanceRequest = [{
+  orderItemId: 'FROZEN_ACCEPT_LINE_1',
+  parentProductId: coffeeThreeWaysParent.id,
+  parentProductCode: coffeeThreeWaysParent.code,
+  quantity: 1,
+  selectedAddOns: [],
+}];
+const frozenAcceptance = canonicalizeFrozenOrderCart({
+  storeId: STORE_ID,
+  store: DEFER_STORE,
+  requestedItems: frozenAcceptanceRequest,
+  sourceItems: deferredCustomerCanonical.items,
+  productsById: { [coffeeThreeWaysParent.id]: laterChangedParent },
+  // Simulate a later recipe backfill: current child documents now have non-empty BOMs.
+  componentProductsById: children,
+});
+assert.deepEqual(
+  frozenAcceptance.canonicalItems.FROZEN_ACCEPT_LINE_1.components,
+  coffeeThreeWaysComponents,
+  'acceptance must retain the historical empty-BOM snapshot after definitions change',
+);
+assertImmutableSourceOnlineOrder({
+  sourceOnlineOrderSnapshot: {
+    exists: true,
+    data: () => ({
+      storeId: STORE_ID,
+      source: 'CUSTOMER_WEB',
+      paymentProvider: 'PAY_AT_COUNTER',
+      status: 'PENDING',
+      items: deferredCustomerCanonical.items,
+    }),
+  },
+  storeId: STORE_ID,
+  requestedItems: frozenAcceptanceRequest,
+  canonicalItems: frozenAcceptance.canonicalItems,
+});
+
+// The snapshot is immutable but acceptance still revalidates current child existence and
+// manual availability, and the current store must still explicitly permit deferred BOMs.
+assert.throws(() => canonicalizeFrozenOrderCart({
+  storeId: STORE_ID,
+  store: STRICT_STORE,
+  requestedItems: frozenAcceptanceRequest,
+  sourceItems: deferredCustomerCanonical.items,
+  productsById: { [coffeeThreeWaysParent.id]: laterChangedParent },
+  componentProductsById: children,
+}), /no authoritative BOM/i);
+const missingFrozenChild = { ...children };
+delete missingFrozenChild.TR_COMPONENT_MINI_ESPRESSO;
+assert.throws(() => canonicalizeFrozenOrderCart({
+  storeId: STORE_ID,
+  store: DEFER_STORE,
+  requestedItems: frozenAcceptanceRequest,
+  sourceItems: deferredCustomerCanonical.items,
+  productsById: { [coffeeThreeWaysParent.id]: laterChangedParent },
+  componentProductsById: missingFrozenChild,
+}), /Finished Good is missing or changed/i);
+assert.throws(() => canonicalizeFrozenOrderCart({
+  storeId: STORE_ID,
+  store: DEFER_STORE,
+  requestedItems: frozenAcceptanceRequest,
+  sourceItems: deferredCustomerCanonical.items,
+  productsById: { [coffeeThreeWaysParent.id]: laterChangedParent },
+  componentProductsById: {
+    ...children,
+    TR_COMPONENT_MINI_ESPRESSO: {
+      ...children.TR_COMPONENT_MINI_ESPRESSO,
+      isAvailable: false,
+    },
+  },
+}), /unavailable at this store/i);
+
+const malformedFrozenSourceItems = structuredClone(deferredCustomerCanonical.items);
+malformedFrozenSourceItems[0].components[0].bom = [{
+  componentType: 'RAW_INGREDIENT',
+  componentCode: '',
+  componentName: '',
+  quantity: 0,
+  uom: '',
+}];
+delete malformedFrozenSourceItems[0].components[0].bomStatus;
+assert.throws(() => canonicalizeFrozenOrderCart({
+  storeId: STORE_ID,
+  store: DEFER_STORE,
+  requestedItems: frozenAcceptanceRequest,
+  sourceItems: malformedFrozenSourceItems,
+  productsById: { [coffeeThreeWaysParent.id]: laterChangedParent },
+  componentProductsById: children,
+}), /BOM line/i);
+
+// 3 + 4. One accepted composite line produces exactly one KOT task per component, and exactly
+// one inventory line per component — no duplication introduced by the deferral marker.
+const deferredLine = {
+  lineKey: 'LINE_1',
+  quantity: 1,
+  itemName: 'Coffee Three Ways',
+  itemCode: coffeeThreeWaysParent.code,
+  finishedGood: coffeeThreeWaysParent,
+  components: coffeeThreeWaysComponents,
+  addOns: [],
+};
+const deferredKots = buildKotTasks(deferredLine);
+assert.equal(deferredKots.length, 3);
+assert.equal(new Set(deferredKots.map(task => task.taskKey)).size, 3);
+assert.ok(deferredKots.every(task => task.station === 'BARISTA'));
+assert.ok(deferredKots.every(task => task.component && task.component.bomStatus === 'PENDING_BOM'));
+const deferredInventoryLines = expandCompositeInventoryLines([deferredLine], STORE_ID);
+assert.equal(deferredInventoryLines.length, 3);
+assert.equal(new Set(deferredInventoryLines.map(line => line.lineKey)).size, 3);
+// Every expanded line carries the empty BOM through to the inventory layer, which is what
+// makes onlineOrderInventory defer it to PENDING_BOM instead of consuming nothing silently.
+assert.ok(deferredInventoryLines.every(line => Array.isArray(line.finishedGood.bom) && line.finishedGood.bom.length === 0));
+
+const deferredInventoryHarness = {
+  db: {
+    collection(collectionName) {
+      return { doc: id => ({ id, path: `${collectionName}/${id}` }) };
+    },
+  },
+  transaction: {
+    async get(ref) {
+      return { id: ref.id, exists: false, data: () => undefined };
+    },
+  },
+  admin: {
+    firestore: { FieldValue: { serverTimestamp: () => 'SERVER_TIMESTAMP' } },
+  },
+};
+async function planDeferredFlightInventory() {
+  return planOnlineOrderInventory({
+    ...deferredInventoryHarness,
+    store: { ...DEFER_STORE, code: STORE_ID, name: 'The Tasting Room' },
+    orderId: 'ORDER_DEFERRED_FLIGHT_1',
+    orderNumber: 'CB-TR-0001',
+    orderType: 'DINE_IN',
+    businessDate: '20260904',
+    staff: { uid: 'manager-1', name: 'Manager' },
+    lines: deferredInventoryLines,
+    requireAvailableStock: true,
+  });
+}
+const deferredInventoryPlan = await planDeferredFlightInventory();
+const deferredInventoryRetry = await planDeferredFlightInventory();
+assert.equal(deferredInventoryPlan.blockers.length, 0);
+assert.equal(deferredInventoryPlan.pendingConsumptionPayloads.length, 3);
+assert.equal(new Set(deferredInventoryPlan.pendingConsumptionPayloads.map(row => row.idempotencyKey)).size, 3);
+assert.ok(deferredInventoryPlan.pendingConsumptionPayloads.every(row => row.status === 'PENDING_BOM'));
+assert.deepEqual(
+  deferredInventoryRetry.pendingConsumptionPayloads.map(row => row.idempotencyKey),
+  deferredInventoryPlan.pendingConsumptionPayloads.map(row => row.idempotencyKey),
+  'acceptance retry must target the same pending-BOM documents',
+);
+
+// 6. Re-running acceptance over the same stored snapshot is deterministic: the same three
+// KOT task keys and the same three inventory line keys, so a duplicate Accept cannot create
+// a second set of either.
+assert.deepEqual(buildKotTasks(deferredLine).map(task => task.taskKey), deferredKots.map(task => task.taskKey));
+assert.deepEqual(
+  expandCompositeInventoryLines([deferredLine], STORE_ID).map(line => line.lineKey),
+  deferredInventoryLines.map(line => line.lineKey),
+);
+
+// 12. Non-composite products and fully-recipied composites are untouched by the change: no
+// deferral marker appears anywhere.
+const recipiedComponents = resolveFlight(DEFER_STORE, children);
+assert.ok(recipiedComponents.every(component => component.bomStatus === undefined));
+assert.ok(recipiedComponents.every(component => component.bom.length === 1));
+const simpleLine = {
+  lineKey: 'LINE_S',
+  quantity: 2,
+  itemName: 'Flat White',
+  itemCode: 'TR_FLAT_WHITE',
+  finishedGood: { code: 'TR_FLAT_WHITE', name: 'Flat White', prepStation: 'BARISTA', bom: [] },
+  components: [],
+  addOns: [],
+};
+assert.deepEqual(buildKotTasks(simpleLine).map(task => task.taskKey), ['BARISTA']);
+assert.equal(expandCompositeInventoryLines([simpleLine], STORE_ID).length, 1);
+
+// The opt-in must be threaded at every authoritative server resolution site, or the customer
+// could place an order the till cannot accept.
+const deferOptInAuthorizationBackend = readFileSync(resolve('functions/posAddOnAuthorization.js'), 'utf8');
+assert.match(deferOptInAuthorizationBackend, /allowDeferredComponentBom: allowsDeferredComponentBom\(store\)/);
+const deferOptInSubmitBackend = readFileSync(resolve('functions/index.js'), 'utf8');
+assert.match(deferOptInSubmitBackend, /allowDeferredComponentBom: allowsDeferredComponentBom\(store\)/);
 
 console.log('composite product policy tests passed');

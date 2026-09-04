@@ -5,10 +5,10 @@ const Razorpay = require('razorpay');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret, defineString } = require('firebase-functions/params');
 const { isAuthorizedStaffForStorePair } = require('./complimentaryAuthorizationPolicy');
-const { canonicalizeRequestedCart } = require('./posAddOnAuthorization');
+const { canonicalizeFrozenOrderCart } = require('./posAddOnAuthorization');
 const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
-const { collectRequiredComponentFinishedGoodIds } = require('./compositeProductPolicy');
+const { collectFrozenComponentFinishedGoodIds } = require('./compositeProductPolicy');
 const {
   buildKotTasks,
   expandCompositeInventoryLines,
@@ -380,11 +380,7 @@ async function finalizePaidOnlineOrder({
     }
 
     const storeRef = db.collection('stores').doc(onlineOrder.storeId);
-    const gstRef = db.collection('appSettings').doc('gstConfig');
-    const [storeSnapshot, gstSnapshot] = await Promise.all([
-      transaction.get(storeRef),
-      transaction.get(gstRef),
-    ]);
+    const storeSnapshot = await transaction.get(storeRef);
     if (!storeSnapshot.exists || storeSnapshot.data().isActive !== true) {
       fail('failed-precondition', 'The selected store is not active.');
     }
@@ -474,33 +470,7 @@ async function finalizePaidOnlineOrder({
       return { reviewRequired: true, code: 'FINISHED_GOOD_MISSING_AFTER_PAYMENT' };
     }
     const finishedGoods = finishedGoodSnapshots.map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
-    const groupIds = [...new Set(finishedGoods.flatMap(item => Array.isArray(item.addOnGroupIds) ? item.addOnGroupIds : []))];
-    const groupSnapshots = await Promise.all(
-      groupIds.map(groupId => transaction.get(db.collection('addOnGroups').doc(groupId))),
-    );
-    const groupsById = Object.fromEntries(
-      groupSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }]),
-    );
     const productsById = Object.fromEntries(finishedGoods.map(item => [item.id, item]));
-    let componentProductIds = [];
-    try {
-      componentProductIds = collectRequiredComponentFinishedGoodIds({
-        products: productsById,
-        groupsById,
-      });
-    } catch {
-      // Canonicalization below repeats authoritative composite validation and
-      // routes any changed/invalid menu definition into payment review.
-    }
-    const componentProductSnapshots = await Promise.all(
-      componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
-    );
-    const componentProductsById = {
-      ...productsById,
-      ...Object.fromEntries(componentProductSnapshots
-        .filter(snapshot => snapshot.exists)
-        .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
-    };
     const lineIds = onlineOrder.items.map((_, index) => deterministicLineId(onlineOrder.id, index));
     const requestedItems = onlineOrder.items.map((item, index) => ({
       orderItemId: lineIds[index],
@@ -511,13 +481,22 @@ async function finalizePaidOnlineOrder({
     }));
     let canonical;
     try {
-      canonical = canonicalizeRequestedCart({
+      const componentProductIds = collectFrozenComponentFinishedGoodIds(onlineOrder.items);
+      const componentProductSnapshots = await Promise.all(
+        componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
+      );
+      const componentProductsById = {
+        ...productsById,
+        ...Object.fromEntries(componentProductSnapshots
+          .filter(snapshot => snapshot.exists)
+          .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+      };
+      canonical = canonicalizeFrozenOrderCart({
         storeId: store.id,
         store,
-        gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
         requestedItems,
+        sourceItems: onlineOrder.items,
         productsById,
-        groupsById,
         componentProductsById,
       });
     } catch {
@@ -540,37 +519,6 @@ async function finalizePaidOnlineOrder({
         customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
       }, { merge: true });
       return { reviewRequired: true, code: 'MENU_REVALIDATION_FAILED_AFTER_PAYMENT' };
-    }
-
-    const componentSnapshotChanged = onlineOrder.items.some((storedItem, index) => (
-      !immutableCompositeComponentSnapshotsEqual(
-        storedItem.components,
-        canonical.canonicalItems[lineIds[index]]?.components,
-      )
-    ));
-    if (componentSnapshotChanged) {
-      transaction.update(intentRef, {
-        status: PAID_STATUS,
-        failureCode: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
-        safeProviderPaymentId: providerPayment.id,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      transaction.update(onlineOrderRef, {
-        ...clearedAcceptanceClaim,
-        status: REVIEW_STATUS,
-        paymentStatus: PAID_STATUS,
-        paymentReviewCode: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      transaction.set(db.collection('publicOrderTracking').doc(onlineOrder.trackingToken), {
-        publicStatus: REVIEW_STATUS,
-        paymentStatus: PAID_STATUS,
-        customerStatusMessage: publicStatusMessage(REVIEW_STATUS),
-      }, { merge: true });
-      return {
-        reviewRequired: true,
-        code: 'COMPOSITE_COMPONENT_SNAPSHOT_CHANGED_AFTER_PAYMENT',
-      };
     }
 
     const calculatedLines = onlineOrder.items.map((storedItem, index) => {

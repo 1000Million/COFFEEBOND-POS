@@ -819,6 +819,94 @@ test('94. Golden I missing prep dependency is deferred without inventing a deduc
   assert.match(plan.pendingConsumptionPayloads[0].reason, /Missing prep\/raw ingredient reference/);
 });
 
+test('94a. Explicit non-Golden ALLOW_NEGATIVE_DEFER_BOM defers one genuinely empty BOM', async () => {
+  const store = {
+    id: 'TASTING_ROOM_29',
+    code: 'TASTING_ROOM_29',
+    name: 'The Tasting Room',
+    inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM',
+  };
+  const plan = await planInventory({
+    store,
+    finishedGood: madeToOrderFinishedGood({
+      id: 'TR_COLD_BREW',
+      code: 'TR_COLD_BREW',
+      name: 'Cold Brew',
+      displayName: 'Cold Brew',
+      availableStoreIds: [store.id],
+      bom: [],
+    }),
+  });
+  assert.equal(plan.blockers.length, 0);
+  assert.equal(plan.movementPayloads.length, 0);
+  assert.equal(plan.pendingConsumptionPayloads.length, 1);
+  assert.equal(plan.pendingConsumptionPayloads[0].status, 'PENDING_BOM');
+  assert.equal(plan.pendingConsumptionPayloads[0].idempotencyKey, 'TASTING_ROOM_29_POS_ORDER_1_LINE_1');
+});
+
+test('94b. Explicit non-Golden policy cannot defer a malformed non-empty BOM', async () => {
+  const store = {
+    id: 'TASTING_ROOM_29',
+    code: 'TASTING_ROOM_29',
+    name: 'The Tasting Room',
+    inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM',
+  };
+  const plan = await planInventory({
+    store,
+    finishedGood: madeToOrderFinishedGood({
+      availableStoreIds: [store.id],
+      bom: [{
+        componentType: 'RAW_INGREDIENT',
+        componentCode: '',
+        componentName: '',
+        quantity: 0,
+        uom: '',
+      }],
+    }),
+  });
+  assert.equal(plan.blockers.length, 1);
+  assert.equal(plan.blockers[0].blockerType, 'Missing prep/raw ingredient reference');
+  assert.equal(plan.pendingConsumptionPayloads.length, 0);
+  assert.equal(plan.movementPayloads.length, 0);
+
+  const malformedContainerPlan = await planInventory({
+    store,
+    finishedGood: madeToOrderFinishedGood({
+      availableStoreIds: [store.id],
+      bom: { unexpected: true },
+    }),
+  });
+  assert.equal(malformedContainerPlan.blockers.length, 1);
+  assert.equal(malformedContainerPlan.blockers[0].blockerType, 'Missing prep/raw ingredient reference');
+  assert.equal(malformedContainerPlan.pendingConsumptionPayloads.length, 0);
+});
+
+test('94c. Explicit non-Golden policy cannot defer a missing inventory master', async () => {
+  const store = {
+    id: 'TASTING_ROOM_29',
+    code: 'TASTING_ROOM_29',
+    name: 'The Tasting Room',
+    inventoryPolicy: 'ALLOW_NEGATIVE_DEFER_BOM',
+  };
+  const plan = await planInventory({
+    store,
+    finishedGood: madeToOrderFinishedGood({
+      availableStoreIds: [store.id],
+      bom: [{
+        componentType: 'RAW_INGREDIENT',
+        componentCode: 'MISSING_MASTER',
+        componentName: 'Missing master',
+        quantity: 1,
+        uom: 'PCS',
+      }],
+    }),
+  });
+  assert.equal(plan.blockers.length, 1);
+  assert.equal(plan.blockers[0].blockerType, 'Missing prep/raw ingredient reference');
+  assert.equal(plan.pendingConsumptionPayloads.length, 0);
+  assert.equal(plan.movementPayloads.length, 0);
+});
+
 test('95. An ordinary store with missing BOM remains blocked and gets no pending audit', async () => {
   const strictStore = { id: 'UDAY_PARK', code: 'UDAY_PARK', name: 'Uday Park' };
   const plan = await planInventory({
@@ -860,6 +948,7 @@ test('97. Existing deterministic POS, payment, KOT and movement IDs remain uncha
 
 test('98. Pay-at-Counter acceptance uses the same exact Golden I deferred-inventory identity', () => {
   assert.match(clientInventorySource, /isGoldenISalesFirstOrderingStore\(store\)/);
+  assert.match(clientInventorySource, /allowExpandedBomFailureDeferral && deferLineBomIfAllowed/);
   assert.doesNotMatch(clientInventorySource, /store\.id === 'GOLDEN_I' \|\| store\.code === 'GOLDEN_I'/);
   assert.match(conversion, /planInventoryDeductionForSale/);
   assert.match(conversion, /pendingInventoryConsumption/);
@@ -884,5 +973,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 102);
+assert.equal(tests.length, 105);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

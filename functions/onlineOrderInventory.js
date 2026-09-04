@@ -181,6 +181,11 @@ async function planOnlineOrderInventory({
   const stockCache = new Map();
   const warningKeys = new Set();
   const canDefer = inventoryPolicy(store) === 'ALLOW_NEGATIVE_DEFER_BOM';
+  // Golden I historically deferred unresolved BOM expansion as well as a wholly
+  // missing recipe. Preserve that exact-store invariant, but keep every other
+  // explicit-policy store narrow: only an absent/empty top-level BOM may be deferred.
+  const canDeferExpandedBomFailures = canDefer
+    && isGoldenISalesFirstOrderingStore(store);
 
   const readDoc = async (collection, id, cache) => {
     if (cache.has(id)) return cache.get(id);
@@ -448,7 +453,14 @@ async function planOnlineOrderInventory({
       continue;
     }
     if (usesBom(item)) {
-      if (!Array.isArray(item.bom) || item.bom.length === 0) {
+      const bomMissing = item.bom === undefined || item.bom === null;
+      const bomIsArray = Array.isArray(item.bom);
+      const missingOrEmptyBom = bomMissing || (bomIsArray && item.bom.length === 0);
+      if (!bomMissing && !bomIsArray) {
+        block(line, 'Missing prep/raw ingredient reference', {
+          suggestedAdminAction: 'Replace the malformed BOM value with a valid recipe array.',
+        });
+      } else if (missingOrEmptyBom) {
         block(line, 'Missing BOM', { suggestedAdminAction: 'Add a BOM/recipe for this finished good.' });
       } else {
         for (const component of item.bom) {
@@ -462,7 +474,11 @@ async function planOnlineOrderInventory({
           });
         }
       }
-      if (canDefer && blockers.length > blockerStart) {
+      if (
+        canDefer
+        && blockers.length > blockerStart
+        && (missingOrEmptyBom || canDeferExpandedBomFailures)
+      ) {
         const deferred = blockers.splice(blockerStart);
         movements.splice(movementStart);
         const idempotencyKey = safeDocId(`${store.id}_${orderId}_${line.lineKey}`);

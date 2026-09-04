@@ -1,5 +1,7 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
+
 /**
  * Pure, persistence-agnostic policy for one-level Finished Good composites.
  *
@@ -9,7 +11,8 @@
  * Choice groups continue to use the existing add-on transport, but must declare
  * purpose=COMPOSITE_CHOICE. Their options reference child Finished Goods through
  * finishedGoodComponent. Clients submit only group/option/quantity; every child
- * identity, preparation station and BOM below is resolved again on the server.
+ * identity, preparation station and BOM below is resolved on the server when the
+ * customer order is created, then retained as the order's immutable snapshot.
  */
 
 const COMPOSITE_SCHEMA_VERSION = 1;
@@ -38,6 +41,26 @@ class CompositeProductPolicyError extends Error {
 
 function policyError(message) {
   throw new CompositeProductPolicyError(message);
+}
+
+/**
+ * A store opts in to deferred-BOM composites by setting inventoryPolicy explicitly.
+ *
+ * Deliberately NOT routed through onlineOrderInventory's inventoryPolicy(), which falls
+ * back to Golden I by store identity: a component BOM bypass must never be inherited from
+ * a name or code, only from the field an operator actually set. Everything else about the
+ * child — identity, availability, prep station, item type, BOM shape when one exists —
+ * is still validated exactly as before.
+ */
+function allowsDeferredComponentBom(store) {
+  return String(store?.inventoryPolicy || '').trim().toUpperCase() === 'ALLOW_NEGATIVE_DEFER_BOM';
+}
+
+function snapshotUsesBom(itemType, productionMode, bom) {
+  return itemType === 'MADE_TO_ORDER'
+    || productionMode === 'MADE_TO_ORDER'
+    || productionMode === 'ASSEMBLED_TO_ORDER'
+    || (itemType === 'DIRECT_STOCK' && bom.length > 0);
 }
 
 function cleanText(value, maxLength = 120) {
@@ -268,7 +291,15 @@ function sanitizeBomLine(line, index, childName) {
   };
 }
 
-function canonicalChildSnapshot({ reference, componentProductsById, storeId, source, provenance, sequence }) {
+function canonicalChildSnapshot({
+  reference,
+  componentProductsById,
+  storeId,
+  source,
+  provenance,
+  sequence,
+  allowDeferredComponentBom = false,
+}) {
   const child = componentProductsById?.[reference.finishedGoodId];
   if (!child) policyError('A composite component Finished Good is missing.');
   const childId = cleanText(child.id || reference.finishedGoodId, 120);
@@ -300,13 +331,20 @@ function canonicalChildSnapshot({ reference, componentProductsById, storeId, sou
   if (productionMode && !PRODUCTION_MODES.has(productionMode)) {
     policyError(`${childName || 'A composite component'} has no valid production mode.`);
   }
+  if (child.bom !== undefined && child.bom !== null && !Array.isArray(child.bom)) {
+    policyError(`${childName || 'A composite component'} has an invalid BOM.`);
+  }
   const bom = (Array.isArray(child.bom) ? child.bom : [])
     .map((line, index) => sanitizeBomLine(line, index, childName || childCode));
-  const usesBom = itemType === 'MADE_TO_ORDER'
-    || productionMode === 'MADE_TO_ORDER'
-    || productionMode === 'ASSEMBLED_TO_ORDER'
-    || (itemType === 'DIRECT_STOCK' && Array.isArray(child.bom) && child.bom.length > 0);
-  if (usesBom && bom.length === 0) {
+  const usesBom = snapshotUsesBom(itemType, productionMode, bom);
+  /* An empty BOM is a missing recipe, not a malformed one. For a store that has explicitly
+     opted in to ALLOW_NEGATIVE_DEFER_BOM the sale is commercially valid and inventory is
+     reconciled later, so the component resolves carrying a deferral marker and
+     onlineOrderInventory turns it into a PENDING_BOM record. Every other store still
+     fails closed here. A BOM that EXISTS but is malformed has already thrown in
+     sanitizeBomLine above and can never reach this branch. */
+  const bomDeferred = usesBom && bom.length === 0;
+  if (bomDeferred && !allowDeferredComponentBom) {
     policyError(`${childName || 'A composite component'} has no authoritative BOM.`);
   }
   const bomVersion = Number.isInteger(Number(child.bomVersion))
@@ -325,7 +363,142 @@ function canonicalChildSnapshot({ reference, componentProductsById, storeId, sou
     productionMode: productionMode || null,
     bom,
     bomVersion,
+    // Only a genuinely missing/empty recipe can carry this marker.
+    ...(bomDeferred ? { bomStatus: 'PENDING_BOM' } : {}),
   };
+}
+
+/**
+ * Collects child ids from an already-created server snapshot. This deliberately does
+ * not inspect the current parent composite definition: historical orders must keep the
+ * component meaning that was frozen when the order was created.
+ */
+function collectFrozenComponentFinishedGoodIds(items) {
+  const ids = [];
+  const seen = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item?.components === undefined) continue;
+    if (!Array.isArray(item.components) || item.components.length === 0 || item.components.length > MAX_COMPONENTS) {
+      policyError('A stored composite component snapshot is malformed.');
+    }
+    for (const component of item.components) {
+      if (!isRecord(component)) policyError('A stored composite component snapshot is malformed.');
+      const childId = cleanText(component.componentFinishedGoodId, 120);
+      if (!childId) policyError('A stored composite component identity is missing.');
+      if (seen.has(childId)) continue;
+      seen.add(childId);
+      ids.push(childId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Validates a frozen component snapshot without rebuilding it from today's menu.
+ * Only operational compatibility is checked against current child documents: the child
+ * must still exist, retain its identity, and remain manually available at the store.
+ * Preparation, production and BOM data continue to come from the immutable snapshot.
+ */
+function validateFrozenCanonicalCompositeComponents({
+  components,
+  componentProductsById,
+  store,
+  storeId,
+}) {
+  if (!Array.isArray(components) || components.length === 0 || components.length > MAX_COMPONENTS) {
+    policyError('A stored composite component snapshot is malformed.');
+  }
+
+  return components.map((component, index) => {
+    if (!isRecord(component)) policyError('A stored composite component snapshot is malformed.');
+    const sequence = Number(component.sequence);
+    const source = cleanText(component.source, 20).toUpperCase();
+    const componentFinishedGoodId = cleanText(component.componentFinishedGoodId, 120);
+    const componentFinishedGoodCode = cleanText(component.componentFinishedGoodCode, 80);
+    const componentName = cleanText(component.componentName, 160);
+    const quantity = Number(component.quantity);
+    const prepStation = cleanText(component.prepStation, 20).toUpperCase();
+    const itemType = cleanText(component.itemType, 40).toUpperCase();
+    const productionMode = cleanText(component.productionMode, 40).toUpperCase();
+
+    if (
+      sequence !== index + 1
+      || !['STATIC', 'CHOICE'].includes(source)
+      || !componentFinishedGoodId
+      || !componentFinishedGoodCode
+      || !componentName
+      || !Number.isInteger(quantity)
+      || quantity <= 0
+      || quantity > MAX_COMPONENT_QUANTITY
+      || !PREP_STATIONS.has(prepStation)
+      || !FINISHED_GOOD_ITEM_TYPES.has(itemType)
+      || (productionMode && !PRODUCTION_MODES.has(productionMode))
+      || !Array.isArray(component.bom)
+    ) {
+      policyError('A stored composite component snapshot is malformed.');
+    }
+
+    const currentChild = componentProductsById?.[componentFinishedGoodId];
+    const currentChildId = cleanText(currentChild?.id || componentFinishedGoodId, 120);
+    const currentChildCode = cleanText(currentChild?.code, 80);
+    if (!currentChild || currentChildId !== componentFinishedGoodId || currentChildCode !== componentFinishedGoodCode) {
+      policyError('A composite component Finished Good is missing or changed.');
+    }
+    if (
+      currentChild.isActive !== true
+      || currentChild.isAvailable === false
+      || !Array.isArray(currentChild.availableStoreIds)
+      || !currentChild.availableStoreIds.includes(storeId)
+    ) {
+      policyError(`${componentName} is unavailable at this store.`);
+    }
+
+    const bom = component.bom.map((line, bomIndex) => (
+      sanitizeBomLine(line, bomIndex, componentName)
+    ));
+    const bomVersion = component.bomVersion === null
+      ? null
+      : Number.isInteger(Number(component.bomVersion)) ? Number(component.bomVersion) : NaN;
+    if (Number.isNaN(bomVersion)) policyError('A stored composite BOM version is malformed.');
+    const bomStatus = cleanText(component.bomStatus, 40).toUpperCase();
+    const bomDeferred = snapshotUsesBom(itemType, productionMode, bom) && bom.length === 0;
+    if (bomDeferred && (!allowsDeferredComponentBom(store) || bomStatus !== 'PENDING_BOM')) {
+      policyError(`${componentName} has no authoritative BOM.`);
+    }
+    if (!bomDeferred && bomStatus) {
+      policyError('A stored composite BOM status is malformed.');
+    }
+
+    const provenance = source === 'CHOICE' ? {
+      groupId: cleanText(component.groupId, 80),
+      groupName: cleanText(component.groupName, 120),
+      optionId: cleanText(component.optionId, 80),
+      optionName: cleanText(component.optionName, 120),
+    } : {};
+    if (source === 'CHOICE' && (!provenance.groupId || !provenance.optionId)) {
+      policyError('A stored composite choice provenance is malformed.');
+    }
+
+    const canonical = {
+      sequence,
+      source,
+      ...provenance,
+      componentFinishedGoodId,
+      componentFinishedGoodCode,
+      componentName,
+      quantity,
+      prepStation,
+      itemType,
+      productionMode: productionMode || null,
+      bom,
+      bomVersion,
+      ...(bomDeferred ? { bomStatus: 'PENDING_BOM' } : {}),
+    };
+    if (!isDeepStrictEqual(component, canonical)) {
+      policyError('A stored composite component snapshot is malformed.');
+    }
+    return canonical;
+  });
 }
 
 function selectionBounds(group) {
@@ -347,6 +520,9 @@ function resolveCanonicalCompositeComponents({
   groupsById,
   componentProductsById,
   storeId,
+  /* Defaults to false so every existing caller — including the direct callers in the test
+     suite — keeps the strict behaviour unless a store has explicitly opted in. */
+  allowDeferredComponentBom = false,
 }) {
   const definition = compositeDefinition(parentProduct, groupsById);
   if (!definition) return [];
@@ -374,6 +550,7 @@ function resolveCanonicalCompositeComponents({
       source: 'STATIC',
       provenance: {},
       sequence: sequence++,
+      allowDeferredComponentBom,
     }));
   }
 
@@ -422,6 +599,7 @@ function resolveCanonicalCompositeComponents({
           optionName: cleanText(option.name, 120),
         },
         sequence: sequence++,
+        allowDeferredComponentBom,
       }));
     }
   }
@@ -435,8 +613,11 @@ module.exports = {
   COMPOSITE_SCHEMA_VERSION,
   CompositeProductPolicyError,
   EXACT_DISTINCT_SELECTION_MODE,
+  allowsDeferredComponentBom,
+  collectFrozenComponentFinishedGoodIds,
   collectRequiredComponentFinishedGoodIds,
   isCompositeChoiceGroup,
   isCompositeProduct,
   resolveCanonicalCompositeComponents,
+  validateFrozenCanonicalCompositeComponents,
 };

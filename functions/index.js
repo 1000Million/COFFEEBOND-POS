@@ -19,6 +19,7 @@ const {
   CompositeProductPolicyError,
   collectRequiredComponentFinishedGoodIds,
   resolveCanonicalCompositeComponents,
+  allowsDeferredComponentBom,
 } = require('./compositeProductPolicy');
 
 admin.initializeApp();
@@ -651,6 +652,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
           groupsById: privateAddOnGroups,
           componentProductsById,
           storeId: store.id,
+          allowDeferredComponentBom: allowsDeferredComponentBom(store),
         })
       ));
     } catch (error) {

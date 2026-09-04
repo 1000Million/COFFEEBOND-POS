@@ -2,16 +2,20 @@
 
 Open problems. Each entry: what, impact, and what NOT to do about it.
 
-## 1. Production source is preserved in Git — resolved
+## 1. Phase 4 production hotfix is preserved locally but not pushed
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
+PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_HOTFIX_PUSHED=NO
 ```
 
-The deployed source is committed as `a8bff83` (84 files, +8572/-577) and pushed to
-`origin/release/customer-order-bond-20260820`. This was previously the highest
-repository-safety risk in the project; it is now closed.
+The earlier rollout remains preserved in `a8bff83`. The Phase 4 immutable
+composite/PENDING_BOM hotfix is preserved by this local commit under explicit owner
+approval, while origin deliberately remains at the pre-hotfix base. `THIS_COMMIT` is a
+self-reference; use `git rev-parse HEAD` for the concrete SHA. Do not push without a
+separate explicit instruction.
 
 The documentation bank is additionally backed up outside the repo at
 `~/Documents/CoffeeBond-AI-Backup/`.

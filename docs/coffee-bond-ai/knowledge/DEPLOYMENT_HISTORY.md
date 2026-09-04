@@ -3,11 +3,10 @@
 Production deployments (project `coffee-bond-pos`). Preview work is noted where it
 provided the evidence for a production step.
 
-> **Production commit:** `a8bff838d51fec0a3533b80b492b67a470ac67b4`
+> **Preserved rollout commit:** `a8bff838d51fec0a3533b80b492b67a470ac67b4`
 > ("feat: preserve tasting room production rollout", 84 files, +8572/-577) on branch
-> `release/customer-order-bond-20260820`. All deployments listed below are contained in
-> that single commit, which preserves the source state deployed across 2026-09-03/04.
-> Pushed to `origin/release/customer-order-bond-20260820`.
+> `release/customer-order-bond-20260820`. The later Phase 4 hotfix recorded below is
+> deployed and preserved by this local commit, but intentionally not pushed.
 
 ## 2026-09-03 — Tasting Room go-live
 
@@ -81,6 +80,42 @@ hosting `coffee-bond-order` version `2df929dd8c0c5dd1`.
 
 Verified after deploy: copy live, warning toggles correctly, 0 ERROR-level function logs,
 Razorpay config unchanged (`rzp_live` customer / `rzp_test` POS, both on prior revisions).
+
+## 2026-09-04 — Immutable composite/PENDING_BOM production hotfix
+
+Preview evidence first: Pay at Counter order `CBWEB-ZYTKQ7QUQH` became POS order
+`CB-TASTING_ROOM_29-20260904-0001`; its frozen three-child snapshot drove acceptance,
+BARISTA/KITCHEN KOT routing and PENDING_BOM records exactly once, including an idempotent
+acceptance replay. The Razorpay payment-first suite passed 105/105 without placing a paid
+production order.
+
+Production deployment was deliberately scoped to four functions:
+`submitCustomerOrder`, `authorizePosAddOns`, `createCustomerCheckoutSession`, and
+`acceptPaidRazorpayOrder`. The staff hosting target was then deployed. Direct downloads
+of all four live function source archives matched the corresponding local hotfix files
+byte-for-byte. Customer hosting, Firestore rules, BOND functions and Razorpay values and
+secret fingerprints were unchanged.
+
+After all four functions were ACTIVE, a guarded transaction re-enabled only
+`TR_COFFEE_THREE_WAYS`, `TR_COLD_BOND_FLIGHT`, `TR_ZERO_PROOF_FLIGHT`, and
+`TR_WAKE_UP_WITH_BOND`. `publicMenuAvailability/TASTING_ROOM_29` finished at **18
+available / 3 blocked**, with the blocked set exactly `TR_MINI_AFFOGATO`, `TR_SET_A`, and
+`TR_SET_B`. All other public menu snapshots and store policies were unchanged.
+
+Protected historical orders `SyxpmdmKJhVH01Ril1Sb` and `ix3Tv99oCC3nzBrC6t57` retained
+their exact document hashes and update times. No order was migrated, rewritten, accepted,
+or rejected by this deployment. Post-deploy public-site, staff-route, live-data and
+function-log checks passed with zero ERROR/CRITICAL/ALERT entries in the observed window.
+
+```
+DEPLOYED_BUT_UNCOMMITTED=NO
+PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
+PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_HOTFIX_PUSHED=NO
+```
+
+`THIS_COMMIT` is intentionally symbolic because a Git commit cannot embed its own hash;
+the concrete preservation SHA is the output of `git rev-parse HEAD` for this commit.
 
 ## Rollback quick reference
 

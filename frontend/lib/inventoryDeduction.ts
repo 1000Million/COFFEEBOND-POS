@@ -351,6 +351,11 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
   const logicalSalesAttribution = logicalSalesStoreAttribution(store);
   const inventoryPolicy = effectiveInventoryPolicy(store);
   const allowDeferredBom = inventoryPolicy === 'ALLOW_NEGATIVE_DEFER_BOM';
+  // Golden I keeps its exact-store legacy broad deferral invariant. Every other store
+  // that explicitly opts in may defer only a genuinely empty top-level BOM; malformed
+  // non-empty BOMs and missing master references remain blockers.
+  const allowExpandedBomFailureDeferral = allowDeferredBom
+    && isGoldenISalesFirstOrderingStore(store);
 
   const blockers: InventoryDeductionBlocker[] = [];
   const warnings: InventoryDeductionWarning[] = [];
@@ -1040,6 +1045,33 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
     }
 
     if (usesBom(line.finishedGood)) {
+      const bomMissing = line.finishedGood.bom === undefined || line.finishedGood.bom === null;
+      const bomMalformed = !bomMissing && !Array.isArray(line.finishedGood.bom);
+      if (bomMalformed) {
+        addBlocker({
+          itemName: finishedGoodName,
+          itemCode: finishedGoodCode,
+          finishedGoodCode,
+          blockerType: 'Missing prep/raw ingredient reference',
+          requiredQuantity: soldQuantity,
+          availableQuantity: 0,
+          unit: 'BOM',
+          suggestedAdminAction: 'Replace the malformed BOM value with a valid recipe array.',
+        });
+        if (allowExpandedBomFailureDeferral && deferLineBomIfAllowed(line, {
+          blockerStart: lineBlockerStart,
+          movementStart: lineMovementStart,
+          finishedGoodCode,
+          finishedGoodName,
+          soldQuantity,
+          finishedGoodId: String((line.finishedGood as Record<string, unknown>).id || finishedGoodCode),
+          bomVersion: typeof line.finishedGood.bomVersion === 'number' ? line.finishedGood.bomVersion : null,
+        })) {
+          await processLineAddOns(line, finishedGoodCode, finishedGoodName, soldQuantity);
+          continue;
+        }
+        continue;
+      }
       if (bom.length === 0) {
         addBlocker({
           itemName: finishedGoodName,
@@ -1109,7 +1141,7 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
           prepPath: [],
         });
       }
-      if (deferLineBomIfAllowed(line, {
+      if (allowExpandedBomFailureDeferral && deferLineBomIfAllowed(line, {
         blockerStart: lineBlockerStart,
         movementStart: lineMovementStart,
         finishedGoodCode,

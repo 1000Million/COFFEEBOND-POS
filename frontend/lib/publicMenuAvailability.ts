@@ -356,6 +356,9 @@ function validateCompositeChild(
     return INCOMPLETE_STRUCTURE;
   }
 
+  if (child.bom !== undefined && child.bom !== null && !Array.isArray(child.bom)) {
+    return INCOMPLETE_STRUCTURE;
+  }
   const childBom = Array.isArray(child.bom) ? child.bom : [];
   // A missing/empty child BOM is a back-office gap, not a structural fault. At a
   // sales-first store consumption defers to PENDING_BOM and is backfilled exactly

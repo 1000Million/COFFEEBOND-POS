@@ -64,6 +64,8 @@ export interface CanonicalCompositeComponent {
   /** Operational fields only; recipe cost fields are deliberately excluded. */
   bom: Array<Omit<BOMComponent, 'costPerUnit' | 'lineCost'>>;
   bomVersion: number | null;
+  /** Present only when an explicit store policy deferred a genuinely missing/empty BOM. */
+  bomStatus?: 'PENDING_BOM';
 }
 
 export interface AddOnOption {
