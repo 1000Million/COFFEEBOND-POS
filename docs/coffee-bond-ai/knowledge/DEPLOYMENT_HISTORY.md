@@ -3,8 +3,11 @@
 Production deployments (project `coffee-bond-pos`). Preview work is noted where it
 provided the evidence for a production step.
 
-> **No commit SHA is recorded for any entry below** — the deployed code is uncommitted.
-> See `KNOWN_ISSUES.md` #1. Once committed, backfill the SHAs here.
+> **Production commit:** `a8bff838d51fec0a3533b80b492b67a470ac67b4`
+> ("feat: preserve tasting room production rollout", 84 files, +8572/-577) on branch
+> `release/customer-order-bond-20260820`. All deployments listed below are contained in
+> that single commit, which preserves the source state deployed across 2026-09-03/04.
+> Pushed to `origin/release/customer-order-bond-20260820`.
 
 ## 2026-09-03 — Tasting Room go-live
 

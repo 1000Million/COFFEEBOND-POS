@@ -2,19 +2,19 @@
 
 Open problems. Each entry: what, impact, and what NOT to do about it.
 
-## 1. Deployed production code is not committed — HIGHEST RISK
+## 1. Production source is preserved in Git — resolved
 
-`DEPLOYED_BUT_UNCOMMITTED=YES`
+```
+DEPLOYED_BUT_UNCOMMITTED=NO
+PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+```
 
-Branch `release/customer-order-bond-20260820`, HEAD `9845e0ce4b04714e6d027e4336038f754ce18cb4`.
-**45 tracked modified files, 18 untracked source files, 0 staged, 0 commits ahead.**
-Diffstat: 45 files changed, 3040 insertions(+), 577 deletions(-).
+The deployed source is committed as `a8bff83` (84 files, +8572/-577) and pushed to
+`origin/release/customer-order-bond-20260820`. This was previously the highest
+repository-safety risk in the project; it is now closed.
 
-**Impact:** if this working tree is lost, the behaviour currently serving customers is
-lost with it. There is no other copy.
-
-**Next step:** review the delta, commit the exact deployed state, push, record the SHA in
-`DEPLOYMENT_HISTORY.md`. Requires explicit approval.
+The documentation bank is additionally backed up outside the repo at
+`~/Documents/CoffeeBond-AI-Backup/`.
 
 ## 2. Production POS Razorpay uses a test key
 

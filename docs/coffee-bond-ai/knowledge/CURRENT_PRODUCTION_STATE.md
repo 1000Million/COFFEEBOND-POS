@@ -64,5 +64,13 @@ Authoritative provenance for point earning is `PRIVATE_CHECKOUT_SESSION`.
 
 ## Git state
 
-**The deployed code is not committed.** See `CURRENT_HANDOFF.md` — this is the highest
-outstanding risk.
+```
+DEPLOYED_BUT_UNCOMMITTED=NO
+PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+```
+
+The deployed source is preserved in commit `a8bff83`
+("feat: preserve tasting room production rollout", 84 files, +8572/-577) on branch
+`release/customer-order-bond-20260820`.
+
+Pushed to `origin/release/customer-order-bond-20260820`.

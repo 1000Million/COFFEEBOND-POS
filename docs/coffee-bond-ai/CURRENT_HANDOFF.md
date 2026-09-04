@@ -29,24 +29,18 @@ The four flights are live: `TR_COFFEE_THREE_WAYS`, `TR_COLD_BOND_FLIGHT`,
 - Physical inventory store: `cJk69Ti1mveh603L4edw`
 - Logical sales store: `TASTING_ROOM_29`
 
-## HIGHEST RISK: deployed but uncommitted
+## Git state
 
-**`DEPLOYED_BUT_UNCOMMITTED=YES`**
+```
+DEPLOYED_BUT_UNCOMMITTED=NO
+PRODUCTION_COMMIT_SHA=a8bff838d51fec0a3533b80b492b67a470ac67b4
+```
 
-The code currently running in production is **not** preserved in Git.
+The deployed production source is committed as `a8bff83` on
+`release/customer-order-bond-20260820` — 84 files, +8572/-577.
 
-| | |
-|---|---|
-| Branch | `release/customer-order-bond-20260820` |
-| HEAD | `9845e0ce4b04714e6d027e4336038f754ce18cb4` |
-| Tracked modified | **45** |
-| Untracked source | **18** |
-| Staged | 0 |
-| Commits ahead of origin | 0 |
-| Diffstat | 45 files changed, 3040 insertions(+), 577 deletions(-) |
-
-If this working tree is lost, the deployed production behaviour is lost with it.
-This is the single highest repository-safety risk in the project.
+Pushed to `origin/release/customer-order-bond-20260820`. The deployed production state is
+now preserved both locally and on the remote.
 
 ## High-priority TODO
 
