@@ -169,9 +169,13 @@ test('10. Recommended modules exclude legal and receipt configuration', () => {
 });
 
 test('11. Select-all contains each supported configuration module once', () => {
-  assert.equal(policy.ALL_MODULE_IDS.length, 7);
-  assert.equal(new Set(policy.ALL_MODULE_IDS).size, 7);
+  assert.equal(policy.ALL_MODULE_IDS.length, 8);
+  assert.equal(new Set(policy.ALL_MODULE_IDS).size, 8);
   assert.ok(policy.ALL_MODULE_IDS.includes('LEGAL_RECEIPT'));
+  assert.ok(policy.ALL_MODULE_IDS.includes('ITEM_OVERRIDES'));
+  // Both opt-in modules stay out of the recommended default set.
+  assert.ok(!policy.RECOMMENDED_MODULE_IDS.includes('LEGAL_RECEIPT'));
+  assert.ok(!policy.RECOMMENDED_MODULE_IDS.includes('ITEM_OVERRIDES'));
 });
 
 test('12. Orders and payments are always excluded', () => {

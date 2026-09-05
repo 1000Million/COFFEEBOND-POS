@@ -52,6 +52,12 @@ const MODULES = Object.freeze({
     recommended: false,
     copyMode: 'STORE_FIELDS',
   },
+  ITEM_OVERRIDES: {
+    id: 'ITEM_OVERRIDES',
+    label: 'Store item overrides',
+    recommended: false,
+    copyMode: 'STORE_DOCUMENTS',
+  },
 });
 
 const ALL_MODULE_IDS = Object.freeze(Object.keys(MODULES));
@@ -140,6 +146,81 @@ const READINESS_STEP_LABELS = Object.freeze({
   posTestCompleted: 'Internal POS test',
   customerOrderingTestCompleted: 'Customer-ordering test',
 });
+
+const STORE_ITEM_CONFIG_COLLECTION = 'storeItemConfig';
+
+/** The four override fields. Deliberately excludes GST — see 07-reporting-gst-permissions.md. */
+const STORE_ITEM_OVERRIDE_FIELDS = Object.freeze([
+  'priceOverride',
+  'isAvailableOverride',
+  'menuVisibilityOverride',
+  'sortOrderOverride',
+]);
+
+/**
+ * Deterministic override document id.
+ *
+ * Must stay byte-identical to storeItemConfigDocId() in frontend/lib/storeItemConfig.ts.
+ * Functions is CommonJS and cannot import that TypeScript module, so the two are held in
+ * lockstep by scripts/test-store-override-clone.mjs, which imports BOTH and asserts they
+ * agree. Change one without the other and that test fails.
+ */
+function storeItemConfigDocId(storeId, itemCode) {
+  const sanitize = (value) => String(value === undefined || value === null ? '' : value)
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${sanitize(storeId)}__${sanitize(itemCode)}`.slice(0, 400);
+}
+
+/**
+ * Copies only explicitly-present override fields, and only for items that are actually
+ * assigned to the destination. Presence semantics: a field that is absent inherits the
+ * global value, so `0` and `false` must survive the copy untouched.
+ */
+function planStoreItemOverrideCopies({
+  overrideDocs = [],
+  assignedItemCodes = [],
+  destinationStoreId,
+} = {}) {
+  const assigned = new Set(assignedItemCodes.filter(Boolean));
+  const creates = [];
+  const skipped = [];
+
+  [...overrideDocs]
+    .sort((left, right) => String(left.itemCode || '').localeCompare(String(right.itemCode || '')))
+    .forEach((row) => {
+      const itemCode = text(row?.itemCode, 120);
+      if (!itemCode) {
+        skipped.push({ itemCode: '', reason: 'MISSING_ITEM_CODE' });
+        return;
+      }
+      if (!assigned.has(itemCode)) {
+        skipped.push({ itemCode, reason: 'ITEM_NOT_ASSIGNED_TO_DESTINATION' });
+        return;
+      }
+      const fields = {};
+      STORE_ITEM_OVERRIDE_FIELDS.forEach((field) => {
+        if (!Object.prototype.hasOwnProperty.call(row, field)) return;
+        const value = row[field];
+        if (value === undefined || value === null) return;
+        if ((field === 'priceOverride' || field === 'sortOrderOverride') && !Number.isFinite(Number(value))) return;
+        if ((field === 'isAvailableOverride' || field === 'menuVisibilityOverride') && typeof value !== 'boolean') return;
+        fields[field] = field === 'priceOverride' || field === 'sortOrderOverride' ? Number(value) : value;
+      });
+      if (Object.keys(fields).length === 0) {
+        skipped.push({ itemCode, reason: 'NO_EXPLICIT_OVERRIDE_FIELDS' });
+        return;
+      }
+      creates.push({
+        itemCode,
+        docId: storeItemConfigDocId(destinationStoreId, itemCode),
+        fields,
+        fieldNames: Object.keys(fields).sort(),
+      });
+    });
+
+  return { creates, skipped };
+}
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z0-9]{10}[0-9A-Z][Z][0-9A-Z]$/;
 
@@ -564,6 +645,10 @@ function valueChecksum(value) {
 
 module.exports = {
   ALL_MODULE_IDS,
+  STORE_ITEM_CONFIG_COLLECTION,
+  STORE_ITEM_OVERRIDE_FIELDS,
+  planStoreItemOverrideCopies,
+  storeItemConfigDocId,
   CUSTOMER_ORDERING_FIELDS,
   CUSTOMER_ORDERING_READINESS_KEY,
   BAKED_BY_BOND_51_STORE_ID,

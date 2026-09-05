@@ -4,6 +4,8 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const {
   ALL_MODULE_IDS,
+  STORE_ITEM_CONFIG_COLLECTION,
+  planStoreItemOverrideCopies,
   BAKED_BY_BOND_51_STORE_ID,
   GOLDEN_I_STORE_ID,
   LEGACY_MIGRATED_ONBOARDING_MODE,
@@ -310,6 +312,8 @@ async function loadSourceConfiguration(db, sourceStore, selectedModules) {
     return {
       menuDocs: [],
       inventoryDocs: [],
+      overrideDocs: [],
+      sourceOverrideDocCount: 0,
       publicSnapshotExists: false,
       sourceStaffCount: 0,
       addOnReferenceCount: 0,
@@ -321,6 +325,7 @@ async function loadSourceConfiguration(db, sourceStore, selectedModules) {
 
   const menuSelected = selectedModules.includes('MENU');
   const inventorySelected = selectedModules.includes('INVENTORY');
+  const overridesSelected = selectedModules.includes('ITEM_OVERRIDES');
   const menuPromises = menuSelected
     ? MENU_COLLECTIONS.map(async (collectionName) => {
       const snapshot = await db.collection(collectionName)
@@ -351,12 +356,18 @@ async function loadSourceConfiguration(db, sourceStore, selectedModules) {
       .get();
     return [collectionName, aggregate.data().count];
   });
-  const [menuGroups, inventoryGroups, publicSnapshot, usersSnap, excludedCounts] = await Promise.all([
+  // Full documents only when copying is selected; otherwise a count aggregate, so the
+  // preview can still tell the operator that overrides exist and are NOT being copied.
+  const overridePromise = overridesSelected
+    ? db.collection(STORE_ITEM_CONFIG_COLLECTION).where('storeId', '==', sourceStore.id).get()
+    : db.collection(STORE_ITEM_CONFIG_COLLECTION).where('storeId', '==', sourceStore.id).count().get();
+  const [menuGroups, inventoryGroups, publicSnapshot, usersSnap, excludedCounts, overrideSnap] = await Promise.all([
     Promise.all(menuPromises),
     Promise.all(inventoryPromises),
     db.collection('publicMenuAvailability').doc(sourceStore.code || sourceStore.id).get(),
     db.collection('users').get(),
     Promise.all(excludedCountPromises),
+    overridePromise,
   ]);
   const menuDocs = menuGroups.flat();
   const inventoryDocs = inventoryGroups.flat();
@@ -378,6 +389,12 @@ async function loadSourceConfiguration(db, sourceStore, selectedModules) {
   return {
     menuDocs,
     inventoryDocs,
+    overrideDocs: overridesSelected && overrideSnap
+      ? overrideSnap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }))
+      : [],
+    sourceOverrideDocCount: overridesSelected
+      ? (overrideSnap ? overrideSnap.size : 0)
+      : (overrideSnap && typeof overrideSnap.data === 'function' ? number(overrideSnap.data().count) : 0),
     publicSnapshotExists: publicSnapshot.exists,
     sourceStaffCount,
     addOnReferenceCount: finishedGoods.filter((entry) => unique(entry.data.addOnGroupIds || entry.data.addonGroupIds).length > 0).length,
@@ -532,6 +549,20 @@ function buildPreviewResponse({
   const duplicateInventoryTargetIds = inventoryTargetIds.filter((targetId, index) => (
     inventoryTargetIds.indexOf(targetId) !== index
   ));
+  // Only items actually assigned to the destination are eligible; the menu docs being
+  // assigned in this same plan ARE the destination's assignment set.
+  const assignedItemCodes = sourceConfiguration.menuDocs
+    .filter((entry) => entry.collection === 'finishedGoods')
+    .map((entry) => cleanText(entry.data?.code, 120))
+    .filter(Boolean);
+  const overridePlan = input.selectedModules.includes('ITEM_OVERRIDES')
+    ? planStoreItemOverrideCopies({
+      overrideDocs: sourceConfiguration.overrideDocs || [],
+      assignedItemCodes,
+      destinationStoreId: input.location.storeCode,
+    })
+    : { creates: [], skipped: [] };
+
   const menuCounts = Object.fromEntries(MENU_COLLECTIONS.map((collectionName) => [
     collectionName,
     sourceConfiguration.menuDocs.filter((entry) => entry.collection === collectionName).length,
@@ -551,12 +582,17 @@ function buildPreviewResponse({
     ...menuCounts,
     ...inventoryCounts,
     stockMovements: openingMovementCount,
+    // Only present when override copying is selected, so a default clone's write plan and
+    // plan checksum stay byte-identical to what they were before this module existed.
+    ...(input.selectedModules.includes('ITEM_OVERRIDES')
+      ? { storeItemConfig: overridePlan.creates.length }
+      : {}),
   };
   const writeOperationsByCollection = Object.fromEntries(
     Object.entries(writesByCollection).map(([collectionName, count]) => [
       collectionName,
       {
-        creates: ['stores', 'storeProvisioningJobs', 'storeProvisioningAudit', 'storeStock', 'stockMovements'].includes(collectionName)
+        creates: ['stores', 'storeProvisioningJobs', 'storeProvisioningAudit', 'storeStock', 'stockMovements', 'storeItemConfig'].includes(collectionName)
           ? count
           : 0,
         updates: MENU_COLLECTIONS.includes(collectionName) || collectionName === 'users' ? count : 0,
@@ -578,6 +614,14 @@ function buildPreviewResponse({
   if (input.selectedModules.includes('KOT')) {
     warnings.push('KOT routing is a global Finished Good attribute in the current architecture; no KOT history is copied.');
   }
+  if (input.selectedModules.includes('ITEM_OVERRIDES')) {
+    warnings.push(`Store item overrides: ${overridePlan.creates.length} copied, ${overridePlan.skipped.length} skipped. Products, images, add-ons, KOT routing and BOM stay global and are never duplicated.`);
+    if (overridePlan.creates.some((entry) => Object.prototype.hasOwnProperty.call(entry.fields, 'priceOverride'))) {
+      warnings.push('Copied price overrides can produce fractional payables under percentage discounts; receipt and report rounding remains an open release-QA item.');
+    }
+  } else if (number(sourceConfiguration.sourceOverrideDocCount) > 0) {
+    warnings.push('The source store has item overrides. They are NOT copied: the destination inherits global item values.');
+  }
   warnings.push(...moduleCompatibility.errors);
   if (input.inventoryOption === 'CURRENT_STOCK_ADVANCED') {
     warnings.push('Advanced current-stock copying creates destination opening balances and auditable opening movements; source balances remain unchanged.');
@@ -595,6 +639,14 @@ function buildPreviewResponse({
       path: `${entry.collection}/${destinationInventoryId(input.location.storeCode, entry)}`,
       quantity: inventoryQuantityForOption(entry.data, input.inventoryOption),
     })).sort((left, right) => left.path.localeCompare(right.path)),
+    ...(input.selectedModules.includes('ITEM_OVERRIDES')
+      ? {
+        overrideCreates: overridePlan.creates.map((entry) => ({
+          path: `${STORE_ITEM_CONFIG_COLLECTION}/${entry.docId}`,
+          fields: entry.fieldNames,
+        })).sort((left, right) => left.path.localeCompare(right.path)),
+      }
+      : {}),
     writesByCollection,
   });
 
@@ -650,7 +702,23 @@ function buildPreviewResponse({
       addOnGlobalReferences: input.selectedModules.includes('ADD_ONS') ? sourceConfiguration.addOnReferenceCount : 0,
       kotGlobalReferences: input.selectedModules.includes('KOT') ? sourceConfiguration.kotReferenceCount : 0,
       inventoryQuantityRows: openingMovementCount,
+      sourceOverrideCount: number(sourceConfiguration.sourceOverrideDocCount),
+      eligibleOverrideCount: overridePlan.creates.length,
+      skippedOverrideCount: overridePlan.skipped.length,
+      plannedOverrideCreates: overridePlan.creates.length,
       estimatedWrites,
+    },
+    itemOverridePlan: {
+      selected: input.selectedModules.includes('ITEM_OVERRIDES'),
+      sourceStoreId: sourceStore?.id || null,
+      destinationStoreId: input.location.storeCode,
+      creates: overridePlan.creates.map((entry) => ({
+        itemCode: entry.itemCode,
+        destinationDocId: entry.docId,
+        fieldsCopied: entry.fieldNames,
+        values: entry.fields,
+      })),
+      skipped: overridePlan.skipped,
     },
     writesByCollection,
     writeOperationsByCollection,
@@ -862,6 +930,38 @@ async function applyProvisioningOperations({
           },
         });
       }
+    });
+  }
+
+  if (selectedModules.includes('ITEM_OVERRIDES')) {
+    const assignedItemCodes = context.sourceConfiguration.menuDocs
+      .filter((entry) => entry.collection === 'finishedGoods')
+      .map((entry) => cleanText(entry.data?.code, 120))
+      .filter(Boolean);
+    const overridePlan = planStoreItemOverrideCopies({
+      overrideDocs: context.sourceConfiguration.overrideDocs || [],
+      assignedItemCodes,
+      destinationStoreId: destinationStore.id,
+    });
+    overridePlan.creates.forEach((entry) => {
+      operations.push({
+        key: `CREATE:${STORE_ITEM_CONFIG_COLLECTION}/${entry.docId}`,
+        type: 'CREATE',
+        ref: db.collection(STORE_ITEM_CONFIG_COLLECTION).doc(entry.docId),
+        payload: {
+          // Only the destination's own identity plus the explicitly-present override
+          // fields. Source id, source storeId and source audit fields are never carried.
+          storeId: destinationStore.id,
+          itemCode: entry.itemCode,
+          ...entry.fields,
+          provisioningJobId: jobId,
+          provisionedFromStoreId: context.sourceStore?.id || null,
+          createdBy: adminUser.uid,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          updatedBy: adminUser.uid,
+        },
+      });
     });
   }
 

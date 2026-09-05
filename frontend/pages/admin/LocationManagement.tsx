@@ -35,7 +35,7 @@ type ModuleId =
   | 'KOT'
   | 'INVENTORY'
   | 'CUSTOMER_ORDERING'
-  | 'LEGAL_RECEIPT';
+  | 'LEGAL_RECEIPT' | 'ITEM_OVERRIDES';
 
 type InventoryOption = 'STRUCTURE_ONLY' | 'CONFIGURED_OPENING' | 'CURRENT_STOCK_ADVANCED';
 
@@ -157,6 +157,7 @@ const MODULES: Array<{
   { id: 'INVENTORY', label: 'Inventory structure', description: 'Create destination stock rows and preserve catalogue, units, and reorder configuration.', recommended: true },
   { id: 'CUSTOMER_ORDERING', label: 'Customer-ordering configuration', description: 'Pickup options, hours, instructions, and visibility settings. Ordering stays disabled.', recommended: true },
   { id: 'LEGAL_RECEIPT', label: 'Legal and receipt configuration', description: 'GST, legal entity, receipt footer, and invoice numbering. Off by default.', recommended: false },
+  { id: 'ITEM_OVERRIDES', label: 'Store item overrides', description: 'Copies explicit store-level price, availability, customer-menu visibility and display-order overrides. If left off, the new store inherits global item settings.', recommended: false },
 ];
 
 const RECOMMENDED_MODULES = MODULES.filter((module) => module.recommended).map((module) => module.id);
