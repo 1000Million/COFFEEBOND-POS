@@ -20,6 +20,8 @@ type Props = {
   rightSlot?: ReactNode;
   /** Real balance from getCustomerBondSummary. Omitted when the summary is unavailable. */
   pointsBalance?: number | null;
+  /** Existing BondSummary.currentClubStatus recognition; presentation only. */
+  clubActive?: boolean;
   /** True only for the Home shell: points/Join replace the account avatar. */
   homeShell?: boolean;
   /** Distinguishes an in-flight real balance from an unavailable BOND summary. */
@@ -60,6 +62,7 @@ export default function CustomerHeader({
   onSignedOut,
   rightSlot,
   pointsBalance = null,
+  clubActive = false,
   homeShell = false,
   pointsLoading = false,
   onJoin,
@@ -137,12 +140,18 @@ export default function CustomerHeader({
               ) : profile ? (
                 <Link
                   to={CUSTOMER_BOND_PATH}
-                  className="cb-customer-header-points"
+                  className={`cb-customer-header-points${clubActive ? ' is-club' : ''}`}
                   aria-label={showPointsBadge
-                    ? `${Number(pointsBalance).toLocaleString('en-IN')} BOND points. View BOND`
-                    : 'View BOND'}
+                    ? `${clubActive ? 'THE BOND CLUB member. ' : ''}${Number(pointsBalance).toLocaleString('en-IN')} BOND points. View BOND`
+                    : clubActive ? 'THE BOND CLUB member. View BOND' : 'View BOND'}
                 >
-                  {showPointsBadge ? `${Number(pointsBalance).toLocaleString('en-IN')} pts` : 'Bond'}
+                  {clubActive && (
+                    <>
+                      <span className="cb-customer-header-club">Club</span>
+                      <span className="cb-customer-header-club-separator" aria-hidden="true">·</span>
+                    </>
+                  )}
+                  <span>{showPointsBadge ? `${Number(pointsBalance).toLocaleString('en-IN')} pts` : 'Bond'}</span>
                 </Link>
               ) : (
                 <button

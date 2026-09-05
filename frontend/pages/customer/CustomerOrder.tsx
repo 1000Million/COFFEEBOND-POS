@@ -712,6 +712,8 @@ export default function CustomerOrder() {
   const requestedDemoKey = explicitBondDemoKey(routerLocation.search);
   const demoRequested = Boolean(requestedDemoKey);
   const displayedBondSummary = demoRequested ? previewBondSummary : bondSummary;
+  const displayedClubActive = displayedBondSummary?.enabled === true
+    && displayedBondSummary.currentClubStatus === 'ACTIVE';
   // Owns focus for the existing menu search control; the shell adds no second search.
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const fullMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2849,6 +2851,7 @@ export default function CustomerOrder() {
         profile={verifiedCustomer}
         authRestored={customerAuthRestored}
         pointsBalance={displayedBondSummary?.enabled ? Number(displayedBondSummary.pointsBalance || 0) : null}
+        clubActive={displayedClubActive}
         pointsLoading={Boolean(verifiedCustomer && (bondSummaryLoading || (demoRequested && !displayedBondSummary)))}
         onProfileUpdated={(profile) => {
           setVerifiedCustomer(profile);

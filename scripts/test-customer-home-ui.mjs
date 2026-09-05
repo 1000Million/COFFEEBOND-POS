@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Customer Home/Menu redesign contract through Bite 7.
+ * Customer Home/Menu redesign contract through Bite 8.
  *
  * Pins the visual wiring AND that no ordering behaviour moved into presentation:
  * pricing, availability, add-on resolution and cart mutation must all stay in
@@ -418,6 +418,27 @@ check('P0-12. the Home header uses the real points summary or signed-out Join ac
   && header.includes('cb-customer-header-points')
   && header.includes('cb-customer-header-join')
   && home.includes("setMyUsualDialog({ type: 'SIGN_IN', source: 'JOIN' })"));
+check('P0-12a. active Club recognition reuses the displayed server summary',
+  home.includes("displayedBondSummary.currentClubStatus === 'ACTIVE'")
+  && home.includes('clubActive={displayedClubActive}')
+  && header.includes('clubActive = false')
+  && header.includes('cb-customer-header-club'));
+check('P0-12b. Club header preserves real points and the BOND destination',
+  header.includes('THE BOND CLUB member.')
+  && header.includes("Number(pointsBalance).toLocaleString('en-IN')")
+  && header.includes('to={CUSTOMER_BOND_PATH}')
+  && header.includes('<span>{showPointsBadge ?'));
+check('P0-12c. active Club strip is recognition only while regular visits retain progress',
+  bondCard.includes("summary?.currentClubStatus === 'ACTIVE'")
+  && bondCard.includes("? 'THE BOND CLUB'")
+  && bondCard.includes('const showProgress = !clubActive && visits !== null;')
+  && bondCard.includes("`${visits} / ${CLUB_VISIT_TARGET} · to THE BOND CLUB`")
+  && bondCard.includes('{showProgress && ('));
+check('P0-12d. Club chrome remains quiet and responsive at 320px',
+  tokens.includes('.cb-customer-header-points.is-club')
+  && tokens.includes('.cb-customer-header-club-separator')
+  && /@media \(max-width: 340px\)[\s\S]*?\.cb-customer-header-points\.is-club/.test(tokens)
+  && !/\.cb-customer-header-points\.is-club[^}]*background\s*:/.test(tokens));
 check('P0-13. contextual basket remains absent at zero and honest when visible',
   basketBar.includes('if (itemCount <= 0) return null;')
   && basketBar.includes('Open basket with ${itemCount} item')

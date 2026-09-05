@@ -2102,6 +2102,15 @@
   white-space: nowrap;
 }
 .cb-customer-header-points { padding-inline: 8px; font-variant-numeric: tabular-nums; }
+.cb-customer-header-points.is-club { gap: 4px; padding-inline: 6px; font-size: 13px; }
+.cb-customer-header-club {
+  color: #7d553f;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.085em;
+  text-transform: uppercase;
+}
+.cb-customer-header-club-separator { color: #ac9a8d; font-weight: 500; }
 .cb-customer-header-join { padding-inline: 10px; background: transparent; }
 
 .cb-customer-avatar-button {
@@ -3124,6 +3133,8 @@
   .cb-customer-header.is-home-shell .cb-customer-brand-mark,
   .cb-customer-header.is-home-shell .cb-customer-official-mark { width: 33px; height: 33px; }
   .cb-customer-header.is-home-shell .cb-customer-wordmark { font-size: 23px; }
+  .cb-customer-header-points.is-club { gap: 3px; padding-inline: 2px; font-size: 12px; }
+  .cb-customer-header-club { font-size: 9px; letter-spacing: 0.07em; }
   .cb-customer-usual-hero { grid-template-columns: 40% minmax(0, 60%); }
   .cb-customer-usual-name { font-size: 18px; }
   .cb-customer-usual-primary { padding-inline: 5px; font-size: 11px; }
