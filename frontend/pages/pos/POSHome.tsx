@@ -15,6 +15,17 @@ import {
   canonicalAddOnSelections,
   unitPriceWithAddOns,
 } from '../../lib/addOns';
+import { resolvePosMenuItems, STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
+import {
+  calculateTotals,
+  clampDiscountPercent,
+  getItemTaxRate,
+  getMaxDiscountPercent,
+  normalizeTaxRate,
+  toFiniteNumber,
+  type CalculatedTotals,
+  type TotalsInput,
+} from '../../lib/posPricing';
 import {
   authorizePosAddOns,
   selectedAddOnIds,
@@ -93,22 +104,6 @@ type AppGstConfig = {
   defaultRate: number;
   defaultSource: string;
   storeOverrides: Record<string, number>;
-};
-
-type TotalsInput = {
-  price: number;
-  quantity: number;
-  taxRate?: number | null;
-  addOns?: AddOnSelection[];
-};
-
-type CalculatedTotals = {
-  subtotal: number;
-  discountPercent: number;
-  discountAmount: number;
-  taxableAmount: number;
-  taxTotal: number;
-  grandTotal: number;
 };
 
 type ReceiptLineSnapshot = {
@@ -220,17 +215,6 @@ const ORDER_TYPE_LABELS: Record<OrderType, string> = {
 };
 const QUICK_TABLE_CHIPS = ['1', '2', '3', '4'];
 
-function toFiniteNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  const parsed = Number(String(value).replace(/,/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeTaxRate(value: unknown): number {
-  const parsed = toFiniteNumber(value);
-  return parsed !== null && parsed > 0 ? parsed : 0;
-}
-
 function pickTaxConfig(data: Record<string, unknown>, source: string, keys = APP_TAX_RATE_KEYS): TaxConfig | null {
   for (const key of keys) {
     const rate = normalizeTaxRate(data[key]);
@@ -251,24 +235,6 @@ function normalizeStoreOverrides(value: unknown): Record<string, number> {
 function pickItemTaxRate(item: Record<string, unknown>): number {
   const picked = pickTaxConfig(item, 'item', ITEM_TAX_RATE_KEYS);
   return picked?.rate || 0;
-}
-
-function getItemTaxRate(item: { taxRate?: number | null }, fallbackTaxRate: number): number {
-  const itemTax = normalizeTaxRate(item.taxRate);
-  return itemTax > 0 ? itemTax : fallbackTaxRate;
-}
-
-function clampDiscountPercent(value: unknown): number {
-  const parsed = toFiniteNumber(value) || 0;
-  if (parsed < 0) return 0;
-  if (parsed > 100) return 100;
-  return parsed;
-}
-
-function getMaxDiscountPercent(role?: string): number {
-  if (role === 'ADMIN') return 100;
-  if (role === 'STORE_MANAGER') return 20;
-  return 10;
 }
 
 function normalizePaymentAmount(value: unknown): number {
@@ -504,33 +470,6 @@ function normalizePrepStation(value: unknown): PrepStation {
   return 'NONE';
 }
 
-function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
-  const subtotal = items.reduce(
-    (sum, item) => sum + unitPriceWithAddOns(Number(item.price) || 0, item.addOns) * (Number(item.quantity) || 0),
-    0,
-  );
-  const discountPercent = clampDiscountPercent(discountPercentInput);
-  const discountAmount = subtotal * (discountPercent / 100);
-  const taxableAmount = Math.max(0, subtotal - discountAmount);
-  const discountRatio = subtotal > 0 ? discountAmount / subtotal : 0;
-  const taxTotal = items.reduce((sum, item) => {
-    const quantity = Number(item.quantity) || 0;
-    const baseSubtotal = (Number(item.price) || 0) * quantity;
-    const baseTaxable = Math.max(0, baseSubtotal - (baseSubtotal * discountRatio));
-    return sum
-      + baseTaxable * (getItemTaxRate(item, fallbackTaxRate) / 100)
-      + addOnTaxForLine(item.addOns, quantity, discountRatio);
-  }, 0);
-
-  return {
-    subtotal,
-    discountPercent,
-    discountAmount,
-    taxableAmount,
-    taxTotal,
-    grandTotal: taxableAmount + taxTotal,
-  };
-}
 
 function readLocalStorageJson<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback;
@@ -811,6 +750,7 @@ export default function POSHome() {
 
   const [stores, setStores] = useState<Store[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [storeItemConfigs, setStoreItemConfigs] = useState<StoreItemConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [appGstConfig, setAppGstConfig] = useState<AppGstConfig>({
     defaultRate: 0,
@@ -980,9 +920,10 @@ export default function POSHome() {
   const fetchMenuData = async () => {
     setLoading(true);
     try {
-      const [fgSnap, addOnGroupSnap] = await Promise.all([
+      const [fgSnap, addOnGroupSnap, storeItemConfigSnap] = await Promise.all([
         getDocs(query(collection(db, 'finishedGoods'))),
         getDocs(query(collection(db, 'addOnGroups'))),
+        getDocs(query(collection(db, STORE_ITEM_CONFIG_COLLECTION))),
       ]);
 
       let total = 0;
@@ -1002,8 +943,7 @@ export default function POSHome() {
          if (!data.isSellable) return;
          sellableCount++;
 
-         if (data.isAvailable === false) return;
-         availableCount++;
+         if (data.isAvailable !== false) availableCount++;
 
          mappedItems.push({
            id: data.code,
@@ -1018,6 +958,7 @@ export default function POSHome() {
            sku: data.sku || '',
            description: data.description || '',
            price: data.salePrice || 0,
+           isAvailable: data.isAvailable !== false,
            taxRate: pickItemTaxRate(data),
            prepStation: normalizePrepStation(data.prepStation),
            isActive: data.isActive,
@@ -1033,6 +974,10 @@ export default function POSHome() {
       });
 
       setMenuItems(mappedItems);
+      setStoreItemConfigs(storeItemConfigSnap.docs.map(configDoc => ({
+        id: configDoc.id,
+        ...(configDoc.data() as Omit<StoreItemConfig, 'id'>),
+      })));
       setAddOnGroups(addOnGroupSnap.docs.map(groupDoc => ({
         id: groupDoc.id,
         ...(groupDoc.data() as Omit<AddOnGroup, 'id'>),
@@ -1161,12 +1106,21 @@ export default function POSHome() {
     };
   }, [stores, selectedStoreId, appGstConfig]);
 
+  // Store-resolved POS menu: the global catalogue with this store's overrides applied.
+  // Display, cart lookup and the authoritative checkout re-read all consume this array, so
+  // POS can never charge a different price from the one the customer menu advertises.
+  // With no override documents this is the raw menuItems array, unchanged.
+  const storeMenuItems = useMemo(() => (
+    resolvePosMenuItems(menuItems, selectedStoreId, storeItemConfigs)
+      .filter(item => (item as MenuItem & { isAvailable?: boolean }).isAvailable !== false)
+  ), [menuItems, selectedStoreId, storeItemConfigs]);
+
   const availableMenuItems = useMemo(() => {
     return uniqueSortedPosMenuItems(
-      menuItems.filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId)),
+      storeMenuItems.filter(item => item.isActive && item.availableStoreIds?.includes(selectedStoreId)),
       posMenuCategories,
     );
-  }, [menuItems, posMenuCategories, selectedStoreId]);
+  }, [storeMenuItems, posMenuCategories, selectedStoreId]);
 
   const classificationByItemId = useMemo(() => new Map(
     availableMenuItems.map(item => [
@@ -1480,7 +1434,7 @@ export default function POSHome() {
 
   const editCartItemAddOns = (cartItem: CartItem) => {
     if (razorpayPaymentLocked) return;
-    const menuItem = menuItems.find(item => item.id === cartItem.menuItemId);
+    const menuItem = storeMenuItems.find(item => item.id === cartItem.menuItemId);
     if (!menuItem) return;
     const groups = activeAddOnGroupsForProduct(
       menuItem.addOnGroupIds,
@@ -2044,7 +1998,7 @@ export default function POSHome() {
 
       // Verify menu items exist and are still active/available, and compute true totals
       const browserValidatedCart = cart.map(item => {
-        const liveItem = menuItems.find(mi => mi.id === item.menuItemId && mi.isActive && mi.availableStoreIds.includes(selectedStoreId));
+        const liveItem = storeMenuItems.find(mi => mi.id === item.menuItemId && mi.isActive && mi.availableStoreIds.includes(selectedStoreId));
         if (!liveItem) {
           throw new Error(`Menu item ${item.name} is no longer available at this store.`);
         }

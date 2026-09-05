@@ -1222,6 +1222,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Per-store item overrides for the global finishedGoods catalogue.
+    // Staff read (POS and menu tooling); Admin-only writes. No public/customer access:
+    // customers receive effective values through the publicMenuAvailability snapshot.
+    match /storeItemConfig/{configId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
     match /storeStock/{stockId} {
       allow read: if isActiveStaff();
       allow create: if ((isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId))

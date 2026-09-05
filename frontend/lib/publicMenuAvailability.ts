@@ -11,6 +11,7 @@ import {
 } from '../types/menu-management';
 import { normalizeAddOnOptionIdsByGroup, sanitizeAddOnGroupsForPublic } from './addOns';
 import { trustedDietaryClassification } from './customerMenuPresentation';
+import { resolveStoreItem, storeItemConfigByItemCode, type StoreItemConfig } from './storeItemConfig';
 
 export type PublicMenuAvailabilityStatus = 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
 
@@ -65,6 +66,11 @@ type BuildSnapshotInput = {
   rawIngredients?: RawIngredient[];
   prepItems?: PrepItem[];
   addOnGroups?: AddOnGroup[];
+  /**
+   * Per-store overrides for this store. Omitted or empty means every item inherits its
+   * global catalogue values, which is the behaviour of every store today.
+   */
+  storeItemConfigs?: StoreItemConfig[];
 };
 
 function toNumber(value: unknown): number {
@@ -694,7 +700,14 @@ function evaluateItemAvailability(
 }
 
 export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): PublicMenuAvailabilitySnapshot {
-  const { store, finishedGoods, rawIngredients = [], prepItems = [], addOnGroups = [] } = input;
+  const { store, rawIngredients = [], prepItems = [], addOnGroups = [] } = input;
+  // Overrides are applied once, up front, so every downstream check (availability,
+  // composite and BOM validation, display) sees this store's effective values.
+  // With no override documents each resolved item is field-identical to its global source.
+  const overridesByCode = storeItemConfigByItemCode(store.id, input.storeItemConfigs);
+  const finishedGoods = overridesByCode.size === 0
+    ? input.finishedGoods
+    : input.finishedGoods.map((item) => resolveStoreItem(item, overridesByCode.get(item.code)));
   const rawByCode = new Map(rawIngredients.map((item) => [item.code, item]));
   const prepByCode = new Map(prepItems.map((item) => [item.code, item]));
   const finishedByCode = new Map(finishedGoods.map((item) => [item.code, item]));
@@ -711,6 +724,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
 
   const visibleItems = finishedGoods
     .filter((item) => item.isActive !== false && item.isSellable !== false && isStoreAssigned(item, store.id))
+    .filter((item) => (item as { menuVisible?: boolean }).menuVisible !== false)
     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
   const evaluatedItems = visibleItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
