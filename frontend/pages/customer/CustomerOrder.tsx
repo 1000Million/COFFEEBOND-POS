@@ -669,8 +669,13 @@ export default function CustomerOrder() {
     if (!intent?.openBasket && !intent?.focusSearch) return;
     if (intent.openBasket) setBasketOpen(true);
     if (intent.focusSearch) {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      pendingMenuEntryRef.current = 'SEARCH';
+      navigate({
+        pathname: routerLocation.pathname,
+        search: routerLocation.search,
+        hash: '#cb-full-menu',
+      }, { replace: true, state: null });
+      return;
     }
     navigate({ pathname: routerLocation.pathname, search: routerLocation.search }, { replace: true, state: null });
   }, [routerLocation.state, routerLocation.pathname, routerLocation.search, navigate]);
@@ -702,30 +707,71 @@ export default function CustomerOrder() {
   const initialStoreSearchRef = useRef(routerLocation.search);
   const pendingCheckoutDraftRef = useRef<CustomerCheckoutDraft | null>(null);
   const hydrationAppliedRef = useRef(false);
+  const pendingMenuEntryRef = useRef<'SEARCH' | 'BAKED_BY_BOND' | null>(null);
+  const pendingFullMenuScrollRef = useRef(false);
+  const menuRouteActive = routerLocation.hash === '#cb-full-menu';
 
-  /* Home and Menu share this one existing screen. The four-tab shell uses hashes only
-     to choose the view position; no menu, basket or checkout state is duplicated. */
+  /* Home and Menu share this one existing screen. Bite 3 uses the existing menu hash as
+     a composition boundary: Home stays personal and compact, while Menu keeps the
+     existing category/search/product tree. No menu, basket or checkout state is
+     duplicated. */
   useEffect(() => {
     if (routerLocation.hash === '#cb-home') {
+      pendingFullMenuScrollRef.current = false;
+      setSearchActive(false);
+      setSearch('');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return undefined;
     }
     if (routerLocation.hash !== '#cb-full-menu') return undefined;
-    if (searchActive || search) {
+
+    const pendingEntry = pendingMenuEntryRef.current;
+    pendingMenuEntryRef.current = null;
+    if (pendingEntry === 'SEARCH') {
+      pendingFullMenuScrollRef.current = false;
+      setCategory('ALL');
+      setSearch('');
+      setSearchActive(true);
+      const frame = window.requestAnimationFrame(() => {
+        searchInputRef.current?.focus({ preventScroll: true });
+        searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (pendingEntry === 'BAKED_BY_BOND') {
+      pendingFullMenuScrollRef.current = false;
       setSearchActive(false);
       setSearch('');
-      return undefined;
+      setCategory('Baked by Bond');
+      const frame = window.requestAnimationFrame(() => {
+        searchInputRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
-    if (category !== 'ALL') {
-      setCategory('ALL');
-      return undefined;
-    }
-    if (loading || !fullMenuRef.current) return undefined;
+
+    setSearchActive(false);
+    setSearch('');
+    setCategory('ALL');
+    pendingFullMenuScrollRef.current = true;
+    return undefined;
+  }, [routerLocation.hash]);
+
+  useEffect(() => {
+    if (
+      !menuRouteActive
+      || !pendingFullMenuScrollRef.current
+      || loading
+      || category !== 'ALL'
+      || searchActive
+      || search
+      || !fullMenuRef.current
+    ) return undefined;
+    pendingFullMenuScrollRef.current = false;
     const frame = window.requestAnimationFrame(() => {
       fullMenuRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [routerLocation.hash, loading, category, searchActive, search]);
+  }, [menuRouteActive, loading, category, searchActive, search]);
 
   const alignExistingStoreQuery = (store: Store) => {
     const params = new URLSearchParams(routerLocation.search);
@@ -1165,11 +1211,39 @@ export default function CustomerOrder() {
 
   const openPastryMenu = () => {
     if (!categories.includes('Baked by Bond')) return;
-    setSearch('');
-    setSearchActive(false);
-    setCategory('Baked by Bond');
-    window.requestAnimationFrame(() => {
-      searchInputRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (menuRouteActive) {
+      setSearch('');
+      setSearchActive(false);
+      setCategory('Baked by Bond');
+      window.requestAnimationFrame(() => {
+        searchInputRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+      return;
+    }
+    pendingMenuEntryRef.current = 'BAKED_BY_BOND';
+    navigate({
+      pathname: routerLocation.pathname,
+      search: routerLocation.search,
+      hash: '#cb-full-menu',
+    });
+  };
+
+  const openHomeSearch = () => {
+    if (menuRouteActive) {
+      setCategory('ALL');
+      setSearch('');
+      setSearchActive(true);
+      window.requestAnimationFrame(() => {
+        searchInputRef.current?.focus({ preventScroll: true });
+        searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+      return;
+    }
+    pendingMenuEntryRef.current = 'SEARCH';
+    navigate({
+      pathname: routerLocation.pathname,
+      search: routerLocation.search,
+      hash: '#cb-full-menu',
     });
   };
 
@@ -2781,8 +2855,12 @@ export default function CustomerOrder() {
                     setMyUsualDialog({ type: 'SIGN_IN' });
                   }}
                   onCreate={() => {
-                    searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
                     setMyUsualNotice('Add your regular items to the basket, then choose Save as My Usual.');
+                    navigate({
+                      pathname: routerLocation.pathname,
+                      search: routerLocation.search,
+                      hash: '#cb-full-menu',
+                    });
                   }}
                   onOrder={() => startMyUsualOrder('ORDER')}
                   onEdit={() => startMyUsualOrder('EDIT')}
@@ -2791,6 +2869,30 @@ export default function CustomerOrder() {
                   orderActionLabel={myUsual?.orderType === 'DINE_IN' ? 'Place dine-in' : 'Place pickup'}
                 />
               </div>
+
+              <nav className="cb-customer-something-else" aria-label="More ways to order">
+                <Link
+                  to={{
+                    pathname: routerLocation.pathname,
+                    search: routerLocation.search,
+                    hash: '#cb-full-menu',
+                  }}
+                  className="cb-customer-something-else-menu"
+                >
+                  <span className="cb-customer-something-else-title">
+                    Something else <ChevronRight size={15} aria-hidden="true" />
+                  </span>
+                  <span className="cb-customer-something-else-label">Menu</span>
+                </Link>
+                <span className="cb-customer-something-else-dot" aria-hidden="true">·</span>
+                <button type="button" onClick={openHomeSearch} className="cb-customer-something-else-action">
+                  Search
+                </button>
+                <span className="cb-customer-something-else-dot" aria-hidden="true">·</span>
+                <Link to={CUSTOMER_MY_ORDERS_PATH} className="cb-customer-something-else-action">
+                  Recent orders
+                </Link>
+              </nav>
 
               <CustomerBondSummaryCard
                 summary={displayedBondSummary}
@@ -2836,52 +2938,54 @@ export default function CustomerOrder() {
             </div>
           )}
 
-          <div className={searchOpen ? 'cb-customer-search-row' : ''}>
-            <label className="cb-customer-home-search flex h-12 min-w-0 flex-1 items-center gap-3 px-4 focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
-              <Search size={18} className="shrink-0 text-[#8b5e42]" />
-              <input
-                ref={searchInputRef}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                onFocus={() => setSearchActive(true)}
-                /* h-full so the input itself is the full 48px target, not a 22px strip
-                   inside it — tapping near the edge of the field must still focus it. */
-                className="h-full w-full min-w-0 bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
-                placeholder={searchOpen
-                  ? `${selectedStorePresentation.searchPromptTitle}...`
-                  : selectedStorePresentation.searchPlaceholder}
-                aria-label="Search the menu"
-                enterKeyHint="search"
-              />
-              {search && (
+          {menuRouteActive && (
+            <div className={searchOpen ? 'cb-customer-search-row' : ''}>
+              <label className="cb-customer-home-search flex h-12 min-w-0 flex-1 items-center gap-3 px-4 focus-within:ring-2 focus-within:ring-[#8b5e42]/35">
+                <Search size={18} className="shrink-0 text-[#8b5e42]" />
+                <input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onFocus={() => setSearchActive(true)}
+                  /* h-full so the input itself is the full 48px target, not a 22px strip
+                     inside it — tapping near the edge of the field must still focus it. */
+                  className="h-full w-full min-w-0 bg-transparent text-[15px] font-semibold outline-none placeholder:text-[#9a8d86]"
+                  placeholder={searchOpen
+                    ? `${selectedStorePresentation.searchPromptTitle}...`
+                    : selectedStorePresentation.searchPlaceholder}
+                  aria-label="Search the menu"
+                  enterKeyHint="search"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+                    aria-label="Clear search"
+                    className="cb-customer-search-clear -mr-2 flex h-11 w-11 shrink-0 items-center justify-center"
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                )}
+              </label>
+              {searchOpen && (
                 <button
                   type="button"
-                  onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
-                  aria-label="Clear search"
-                  className="cb-customer-search-clear -mr-2 flex h-11 w-11 shrink-0 items-center justify-center"
+                  /* Leaves search and hands the menu back exactly as it was. Category is
+                     deliberately untouched — that is existing menu state, not search
+                     state. */
+                  onClick={() => {
+                    setSearch('');
+                    setSearchActive(false);
+                    searchInputRef.current?.blur();
+                  }}
+                  aria-label="Cancel search"
+                  className="cb-customer-search-cancel flex min-h-11 shrink-0 items-center px-2"
                 >
-                  <X size={16} aria-hidden="true" />
+                  Cancel
                 </button>
               )}
-            </label>
-            {searchOpen && (
-              <button
-                type="button"
-                /* Leaves search and hands the menu back exactly as it was. Category is
-                   deliberately untouched — that is existing menu state, not search
-                   state. */
-                onClick={() => {
-                  setSearch('');
-                  setSearchActive(false);
-                  searchInputRef.current?.blur();
-                }}
-                aria-label="Cancel search"
-                className="cb-customer-search-cancel flex min-h-11 shrink-0 items-center px-2"
-              >
-                Cancel
-              </button>
-            )}
-          </div>
+            </div>
+          )}
 
           {error && (
             <div className="flex gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
@@ -2890,6 +2994,7 @@ export default function CustomerOrder() {
             </div>
           )}
 
+          {menuRouteActive && (
           <div className="cb-customer-menu-content min-w-0">
             {!searchOpen && (
               <CustomerCategoryRail
@@ -3012,6 +3117,7 @@ export default function CustomerOrder() {
               )}
             </div>
           </div>
+          )}
         </section>
 
         <aside className="hidden h-fit max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-sm ring-1 ring-[#e7ddd3] lg:sticky lg:top-24 lg:block">

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Stage 1 customer home/menu redesign contract.
+ * Customer Home/Menu redesign contract through Bite 3.
  *
  * Pins the visual wiring AND that no ordering behaviour moved into presentation:
  * pricing, availability, add-on resolution and cart mutation must all stay in
@@ -37,7 +37,7 @@ check('store chip preserves selected-store data and opens the existing selector'
   home.includes('storeName={selectedStoreCustomerName}')
   && home.includes('statusLabel={customerOrderingState.statusLabel}')
   && home.includes('onOpenSelector={() => setStoreSelectorOpen(true)}'));
-check('home renders the new category rail', home.includes('<CustomerCategoryRail'));
+check('Menu retains the existing category rail', home.includes('<CustomerCategoryRail'));
 check('home renders the new product card', home.includes('<CustomerProductCard'));
 check('home renders the persistent bottom navigation', home.includes('<CustomerBottomNav'));
 check('the complete menu remains two-column below the featured rail on phones',
@@ -51,7 +51,7 @@ const composition = [
   '<CustomerBondSummaryCard', 'aria-label="Search the menu"', '<CustomerCategoryRail',
   'Coffee Bond favourites', '<HorizontalScroller', '<CustomerBottomNav',
 ].map(anchor => home.indexOf(anchor));
-check('the home composition follows the approved reference order',
+check('the source composition keeps Home before the preserved Menu surface',
   composition.every((position, index) => position >= 0 && (index === 0 || position > composition[index - 1])));
 check('the customer header uses the official PDF-derived mark beside the readable wordmark',
   header.includes('IS_CUSTOMER_ORIGIN_BUILD')
@@ -69,6 +69,58 @@ check('every My Usual state keeps the same hero family and real menu-image wirin
   && home.includes('lines={myUsualPreview?.state === \'SAVED\' ? myUsualPreview.displayLines : []}')
   && home.includes('discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}')
   && !/https?:\/\//.test(usual));
+
+// --- Bite 3: Home is an order OS, not a menu wall ---------------------------
+const homeOverview = home.slice(
+  home.indexOf('<div className="cb-customer-home-overview">'),
+  home.indexOf('{!searchOpen && myUsualNotice &&'),
+);
+const menuSurface = home.slice(
+  home.indexOf('{menuRouteActive && (\n            <div className={searchOpen'),
+  home.indexOf('<aside className="hidden h-fit'),
+);
+const somethingElse = home.slice(
+  home.indexOf('<nav className="cb-customer-something-else"'),
+  home.indexOf('<CustomerBondSummaryCard'),
+);
+
+check('Bite 3 gates Search and the full menu tree behind the existing Menu hash',
+  home.includes("const menuRouteActive = routerLocation.hash === '#cb-full-menu'")
+  && home.includes('{menuRouteActive && (\n            <div className={searchOpen')
+  && home.includes('{menuRouteActive && (\n          <div className="cb-customer-menu-content'));
+check('Home contains no category rail, favourites or product catalogue',
+  homeOverview.length > 500
+  && !homeOverview.includes('<CustomerCategoryRail')
+  && !homeOverview.includes('cb-customer-featured-section')
+  && !homeOverview.includes('cb-customer-full-menu')
+  && !homeOverview.includes('aria-label="Search the menu"'));
+check('Menu keeps categories, favourites, Search and the complete catalogue',
+  menuSurface.includes('<CustomerCategoryRail')
+  && menuSurface.includes('Coffee Bond favourites')
+  && menuSurface.includes('<HorizontalScroller')
+  && menuSurface.includes('aria-label="Search the menu"')
+  && menuSurface.includes('id="cb-full-menu"'));
+check('Something else sits between My Usual and the existing BOND strip',
+  homeOverview.indexOf('<CustomerMyUsualCard') < homeOverview.indexOf('cb-customer-something-else')
+  && homeOverview.indexOf('cb-customer-something-else') < homeOverview.indexOf('<CustomerBondSummaryCard'));
+check('Something else is one quiet row with three existing destinations',
+  somethingElse.includes('aria-label="More ways to order"')
+  && somethingElse.includes('Something else')
+  && somethingElse.includes('>Menu</span>')
+  && somethingElse.includes('onClick={openHomeSearch}')
+  && somethingElse.includes('>\n                  Search\n')
+  && somethingElse.includes('to={CUSTOMER_MY_ORDERS_PATH}')
+  && somethingElse.includes('Recent orders'));
+check('the Home escape hatch invents no route',
+  somethingElse.includes("hash: '#cb-full-menu'")
+  && home.includes("pendingMenuEntryRef.current = 'SEARCH'")
+  && home.includes("hash: '#cb-full-menu'")
+  && !/to=["']\/(search|menu|orders|recent)/.test(somethingElse));
+check('the escape row stays compact, quiet and accessible',
+  /\.cb-customer-something-else \{[^}]*min-height: 56px/.test(homeRedesignCss)
+  && /\.cb-customer-something-else-menu \{[^}]*min-height: 44px/.test(homeRedesignCss)
+  && /\.cb-customer-something-else-action,[\s\S]{0,140}min-height: 44px/.test(homeRedesignCss)
+  && !/<img|CustomerProductImage|CustomerProductCard/.test(somethingElse));
 
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));
