@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Customer Home/Menu redesign contract through Bite 5.
+ * Customer Home/Menu redesign contract through Bite 7.
  *
  * Pins the visual wiring AND that no ordering behaviour moved into presentation:
  * pricing, availability, add-on resolution and cart mutation must all stay in
@@ -25,6 +25,9 @@ const header = read('frontend/components/customer/CustomerHeader.tsx');
 const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
 const productImage = read('frontend/components/customer/CustomerProductImage.tsx');
 const usual = read('frontend/components/customer/CustomerMyUsualCard.tsx');
+const signedOutStart = read('frontend/components/customer/CustomerSignedOutStartCard.tsx');
+const signedOutStartRuntime = signedOutStart.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const signatureSelector = read('frontend/lib/customerHomeSignatures.ts');
 const liveBanner = read('frontend/components/customer/CustomerLiveOrderBanner.tsx');
 const bondCard = read('frontend/components/customer/CustomerBondSummaryCard.tsx');
 const horizontalScroller = read('frontend/components/customer/HorizontalScroller.tsx');
@@ -36,7 +39,7 @@ const customerMain = read('frontend/customer-main.tsx');
 // --- Wiring -----------------------------------------------------------------
 check('home renders the new store card', home.includes('<CustomerStoreCard'));
 check('store chip preserves selected-store data and opens the existing selector',
-  home.includes('storeName={selectedStoreCustomerName}')
+  home.includes('storeName={homeSelectedStoreCustomerName}')
   && home.includes('statusLabel={customerOrderingState.statusLabel}')
   && home.includes('onOpenSelector={() => setStoreSelectorOpen(true)}'));
 check('Menu retains the existing category rail', home.includes('<CustomerCategoryRail'));
@@ -49,7 +52,7 @@ check('grid passes an index so only the first cards load eagerly',
 check('page reserves space for the fixed bottom navigation',
   home.includes('cb-customer-page-bottom') && tokens.includes('--cb-content-bottom'));
 const composition = [
-  '<CustomerHeader', '<CustomerStoreCard', '<CustomerMyUsualCard',
+  '<CustomerHeader', '<CustomerStoreCard', '<CustomerSignedOutStartCard', '<CustomerMyUsualCard',
   '<CustomerBondSummaryCard', 'aria-label="Search the menu"', '<CustomerCategoryRail',
   'Coffee Bond favourites', '<HorizontalScroller', '<CustomerBottomNav',
 ].map(anchor => home.indexOf(anchor));
@@ -66,11 +69,12 @@ check('the customer header uses the official PDF-derived mark beside the readabl
   && !header.includes('coffee-bond-logo.png')
   && productImage.includes('src="/pwa/coffee-bond-mark.svg"')
   && productImage.includes('IS_CUSTOMER_ORIGIN_BUILD'));
-check('every My Usual state keeps the same hero family and real menu-image wiring',
-  ['is-signed-out', 'is-empty', 'is-loading', 'is-saved'].every(state => usual.includes(state))
+check('signed-out discovery is separate while every signed-in My Usual state keeps its hero family',
+  ['is-empty', 'is-loading', 'is-saved'].every(state => usual.includes(state))
+  && !usual.includes('is-signed-out')
+  && home.includes('<CustomerSignedOutStartCard')
   && home.includes('lines={myUsualPreview?.state === \'SAVED\' ? myUsualPreview.displayLines : []}')
-  && home.includes('discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}')
-  && !/https?:\/\//.test(usual));
+  && !/https?:\/\//.test(usual + signedOutStart));
 
 // --- Bite 3: Home is an order OS, not a menu wall ---------------------------
 const homeOverview = home.slice(
@@ -105,12 +109,13 @@ check('Menu keeps categories, favourites, Search and the complete catalogue',
 check('Something else sits between My Usual and the existing BOND strip',
   homeOverview.indexOf('<CustomerMyUsualCard') < homeOverview.indexOf('cb-customer-something-else')
   && homeOverview.indexOf('cb-customer-something-else') < homeOverview.indexOf('<CustomerBondSummaryCard'));
-check('Something else is one quiet row with three existing destinations',
+check('Something else keeps authenticated history but signed-out Home has only Menu and Search',
   somethingElse.includes('aria-label="More ways to order"')
   && somethingElse.includes('Something else')
   && somethingElse.includes('>Menu</span>')
   && somethingElse.includes('onClick={openHomeSearch}')
   && somethingElse.includes('>\n                  Search\n')
+  && somethingElse.includes('{verifiedCustomer && (')
   && somethingElse.includes('to={CUSTOMER_MY_ORDERS_PATH}')
   && somethingElse.includes('Recent orders'));
 check('the Home escape hatch invents no route',
@@ -180,8 +185,10 @@ check('the relationship strip uses only the existing customer-safe BOND summary 
   && bondCard.includes('summary?.qualifyingVisitCount')
   && bondCard.includes("summary?.currentClubStatus === 'ACTIVE'")
   && !/orders|qualifyingVisitDays|collection\(|getDocs\(|httpsCallable/.test(bondCard));
-check('signed-out and loading Home render no relationship strip or duplicate Join',
-  bondCard.includes("state === 'HIDDEN' || state === 'LOADING' || state === 'SIGNED_OUT'")
+check('signed-out relationship strip is quiet, links to BOND and duplicates no Join',
+  bondCard.includes("state === 'HIDDEN' || state === 'LOADING'")
+  && bondCard.includes("'THE BOND · Earn points when you order'")
+  && bondCard.includes("state === 'SIGNED_OUT'")
   && !/Join|Sign in/.test(bondCard));
 check('regular and zero-visit members use real qualifyingVisitCount with the 125 target',
   bondCard.includes("typeof rawVisits === 'number'")
@@ -191,7 +198,7 @@ check('regular and zero-visit members use real qualifyingVisitCount with the 125
   && !/\b18\b/.test(bondCard));
 check('Club state comes from currentClubStatus and suppresses numeric progress',
   bondCard.includes("summary?.currentClubStatus === 'ACTIVE'")
-  && /const label = clubActive\s*\? 'THE BOND CLUB'/.test(bondCard)
+  && /: clubActive\s*\? 'THE BOND CLUB'/.test(bondCard)
   && bondCard.includes('const showProgress = !clubActive && visits !== null'));
 check('unavailable visit data falls back without fabricated zero progress',
   home.includes("displayedBondSummary ? 'HIDDEN' : 'UNAVAILABLE'")
@@ -204,8 +211,9 @@ check('the whole relationship strip opens the existing BOND route',
   && bondCard.includes('CUSTOMER_BOND_PATH')
   && bondCard.includes('className={`cb-customer-bond-strip')
   && bondCard.includes('aria-label={label}'));
-check('the relationship strip carries no points balance or sales copy',
-  !/pointsBalance|\bpts\b|Start earning|Earn points|Regular Rhythm/.test(bondCard));
+check('the relationship strip carries no balance, fabricated progress or loyalty wall copy',
+  !/pointsBalance|\bpts\b|Start earning|Regular Rhythm|manifesto/i.test(bondCard)
+  && (bondCard.match(/Earn points when you order/g) || []).length === 1);
 check('the visit progress is visually clamped and accessibly labelled',
   bondCard.includes('Math.min(100, Math.max(0,')
   && bondCard.includes('role="progressbar"')
@@ -236,11 +244,58 @@ check('the empty prompt is a quiet cream card with a 52px primary action',
 check('Bite 6 adds no candidate or persistence behavior from incomplete history summaries',
   !/Save as usual|Not this|latest settled/i.test(emptyUsual)
   && !/saveCustomerMyUsualRequest|listMyCustomerOrders|publicTrackingDocRef/.test(emptyUsualAction));
-check('live order, saved usual, signed-out and BOND composition remain on their existing paths',
-  homeOverview.indexOf('{homeLiveOrder && (') < homeOverview.indexOf('<CustomerMyUsualCard')
-  && usual.includes("if (state === 'SIGNED_OUT')")
+check('live order, signed-out start, saved usual and BOND composition remain on their intended paths',
+  homeOverview.indexOf('{homeLiveOrder && (') < homeOverview.indexOf('<CustomerSignedOutStartCard')
+  && homeOverview.indexOf('<CustomerSignedOutStartCard') < homeOverview.indexOf('<CustomerMyUsualCard')
   && usual.includes("className={`cb-customer-usual-hero is-saved")
   && homeOverview.indexOf('<CustomerMyUsualCard') < homeOverview.indexOf('<CustomerBondSummaryCard'));
+
+// --- Bite 7: signed-out Home remains an order OS ---------------------------
+const signedOutHero = home.slice(
+  home.indexOf('{customerAuthRestored && !verifiedCustomer ? ('),
+  home.indexOf(') : (\n                <CustomerMyUsualCard'),
+);
+check('signed-out Home begins with current-store signature products, not auth',
+  signedOutHero.includes('<CustomerSignedOutStartCard')
+  && signedOutHero.includes('products={signatureHomeProducts}')
+  && home.includes('imageUrl: getItemImage(item)')
+  && !/Sign in|Join|CustomerOtpPanel/.test(signedOutStart));
+check('signature identities are exact and owner-approved',
+  ['BOND FRAPPE', 'ICED VIETNAMESE', 'MAGIK TEAM FAVORITE']
+    .every(identity => signatureSelector.includes(identity))
+  && signatureSelector.includes('identities.includes(alias)')
+  && !signatureSelector.includes('.includes(alias) ||'));
+check('only the existing orderable set can supply signature shortcuts',
+  home.includes('selectCustomerHomeSignatures(orderableItems)')
+  && home.includes('const signatureHomeProducts = useMemo(')
+  && signedOutStart.includes('products.map(product =>')
+  && signedOutStart.includes('aria-pressed={product.code === selected.code}')
+  && !/salePrice|publicAvailability|getItemAvailability/.test(signedOutStart + signatureSelector));
+check('the signature primary action delegates to the existing add/customize path',
+  signedOutStart.includes('onStart(selected.code)')
+  && /onStart=\{\(productCode\) => \{[\s\S]{0,220}addItem\(item\)/.test(signedOutHero)
+  && home.includes('activeAddOnGroupsForProduct(')
+  && home.includes('commitCartItem(item, [])'));
+check('signed-out Home has safe unknown-store and all-unavailable states',
+  signedOutStart.includes("if (!storeSelected)")
+  && signedOutStart.includes('Choose your Bond above')
+  && signedOutStart.includes("if (!selected)")
+  && signedOutStart.includes('Explore the menu')
+  && home.includes("'Choose your Bond'")
+  && home.includes('(!customerAuthRestored || verifiedCustomer || selectedStore)'));
+check('signed-out hero has no price, loyalty wall or invented backend behavior',
+  !/price|points|visit|club|loyalty|httpsCallable|setCart|checkout|payment|Razorpay/i.test(signedOutStartRuntime)
+  && !/salePrice|available|imageUrl/.test(signatureSelector));
+check('signed-out BOND and discovery controls remain secondary to one primary action',
+  (signedOutStart.match(/cb-customer-signature-primary/g) || []).length >= 2
+  && signedOutStart.includes('aria-label={`Start with ${selected.name}`}')
+  && bondCard.includes("'THE BOND · Earn points when you order'")
+  && somethingElse.includes('{verifiedCustomer && ('));
+check('signed-out signature controls are responsive touch targets',
+  /\.cb-customer-signature-option \{[^}]*min-height: 48px/.test(homeRedesignCss)
+  && /\.cb-customer-signature-primary \{[^}]*min-height: 52px/.test(homeRedesignCss)
+  && /\.cb-customer-signature-options \{[^}]*repeat\(3, minmax\(0, 1fr\)\)/.test(homeRedesignCss)
+  && /@media \(max-width: 340px\)[\s\S]*\.cb-customer-bond-strip-row strong \{ font-size: 11\.5px/.test(homeRedesignCss));
 
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));
@@ -621,7 +676,7 @@ check('the compact home overview, its notices and category rail stand down while
   && home.includes('{!searchOpen && checkoutDraftNotice &&')
   && /\{!searchOpen && \(\s*<CustomerCategoryRail/.test(home));
 check('the store-not-accepting warning is NOT hidden by search',
-  /\{!customerOrderingState\.canAcceptOrders && !availabilityLoading && \(/.test(home));
+  /\{\(!customerAuthRestored \|\| verifiedCustomer \|\| selectedStore\)[\s\S]{0,140}!customerOrderingState\.canAcceptOrders[\s\S]{0,80}!availabilityLoading && \(/.test(home));
 check('search offers Cancel and a clear, both real touch targets',
   home.includes('aria-label="Cancel search"')
   && home.includes('aria-label="Clear search"')
@@ -675,13 +730,14 @@ check('bottom nav exposes Home, Menu, Orders and Bond exactly once at runtime',
 // --- Style isolation --------------------------------------------------------
 check('customer tokens are imported only by the customer entry',
   customerMain.includes("import './customer.css'"));
-for (const [label, source] of [['card', card], ['rail', rail], ['store', store], ['nav', nav]]) {
+for (const [label, source] of [['card', card], ['rail', rail], ['store', store], ['nav', nav], ['signed-out start', signedOutStart]]) {
   check(`${label} uses no Tailwind arbitrary CSS-variable utility`,
     !/\[color:var\(--cb-|shadow-\[var\(--cb-|rounded-\[var\(--cb-|bg-\[var\(--cb-/.test(source));
 }
 check('semantic customer classes are declared in customer.css',
   ['.cb-customer-card', '.cb-customer-accent-button', '.cb-customer-chip-active',
    '.cb-customer-bottom-nav', '.cb-customer-store-card', '.cb-customer-usual-hero',
+   '.cb-customer-signature-hero',
    '.cb-customer-featured-track', '.cb-customer-basket-bar', '.cb-customer-stepper']
     .every((cls) => tokens.includes(cls)));
 check('shared stylesheet was not modified for the customer app',

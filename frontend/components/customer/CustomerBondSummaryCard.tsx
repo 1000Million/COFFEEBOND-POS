@@ -13,12 +13,13 @@ type Props = {
 const CLUB_VISIT_TARGET = 125;
 
 export default function CustomerBondSummaryCard({ summary = null, state = 'READY', demoStateKey = null }: Props) {
-  if (state === 'HIDDEN' || state === 'LOADING' || state === 'SIGNED_OUT') return null;
+  if (state === 'HIDDEN' || state === 'LOADING') return null;
   if (state === 'READY' && !summary?.enabled) return null;
 
   const destination = demoStateKey
     ? `${CUSTOMER_BOND_PATH}?bondDemo=${demoStateKey}`
     : CUSTOMER_BOND_PATH;
+  const signedOut = state === 'SIGNED_OUT';
   const clubActive = state === 'READY' && summary?.currentClubStatus === 'ACTIVE';
   const rawVisits = state === 'READY' ? summary?.qualifyingVisitCount : null;
   const visits = state === 'READY'
@@ -33,11 +34,13 @@ export default function CustomerBondSummaryCard({ summary = null, state = 'READY
   const progress = showProgress
     ? Math.min(100, Math.max(0, (visits / CLUB_VISIT_TARGET) * 100))
     : 0;
-  const label = clubActive
-    ? 'THE BOND CLUB'
-    : showProgress
-      ? `${visits} / ${CLUB_VISIT_TARGET} · to THE BOND CLUB`
-      : 'View THE BOND';
+  const label = signedOut
+    ? 'THE BOND · Earn points when you order'
+    : clubActive
+      ? 'THE BOND CLUB'
+      : showProgress
+        ? `${visits} / ${CLUB_VISIT_TARGET} · to THE BOND CLUB`
+        : 'View THE BOND';
 
   return (
     <Link

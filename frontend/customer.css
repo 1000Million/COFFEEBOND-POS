@@ -2352,6 +2352,170 @@
   outline-offset: 2px;
 }
 
+/* Bite 7: first-open Home begins with current, orderable signature products. The
+   card owns selection styling only; menu availability and basket behavior stay in
+   CustomerOrder. No price is printed here, so stale catalogue money cannot leak. */
+.cb-customer-signature-hero {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dfd0bd;
+  border-radius: 26px;
+  background: #fffdf8;
+  box-shadow: 0 12px 28px rgba(66, 42, 27, 0.11);
+}
+.cb-customer-signature-photo,
+.cb-customer-signature-art,
+.cb-customer-signature-loading-photo {
+  min-width: 0;
+  aspect-ratio: 16 / 7;
+}
+.cb-customer-signature-photo { background: #f0e3d3; }
+.cb-customer-signature-photo > * { border-radius: 0; }
+.cb-customer-signature-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: rgba(134, 86, 26, 0.7);
+  background:
+    radial-gradient(circle at 35% 45%, rgba(255, 255, 255, 0.8), transparent 38%),
+    linear-gradient(145deg, #f3dba7, #fbf2dd);
+}
+.cb-customer-signature-art svg:first-child {
+  position: absolute;
+  left: 22%;
+  bottom: 8%;
+  transform: rotate(-14deg);
+  opacity: 0.48;
+}
+.cb-customer-signature-art svg:last-child { position: relative; margin-left: 38px; color: #80512d; }
+.cb-customer-signature-loading-photo { background: #eee1d5; }
+.cb-customer-signature-content { padding: 16px 17px 17px; }
+.cb-customer-signature-eyebrow {
+  margin: 0;
+  color: #9c6928;
+  font-size: 11px;
+  font-weight: 840;
+  letter-spacing: 0.2em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+.cb-customer-signature-name {
+  margin: 5px 0 0;
+  color: var(--cb-text);
+  font-family: Georgia, 'Times New Roman', ui-serif, serif;
+  font-size: 27px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.04;
+}
+.cb-customer-signature-copy {
+  margin: 8px 0 0;
+  color: var(--cb-text-muted);
+  font-size: 13px;
+  font-weight: 570;
+  line-height: 1.45;
+}
+.cb-customer-signature-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 13px;
+}
+.cb-customer-signature-option {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  place-items: center;
+  padding: 6px 7px;
+  border: 1px solid #e7dac9;
+  border-radius: 13px;
+  color: #72503f;
+  background: #fbf5ec;
+  font-size: 11px;
+  font-weight: 740;
+  line-height: 1.15;
+  text-align: center;
+}
+.cb-customer-signature-option[aria-pressed='true'] {
+  border-color: #9d6b2f;
+  color: var(--cb-espresso);
+  background: #f5e5c9;
+  box-shadow: inset 0 0 0 1px rgba(157, 107, 47, 0.24);
+}
+.cb-customer-signature-option:focus-visible,
+.cb-customer-signature-primary:focus-visible {
+  outline: 3px solid rgba(117, 72, 23, 0.32);
+  outline-offset: 2px;
+}
+.cb-customer-signature-primary {
+  display: inline-flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 13px;
+  padding: 8px 14px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 7px 16px rgba(63, 39, 27, 0.18);
+  font-size: 13.5px;
+  font-weight: 810;
+  line-height: 1.2;
+  text-align: center;
+}
+.cb-customer-signature-primary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-signature-primary:disabled {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  box-shadow: none;
+}
+.cb-customer-signature-message {
+  margin: 8px 0 0;
+  color: var(--cb-danger);
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.35;
+  text-align: center;
+}
+.cb-customer-signature-hero.is-store-unknown,
+.cb-customer-signature-hero.is-fallback {
+  display: grid;
+  grid-template-columns: 40% minmax(0, 60%);
+  min-height: 166px;
+  border-radius: 21px;
+  box-shadow: 0 6px 17px rgba(43, 33, 24, 0.065);
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-art,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-art {
+  min-height: 100%;
+  aspect-ratio: auto;
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-content,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  padding: 13px 12px;
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-name,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-name { font-size: 20px; }
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-primary {
+  min-height: 44px;
+  margin-top: 10px;
+  padding-inline: 7px;
+  font-size: 11.5px;
+}
+.cb-customer-signature-hero.is-loading .cb-customer-signature-content { padding-block: 14px 17px; }
+
 .cb-customer-store-card {
   display: flex;
   width: 100%;
@@ -2964,6 +3128,7 @@
   .cb-customer-usual-name { font-size: 18px; }
   .cb-customer-usual-primary { padding-inline: 5px; font-size: 11px; }
   .cb-customer-usual-primary svg { display: none; }
+  .cb-customer-bond-strip-row strong { font-size: 11.5px; letter-spacing: -0.01em; }
   .cb-customer-card.is-featured { width: 124px; min-width: 124px; flex-basis: 124px; }
   .cb-customer-featured-heading h2 { font-size: 19px; }
   .cb-customer-nav-link { font-size: 11px; }

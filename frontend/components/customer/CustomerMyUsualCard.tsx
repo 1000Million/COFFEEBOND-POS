@@ -1,5 +1,5 @@
 import { ComponentType } from 'react';
-import { ArrowRight, Coffee, Trash2, UtensilsCrossed, Wheat } from 'lucide-react';
+import { ArrowRight, Coffee, Trash2, UtensilsCrossed } from 'lucide-react';
 import CustomerProductImage from './CustomerProductImage';
 
 export type MyUsualPreviewLine = {
@@ -19,16 +19,8 @@ export type MyUsualPreviewLine = {
 };
 
 type Props = {
-  /**
-   * SIGNED_OUT is a distinct state, not an empty one: a signed-out customer has no
-   * usual to show and must never be offered a permanent save.
-   */
-  state: 'SIGNED_OUT' | 'EMPTY' | 'LOADING' | 'SAVED';
+  state: 'EMPTY' | 'LOADING' | 'SAVED';
   lines: MyUsualPreviewLine[];
-  /** Real current-menu image used only by the unchanged signed-out discovery state. */
-  discoveryImageUrl?: string | null;
-  discoveryImageName?: string;
-  discoveryImageIsFood?: boolean;
   /** Formatted menu subtotal recalculated from live prices at the CURRENT store, or null. */
   totalLabel: string | null;
   /** Hard blocker text — reorder is disabled while present. */
@@ -38,7 +30,6 @@ type Props = {
   busy?: boolean;
   /** Offline disables every server action — reorder, edit and delete alike. */
   offline?: boolean;
-  onSignIn: () => void;
   onCreate: () => void;
   onOrder: () => void;
   onEdit: () => void;
@@ -60,15 +51,11 @@ type Props = {
 export default function CustomerMyUsualCard({
   state,
   lines,
-  discoveryImageUrl = null,
-  discoveryImageName = 'Coffee Bond menu',
-  discoveryImageIsFood = false,
   totalLabel,
   blockerMessage,
   noticeMessage,
   busy = false,
   offline = false,
-  onSignIn,
   onCreate,
   onOrder,
   onEdit,
@@ -76,46 +63,6 @@ export default function CustomerMyUsualCard({
   onAddPastry,
   orderActionLabel = 'Place pickup',
 }: Props) {
-  const DiscoveryIcon = discoveryImageIsFood ? UtensilsCrossed : Coffee;
-  const discoveryVisual = discoveryImageUrl ? (
-    <div className="cb-customer-usual-photo is-discovery" aria-hidden="true">
-      <CustomerProductImage
-        src={discoveryImageUrl}
-        alt={discoveryImageName}
-        icon={DiscoveryIcon}
-        iconClassName="text-[#9a6a2e]"
-        className="h-full w-full"
-        priority
-      />
-    </div>
-  ) : (
-    <div className="cb-customer-usual-art" aria-hidden="true">
-      <Wheat size={58} strokeWidth={1.25} />
-      <Coffee size={34} strokeWidth={1.45} />
-    </div>
-  );
-
-  if (state === 'SIGNED_OUT') {
-    return (
-      <section className="cb-customer-usual-hero is-signed-out" aria-labelledby="cb-my-usual-heading">
-        {discoveryVisual}
-        <div className="cb-customer-usual-content">
-          <p className="cb-customer-usual-eyebrow">My Usual</p>
-          <h2 id="cb-my-usual-heading" className="cb-customer-usual-name">Your everyday favourite</h2>
-          <p className="cb-customer-usual-copy">Sign in to save it once and order it again in a tap.</p>
-          <button
-            type="button"
-            onClick={onSignIn}
-            data-requires-online="true"
-            className="cb-customer-usual-primary"
-          >
-            Sign in <ArrowRight size={16} aria-hidden="true" />
-          </button>
-        </div>
-      </section>
-    );
-  }
-
   if (state === 'EMPTY') {
     return (
       <section className="cb-customer-usual-hero is-empty" aria-labelledby="cb-my-usual-heading">

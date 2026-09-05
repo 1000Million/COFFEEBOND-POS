@@ -89,6 +89,7 @@ import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
 import CustomerBondSummaryCard from '../../components/customer/CustomerBondSummaryCard';
 import CustomerLiveOrderBanner from '../../components/customer/CustomerLiveOrderBanner';
+import CustomerSignedOutStartCard from '../../components/customer/CustomerSignedOutStartCard';
 import HorizontalScroller from '../../components/customer/HorizontalScroller';
 import {
   BondSummary,
@@ -118,6 +119,7 @@ import {
   selectMostRecentCurrentCustomerOrder,
 } from '../../lib/customerOrderHistory';
 import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
+import { selectCustomerHomeSignatures } from '../../lib/customerHomeSignatures';
 import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTracking, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
 
@@ -1124,6 +1126,9 @@ export default function CustomerOrder() {
   const selectedStoreCustomerName = tastingRoomSelected
     ? selectedStorePresentation.conceptName
     : selectedStore?.name || 'Choose store';
+  const homeSelectedStoreCustomerName = customerAuthRestored && !verifiedCustomer && !selectedStore
+    ? 'Choose your Bond'
+    : selectedStoreCustomerName;
   const selectedStoreTaxRate = useMemo(() => storeTaxRate(selectedStore, gstConfig), [selectedStore, gstConfig]);
   const addOnGroups = useMemo(
     () => Object.values(publicAvailability?.addOnGroups || {}),
@@ -1782,7 +1787,17 @@ export default function CustomerOrder() {
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name))
       .slice(0, 6);
   }, [orderableItems]);
-  const discoveryProduct = popularItems.find(item => Boolean(getItemImage(item))) || null;
+  const signatureItems = useMemo(
+    () => selectCustomerHomeSignatures(orderableItems),
+    [orderableItems],
+  );
+  const signatureHomeProducts = useMemo(() => signatureItems.map(item => ({
+    code: item.code,
+    name: item.displayName || item.name,
+    imageUrl: getItemImage(item),
+    isFood: !['Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea']
+      .includes(customerMenuCategory(item, selectedStore)),
+  })), [signatureItems, selectedStore]);
 
   const customerOrderingState = useMemo(() => deriveCustomerOrderingState({
     store: selectedStore,
@@ -2903,7 +2918,7 @@ export default function CustomerOrder() {
               )}
               <CustomerStoreCard
                 contextLabel={selectedStoreContextLabel}
-                storeName={selectedStoreCustomerName}
+                storeName={homeSelectedStoreCustomerName}
                 statusLabel={customerOrderingState.statusLabel}
                 tone={customerOrderingState.tone}
                 onOpenSelector={() => setStoreSelectorOpen(true)}
@@ -2921,54 +2936,66 @@ export default function CustomerOrder() {
               )}
 
               <div ref={myUsualSectionRef} tabIndex={-1}>
-                <CustomerMyUsualCard
-                  state={
-                    !customerAuthRestored
-                      ? 'LOADING'
-                      : !verifiedCustomer
-                        ? 'SIGNED_OUT'
-                        : myUsualLoading
+                {customerAuthRestored && !verifiedCustomer ? (
+                  <CustomerSignedOutStartCard
+                    products={signatureHomeProducts}
+                    storeSelected={Boolean(selectedStore)}
+                    loading={Boolean(selectedStore && (loading || availabilityLoading || loadedMenuStoreId !== selectedStoreId))}
+                    canOrder={!isOffline && customerOrderingState.canAcceptOrders}
+                    unavailableMessage={isOffline
+                      ? 'Reconnect to start an order.'
+                      : customerOrderingState.canAcceptOrders ? undefined : customerOrderingState.message}
+                    onStart={(productCode) => {
+                      const item = signatureItems.find(candidate => candidate.code === productCode);
+                      if (item) addItem(item);
+                    }}
+                    onBrowseMenu={() => {
+                      navigate({
+                        pathname: routerLocation.pathname,
+                        search: routerLocation.search,
+                        hash: '#cb-full-menu',
+                      });
+                    }}
+                  />
+                ) : (
+                  <CustomerMyUsualCard
+                    state={
+                      !customerAuthRestored
                         ? 'LOADING'
-                        : !myUsual
-                          ? 'EMPTY'
-                          : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
-                  }
-                  lines={myUsualPreview?.state === 'SAVED' ? myUsualPreview.displayLines : []}
-                  discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}
-                  discoveryImageName={discoveryProduct?.displayName || discoveryProduct?.name || 'Coffee Bond menu'}
-                  discoveryImageIsFood={Boolean(discoveryProduct && ![
-                    'Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea',
-                  ].includes(customerMenuCategory(discoveryProduct, selectedStore)))}
-                  totalLabel={
-                    myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
-                      ? formatMyUsualPrice(myUsualPreview.totals.subtotal)
-                      : null
-                  }
-                  blockerMessage={
-                    isOffline
-                      ? 'Reconnect to check current prices and availability.'
-                      : myUsualPreview?.state === 'SAVED' ? myUsualPreview.blockerMessage : undefined
-                  }
-                  noticeMessage={myUsualPreview?.state === 'SAVED' ? myUsualPreview.noticeMessage : undefined}
-                  busy={myUsualBusy}
-                  offline={isOffline}
-                  onSignIn={() => {
-                    pendingMyUsualSaveRef.current = false;
-                    setMyUsualDialog({ type: 'SIGN_IN' });
-                  }}
-                  onCreate={() => {
-                    navigate({
-                      pathname: routerLocation.pathname,
-                      search: routerLocation.search,
-                      hash: '#cb-full-menu',
-                    });
-                  }}
-                  onOrder={() => startMyUsualOrder('ORDER')}
-                  onEdit={() => startMyUsualOrder('EDIT')}
-                  onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
-                  onAddPastry={categories.includes('Baked by Bond') ? openPastryMenu : undefined}
-                  orderActionLabel={myUsual?.orderType === 'DINE_IN' ? 'Place dine-in' : 'Place pickup'}
-                />
+                        : myUsualLoading
+                          ? 'LOADING'
+                          : !myUsual
+                            ? 'EMPTY'
+                            : myUsualPreview?.state === 'SAVED' ? 'SAVED' : 'LOADING'
+                    }
+                    lines={myUsualPreview?.state === 'SAVED' ? myUsualPreview.displayLines : []}
+                    totalLabel={
+                      myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
+                        ? formatMyUsualPrice(myUsualPreview.totals.subtotal)
+                        : null
+                    }
+                    blockerMessage={
+                      isOffline
+                        ? 'Reconnect to check current prices and availability.'
+                        : myUsualPreview?.state === 'SAVED' ? myUsualPreview.blockerMessage : undefined
+                    }
+                    noticeMessage={myUsualPreview?.state === 'SAVED' ? myUsualPreview.noticeMessage : undefined}
+                    busy={myUsualBusy}
+                    offline={isOffline}
+                    onCreate={() => {
+                      navigate({
+                        pathname: routerLocation.pathname,
+                        search: routerLocation.search,
+                        hash: '#cb-full-menu',
+                      });
+                    }}
+                    onOrder={() => startMyUsualOrder('ORDER')}
+                    onEdit={() => startMyUsualOrder('EDIT')}
+                    onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
+                    onAddPastry={categories.includes('Baked by Bond') ? openPastryMenu : undefined}
+                    orderActionLabel={myUsual?.orderType === 'DINE_IN' ? 'Place dine-in' : 'Place pickup'}
+                  />
+                )}
               </div>
 
               <nav className="cb-customer-something-else" aria-label="More ways to order">
@@ -2989,10 +3016,14 @@ export default function CustomerOrder() {
                 <button type="button" onClick={openHomeSearch} className="cb-customer-something-else-action">
                   Search
                 </button>
-                <span className="cb-customer-something-else-dot" aria-hidden="true">·</span>
-                <Link to={CUSTOMER_MY_ORDERS_PATH} className="cb-customer-something-else-action">
-                  Recent orders
-                </Link>
+                {verifiedCustomer && (
+                  <>
+                    <span className="cb-customer-something-else-dot" aria-hidden="true">·</span>
+                    <Link to={CUSTOMER_MY_ORDERS_PATH} className="cb-customer-something-else-action">
+                      Recent orders
+                    </Link>
+                  </>
+                )}
               </nav>
 
               <CustomerBondSummaryCard
@@ -3019,7 +3050,9 @@ export default function CustomerOrder() {
             </p>
           )}
 
-          {!customerOrderingState.canAcceptOrders && !availabilityLoading && (
+          {(!customerAuthRestored || verifiedCustomer || selectedStore)
+            && !customerOrderingState.canAcceptOrders
+            && !availabilityLoading && (
             <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold leading-relaxed text-red-800">
               {customerOrderingState.message}
             </div>

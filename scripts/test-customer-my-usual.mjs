@@ -25,6 +25,7 @@ const check = (name, condition) => { assert(condition, name); passed.push(name);
 const helperSrc = read('frontend/lib/customerMyUsual.ts');
 const apiSrc = read('frontend/lib/customerMyUsualApi.ts');
 const card = read('frontend/components/customer/CustomerMyUsualCard.tsx');
+const signedOutStart = read('frontend/components/customer/CustomerSignedOutStartCard.tsx');
 const home = read('frontend/pages/customer/CustomerOrder.tsx');
 const tokens = read('frontend/customer.css');
 const draftSrc = read('frontend/lib/customerCheckoutPersistence.ts');
@@ -283,18 +284,17 @@ check('a runtime public-menu product without id falls back to its authoritative 
   && persistedCheckoutLinesBlock.includes('productId: line.item.id || line.item.code,'));
 
 // --- Signed out ---
-check('signed out renders its own state, not an empty one',
-  card.includes("state === 'SIGNED_OUT'")
-  && card.includes('cb-customer-usual-hero is-signed-out')
-  && card.includes('Sign in to save it once and order it again in a tap.')
-  && /onClick=\{onSignIn\}/.test(card));
-const signedOutBlock = card.slice(card.indexOf("if (state === 'SIGNED_OUT')"), card.indexOf("if (state === 'EMPTY')"));
+check('signed out renders product-first discovery, not an empty My Usual state',
+  homeCode.includes('customerAuthRestored && !verifiedCustomer ? (')
+  && homeCode.includes('<CustomerSignedOutStartCard')
+  && !card.includes("state === 'SIGNED_OUT'")
+  && !/Sign in|Join/.test(signedOutStart));
 check('the signed-out hero is honest and never presents a saved usual',
-  signedOutBlock.includes('{discoveryVisual}')
-  && !/lead\?|totalLabel|Order My Usual|Saved to your Coffee Bond profile/.test(signedOutBlock)
-  && homeCode.includes('discoveryImageUrl={discoveryProduct ? getItemImage(discoveryProduct) : null}'));
-check('signed out is chosen by the absence of a verified customer',
-  /!verifiedCustomer\s*\?\s*'SIGNED_OUT'/.test(homeCode));
+  signedOutStart.includes('Start from here')
+  && !/My Usual|totalLabel|Order My Usual|Saved to your Coffee Bond profile/.test(signedOutStart)
+  && homeCode.includes('products={signatureHomeProducts}'));
+check('signed out is chosen only after auth restoration and absence of a verified customer',
+  homeCode.includes('customerAuthRestored && !verifiedCustomer ? ('));
 check('signed out cannot permanently save',
   /if \(!verifiedCustomer\) \{[\s\S]{0,200}setMyUsualDialog\(\{ type: 'SIGN_IN' \}\)/.test(homeCode));
 check('a signed-out save never reaches the callable',
@@ -318,7 +318,7 @@ check('a signed-in member without a saved usual gets the relationship-aware prom
 check('the no-usual prompt carries no discovery campaign image',
   !/discoveryVisual|CustomerProductImage|cb-customer-usual-(photo|art)/.test(emptyBlock));
 check('signed-in plus no saved usual is the only path to the empty state',
-  /!verifiedCustomer\s*\?\s*'SIGNED_OUT'[\s\S]{0,140}!myUsual\s*\?\s*'EMPTY'/.test(homeCode));
+  /customerAuthRestored && !verifiedCustomer \? \([\s\S]{0,3000}\) : \([\s\S]{0,500}!myUsual\s*\?\s*'EMPTY'/.test(homeCode));
 check('Build it from the menu opens the existing menu route only',
   emptyAction.includes("hash: '#cb-full-menu'")
   && !/setCart|commitCartItem|setPendingAddOnItem|setBasketOpen|submit|checkout|payment/i.test(emptyAction));
@@ -327,8 +327,10 @@ check('the no-usual state invents no order-history candidate or save path',
   && !/saveCustomerMyUsualRequest|listMyCustomerOrders|publicTrackingDocRef/.test(emptyAction));
 
 // --- Sign-in handoff ---
-check('the signed-out CTA invokes the EXISTING customer OTP flow',
-  homeCode.includes("myUsualDialog.type === 'SIGN_IN'")
+check('header Join invokes the EXISTING customer OTP flow',
+  homeCode.includes("setMyUsualDialog({ type: 'SIGN_IN', source: 'JOIN' })")
+  && !/CustomerOtpPanel|onSignIn/.test(signedOutStart)
+  && homeCode.includes("myUsualDialog.type === 'SIGN_IN'")
   && /myUsualDialog\.type === 'SIGN_IN'[\s\S]{0,900}<CustomerOtpPanel/.test(homeCode));
 check('no second OTP implementation is introduced',
   (home.match(/<CustomerOtpPanel/g) || []).length === 2
