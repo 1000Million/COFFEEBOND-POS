@@ -14,6 +14,7 @@ const order = source('frontend/pages/customer/CustomerOrder.tsx');
    not whichever of its two files a given line happens to live in. */
 const myOrders = source('frontend/pages/customer/CustomerMyOrders.tsx')
   + source('frontend/components/customer/CustomerOrdersScreen.tsx');
+const orderHistory = source('frontend/lib/customerOrderHistory.ts');
 const status = source('frontend/pages/customer/CustomerOrderStatus.tsx')
   + source('frontend/components/customer/CustomerTrackingScreen.tsx');
 const persistence = source('frontend/lib/customerOrderPersistence.ts');
@@ -136,19 +137,20 @@ test('16. Empty Orders state is clear', () => {
   assert.match(myOrders, /Browse menu/);
 });
 test('17. Paid pending acceptance is human readable', () => {
-  assert.match(myOrders, /Paid — awaiting store confirmation/);
+  assert.match(orderHistory, /Paid — awaiting store confirmation/);
 });
 test('18. Refund pending is human readable', () => {
-  assert.match(myOrders, /Refund pending/);
+  assert.match(orderHistory, /Refund pending/);
 });
 test('19. Refunded status is human readable', () => {
-  assert.match(myOrders, /Refunded/);
+  assert.match(orderHistory, /Refunded/);
 });
 test('20. The live order is separated out and shown above history', () => {
   // Stage 5 replaced the single sorted list with an explicit split: one active order
   // above, everything else below. The decision still uses the canonical status helper.
   assert.match(myOrders, /const activeOrder = useMemo\(/);
-  assert.match(myOrders, /\.filter\(isCurrentOrder\)/);
+  assert.match(myOrders, /selectMostRecentCurrentCustomerOrder\(displayedOrders\)/);
+  assert.match(orderHistory, /\.filter\(isCurrentCustomerOrder\)/);
   assert.match(myOrders, /order\.trackingToken !== activeOrder\?\.trackingToken/);
   assert.match(myOrders, /Earlier/);
 });
@@ -219,7 +221,8 @@ test('33. Current Order shortcut is gone from the account surface', () => {
   assert.doesNotMatch(accountSheetCode, /Current Order/);
   assert.match(persistence, /coffeeBondLastOrderTrackingToken/);
   // Orders decides the live order from the authenticated history, not from a device token.
-  assert.match(myOrders, /isCurrentOrder/);
+  assert.match(myOrders, /selectMostRecentCurrentCustomerOrder/);
+  assert.match(orderHistory, /isLiveCustomerOrderStatus/);
 });
 test('34. Shared customer header is present on all customer pages', () => {
   assert.match(order, /<CustomerHeader/);

@@ -2146,6 +2146,86 @@
 .cb-customer-home-flow,
 .cb-customer-home-overview { display: grid; gap: 10px; }
 
+/* Bite 4: a proven live order temporarily leads Home. The component renders nothing
+   when no current order exists, so this selector can never reserve an empty slot. */
+.cb-customer-live-order {
+  min-width: 0;
+  padding: 14px 15px 15px;
+  box-shadow: 0 9px 22px rgba(43, 33, 24, 0.14);
+}
+.cb-customer-live-order-topline {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cb-customer-live-order-track {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: -8px -5px -8px 0;
+  padding: 0 5px;
+  border-radius: 10px;
+  color: var(--hero-accent);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.cb-customer-live-order-track:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--hero-accent) 52%, transparent);
+  outline-offset: 1px;
+}
+.cb-customer-live-order-status {
+  margin-top: 3px;
+  color: var(--hero-fg);
+  font-size: clamp(22px, 6.4vw, 27px);
+  font-weight: 820;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.cb-customer-live-order-message {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 6px;
+  color: var(--hero-fg-soft);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.38;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cb-customer-live-order-summary {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--hero-accent) 32%, transparent);
+  color: var(--hero-fg-soft);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.cb-customer-live-order-summary > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-live-order-reference {
+  flex: 0 0 auto;
+  color: var(--hero-accent);
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+
 /* Bite 3: one quiet escape hatch replaces the category/favourites/menu wall on Home.
    Each label is its own real target, while the row remains deliberately lighter than
    the image-led My Usual hero above it. */

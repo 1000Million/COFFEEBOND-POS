@@ -37,6 +37,7 @@ const ordersPage = read('frontend/pages/customer/CustomerMyOrders.tsx');
 const trackScreen = read('frontend/components/customer/CustomerTrackingScreen.tsx');
 const trackPage = read('frontend/pages/customer/CustomerOrderStatus.tsx');
 const home = read('frontend/pages/customer/CustomerOrder.tsx');
+const orderHistory = read('frontend/lib/customerOrderHistory.ts');
 const activeCard = read('frontend/components/customer/CustomerActiveOrderCard.tsx');
 const orderCard = read('frontend/components/customer/CustomerOrderCard.tsx');
 const tokens = read('frontend/customer.css');
@@ -51,6 +52,7 @@ const trackScreenCode = code(trackScreen);
 const trackPageCode = code(trackPage);
 const ordersScreenCode = code(ordersScreen);
 const ordersPageCode = code(ordersPage);
+const orderHistoryCode = code(orderHistory);
 const headerCode = code(header);
 const orders = ordersScreen + ordersPage;
 const ordersCode = ordersScreenCode + ordersPageCode;
@@ -90,13 +92,15 @@ check('6. Orders renders the active order when a canonical active order exists',
   && /state\.active &&/.test(ordersScreenCode)
   && /activeOrder && activeStatus/.test(ordersPageCode));
 check('6a. active is decided by canonical status, never by display strings',
-  ordersPageCode.includes('function isCurrentOrder')
-  && ordersPageCode.includes('.filter(isCurrentOrder)')
+  orderHistoryCode.includes('function isLiveCustomerOrderStatus')
+  && orderHistoryCode.includes('.filter(isCurrentCustomerOrder)')
+  && ordersPageCode.includes('selectMostRecentCurrentCustomerOrder(displayedOrders)')
   && !/statusLabel\(.*\)\s*===\s*'/.test(ordersCode));
 check('6b. the active order is rendered exactly once',
   (ordersScreen.match(/<CustomerActiveOrderCard/g) || []).length === 1);
 check('7. Orders omits the active section when nothing is live',
-  /const activeOrder = useMemo\([\s\S]{0,320}\|\| null\s*\)/.test(ordersPageCode));
+  ordersPageCode.includes('selectMostRecentCurrentCustomerOrder(displayedOrders)')
+  && /selectMostRecentCurrentCustomerOrder[\s\S]{0,260}\|\| null/.test(orderHistoryCode));
 check('8. each historical order renders once and excludes the active one',
   ordersPageCode.includes('order.trackingToken !== activeOrder?.trackingToken')
   && ordersScreenCode.includes('key={order.key}')
@@ -113,10 +117,12 @@ check('8a. the spacing around Orders row lists is actually applied',
 
 // --- 9-10. Existing data sources reused, none added ---------------------------
 check('9. the existing authenticated history callable is reused',
-  ordersPageCode.includes("'listMyCustomerOrders'")
-  && (ordersPageCode.match(/httpsCallable</g) || []).length === 1);
+  orderHistoryCode.includes("'listMyCustomerOrders'")
+  && ordersPageCode.includes('listMyCustomerOrders()')
+  && home.includes('listMyCustomerOrders()')
+  && (orderHistoryCode.match(/httpsCallable</g) || []).length === 1);
 check('9a. Stage 5 adds no second orders query anywhere',
-  !/collection\(|query\(|getDocs\(/.test(ordersCode));
+  !/collection\(|query\(|getDocs\(/.test(ordersCode + orderHistoryCode));
 check('10. the existing public tracking subscription is reused, not reimplemented',
   ordersPageCode.includes('publicTrackingDocRef')
   && ordersPageCode.includes('onSnapshot')

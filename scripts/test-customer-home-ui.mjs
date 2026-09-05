@@ -25,8 +25,10 @@ const header = read('frontend/components/customer/CustomerHeader.tsx');
 const basketBar = read('frontend/components/customer/CustomerBasketBar.tsx');
 const productImage = read('frontend/components/customer/CustomerProductImage.tsx');
 const usual = read('frontend/components/customer/CustomerMyUsualCard.tsx');
+const liveBanner = read('frontend/components/customer/CustomerLiveOrderBanner.tsx');
 const bondCard = read('frontend/components/customer/CustomerBondSummaryCard.tsx');
 const horizontalScroller = read('frontend/components/customer/HorizontalScroller.tsx');
+const orderHistory = read('frontend/lib/customerOrderHistory.ts');
 const tokens = read('frontend/customer.css');
 const homeRedesignCss = tokens.slice(tokens.indexOf('Customer home — reference-led composition.'));
 const customerMain = read('frontend/customer-main.tsx');
@@ -121,6 +123,53 @@ check('the escape row stays compact, quiet and accessible',
   && /\.cb-customer-something-else-menu \{[^}]*min-height: 44px/.test(homeRedesignCss)
   && /\.cb-customer-something-else-action,[\s\S]{0,140}min-height: 44px/.test(homeRedesignCss)
   && !/<img|CustomerProductImage|CustomerProductCard/.test(somethingElse));
+
+// --- Bite 4: a live order leads Home, and absence means no surface ----------
+check('Bite 4 places the conditional live order between store and My Usual',
+  homeOverview.indexOf('<CustomerStoreCard') < homeOverview.indexOf('{homeLiveOrder && (')
+  && homeOverview.indexOf('{homeLiveOrder && (') < homeOverview.indexOf('<CustomerMyUsualCard')
+  && home.includes('<CustomerLiveOrderBanner'));
+check('no-live Home renders no placeholder or reserved banner shell',
+  home.includes('{homeLiveOrder && (')
+  && !/liveOrderLoading|live-order-skeleton|Loading live order/i.test(home + liveBanner));
+check('Home reuses the authenticated My Orders source and public tracking document',
+  home.includes('listMyCustomerOrders()')
+  && home.includes('selectMostRecentCurrentCustomerOrder(orders)')
+  && home.includes('publicTrackingDocRef(liveOrderSummary.trackingToken)')
+  && orderHistory.includes("'listMyCustomerOrders'")
+  && !/collection\(|query\(|getDocs\(/.test(orderHistory));
+check('live-vs-terminal semantics are status-based and shared with My Orders',
+  orderHistory.includes('CUSTOMER_TERMINAL_ORDER_STATUSES')
+  && ['SERVED', 'COMPLETED', 'CANCELLED', 'CANCELLED_REFUNDED', 'REFUNDED', 'REFUND_FAILED', 'REJECTED']
+    .every(status => orderHistory.includes(`'${status}'`))
+  && home.includes('isLiveCustomerOrderStatus(effectiveLiveOrderStatus)'));
+check('the safest deterministic active order is newest with a token tie-break',
+  orderHistory.includes('.filter(isCurrentCustomerOrder)')
+  && orderHistory.includes('.sort(compareCustomerOrdersNewestFirst)')
+  && orderHistory.includes('right.trackingToken.localeCompare(left.trackingToken)'));
+check('the banner maps actual status values and invents no ETA',
+  ['PAID_PENDING_ACCEPTANCE', 'ACCEPTED', 'CONVERTED', 'PREPARING', 'READY', 'NEEDS_ATTENTION']
+    .every(status => orderHistory.includes(`'${status}'`))
+  && home.includes('publicStatusMessage(effectiveLiveOrderStatus)')
+  && !/estimatedPrep|ready in|\bETA\b/i.test(liveBanner + orderHistory));
+check('the banner summary uses customer-safe names and one concise modifier',
+  orderHistory.includes('first.itemName')
+  && orderHistory.includes("first.addOns?.[0]?.optionName")
+  && orderHistory.includes('`${firstLine} + ${extraLines} more`')
+  && !/SKU|finishedGood|optionId|groupId/.test(liveBanner));
+check('Track reuses the canonical status route and performs no mutation',
+  home.includes('trackPath: customerStatusPath(liveOrderSummary.trackingToken)')
+  && liveBanner.includes('to={trackPath}')
+  && !/onClick|updateDoc|setDoc|addDoc|httpsCallable/.test(liveBanner));
+check('READY is distinct and uses only an existing public reference',
+  liveBanner.includes("status === 'READY'")
+  && orderHistory.includes("return 'Ready for pickup'")
+  && home.includes('liveOrderTracking?.publicOrderNumber?.trim()')
+  && home.includes('liveOrderSummary.publicOrderReference'));
+check('the live banner is compact, premium and keeps Track accessible',
+  /\.cb-customer-live-order \{[^}]*min-width: 0/.test(homeRedesignCss)
+  && /\.cb-customer-live-order-track \{[^}]*min-width: 44px[^}]*min-height: 44px/.test(homeRedesignCss)
+  && homeRedesignCss.includes('.cb-customer-live-order-summary'));
 
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));

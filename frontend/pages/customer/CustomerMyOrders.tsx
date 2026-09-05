@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { onSnapshot } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
 import { useLocation, useNavigate } from 'react-router-dom';
 import CustomerOrdersScreen, {
   OrdersScreenState,
@@ -10,7 +9,6 @@ import CustomerOrdersScreen, {
 import {
   CustomerProfile,
   customerAuth,
-  customerFunctions,
   restoreCustomerProfile,
   waitForCustomerAuthRestoration,
 } from '../../lib/customerAuth';
@@ -18,61 +16,18 @@ import { rememberCustomerOrder } from '../../lib/customerOrderPersistence';
 import { readCustomerCheckoutDraft } from '../../lib/customerCheckoutPersistence';
 import { publicTrackingDocRef } from '../../lib/publicOrderTracking';
 import { explicitBondDemoKey } from '../../lib/bondLoyalty';
-import { PaymentStatus, PublicOrderStatus, PublicOrderTracking } from '../../types';
+import { PublicOrderStatus, PublicOrderTracking } from '../../types';
 import { CUSTOMER_HOME_PATH, customerStatusPath } from '../../lib/customerRoutes';
-
-type CustomerOrderSummary = {
-  trackingToken: string;
-  publicOrderReference: string;
-  storeName: string;
-  orderType: 'PICKUP' | 'DINE_IN';
-  total: number;
-  status: PublicOrderStatus | 'COMPLETED';
-  paymentStatus: PaymentStatus;
-  /** Points posted by the server's immutable POINT_EARN ledger entry. Never estimated. */
-  pointsEarned?: number | null;
-  createdAt: string | null;
-};
-
-/* The one authenticated history source. Stage 5 adds no second orders query. */
-const listMyCustomerOrders = httpsCallable<void, { orders: CustomerOrderSummary[] }>(
-  customerFunctions,
-  'listMyCustomerOrders',
-);
+import {
+  CustomerOrderSummary,
+  compareCustomerOrdersNewestFirst,
+  customerOperationalStatus,
+  listMyCustomerOrders,
+  selectMostRecentCurrentCustomerOrder,
+} from '../../lib/customerOrderHistory';
 
 function money(value: number): string {
   return `₹${Number(value || 0).toFixed(2)}`;
-}
-
-function operationalStatus(status: CustomerOrderSummary['status']): string {
-  if (status === 'PAID_PENDING_ACCEPTANCE') return 'Paid — awaiting store confirmation';
-  if (status === 'ACCEPTED' || status === 'CONVERTED') return 'Accepted';
-  if (status === 'PREPARING') return 'Preparing';
-  if (status === 'READY') return 'Ready';
-  if (status === 'SERVED' || status === 'COMPLETED') return 'Completed';
-  if (status === 'PAYMENT_PROCESSING') return 'Payment processing';
-  if (status === 'PAYMENT_REVIEW_REQUIRED') return 'Payment review required';
-  if (status === 'REFUND_PENDING') return 'Refund pending';
-  if (status === 'REFUNDED' || status === 'CANCELLED_REFUNDED') return 'Refunded';
-  if (status === 'REFUND_FAILED') return 'Refund failed';
-  if (status === 'CANCELLED') return 'Cancelled';
-  return status.replaceAll('_', ' ').toLowerCase().replace(/^\w/, value => value.toUpperCase());
-}
-
-/**
- * The canonical "is this order still live" test. Unchanged from the previous screen and
- * still driven by the order status, never by matching display strings.
- */
-function isCurrentOrder(order: CustomerOrderSummary): boolean {
-  return ![
-    'SERVED',
-    'COMPLETED',
-    'CANCELLED',
-    'CANCELLED_REFUNDED',
-    'REFUNDED',
-    'REFUND_FAILED',
-    'REJECTED',
-  ].includes(order.status);
 }
 
 /** Orders that ended badly read as ended, not as a neutral archive entry. */
@@ -146,14 +101,14 @@ export default function CustomerMyOrders() {
         }
         setLoading(true);
         try {
-          const [resolvedProfile, result] = await Promise.all([
+          const [resolvedProfile, loadedOrders] = await Promise.all([
             restoreCustomerProfile(),
             listMyCustomerOrders(),
           ]);
           if (!active) return;
           setProfile(resolvedProfile);
-          setOrders(result.data.orders);
-          result.data.orders.forEach(order => rememberCustomerOrder(order.trackingToken));
+          setOrders(loadedOrders);
+          loadedOrders.forEach(order => rememberCustomerOrder(order.trackingToken));
           setError(null);
         } catch {
           if (active) setError('We could not load your orders. Please retry.');
@@ -178,16 +133,15 @@ export default function CustomerMyOrders() {
     () => (demoRequested && previewOrder ? [previewOrder] : orders),
     [demoRequested, orders, previewOrder],
   );
-  const activeOrder = useMemo(() => (
-    [...displayedOrders]
-      .filter(isCurrentOrder)
-      .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
-  ), [displayedOrders]);
+  const activeOrder = useMemo(
+    () => selectMostRecentCurrentCustomerOrder(displayedOrders),
+    [displayedOrders],
+  );
 
   const pastOrders = useMemo(() => (
     displayedOrders
       .filter(order => order.trackingToken !== activeOrder?.trackingToken)
-      .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+      .sort(compareCustomerOrdersNewestFirst)
   ), [activeOrder, displayedOrders]);
 
   /* Live status for the one active order, from the tracking document the tracking
@@ -234,7 +188,7 @@ export default function CustomerMyOrders() {
       ? new Date(order.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
       : null,
     fulfilmentLabel: order.orderType === 'DINE_IN' ? 'Dine-in' : 'Pickup',
-    statusLabel: operationalStatus(order.status),
+    statusLabel: customerOperationalStatus(order.status),
     /* Server-posted only: listMyOrders reads this from the loyalty ledger, so a value
        here means a POINT_EARN event exists. The client never estimates it. */
     pointsEarned: typeof order.pointsEarned === 'number' ? order.pointsEarned : null,
@@ -256,7 +210,7 @@ export default function CustomerMyOrders() {
             active: activeOrder && activeStatus
               ? {
                 storeName: activeOrder.storeName,
-                statusLabel: operationalStatus(liveOrder?.publicStatus ?? activeOrder.status),
+                statusLabel: customerOperationalStatus(liveOrder?.publicStatus ?? activeOrder.status),
                 itemSummary: activeExtraItems > 0 ? `${activeItemSummary} +${activeExtraItems} more` : activeItemSummary,
                 totalLabel: money(liveOrder?.total ?? activeOrder.total),
                 trackPath: customerStatusPath(activeOrder.trackingToken),

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { httpsCallable } from 'firebase/functions';
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import {
   AlertCircle,
   ArrowLeft,
@@ -88,6 +88,7 @@ import { maskedPhone } from '../../components/customer/CustomerAccountSheet';
 import CustomerCategoryRail from '../../components/customer/CustomerCategoryRail';
 import CustomerBottomNav from '../../components/customer/CustomerBottomNav';
 import CustomerBondSummaryCard from '../../components/customer/CustomerBondSummaryCard';
+import CustomerLiveOrderBanner from '../../components/customer/CustomerLiveOrderBanner';
 import HorizontalScroller from '../../components/customer/HorizontalScroller';
 import {
   BondSummary,
@@ -108,7 +109,16 @@ import {
 } from '../../lib/customerOrderingState';
 import { matchesCustomerSearch } from '../../lib/customerMenuSearch';
 import { isGoldenISetupWarningOnly } from '../../lib/publicMenuAvailability';
-import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTrackingItem, Store } from '../../types';
+import {
+  CustomerOrderSummary,
+  compactCustomerOrderItemSummary,
+  customerHomeLiveOrderStatus,
+  isLiveCustomerOrderStatus,
+  listMyCustomerOrders,
+  selectMostRecentCurrentCustomerOrder,
+} from '../../lib/customerOrderHistory';
+import { publicStatusMessage, publicTrackingDocRef } from '../../lib/publicOrderTracking';
+import { AddOnSelection, OnlineOrderType, PaymentProvider, PublicOrderStatus, PublicOrderTracking, PublicOrderTrackingItem, Store } from '../../types';
 import { AddOnGroup, FinishedGood } from '../../types/menu-management';
 
 type CustomerMenuItem = FinishedGood & { id: string };
@@ -695,6 +705,8 @@ export default function CustomerOrder() {
   const [basketAnnouncement, setBasketAnnouncement] = useState('');
   const [basketBumpKey, setBasketBumpKey] = useState(0);
   const [previewBondSummary, setPreviewBondSummary] = useState<BondSummary | null>(null);
+  const [liveOrderSummary, setLiveOrderSummary] = useState<CustomerOrderSummary | null>(null);
+  const [liveOrderTracking, setLiveOrderTracking] = useState<PublicOrderTracking | null>(null);
   const requestedDemoKey = explicitBondDemoKey(routerLocation.search);
   const demoRequested = Boolean(requestedDemoKey);
   const displayedBondSummary = demoRequested ? previewBondSummary : bondSummary;
@@ -814,6 +826,68 @@ export default function CustomerOrder() {
       active = false;
     };
   }, []);
+
+  /* Bite 4 reuses the authenticated history read already owned by My Orders. It is
+     intentionally silent while auth is restoring, signed out or offline: Home reserves
+     no placeholder space for an order it cannot prove exists. */
+  useEffect(() => {
+    if (
+      !customerAuthRestored
+      || !verifiedCustomer?.customerUid
+      || demoRequested
+      || isOffline
+    ) {
+      setLiveOrderSummary(null);
+      return undefined;
+    }
+
+    let active = true;
+    // Never carry one authenticated customer's order summary across an account change
+    // while the next customer's UID-bound history request is in flight.
+    setLiveOrderSummary(null);
+    listMyCustomerOrders()
+      .then(orders => {
+        if (active) setLiveOrderSummary(selectMostRecentCurrentCustomerOrder(orders));
+      })
+      .catch(() => {
+        // A Home enhancement must not turn a safe order-history read failure into a
+        // broken ordering screen. My Orders remains the explicit retry surface.
+        if (active) setLiveOrderSummary(null);
+      });
+
+    return () => { active = false; };
+  }, [
+    customerAuthRestored,
+    verifiedCustomer?.customerUid,
+    demoRequested,
+    isOffline,
+    confirmation?.id,
+  ]);
+
+  /* The same public tracking document used by My Orders and Track Order supplies live
+     status and customer-safe line names. A terminal update removes the banner through
+     the canonical status filter below; no status is mutated here. */
+  useEffect(() => {
+    if (!liveOrderSummary?.trackingToken) {
+      setLiveOrderTracking(null);
+      return undefined;
+    }
+    setLiveOrderTracking(null);
+    return onSnapshot(
+      publicTrackingDocRef(liveOrderSummary.trackingToken),
+      snapshot => {
+        setLiveOrderTracking(
+          snapshot.exists()
+            ? ({ id: snapshot.id, ...snapshot.data() } as PublicOrderTracking)
+            : null,
+        );
+      },
+      () => {
+        // The authenticated history summary remains an authoritative fallback.
+        setLiveOrderTracking(null);
+      },
+    );
+  }, [liveOrderSummary?.trackingToken]);
 
   useEffect(() => {
     let active = true;
@@ -1781,6 +1855,23 @@ export default function CustomerOrder() {
     }, 200);
     return () => window.clearTimeout(timeout);
   }, [cart.length, checkoutDraftInput, checkoutHydration, confirmation, selectedStoreId]);
+
+  const effectiveLiveOrderStatus = liveOrderTracking?.publicStatus ?? liveOrderSummary?.status;
+  const homeLiveOrder = liveOrderSummary
+    && effectiveLiveOrderStatus
+    && isLiveCustomerOrderStatus(effectiveLiveOrderStatus)
+    ? {
+      status: effectiveLiveOrderStatus,
+      statusLabel: customerHomeLiveOrderStatus(effectiveLiveOrderStatus),
+      statusMessage: liveOrderTracking?.customerStatusMessage?.trim()
+        || publicStatusMessage(effectiveLiveOrderStatus),
+      itemSummary: compactCustomerOrderItemSummary(liveOrderTracking?.items || []),
+      orderReference: liveOrderTracking?.publicOrderNumber?.trim()
+        ? `#${liveOrderTracking.publicOrderNumber.trim().replace(/^#/, '')}`
+        : liveOrderSummary.publicOrderReference || null,
+      trackPath: customerStatusPath(liveOrderSummary.trackingToken),
+    }
+    : null;
 
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
@@ -2817,6 +2908,17 @@ export default function CustomerOrder() {
                 tone={customerOrderingState.tone}
                 onOpenSelector={() => setStoreSelectorOpen(true)}
               />
+
+              {homeLiveOrder && (
+                <CustomerLiveOrderBanner
+                  status={homeLiveOrder.status}
+                  statusLabel={homeLiveOrder.statusLabel}
+                  statusMessage={homeLiveOrder.statusMessage}
+                  itemSummary={homeLiveOrder.itemSummary}
+                  orderReference={homeLiveOrder.orderReference}
+                  trackPath={homeLiveOrder.trackPath}
+                />
+              )}
 
               <div ref={myUsualSectionRef} tabIndex={-1}>
                 <CustomerMyUsualCard
