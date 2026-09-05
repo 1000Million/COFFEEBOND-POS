@@ -3006,7 +3006,9 @@ export default function CustomerOrder() {
                       ? 'SIGNED_OUT'
                       : bondSummaryLoading || (demoRequested && !displayedBondSummary)
                         ? 'LOADING'
-                        : displayedBondSummary?.enabled ? 'READY' : 'HIDDEN'
+                        : displayedBondSummary?.enabled
+                          ? 'READY'
+                          : displayedBondSummary ? 'HIDDEN' : 'UNAVAILABLE'
                 }
               />
             </div>

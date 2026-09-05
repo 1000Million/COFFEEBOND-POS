@@ -1,78 +1,70 @@
 import type { CSSProperties } from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { BondDemoQueryKey, BondSummary } from '../../lib/bondLoyalty';
 import { CUSTOMER_BOND_PATH } from '../../lib/customerRoutes';
 
 type Props = {
   summary?: BondSummary | null;
-  state?: 'READY' | 'LOADING' | 'SIGNED_OUT' | 'HIDDEN';
+  state?: 'READY' | 'UNAVAILABLE' | 'LOADING' | 'SIGNED_OUT' | 'HIDDEN';
   demoStateKey?: BondDemoQueryKey | null;
 };
 
+const CLUB_VISIT_TARGET = 125;
+
 export default function CustomerBondSummaryCard({ summary = null, state = 'READY', demoStateKey = null }: Props) {
-  if (state === 'HIDDEN') return null;
-  if (state === 'LOADING') {
-    return (
-      <section className="cb-bond-order-card is-loading" aria-label="Loading THE BOND summary" aria-busy="true">
-        <div className="cb-customer-skeleton cb-bond-order-card-balance motion-reduce:animate-none" />
-        <div className="cb-bond-order-card-copy">
-          <p className="cb-bond-order-card-title">THE BOND</p>
-          <div className="cb-customer-skeleton mt-2 h-3 w-4/5 rounded-full" />
-          <div className="cb-customer-skeleton mt-2 h-3 w-20 rounded-full" />
-        </div>
-      </section>
-    );
-  }
-  if (state === 'SIGNED_OUT') {
-    return (
-      <section className="cb-bond-order-card is-signed-out" aria-label="THE BOND summary">
-        <div className="cb-bond-order-card-balance is-empty" aria-label="Sign in to view BOND points">
-          <strong aria-hidden="true">—</strong><span>pts</span>
-        </div>
-        <div className="cb-bond-order-card-copy">
-          <p className="cb-bond-order-card-title">THE BOND</p>
-          <p className="cb-bond-order-card-summary">Sign in to see your real balance and progress.</p>
-          <Link to={CUSTOMER_BOND_PATH} className="cb-bond-order-card-link">
-            View BOND <ArrowRight size={14} aria-hidden="true" />
-          </Link>
-        </div>
-      </section>
-    );
-  }
-  if (!summary?.enabled) return null;
-  const visits = Number(summary.qualifyingVisitCount || 0);
-  const visitsRemaining = Math.max(0, 125 - visits);
-  const progress = Math.min(100, (visits / 125) * 100);
-  const points = Number(summary.pointsBalance || 0);
-  const compactPoints = new Intl.NumberFormat('en-IN', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(points);
-  const summaryCopy = points === 0 && visits === 0
-    ? (summary.earnEnabled ? 'Start earning points with your next order.' : 'Your BOND account is ready.')
-    : summary.visitEnabled
-      ? (visitsRemaining === 0 ? 'THE BOND CLUB is active.' : `${visits} of 125 qualifying visits.`)
-      : summary.earnEnabled
-        ? 'Earn points with every eligible order.'
-        : 'Your real BOND balance.';
+  if (state === 'HIDDEN' || state === 'LOADING' || state === 'SIGNED_OUT') return null;
+  if (state === 'READY' && !summary?.enabled) return null;
+
+  const destination = demoStateKey
+    ? `${CUSTOMER_BOND_PATH}?bondDemo=${demoStateKey}`
+    : CUSTOMER_BOND_PATH;
+  const clubActive = state === 'READY' && summary?.currentClubStatus === 'ACTIVE';
+  const rawVisits = state === 'READY' ? summary?.qualifyingVisitCount : null;
+  const visits = state === 'READY'
+    && summary?.enabled
+    && summary.visitEnabled
+    && typeof rawVisits === 'number'
+    && Number.isFinite(rawVisits)
+    && rawVisits >= 0
+    ? rawVisits
+    : null;
+  const showProgress = !clubActive && visits !== null;
+  const progress = showProgress
+    ? Math.min(100, Math.max(0, (visits / CLUB_VISIT_TARGET) * 100))
+    : 0;
+  const label = clubActive
+    ? 'THE BOND CLUB'
+    : showProgress
+      ? `${visits} / ${CLUB_VISIT_TARGET} · to THE BOND CLUB`
+      : 'View THE BOND';
+
   return (
-    <section className="cb-bond-order-card" aria-label="THE BOND summary">
-      <div className="cb-bond-order-card-balance" aria-label={`${points.toLocaleString('en-IN')} BOND points`}>
-        <strong>{compactPoints}</strong>
-        <span>pts</span>
-        <i aria-hidden="true" style={{ '--cb-bond-progress': `${progress}%` } as CSSProperties} />
-      </div>
-      <div className="cb-bond-order-card-copy">
-        <p className="cb-bond-order-card-title">THE BOND</p>
-        <p className="cb-bond-order-card-summary">{summaryCopy}</p>
-        <Link
-          to={demoStateKey ? `${CUSTOMER_BOND_PATH}?bondDemo=${demoStateKey}` : CUSTOMER_BOND_PATH}
-          className="cb-bond-order-card-link"
+    <Link
+      to={destination}
+      className={`cb-customer-bond-strip${clubActive ? ' is-club' : ''}`}
+      aria-label={label}
+    >
+      <span className="cb-customer-bond-strip-row">
+        <strong>{label}</strong>
+        <ChevronRight size={17} aria-hidden="true" />
+      </span>
+      {showProgress && (
+        <span
+          className="cb-customer-bond-strip-progress"
+          role="progressbar"
+          aria-label="THE BOND CLUB visit progress"
+          aria-valuemin={0}
+          aria-valuemax={CLUB_VISIT_TARGET}
+          aria-valuenow={Math.min(CLUB_VISIT_TARGET, visits)}
+          aria-valuetext={`${visits} of ${CLUB_VISIT_TARGET} qualifying visits`}
         >
-          View BOND <ArrowRight size={14} aria-hidden="true" />
-        </Link>
-      </div>
-    </section>
+          <span
+            aria-hidden="true"
+            style={{ '--cb-bond-progress': `${progress}%` } as CSSProperties}
+          />
+        </span>
+      )}
+    </Link>
   );
 }

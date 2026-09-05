@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Customer Home/Menu redesign contract through Bite 3.
+ * Customer Home/Menu redesign contract through Bite 5.
  *
  * Pins the visual wiring AND that no ordering behaviour moved into presentation:
  * pricing, availability, add-on resolution and cart mutation must all stay in
@@ -171,6 +171,49 @@ check('the live banner is compact, premium and keeps Track accessible',
   && /\.cb-customer-live-order-track \{[^}]*min-width: 44px[^}]*min-height: 44px/.test(homeRedesignCss)
   && homeRedesignCss.includes('.cb-customer-live-order-summary'));
 
+// --- Bite 5: signed-in relationship status, never a second points balance ---
+check('Bite 5 keeps the relationship strip below Something else',
+  homeOverview.indexOf('cb-customer-something-else') < homeOverview.indexOf('<CustomerBondSummaryCard'));
+check('the relationship strip uses only the existing customer-safe BOND summary fields',
+  home.includes('getCustomerBondSummary()')
+  && home.includes('summary={displayedBondSummary}')
+  && bondCard.includes('summary?.qualifyingVisitCount')
+  && bondCard.includes("summary?.currentClubStatus === 'ACTIVE'")
+  && !/orders|qualifyingVisitDays|collection\(|getDocs\(|httpsCallable/.test(bondCard));
+check('signed-out and loading Home render no relationship strip or duplicate Join',
+  bondCard.includes("state === 'HIDDEN' || state === 'LOADING' || state === 'SIGNED_OUT'")
+  && !/Join|Sign in/.test(bondCard));
+check('regular and zero-visit members use real qualifyingVisitCount with the 125 target',
+  bondCard.includes("typeof rawVisits === 'number'")
+  && bondCard.includes('Number.isFinite(rawVisits)')
+  && bondCard.includes('rawVisits >= 0')
+  && bondCard.includes('`${visits} / ${CLUB_VISIT_TARGET} · to THE BOND CLUB`')
+  && !/\b18\b/.test(bondCard));
+check('Club state comes from currentClubStatus and suppresses numeric progress',
+  bondCard.includes("summary?.currentClubStatus === 'ACTIVE'")
+  && /const label = clubActive\s*\? 'THE BOND CLUB'/.test(bondCard)
+  && bondCard.includes('const showProgress = !clubActive && visits !== null'));
+check('unavailable visit data falls back without fabricated zero progress',
+  home.includes("displayedBondSummary ? 'HIDDEN' : 'UNAVAILABLE'")
+  && bondCard.includes("state?: 'READY' | 'UNAVAILABLE'")
+  && bondCard.includes("state === 'READY' && !summary?.enabled")
+  && bondCard.includes(": 'View THE BOND'")
+  && !bondCard.includes('qualifyingVisitCount || 0'));
+check('the whole relationship strip opens the existing BOND route',
+  bondCard.includes('to={destination}')
+  && bondCard.includes('CUSTOMER_BOND_PATH')
+  && bondCard.includes('className={`cb-customer-bond-strip')
+  && bondCard.includes('aria-label={label}'));
+check('the relationship strip carries no points balance or sales copy',
+  !/pointsBalance|\bpts\b|Start earning|Earn points|Regular Rhythm/.test(bondCard));
+check('the visit progress is visually clamped and accessibly labelled',
+  bondCard.includes('Math.min(100, Math.max(0,')
+  && bondCard.includes('role="progressbar"')
+  && bondCard.includes('aria-valuemax={CLUB_VISIT_TARGET}')
+  && /\.cb-customer-bond-strip \{[^}]*min-height: 52px/.test(homeRedesignCss)
+  && /\.cb-customer-bond-strip-row \{[^}]*min-height: 44px/.test(homeRedesignCss)
+  && homeRedesignCss.includes('.cb-customer-bond-strip-progress'));
+
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));
 check('card resolves no availability', !/getItemAvailability|customerOrderingState/.test(card));
@@ -270,9 +313,10 @@ check('P0-8. /bond is the real Codex dashboard, not a placeholder',
   && !/CustomerBondCard|CustomerBondMedallion/.test(customerApp + routes + navCode + home));
 check('P0-8a. no fabricated balance ships in the customer source',
   !/cb-customer-bond-ring|balance unavailable/i.test(home + navCode));
-check('P0-8b. the compact BOND strip renders only server-summary balance and visit state',
-  bondCard.includes('Number(summary.pointsBalance || 0)')
-  && bondCard.includes('Number(summary.qualifyingVisitCount || 0)')
+check('P0-8b. the compact BOND strip renders only server-summary visit and Club state',
+  !bondCard.includes('summary.pointsBalance')
+  && bondCard.includes('summary?.qualifyingVisitCount')
+  && bondCard.includes('summary?.currentClubStatus')
   && bondCard.includes("state === 'SIGNED_OUT'")
   && bondCard.includes("state === 'LOADING'")
   && home.includes('summary={displayedBondSummary}')
