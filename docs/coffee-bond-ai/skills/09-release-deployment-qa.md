@@ -70,6 +70,11 @@ corruption signature.
 that depends on them. Remember the customer app reads only `publicMenuAvailability` —
 creating finished goods without regenerating the snapshot leaves the storefront blank.
 
+That snapshot is **generated state**, so regenerate it only through the canonical builder
+`buildPublicMenuAvailabilitySnapshot()` (see `03-customer-ordering.md`). Never hand-edit a
+stored snapshot and never patch a single field into one — a canonical rebuild replaces the
+whole document for that store.
+
 Dry-run every data write with hard guards on expected counts, and prefer write
 preconditions (`currentDocument.exists=false` for create-only).
 
@@ -99,3 +104,53 @@ state after each write, smoke exact routes, and distinguish static/test proof fr
 transaction. Never claim production-ready without evidence.
 
 Read `../knowledge/ENVIRONMENT_TRAPS.md` before diagnosing a build or deployment hang.
+
+## Maintenance scripts default to the emulator
+
+Distinct from the `npm run deploy:*` scripts above, which hardcode production. Node
+maintenance scripts under `scripts/` must default to a **demo project + emulator + no ADC**.
+Reaching a real project requires two explicit flags:
+
+```text
+--allow-production --confirm-project=<projectId>
+```
+
+and is refused while `FIRESTORE_EMULATOR_HOST` is set. `dry-run:location-management` and
+`refresh:public-menu-availability` already follow this and run through
+`firebase emulators:exec`. Do not add a script that casually hardcodes a production project
+id, and do not remove these gates for convenience.
+
+## Parallel agents: emulator and worktree discipline
+
+Claude and Codex frequently run at the same time on this machine.
+
+- Use **isolated emulator project ids and ports** per agent; inspect occupied ports first.
+- **Never kill a process or emulator you did not start** — choose another port instead.
+- One worktree and branch per agent. Never reset, stash, clean or otherwise modify another
+  agent's worktree, and never share uncommitted state.
+
+## Release QA matrix — store overrides and customer Home
+
+In addition to the coverage listed under "Evidence vocabulary", a release that touches the
+global catalogue, per-store overrides or customer Home must cover:
+
+- POS ↔ customer parity for **both** effective price and effective availability;
+- discount, GST and payment totals computed from an **override** price — cash, UPI, split
+  tender and multi-quantity lines;
+- **receipt and report rounding on fractional payables** — OPEN, see below;
+- held bill and recall with an override active;
+- live store switching with overrides present;
+- atomic public-menu publish: override write and snapshot rebuild committing together, with
+  no partial state on failure;
+- Firestore security rules, including `storeItemConfig` read/write roles;
+- every customer Home state listed in `03-customer-ordering.md`;
+- Razorpay callback-loss recovery and idempotency.
+
+### OPEN: rounding on override-derived totals
+
+A store override price combined with a percentage discount can produce fractional payable
+values under current calculation semantics — **₹375 with a 10% discount yields ₹354.375**.
+
+This is **not solved**. Receipt, report and payment rounding for such totals has not been
+verified. Do not invent or prescribe a rounding algorithm. It must be explicitly verified
+and approved in release QA before override prices reach a production store.

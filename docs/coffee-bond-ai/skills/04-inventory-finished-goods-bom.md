@@ -4,7 +4,10 @@ Active model: **FINISHED_GOODS V2 / FINISHED_GOODS**.
 
 ## Sellability and inventory are separate
 
-Manual availability controls whether an item can be sold. Stock shortage must not
+Whether an item can be sold at a given store is the **resolved** value — the global
+`isAvailable` with any `storeItemConfig.isAvailableOverride` applied (see
+`01-core-architecture.md`). A store override can withdraw an item, and can restore one the
+store had switched off, but it can never override the structural checks below. Stock shortage must not
 silently withdraw an opted-in sales-first item, and a missing BOM may defer only under the
 explicit store policy that permits it.
 
@@ -100,3 +103,16 @@ shot at a flat 30.4 whether it is 36 ml or 45 ml.
 - `frontend/lib/inventoryDeduction.ts`
 - `scripts/backfill-pending-bom-consumption.mjs`
 - `frontend/lib/publicMenuAvailability.ts`
+
+## A store override is not structural authorization
+
+`storeItemConfig` expresses commercial intent. Structural validation still decides
+sellability and always wins:
+
+- malformed or empty BOM where one is required;
+- missing or invalid prep station;
+- non-positive resolved price (a `priceOverride` of `0` keeps the item unsellable);
+- composite / pending-BOM rules and any other customer-ordering structural block.
+
+An Admin UI must therefore never report "Available" when the resolved structural state is
+blocked — show the real blocked state honestly.

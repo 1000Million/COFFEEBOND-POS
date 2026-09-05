@@ -28,7 +28,8 @@ continue only the next verified task.
 | KOT, stations, order status | `skills/05-kot-online-order-lifecycle.md` |
 | Points, visits, loyalty | `skills/06-bond-loyalty.md` |
 | Reporting, GST, roles, rules | `skills/07-reporting-gst-permissions.md` |
-| Stores, aliases, new locations | `skills/08-store-provisioning.md` |
+| Global catalogue, per-store item overrides | `skills/01-core-architecture.md` |
+| Stores, aliases, new locations, cloning / provisioning | `skills/08-store-provisioning.md` |
 | Building, deploying, QA | `skills/09-release-deployment-qa.md` |
 
 Before debugging any build or deploy hang, read
@@ -44,8 +45,19 @@ project have a known cause and a one-line fix.
 - **Never fabricate BOM quantities, GST data or secret values.**
 - **Never weaken** composite structural validation, Firestore rules, or loyalty
   idempotency.
+- **The store clone / provisioning engine already exists** (`functions/storeProvisioning.js`).
+  Extend it; never write a second one. Same for the global catalogue — `finishedGoods` is
+  already global — and the shared store-item resolver.
+- **`publicMenuAvailability` is generated state**, not source data. Rebuild it only through
+  the canonical builder; never hand-edit a stored snapshot.
+- **Maintenance scripts default to a demo project + emulator + no ADC.** Production needs an
+  explicit `--allow-production --confirm-project=<id>`.
+- **Parallel agents:** isolated emulator project ids and ports, inspect occupied ports first,
+  **never kill a process you did not start**, one worktree per agent, and never reset or
+  stash another agent's work.
 - **Report status as** `PASS` / `FAIL` / `PARTIAL` / `BLOCKED` / `NOT TESTED`, with
-  evidence. Never claim something works without it.
+  evidence. Never claim something works without it. On handoffs also report
+  `SKILL_USED` / `SKILL_PATHS` / `SKILL_COMPLIANCE`.
 
 ## When blocked
 
