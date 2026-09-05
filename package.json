@@ -19,6 +19,7 @@
     "test:pos-customer-override-parity": "esbuild scripts/test-pos-customer-override-parity.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-customer-override-parity-test.mjs && node /tmp/pos-customer-override-parity-test.mjs",
     "test:atomic-override-publish": "esbuild scripts/test-atomic-override-publish.ts --bundle --platform=node --format=esm --outfile=/tmp/atomic-override-publish-test.mjs && node /tmp/atomic-override-publish-test.mjs",
     "test:global-items-admin": "esbuild scripts/test-global-items-admin.ts --bundle --platform=node --format=esm --outfile=/tmp/global-items-admin-test.mjs && node /tmp/global-items-admin-test.mjs",
+    "test:money-quantization": "esbuild scripts/test-money-quantization.ts --bundle --platform=node --format=esm --outfile=/tmp/money-quantization-test.mjs && node /tmp/money-quantization-test.mjs",
     "test:store-item-config-parity": "node scripts/test-store-item-config-parity.mjs",
     "test:pos-authoritative-store-price": "firebase emulators:exec --only firestore --project demo-coffee-bond-g71 \"node scripts/test-pos-authoritative-store-price.mjs\"",
     "test:store-item-config": "esbuild scripts/test-store-item-config-resolver.ts --bundle --platform=node --format=esm --outfile=/tmp/store-item-config-test.mjs && node /tmp/store-item-config-test.mjs",

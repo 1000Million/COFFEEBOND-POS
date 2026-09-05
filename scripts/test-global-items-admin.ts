@@ -110,11 +110,15 @@ ok(!('imageUrl' in goldenCfg), 'O3. No image field is ever written into an overr
 
 // ---- U/V. rounding warning ---------------------------------------------------------------------------
 const warn = buildRoundingPreview(375, 5, 5);
-ok(warn.hasFractionalPaise, 'U1. ₹375 raises the fractional-paise warning');
-ok(warn.rows.some(r => r.percent === 10 && r.fractional), 'U2. Cashier 10% is the fractional case');
-eq(warn.rows.find(r => r.percent === 10)!.payable, 354.375, 'U3. Warning quotes the real computed payable 354.375');
+// G7.2 canonicalized transaction totals to 2dp, so no discount ceiling can now produce a
+// sub-paise payable. The preview therefore stays silent and has become a REGRESSION GUARD:
+// it fires again only if unquantized totals are ever reintroduced.
+ok(!warn.hasFractionalPaise, 'U1. ₹375 no longer raises a fractional-paise warning (totals are canonical 2dp)');
+ok(warn.rows.every(r => !r.fractional), 'U2. No discount ceiling yields a sub-paise payable');
+eq(warn.rows.find(r => r.percent === 10)!.payable, 354.38, 'U3. Preview quotes the canonical payable 354.38');
+ok(warn.rows.every(r => Math.abs(r.payable * 100 - Math.round(r.payable * 100)) < 1e-9), 'U4. Every previewed payable is exactly 2dp');
 const clean = buildRoundingPreview(200, 5, 5);
-ok(!clean.hasFractionalPaise, 'V. A clean price raises no unnecessary warning');
+ok(!clean.hasFractionalPaise, 'V. A clean price still raises no warning');
 
 // ---- routing / permission wiring (static) ----------------------------------------------------------------
 const app = fs.readFileSync('frontend/App.tsx', 'utf8');

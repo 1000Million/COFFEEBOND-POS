@@ -11,7 +11,9 @@ import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 
 const PROJECT_ID = 'demo-coffee-bond-g32-rules';
 const HOST = '127.0.0.1';
-const PORT = Number(process.env.G32_FIRESTORE_PORT || 8092);
+// Defaults to the firestore port in the repo's root firebase.json, which is what
+// `firebase emulators:exec` starts for this script. Override via env when running isolated.
+const PORT = Number(process.env.G32_FIRESTORE_PORT || 8080);
 const COLLECTION = 'storeItemConfig';
 const DOC_A = 'GOLDEN_I__BOND_FRAPPE';
 const DOC_B = 'NOIDA_29__BOND_FRAPPE';

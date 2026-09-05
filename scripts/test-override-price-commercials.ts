@@ -32,8 +32,8 @@ eq(cashier.subtotal, 375, 'DISCOUNT BASE: subtotal is 375, not the global 350');
 eq(cashier.discountPercent, 10, 'Cashier discount of 10% is accepted');
 eq(cashier.discountAmount, 37.5, 'Cashier 10% of 375 = 37.5 (would be 35 on the global price)');
 eq(cashier.taxableAmount, 337.5, 'Taxable amount after cashier discount = 337.5');
-eq(cashier.taxTotal, 16.875, 'GST 5% of 337.5 = 16.875');
-eq(cashier.grandTotal, 354.375, 'Grand total = 354.375');
+eq(cashier.taxTotal, 16.88, 'GST 5% of 337.5 = 16.875 raw, canonicalized to 16.88');
+eq(cashier.grandTotal, 354.38, 'Grand total = 354.375 raw, canonicalized to 354.38 (ROUND_HALF_UP)');
 const cashierGlobal = calculateTotals([{ price: GLOBAL_PRICE, quantity: 1, addOns: [], taxRate: 5 }], 10, APP_DEFAULT_GST);
 ok(cashier.grandTotal !== cashierGlobal.grandTotal, `Override total (${cashier.grandTotal}) differs from global total (${cashierGlobal.grandTotal})`);
 
@@ -83,13 +83,13 @@ eq(twoNoida.subtotal, 700, 'MULTI-QTY: the un-overridden store still totals 2 x 
 
 // ---- payments: cash / UPI / split all settle the same computed payable --------------
 const payable = calculateTotals([line(GOLDEN)], 10, APP_DEFAULT_GST).grandTotal;
-eq(payable, 354.375, 'PAYMENT: final payable derived from the override price');
-eq(payable, 354.375, 'CASH: cash tender equals the computed payable');
-eq(payable, 354.375, 'UPI: UPI tender equals the computed payable');
+eq(payable, 354.38, 'PAYMENT: canonical 2dp payable derived from the override price');
+eq(payable, 354.38, 'CASH: cash tender equals the canonical payable');
+eq(payable, 354.38, 'UPI: UPI tender equals the canonical payable');
 const cashPart = 200;
 const upiPart = Number((payable - cashPart).toFixed(6));
-eq(cashPart + upiPart, payable, 'SPLIT: cash 200 + UPI 154.375 totals the payable exactly');
-eq(upiPart, 154.375, 'SPLIT: the UPI component is 154.375');
+eq(cashPart + upiPart, payable, 'SPLIT: cash 200 + UPI 154.38 totals the canonical payable exactly');
+eq(upiPart, 154.38, 'SPLIT: the UPI component is 154.38 (exact, no tolerance needed)');
 ok(cashPart + upiPart !== cashierGlobal.grandTotal, 'SPLIT: the split does NOT settle the global-price total');
 
 console.log(`\n${n} override-price commercial checks passed.`);

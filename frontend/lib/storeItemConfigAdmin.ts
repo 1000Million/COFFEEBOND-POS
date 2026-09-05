@@ -221,8 +221,11 @@ function hasSubPaiseFraction(value: number): boolean {
 
 /**
  * Non-blocking preview only. Runs the real POS totals maths at the discount ceilings that
- * exist, and reports whether any lands below paise precision. Introduces no rounding rule
- * and changes no POS behaviour.
+ * exist, and reports whether any lands below paise precision.
+ *
+ * Since G7.2 quantized transaction totals to a canonical 2dp (ROUND_HALF_UP), this should
+ * always report no fractional paise. It is retained as a REGRESSION GUARD: if unquantized
+ * totals are ever reintroduced upstream, this preview surfaces it to the operator again.
  */
 export function buildRoundingPreview(effectivePrice: number, taxRate: number | null | undefined, fallbackTaxRate: number): RoundingPreview {
   const rows = ROUNDING_PREVIEW_DISCOUNTS.map(({ label, percent }) => {

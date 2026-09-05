@@ -22,6 +22,8 @@ import {
   getItemTaxRate,
   getMaxDiscountPercent,
   normalizeTaxRate,
+  quantizeMoney,
+  splitGstHalves,
   toFiniteNumber,
   type CalculatedTotals,
   type TotalsInput,
@@ -648,11 +650,9 @@ function receiptGstSplit(order: ReceiptOrderSnapshot): { cgst: number; sgst: num
   if (!order.receiptLegalDetails?.gstRegistered || !order.receiptLegalDetails.stateCode || order.gstTotal <= 0) {
     return null;
   }
-  const half = Math.round((order.gstTotal / 2) * 100) / 100;
-  return {
-    cgst: half,
-    sgst: Math.round((order.gstTotal - half) * 100) / 100,
-  };
+  // Canonical split: CGST + SGST always sums back to gstTotal exactly, with any odd paisa
+  // assigned deterministically. See splitGstHalves in lib/posPricing.
+  return splitGstHalves(order.gstTotal);
 }
 
 function formatQuantity(value: number | undefined, unit?: string): string {

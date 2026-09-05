@@ -6,6 +6,10 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import process from 'node:process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const PROJECT_ID = 'demo-coffee-bond-g71';
@@ -77,10 +81,15 @@ const canonicalItem = res.canonicalItems['line-1'];
 const liveItem = { id: CODE, code: CODE, price: 375, taxRate: 5 };
 const replaced = { ...liveItem, price: canonicalItem.baseUnitPrice, taxRate: canonicalItem.taxRate };
 eq(replaced.price, 375, 'POS post-authorization replacement keeps the effective 375');
-const { calculateTotals } = require('/tmp/g71-pricing.cjs');
+// Build the pricing bundle fresh so this test can never assert against a stale copy.
+const pricingBundle = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'g71-pricing-')), 'pricing.cjs');
+const pricingEntry = path.join(path.dirname(pricingBundle), 'entry.ts');
+fs.writeFileSync(pricingEntry, "export { calculateTotals } from '" + path.resolve('frontend/lib/posPricing') + "';\n");
+execFileSync('npx', ['esbuild', pricingEntry, '--bundle', '--platform=node', '--format=cjs', '--outfile=' + pricingBundle], { stdio: 'pipe' });
+const { calculateTotals } = require(pricingBundle);
 const totals = calculateTotals([{ price: replaced.price, quantity: 1, addOns: [], taxRate: replaced.taxRate }], 10, 5);
 eq(totals.subtotal, 375, 'Checkout totals compute from 375 (a global-price charge would be 350)');
-eq(totals.grandTotal, 354.375, 'Checkout grandTotal is 354.375 — the override reaches the money pipeline');
+eq(totals.grandTotal, 354.38, 'Checkout grandTotal is the canonical 354.38 — the override reaches the money pipeline');
 
 // ---- 5. explicit zero override ------------------------------------------------------------
 await db.collection('storeItemConfig').doc(storeItemConfigDocId(GOLDEN, CODE)).set({ storeId: GOLDEN, itemCode: CODE, priceOverride: 0, updatedBy: 'g71' });
