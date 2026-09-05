@@ -75,6 +75,7 @@ function assertPosRazorpayTestMode(value) {
   return keyId;
 }
 
+/** Exported for the G7.3 money-helper drift guard. Behaviour unchanged. */
 function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
@@ -1837,6 +1838,7 @@ module.exports = {
   createIdempotentProviderRefund,
   createPosRazorpayFunctions,
   createPosSession,
+  roundMoney,
   createProviderRequest,
   deterministicRefundId,
   finalizeCapturedPosPayment,

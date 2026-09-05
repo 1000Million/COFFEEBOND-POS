@@ -18,6 +18,9 @@ const runningOrders = source('frontend/pages/pos/RunningOrders.tsx');
 const helper = source('frontend/lib/posRazorpay.ts');
 const inventory = source('functions/onlineOrderInventory.js');
 const dayClose = source('frontend/pages/reports/DayClose.tsx');
+// G7.3 extracted Day Close's money aggregation (and its payment-method list) verbatim into
+// lib/dayCloseTotals.ts so it can be exercised at runtime. Same list, same logic, new home.
+const dayCloseTotals = source('frontend/lib/dayCloseTotals.ts');
 const auditControl = source('frontend/pages/reports/AuditControl.tsx');
 const inventoryControl = source('frontend/pages/inventory/InventoryControl.tsx');
 const rules = source('firestore.rules');
@@ -284,8 +287,8 @@ test('Razorpay is reported separately from manual UPI', () => {
     grandTotal: 350,
   }, [{ method: 'RAZORPAY', provider: 'RAZORPAY', providerMethod: 'UPI', amount: 350 }]);
   assert.deepEqual(rows.map(row => row.method), ['RAZORPAY']);
-  assert.match(dayClose, /'CARD', 'RAZORPAY', 'ONLINE'/);
-  assert.match(dayClose, /method === 'RAZORPAY'/);
+  assert.match(dayCloseTotals, /'CARD', 'RAZORPAY', 'ONLINE'/);
+  assert.match(dayCloseTotals, /method === 'RAZORPAY'/);
   assert.match(auditControl, /'CARD', 'RAZORPAY', 'ONLINE'/);
   assert.match(inventoryControl, /'CARD', 'RAZORPAY', 'ONLINE'/);
   assert.match(runningOrders, /const PAYMENT_METHODS[^\n]+\['CASH', 'UPI', 'CARD', 'SWIGGY'/);

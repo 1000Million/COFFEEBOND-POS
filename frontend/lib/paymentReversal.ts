@@ -38,7 +38,8 @@ export type PaymentCollectionAudit = {
 
 export const VOIDED_ITEM_STATUS_LABEL = 'VOIDED / CANCELLED';
 
-function money(value: unknown): number {
+/** Exported for the G7.3 money-helper drift guard. Behaviour unchanged. */
+export function money(value: unknown): number {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
 }

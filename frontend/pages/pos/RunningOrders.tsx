@@ -29,6 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
+import { financialNumber as money } from '../../lib/financialNumber';
 import { auth } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { buildPaymentReversalAudit, buildRazorpayRefundAudit, orderItemDisplayStatus, paymentOutcomeLabel } from '../../lib/paymentReversal';
@@ -111,10 +112,6 @@ const FILTER_TABS: { id: RunningTab; label: string }[] = [
   { id: 'VOIDED', label: 'Voided' },
 ];
 
-function money(value: unknown): number {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 function roundStock(value: number): number {
   return Math.round(value * 10000) / 10000;
