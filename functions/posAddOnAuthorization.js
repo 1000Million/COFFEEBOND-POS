@@ -3,6 +3,7 @@
 const { isDeepStrictEqual } = require('node:util');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
+const { loadStoreItemOverrides, resolveEffectiveSalePrice } = require('./storeItemConfig');
 const {
   CompositeProductPolicyError,
   allowsDeferredComponentBom,
@@ -493,6 +494,9 @@ function canonicalizeRequestedCart({
   productsById,
   groupsById,
   componentProductsById = {},
+  // Per-store item overrides, keyed by item code, already loaded for an AUTHORIZED storeId.
+  // Empty means every item inherits its global price, which is the pre-override behaviour.
+  storeItemOverridesByCode = {},
 }) {
   const fallbackTaxRate = storeTaxRate({ id: storeId, ...store }, gstConfig);
   const canonicalItems = {};
@@ -637,7 +641,11 @@ function canonicalizeRequestedCart({
       parentProductId: requestedItem.parentProductId,
       parentProductCode: productCode,
       quantity: requestedItem.quantity,
-      baseUnitPrice: Math.max(0, finiteNumber(product.salePrice)),
+      // Server-authoritative store price: global salePrice with this store's explicit
+      // priceOverride applied. Never trust a client-supplied effective price.
+      baseUnitPrice: Math.max(0, finiteNumber(
+        resolveEffectiveSalePrice(product, storeItemOverridesByCode[productCode]),
+      )),
       taxRate: positiveTaxRate(product, ITEM_TAX_RATE_KEYS) || fallbackTaxRate,
       addOns: canonicalAddOns,
       addOnTotal,
@@ -755,6 +763,11 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
         productsById,
         groupsById,
         componentProductsById,
+        storeItemOverridesByCode: await loadStoreItemOverrides(
+          db,
+          storeId,
+          Object.values(productsById).map(product => cleanText(product.code || product.id, 80)),
+        ),
       });
     if (sourceOnlineOrderId) {
       assertImmutableSourceOnlineOrder({

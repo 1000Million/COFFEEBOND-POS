@@ -14,6 +14,7 @@ const {
   canonicalizeRequestedCart,
   sanitizeCartItems,
 } = require('./posAddOnAuthorization');
+const { loadStoreItemOverrides } = require('./storeItemConfig');
 const {
   CompositeProductPolicyError,
   collectRequiredComponentFinishedGoodIds,
@@ -369,6 +370,14 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
       productsById,
       groupsById,
       componentProductsById,
+      // Same server-authoritative store price as the POS checkout path, read inside this
+      // transaction so Razorpay can never charge a different price from cash or UPI.
+      storeItemOverridesByCode: await loadStoreItemOverrides(
+        db,
+        storeId,
+        Object.values(productsById).map(product => String(product.code || product.id || '').trim()),
+        ref => transaction.get(ref),
+      ),
     });
 
     const subtotal = requestedItems.reduce((sum, requestedItem) => {
