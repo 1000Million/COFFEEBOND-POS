@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { Script } from 'node:vm';
 import {
   buildComplimentaryTotals,
   COMPLIMENTARY_PHONE_PROVIDER,
@@ -130,9 +131,31 @@ assert(
 );
 assert(posSource.includes('COMPLIMENTARY — NO PAYMENT REQUIRED'), 'Receipt must state that no payment is required.');
 assert(posSource.includes('receiptLegalDetailsFromStore(selectedStore)'), 'Receipt GST/legal details must be sourced from store configuration.');
-assert(posSource.includes('function receiptGstSplit'), 'Receipt GST split helper must be present.');
-assert(posSource.includes('Total GST'), 'Receipt must clearly label the total GST amount.');
-assert(posSource.includes('CGST') && posSource.includes('SGST'), 'Receipt must show CGST/SGST when store GST registration and state code support it.');
+const receiptGstHelperSource = posSource.match(/function receiptGstSplit\(order: ReceiptOrderSnapshot\): \{ cgst: number; sgst: number \} \| null \{[\s\S]*?\n\}/)?.[0] || '';
+assert(receiptGstHelperSource, 'Receipt GST split helper must be present.');
+const runnableReceiptGstHelper = receiptGstHelperSource.replace(
+  'function receiptGstSplit(order: ReceiptOrderSnapshot): { cgst: number; sgst: number } | null',
+  'function receiptGstSplit(order)',
+);
+const receiptGstSplitUnderTest = new Script(`${runnableReceiptGstHelper}\nreceiptGstSplit;`).runInNewContext({ Math }) as (
+  order: { receiptLegalDetails?: { gstRegistered?: boolean; stateCode?: string | null }; gstTotal: number; grandTotal: number }
+) => { cgst: number; sgst: number } | null;
+
+const registeredReceipt = {
+  receiptLegalDetails: { gstRegistered: true, stateCode: '09' },
+  gstTotal: 18,
+  grandTotal: 118,
+};
+const registeredGst = receiptGstSplitUnderTest(registeredReceipt);
+assert(registeredGst?.cgst === 9 && registeredGst.sgst === 9, 'GST-registered receipt with required data must show CGST and SGST.');
+assert(receiptGstSplitUnderTest({ ...registeredReceipt, receiptLegalDetails: { gstRegistered: false, stateCode: '09' } }) === null, 'Non-GST-registered receipt must hide the full GST block.');
+assert(receiptGstSplitUnderTest({ ...registeredReceipt, receiptLegalDetails: { gstRegistered: true, stateCode: null } }) === null, 'Receipt with unavailable required GST data must hide the full GST block.');
+assert(registeredReceipt.grandTotal === 118, 'Receipt GST visibility must not change the monetary payable.');
+
+const receiptGstBlock = posSource.match(/\{receiptGst && \(\s*<>([\s\S]*?)<\/>\s*\)\}/)?.[1] || '';
+assert(receiptGstBlock.includes('CGST') && receiptGstBlock.includes('SGST') && receiptGstBlock.includes('Total GST'), 'CGST, SGST, and Total GST must share one receipt eligibility gate.');
+assert((posSource.match(/<span>Total GST<\/span>/g) || []).length === 1, 'Receipt must render Total GST only inside the shared GST block.');
+assert(posSource.indexOf('receiptView.order.grandTotal.toFixed(2)') > posSource.indexOf('{receiptGst && ('), 'Grand total must remain outside the conditional GST display block.');
 assert(posSource.includes('receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin'), 'Receipt must not show GSTIN unless the store is genuinely GST registered and configured.');
 assert(posSource.includes('setComplimentaryVerification(current => retainVerificationForPhone(current, normalized))'), 'Phone changes must invalidate verification.');
 assert(!posSource.includes('otpCode') && !posSource.includes('oneTimePassword'), 'POS must not store an OTP value.');
@@ -170,6 +193,6 @@ console.log('- no OTP, ID token, or confirmation-result persistence');
 console.log('- zero taxable, GST, payable, and payment rows');
 console.log('- KOT and inventory paths retained');
 console.log('- no payment reversal for complimentary void');
-console.log('- store-configured legal GST receipt fields');
+console.log('- store-configured legal GST receipt fields and one gated CGST/SGST/Total GST block');
 console.log('- separate complimentary count, menu value, and COGS');
 console.log('- legacy complimentary detection remains readable');

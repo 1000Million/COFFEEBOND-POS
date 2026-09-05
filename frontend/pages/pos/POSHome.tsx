@@ -2846,6 +2846,8 @@ export default function POSHome() {
     );
   }
 
+  const receiptGst = receiptView ? receiptGstSplit(receiptView.order) : null;
+
   return (
     <div className="relative flex h-[100dvh] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0">
       <div className="shrink-0 max-w-full overflow-x-hidden border-b border-[#eadfd4] bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2">
@@ -4230,22 +4232,22 @@ export default function POSHome() {
                     <span>Taxable Amount</span>
                     <span className="font-mono text-neutral-800">₹{receiptView.order.taxableAmount.toFixed(2)}</span>
                  </div>
-                 {receiptGstSplit(receiptView.order) && (
+                 {receiptGst && (
                    <>
                      <div className="flex justify-between text-neutral-500">
                         <span>CGST</span>
-                        <span className="font-mono text-neutral-800">₹{receiptGstSplit(receiptView.order)!.cgst.toFixed(2)}</span>
+                        <span className="font-mono text-neutral-800">₹{receiptGst.cgst.toFixed(2)}</span>
                      </div>
                      <div className="flex justify-between text-neutral-500">
                         <span>SGST</span>
-                        <span className="font-mono text-neutral-800">₹{receiptGstSplit(receiptView.order)!.sgst.toFixed(2)}</span>
+                        <span className="font-mono text-neutral-800">₹{receiptGst.sgst.toFixed(2)}</span>
+                     </div>
+                     <div className="flex justify-between text-neutral-500 pb-2 border-b border-neutral-100">
+                        <span>Total GST</span>
+                        <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
                      </div>
                    </>
                  )}
-                 <div className="flex justify-between text-neutral-500 pb-2 border-b border-neutral-100">
-                    <span>Total GST</span>
-                    <span className="font-mono text-neutral-800">₹{receiptView.order.gstTotal.toFixed(2)}</span>
-                 </div>
 	                 <div className="flex justify-between font-black text-lg pt-1">
 	                    <span>{receiptView.order.commercialStatus === 'COMPLIMENTARY' ? 'Amount Payable' : 'Total Paid'}</span>
 	                    <span className="font-mono">₹{receiptView.order.grandTotal.toFixed(2)}</span>
