@@ -16,11 +16,56 @@ const {
   validateLocationDetails,
 } = require('../functions/storeProvisioningPolicy.js');
 
-const PROJECT_ID = 'coffee-bond-pos';
-const SOURCE_STORE_CODE = 'NOIDA_51';
-const DESTINATION_STORE_ID = 'BAKED_BY_BOND_51';
-const DESTINATION_STORE_NAME = 'Baked by Bond 51';
-const REPORT_PATH = path.resolve('reports/location-management/baked-by-bond-51-dry-run.json');
+// Safety: this inspection is emulator-only by default. Reaching a real project needs two
+// explicit flags, and even then performs no Firestore writes.
+const PRODUCTION_PROJECT_IDS = new Set(['coffee-bond-pos', 'coffee-bond-pos-preview']);
+const DEFAULT_EMULATOR_PROJECT_ID = 'demo-coffee-bond-location-dry-run';
+
+function resolveDryRunTarget({ argv = [], env = {} } = {}) {
+  const readArg = (name, fallback) => {
+    const prefix = `${name}=`;
+    const match = argv.find((arg) => typeof arg === 'string' && arg.startsWith(prefix));
+    return match ? match.slice(prefix.length).trim() : fallback;
+  };
+  const allowProduction = argv.includes('--allow-production');
+  const emulatorHost = String(env.FIRESTORE_EMULATOR_HOST || '').trim();
+
+  if (!allowProduction) {
+    const projectId = readArg('--project', DEFAULT_EMULATOR_PROJECT_ID);
+    if (!emulatorHost) {
+      return { ok: false, code: 'EMULATOR_REQUIRED', message: 'FIRESTORE_EMULATOR_HOST is required. Run this inspection through the Firestore emulator, e.g. npm run dry-run:location-management. Pointing it at a real project needs --allow-production and --confirm-project=<projectId>.' };
+    }
+    if (PRODUCTION_PROJECT_IDS.has(projectId) || !projectId.startsWith('demo-')) {
+      return { ok: false, code: 'NON_DEMO_PROJECT', message: `Refusing project "${projectId}". The default inspection accepts demo- projects only.` };
+    }
+    return { ok: true, mode: 'EMULATOR', projectId, useApplicationDefault: false, allowProduction: false };
+  }
+
+  const projectId = readArg('--project', 'coffee-bond-pos');
+  const confirmProject = readArg('--confirm-project', '');
+  if (emulatorHost) {
+    return { ok: false, code: 'EMULATOR_HOST_SET', message: 'FIRESTORE_EMULATOR_HOST is set while --allow-production was requested. Unset it, or drop --allow-production.' };
+  }
+  if (!PRODUCTION_PROJECT_IDS.has(projectId)) {
+    return { ok: false, code: 'UNKNOWN_PRODUCTION_PROJECT', message: `--allow-production does not recognise project "${projectId}".` };
+  }
+  if (confirmProject !== projectId) {
+    return { ok: false, code: 'PROJECT_CONFIRMATION_REQUIRED', message: `Read-only production inspection requires --confirm-project=${projectId}.` };
+  }
+  return { ok: true, mode: 'PRODUCTION_READ_ONLY', projectId, useApplicationDefault: true, allowProduction: true };
+}
+
+const TARGET = resolveDryRunTarget({ argv: process.argv, env: process.env });
+if (!TARGET.ok) {
+  console.error(`BLOCKED (${TARGET.code}): ${TARGET.message}`);
+  process.exit(1);
+}
+
+const PROJECT_ID = TARGET.projectId;
+const SOURCE_STORE_CODE = (process.argv.find((a) => a.startsWith('--source-store=')) || '--source-store=NOIDA_51').split('=')[1].trim().toUpperCase();
+const DESTINATION_STORE_ID = (process.argv.find((a) => a.startsWith('--destination-store=')) || '--destination-store=BAKED_BY_BOND_51').split('=')[1].trim().toUpperCase();
+const DESTINATION_STORE_NAME = (process.argv.find((a) => a.startsWith('--destination-name=')) || '--destination-name=Baked by Bond 51').split('=')[1].trim();
+const REPORT_PATH = path.resolve(`reports/location-management/${DESTINATION_STORE_ID.toLowerCase().replace(/_/g, '-')}-dry-run.json`);
 const MENU_COLLECTIONS = ['finishedGoods', 'menuItems', 'categories'];
 const COUNTED_EXCLUDED_COLLECTIONS = [
   'orders',
@@ -54,7 +99,7 @@ async function countStoreDocuments(db, collectionName, storeId) {
 
 async function main() {
   const app = initializeApp({
-    credential: applicationDefault(),
+    ...(TARGET.useApplicationDefault ? { credential: applicationDefault() } : {}),
     projectId: PROJECT_ID,
   }, `location-dry-run-${Date.now()}`);
 
