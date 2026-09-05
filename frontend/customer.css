@@ -2390,6 +2390,112 @@
 }
 .cb-customer-usual-message.is-error { color: var(--cb-danger); background: var(--cb-danger-soft); }
 
+/* Bite 2: only a revalidated SAVED usual becomes the dominant Home hero. The
+   signed-out, empty and loading variants keep their compact Bite 1 composition. */
+.cb-customer-usual-hero.is-saved {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  border-color: #dfd0bd;
+  border-radius: 26px;
+  background: #fffdf8;
+  box-shadow: 0 12px 28px rgba(66, 42, 27, 0.11);
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-photo {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-content {
+  grid-column: 1;
+  grid-row: 2;
+  padding: 17px 18px 15px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-photo-controls {
+  top: 10px;
+  right: 10px;
+  bottom: auto;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-count {
+  right: auto;
+  left: 10px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-name {
+  margin-top: 5px;
+  font-size: 27px;
+  line-height: 1.02;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-lead-detail {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-lead-modifiers {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-price-row {
+  min-height: 0;
+  margin-top: 10px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-price {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-actions { margin-top: 15px; }
+.cb-customer-usual-hero.is-saved .cb-customer-usual-primary {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 7px 16px rgba(63, 39, 27, 0.18);
+  font-size: 14px;
+  font-weight: 820;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-primary:disabled {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  box-shadow: none;
+}
+.cb-customer-usual-secondary-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.cb-customer-usual-secondary {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 2px;
+  color: #754817;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.cb-customer-usual-secondary:disabled { color: var(--cb-text-muted); }
+.cb-customer-usual-secondary:focus-visible {
+  outline: 3px solid rgba(117, 72, 23, 0.32);
+  outline-offset: 2px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-message { margin-top: 4px; }
+.cb-customer-usual-hero.is-saved .cb-customer-usual-more {
+  grid-column: 1;
+  grid-row: 3;
+}
+
 .cb-bond-order-card {
   position: relative;
   display: grid;

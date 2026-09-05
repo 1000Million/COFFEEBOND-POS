@@ -536,6 +536,15 @@ function formatMoney(value: number): string {
   return `₹${value.toFixed(2)}`;
 }
 
+/** Compact Home-hero display only. Checkout keeps its existing two-decimal formatter. */
+function formatMyUsualPrice(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return `₹${rounded.toLocaleString('en-IN', {
+    minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 function normalizeIndianPhone(value: string): string {
   const digits = value.replace(/\D/g, '');
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
@@ -1154,6 +1163,16 @@ export default function CustomerOrder() {
     ));
   }, [storeItems, selectedStore, tastingRoomSelected]);
 
+  const openPastryMenu = () => {
+    if (!categories.includes('Baked by Bond')) return;
+    setSearch('');
+    setSearchActive(false);
+    setCategory('Baked by Bond');
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  };
+
   // --- My Usual (profile-synced) ---------------------------------------------
   // The authenticated Coffee Bond profile is the source of truth. Nothing about a
   // usual is persisted on the device, so signing out or switching accounts leaves
@@ -1394,7 +1413,7 @@ export default function CustomerOrder() {
         key: saved.lineId || `${saved.productCode}-${index}`,
         name: productLabel(saved.productCode),
         quantity: saved.quantity,
-        addOnSummary: saved.addOns.map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId)).join(', '),
+        addOnSummary: saved.addOns.map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId)).join(' · '),
         imageUrl: item ? getItemImage(item) : null,
         isFood: item ? ![
           'Coffee', 'Cold Coffee', 'Cold Drinks', 'Matcha & Tea', 'Flights & Experiences', 'Add Ons', 'Other',
@@ -2746,7 +2765,7 @@ export default function CustomerOrder() {
                   ].includes(customerMenuCategory(discoveryProduct, selectedStore)))}
                   totalLabel={
                     myUsualPreview?.state === 'SAVED' && !myUsualPreview.blocked
-                      ? formatMoney(myUsualPreview.totals.subtotal)
+                      ? formatMyUsualPrice(myUsualPreview.totals.subtotal)
                       : null
                   }
                   blockerMessage={
@@ -2768,6 +2787,8 @@ export default function CustomerOrder() {
                   onOrder={() => startMyUsualOrder('ORDER')}
                   onEdit={() => startMyUsualOrder('EDIT')}
                   onDelete={() => setMyUsualDialog({ type: 'DELETE' })}
+                  onAddPastry={categories.includes('Baked by Bond') ? openPastryMenu : undefined}
+                  orderActionLabel={myUsual?.orderType === 'DINE_IN' ? 'Place dine-in' : 'Place pickup'}
                 />
               </div>
 

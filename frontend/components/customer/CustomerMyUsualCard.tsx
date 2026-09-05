@@ -1,5 +1,5 @@
 import { ComponentType } from 'react';
-import { ArrowRight, Coffee, Pencil, Trash2, UtensilsCrossed, Wheat } from 'lucide-react';
+import { ArrowRight, Coffee, Trash2, UtensilsCrossed, Wheat } from 'lucide-react';
 import CustomerProductImage from './CustomerProductImage';
 
 export type MyUsualPreviewLine = {
@@ -43,6 +43,10 @@ type Props = {
   onOrder: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** Uses the existing menu/category path; omitted when no pastry category is available. */
+  onAddPastry?: () => void;
+  /** Honest order-type label supplied by the screen; price remains a separate live value. */
+  orderActionLabel?: string;
 };
 
 /**
@@ -69,6 +73,8 @@ export default function CustomerMyUsualCard({
   onOrder,
   onEdit,
   onDelete,
+  onAddPastry,
+  orderActionLabel = 'Place pickup',
 }: Props) {
   const DiscoveryIcon = discoveryImageIsFood ? UtensilsCrossed : Coffee;
   const discoveryVisual = discoveryImageUrl ? (
@@ -150,7 +156,10 @@ export default function CustomerMyUsualCard({
   const leadDetails = [
     lead && lead.quantity > 1 ? `${lead.quantity} servings` : '',
     lead?.addOnSummary || '',
-  ].filter(Boolean).join(' · ') || 'Saved just as you like it';
+  ].filter(Boolean).join(' · ');
+  const primaryLabel = blockerMessage
+    ? 'Review My Usual'
+    : `${orderActionLabel}${totalLabel ? ` · ${totalLabel}` : ''}`;
 
   return (
     <section className={`cb-customer-usual-hero is-saved${blockerMessage || noticeMessage ? ' has-message' : ''}${lines.length > 1 ? ' has-extras' : ''}`} aria-labelledby="cb-my-usual-heading">
@@ -169,15 +178,6 @@ export default function CustomerMyUsualCard({
         <div className="cb-customer-usual-photo-controls">
           <button
             type="button"
-            onClick={onEdit}
-            disabled={busy || offline}
-            aria-label="Edit My Usual"
-            className="cb-customer-usual-icon-button"
-          >
-            <Pencil size={16} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
             onClick={onDelete}
             disabled={busy || offline}
             aria-label="Delete My Usual"
@@ -192,10 +192,12 @@ export default function CustomerMyUsualCard({
         <p className="cb-customer-usual-eyebrow">My Usual</p>
         <h2 id="cb-my-usual-heading" className="cb-customer-usual-name">{lead?.name || 'My Usual'}</h2>
 
-        <div className="cb-customer-usual-lead-detail">
-          <span className="cb-customer-usual-lead-modifiers">{leadDetails}</span>
-          {lead?.unavailableReason && <small>{lead.unavailableReason}</small>}
-        </div>
+        {(leadDetails || lead?.unavailableReason) && (
+          <div className="cb-customer-usual-lead-detail">
+            {leadDetails && <span className="cb-customer-usual-lead-modifiers">{leadDetails}</span>}
+            {lead?.unavailableReason && <small>{lead.unavailableReason}</small>}
+          </div>
+        )}
 
         <div className="cb-customer-usual-price-row">
           {totalLabel ? (
@@ -206,12 +208,7 @@ export default function CustomerMyUsualCard({
               >
                 {totalLabel}
               </p>
-              <p
-                aria-hidden="true"
-                className="cb-customer-usual-copy"
-              >
-                Current menu price · GST added at checkout
-              </p>
+              <p className="sr-only">GST is added at checkout.</p>
             </>
           ) : blockerMessage ? (
             <p className="cb-customer-usual-review">Review required</p>
@@ -227,12 +224,32 @@ export default function CustomerMyUsualCard({
           // disable it. The reorder itself is still refused by the screen.
           disabled={busy || offline}
           data-requires-online="true"
-          aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}
+          aria-label={busy ? 'Checking My Usual' : primaryLabel}
           className="cb-customer-usual-primary min-w-0 flex-1"
         >
-          <span>{busy ? 'Checking...' : blockerMessage ? 'Review My Usual' : 'Order My Usual'}</span>
+          <span>{busy ? 'Checking...' : primaryLabel}</span>
           <ArrowRight size={15} aria-hidden="true" />
         </button>
+        </div>
+
+        <div className="cb-customer-usual-secondary-actions">
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy || offline}
+            className="cb-customer-usual-secondary"
+          >
+            Change
+          </button>
+          {onAddPastry && (
+            <button
+              type="button"
+              onClick={onAddPastry}
+              className="cb-customer-usual-secondary"
+            >
+              Add a pastry
+            </button>
+          )}
         </div>
 
         {blockerMessage && (

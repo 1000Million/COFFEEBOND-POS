@@ -487,15 +487,18 @@ check('a blocked line is never dropped from the list',
   /displayLines = myUsual\.items\.map[\s\S]{0,1400}unavailableReason/.test(homeCode)
   && !/displayLines[\s\S]{0,600}\.filter\(/.test(homeCode));
 check('the unblocked card shows the current menu subtotal and explains checkout GST',
-  /!myUsualPreview\.blocked[\s\S]{0,140}formatMoney\(myUsualPreview\.totals\.subtotal\)/.test(homeCode)
-  && card.includes('Current menu price · GST added at checkout')
+  /!myUsualPreview\.blocked[\s\S]{0,140}formatMyUsualPrice\(myUsualPreview\.totals\.subtotal\)/.test(homeCode)
+  && card.includes('GST is added at checkout.')
   && card.includes('Current menu price ${totalLabel}; GST added at checkout')
   && card.includes('Review required')
   && /totalLabel \? \([\s\S]{0,600}\) : blockerMessage \? \([\s\S]{0,220}Review required/.test(card));
+check('the hero price is compact without changing checkout money formatting',
+  /function formatMyUsualPrice\([\s\S]{0,260}Number\.isInteger\(rounded\) \? 0 : 2/.test(homeCode)
+  && /function formatMoney\(value: number\): string \{\s*return `₹\$\{value\.toFixed\(2\)\}`;/.test(home));
 check('the blocked headline states the usual needs an update',
   homeCode.includes("blocked ? 'Your usual needs a quick update.' : undefined"));
 check('the blocked CTA reads Review My Usual',
-  card.includes("blockerMessage ? 'Review My Usual' : 'Order My Usual'")
+  card.includes("blockerMessage\n    ? 'Review My Usual'")
   && !card.includes('Update My Usual'));
 check('the review dialog offers choose-store, edit and cancel in that order',
   /UNAVAILABLE'[\s\S]{0,1600}Choose another store[\s\S]{0,400}Edit My Usual/.test(home)
@@ -508,9 +511,14 @@ const reviewDialogBlock = home.slice(
 check('reviewing writes nothing to the profile',
   reviewDialogBlock.length > 200
   && !/saveCustomerMyUsualRequest|deleteCustomerMyUsualRequest|setMyUsual\(/.test(reviewDialogBlock));
-check('a compatible store keeps the full total and Order My Usual',
+check('a compatible store keeps the full live total and pickup CTA',
   /myUsualPreview\?\.state === 'SAVED' && !myUsualPreview\.blocked/.test(homeCode)
-  && card.includes("'Order My Usual'"));
+  && card.includes('`${orderActionLabel}${totalLabel ? ` · ${totalLabel}` : \'\'}`')
+  && home.includes("orderActionLabel={myUsual?.orderType === 'DINE_IN' ? 'Place dine-in' : 'Place pickup'}"));
+check('actual modifiers use current option labels and disappear cleanly when absent',
+  homeCode.includes("saved.addOns.map(addOn => addOnOptionLabel(addOn.groupId, addOn.optionId)).join(' · ')")
+  && card.includes('{leadDetails && <span className="cb-customer-usual-lead-modifiers">{leadDetails}</span>}')
+  && !card.includes('Saved just as you like it'));
 check('the thumbnail fallback is legible, not beige-on-beige',
   card.includes('iconClassName="text-[#9a6a2e]"') && !card.includes('text-[#b99b7d]'));
 check('the fallback icon renders whenever no image resolves',
@@ -557,7 +565,8 @@ check('offline blocks reorder',
 // unavailable items and offers Edit / Choose another store. Offline still disables
 // all three, and the screen still refuses the reorder itself.
 check('a blocked usual stays tappable so the customer can see why',
-  card.includes("aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}")
+  card.includes("aria-label={busy ? 'Checking My Usual' : primaryLabel}")
+  && card.includes("blockerMessage\n    ? 'Review My Usual'")
   && !/disabled=\{[^}]*blockerMessage/.test(card));
 check('offline disables every server action',
   (card.match(/disabled=\{busy \|\| offline\}/g) || []).length === 3
@@ -606,17 +615,32 @@ check('the card has an accessible heading', card.includes('aria-labelledby="cb-m
 check('controls meet 44px',
   /\.cb-customer-usual-primary \{[^}]*min-height: 44px/.test(tokens)
   && /\.cb-customer-usual-icon-button \{[^}]*width: 44px[^}]*height: 44px/.test(tokens)
+  && /\.cb-customer-usual-secondary \{[^}]*min-height: 44px/.test(tokens)
   && /\.cb-customer-usual-more summary \{[^}]*min-height: 44px/.test(tokens));
+check('the saved hero is image-led and its primary CTA is at least 52px',
+  /\.cb-customer-usual-hero\.is-saved \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(tokens)
+  && /\.cb-customer-usual-hero\.is-saved \.cb-customer-usual-photo \{[^}]*aspect-ratio: 16 \/ 9/.test(tokens)
+  && /\.cb-customer-usual-hero\.is-saved \.cb-customer-usual-primary \{[^}]*min-height: 52px/.test(tokens));
+check('multi-item count and delete controls occupy opposite image corners',
+  /\.cb-customer-usual-hero\.is-saved \.cb-customer-usual-count \{[^}]*right: auto;[^}]*left: 10px/.test(tokens)
+  && /\.cb-customer-usual-hero\.is-saved \.cb-customer-usual-photo-controls \{[^}]*right: 10px/.test(tokens));
+check('Change reuses edit and Add a pastry uses only the existing menu category',
+  /onClick=\{onEdit\}[\s\S]{0,180}>\s*Change\s*</.test(card)
+  && card.includes('onClick={onAddPastry}')
+  && card.includes('Add a pastry')
+  && homeCode.includes("if (!categories.includes('Baked by Bond')) return;")
+  && homeCode.includes("setCategory('Baked by Bond')")
+  && home.includes("onAddPastry={categories.includes('Baked by Bond') ? openPastryMenu : undefined}"));
 check('the visible and accessible saved-usual CTA labels agree',
-  card.includes("aria-label={blockerMessage ? 'Review My Usual' : 'Order My Usual'}")
-  && /<span>\{busy \? 'Checking\.\.\.' : blockerMessage \? 'Review My Usual' : 'Order My Usual'\}<\/span>/.test(card));
+  card.includes("aria-label={busy ? 'Checking My Usual' : primaryLabel}")
+  && /<span>\{busy \? 'Checking\.\.\.' : primaryLabel\}<\/span>/.test(card));
 check('validation messages use a live region', card.includes('role="status" aria-live="polite"'));
 check('dialogs are modal and labelled', /role="dialog"\s+aria-modal="true"\s+aria-label=/.test(home));
 check('no Tailwind arbitrary CSS-variable utilities in the My Usual UI',
   !/\[color:var\(--cb-|bg-\[var\(--cb-|shadow-\[var\(--cb-/.test(card));
 check('My Usual styles are semantic classes in customer.css',
   ['.cb-customer-usual-hero', '.cb-customer-usual-primary', '.cb-customer-usual-icon-button',
-   '.cb-customer-usual-lines', '.cb-customer-sheet']
+   '.cb-customer-usual-secondary', '.cb-customer-usual-lines', '.cb-customer-sheet']
     .every(cls => tokens.includes(cls)));
 
 check('the unit test script is registered', pkg.scripts['test:customer-my-usual'] === 'node scripts/test-customer-my-usual.mjs');

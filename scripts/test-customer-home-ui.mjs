@@ -454,10 +454,12 @@ check('search offers Cancel and a clear, both real touch targets',
   && home.includes('aria-label="Clear search"')
   && home.includes('min-h-11')
   && home.includes('h-11 w-11'));
+const cancelSearchAnchor = home.indexOf('aria-label="Cancel search"');
+const cancelSearchBlock = home.slice(Math.max(0, cancelSearchAnchor - 420), cancelSearchAnchor + 180);
 check('Cancel leaves search without disturbing the menu it returns to',
-  /onClick=\{\(\) => \{\s*setSearch\(''\);\s*setSearchActive\(false\);\s*searchInputRef\.current\?\.blur\(\);\s*\}\}/.test(home)
+  /onClick=\{\(\) => \{\s*setSearch\(''\);\s*setSearchActive\(false\);\s*searchInputRef\.current\?\.blur\(\);\s*\}\}/.test(cancelSearchBlock)
   // Category is menu state, not search state, so Cancel must not reset it.
-  && !/setSearchActive\(false\);[\s\S]{0,80}setCategory/.test(home));
+  && !cancelSearchBlock.includes('setCategory'));
 check('both quiet search states are two lines, not cards',
   home.includes('Search Coffee Bond')
   && home.includes('Coffee, food, smoothies and more.')
