@@ -3,7 +3,10 @@ import process from 'node:process';
 import { applicationDefault, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 
-const PROJECT_ID = 'coffee-bond-pos';
+// Safety: this refresh is emulator-only by default. Reaching a real project requires two
+// explicit flags, and a write additionally requires --apply.
+const PRODUCTION_PROJECT_IDS = new Set(['coffee-bond-pos', 'coffee-bond-pos-preview']);
+const DEFAULT_EMULATOR_PROJECT_ID = 'demo-coffee-bond-public-menu-refresh';
 const DEFAULT_STORE_CODE = 'GOLDEN_I';
 const DEFAULT_SOURCE_STORE_CODE = 'NOIDA_29';
 const PREVIEW_ONLY_STORE_CODES = new Set(['TASTING_ROOM_29']);
@@ -16,6 +19,47 @@ function readArgValue(name, fallback) {
   return match ? match.slice(prefix.length).trim() : fallback;
 }
 
+function resolveRefreshTarget({ argv = [], env = {} } = {}) {
+  const readArg = (name, fallback) => {
+    const prefix = `${name}=`;
+    const match = argv.find((arg) => typeof arg === 'string' && arg.startsWith(prefix));
+    return match ? match.slice(prefix.length).trim() : fallback;
+  };
+  const allowProduction = argv.includes('--allow-production');
+  const emulatorHost = String(env.FIRESTORE_EMULATOR_HOST || '').trim();
+
+  if (!allowProduction) {
+    const projectId = readArg('--project', DEFAULT_EMULATOR_PROJECT_ID);
+    if (!emulatorHost) {
+      return { ok: false, code: 'EMULATOR_REQUIRED', message: 'FIRESTORE_EMULATOR_HOST is required. Run this refresh through the Firestore emulator, e.g. npm run refresh:public-menu-availability. Targeting a real project needs --allow-production and --confirm-project=<projectId>.' };
+    }
+    if (PRODUCTION_PROJECT_IDS.has(projectId) || !projectId.startsWith('demo-')) {
+      return { ok: false, code: 'NON_DEMO_PROJECT', message: `Refusing project "${projectId}". The default refresh accepts demo- projects only.` };
+    }
+    return { ok: true, mode: 'EMULATOR', projectId, emulatorHost, useApplicationDefault: false };
+  }
+
+  const projectId = readArg('--project', 'coffee-bond-pos');
+  const confirmProject = readArg('--confirm-project', '');
+  if (emulatorHost) {
+    return { ok: false, code: 'EMULATOR_HOST_SET', message: 'FIRESTORE_EMULATOR_HOST is set while --allow-production was requested. Unset it, or drop --allow-production.' };
+  }
+  if (!PRODUCTION_PROJECT_IDS.has(projectId)) {
+    return { ok: false, code: 'UNKNOWN_PRODUCTION_PROJECT', message: `--allow-production does not recognise project "${projectId}".` };
+  }
+  if (confirmProject !== projectId) {
+    return { ok: false, code: 'PROJECT_CONFIRMATION_REQUIRED', message: `Targeting ${projectId} requires --confirm-project=${projectId}.` };
+  }
+  return { ok: true, mode: 'PRODUCTION_CONFIRMED', projectId, emulatorHost: '', useApplicationDefault: true };
+}
+
+const TARGET = resolveRefreshTarget({ argv: process.argv, env: process.env });
+if (!TARGET.ok) {
+  console.error(`BLOCKED (${TARGET.code}): ${TARGET.message}`);
+  process.exit(1);
+}
+const PROJECT_ID = TARGET.projectId;
+
 const TARGET_STORE_CODE = readArgValue('--store', DEFAULT_STORE_CODE);
 const SOURCE_STORE_CODE = readArgValue('--source-store', DEFAULT_SOURCE_STORE_CODE);
 
@@ -26,14 +70,14 @@ function fail(message) {
 }
 
 function initializeAdmin() {
-  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-    fail('GOOGLE_APPLICATION_CREDENTIALS is required. This script is dry-run by default but still needs read access to inspect Firestore.');
+  if (TARGET.useApplicationDefault && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    fail('GOOGLE_APPLICATION_CREDENTIALS is required for a confirmed production refresh.');
   }
 
   const app = getApps().length > 0
     ? getApp()
     : initializeApp({
-      credential: applicationDefault(),
+      ...(TARGET.useApplicationDefault ? { credential: applicationDefault() } : {}),
       projectId: PROJECT_ID,
     });
 
@@ -339,7 +383,11 @@ async function main() {
   const diff = diffSnapshot(currentSnapshot, nextSnapshot);
   const targetPath = `publicMenuAvailability/${targetStore.data.code || targetStore.id}`;
 
-  console.log(`Project: ${PROJECT_ID}`);
+  console.log(`MODE=${TARGET.mode}`);
+  console.log(`PROJECT_ID=${PROJECT_ID}`);
+  console.log(`EMULATOR_HOST=${TARGET.emulatorHost || 'none'}`);
+  console.log(`STORE_CODES=${TARGET_STORE_CODE}`);
+  console.log('WRITE_TARGET=publicMenuAvailability');
   console.log(`Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE RUN'}`);
   console.log(`Target store: ${targetStore.data.name || targetStore.id} (${targetStore.data.code || targetStore.id}, doc ${targetStore.id})`);
   console.log(`Source availability template: ${sourceStore.data.name || sourceStore.id} (${sourceStore.data.code || sourceStore.id})`);
