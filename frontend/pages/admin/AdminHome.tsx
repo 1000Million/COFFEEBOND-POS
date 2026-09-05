@@ -3,8 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   Tags, MenuSquare, DatabaseZap, Package, Database, MapPinned,
   BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench, PackagePlus, ImageUp
-} from 'lucide-react';
+  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench, PackagePlus, ImageUp, Layers} from 'lucide-react';
 import { motion } from 'motion/react';
 import { APP_BUILD_TIME, APP_ENVIRONMENT, APP_VERSION, FIREBASE_PROJECT_ID } from '../../lib/appVersion';
 
@@ -76,6 +75,18 @@ export default function AdminHome() {
               <div>
                 <h4 className="font-bold text-neutral-800">Location Management</h4>
                 <p className="text-xs text-neutral-500">Create, clone, review, and activate locations</p>
+              </div>
+            </Link>
+          </motion.div>
+
+          <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="cursor-pointer">
+            <Link to="/admin/global-items" className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-[#5c4033]/30 hover:shadow-md transition-all flex items-center gap-4 h-full">
+              <div className="w-10 h-10 bg-neutral-100 text-[#5c4033] rounded-xl flex items-center justify-center shrink-0">
+                <Layers size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-neutral-800">Global Items</h4>
+                <p className="text-xs text-neutral-500">Shared product catalogue and per-store price, availability and menu overrides</p>
               </div>
             </Link>
           </motion.div>

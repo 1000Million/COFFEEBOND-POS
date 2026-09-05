@@ -17,6 +17,8 @@
     "test:store-item-config-rules": "firebase emulators:exec --only firestore --project demo-coffee-bond-g32-rules \"node scripts/test-store-item-config-rules.mjs\"",
     "test:override-price-commercials": "esbuild scripts/test-override-price-commercials.ts --bundle --platform=node --format=esm --outfile=/tmp/override-price-commercials-test.mjs && node /tmp/override-price-commercials-test.mjs",
     "test:pos-customer-override-parity": "esbuild scripts/test-pos-customer-override-parity.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-customer-override-parity-test.mjs && node /tmp/pos-customer-override-parity-test.mjs",
+    "test:atomic-override-publish": "esbuild scripts/test-atomic-override-publish.ts --bundle --platform=node --format=esm --outfile=/tmp/atomic-override-publish-test.mjs && node /tmp/atomic-override-publish-test.mjs",
+    "test:global-items-admin": "esbuild scripts/test-global-items-admin.ts --bundle --platform=node --format=esm --outfile=/tmp/global-items-admin-test.mjs && node /tmp/global-items-admin-test.mjs",
     "test:store-item-config": "esbuild scripts/test-store-item-config-resolver.ts --bundle --platform=node --format=esm --outfile=/tmp/store-item-config-test.mjs && node /tmp/store-item-config-test.mjs",
     "test:cloned-store-public-menu": "esbuild scripts/test-cloned-store-public-menu-bootstrap.ts --bundle --platform=node --format=esm --outfile=/tmp/cloned-store-public-menu-test.mjs && node /tmp/cloned-store-public-menu-test.mjs",
     "test:location-management": "node scripts/test-location-management.mjs",
