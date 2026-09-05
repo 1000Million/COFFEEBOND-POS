@@ -214,6 +214,34 @@ check('the visit progress is visually clamped and accessibly labelled',
   && /\.cb-customer-bond-strip-row \{[^}]*min-height: 44px/.test(homeRedesignCss)
   && homeRedesignCss.includes('.cb-customer-bond-strip-progress'));
 
+// --- Bite 6: signed-in member without a saved usual ------------------------
+const emptyUsual = usual.slice(
+  usual.indexOf("if (state === 'EMPTY')"),
+  usual.indexOf("if (state === 'LOADING')"),
+);
+const emptyUsualAction = home.slice(
+  home.indexOf('onCreate={() => {'),
+  home.indexOf('onOrder={() =>'),
+);
+check('Bite 6 replaces the signed-in empty campaign with the approved usual prompt',
+  ['YOUR USUAL', 'Start a usual', 'Save the order you always make.', 'Next time it’s one tap.', 'Build it from the menu']
+    .every(copy => emptyUsual.includes(copy))
+  && !/discoveryVisual|CustomerProductImage|cb-customer-usual-(photo|art)/.test(emptyUsual));
+check('the no-usual action opens the existing Menu hash without touching order flow',
+  emptyUsualAction.includes("hash: '#cb-full-menu'")
+  && !/setCart|basket|checkout|payment|Razorpay|submit/i.test(emptyUsualAction));
+check('the empty prompt is a quiet cream card with a 52px primary action',
+  /\.cb-customer-usual-hero\.is-empty \{[^}]*grid-template-columns: minmax\(0, 1fr\)[^}]*background: #fcf5e9/.test(homeRedesignCss)
+  && /\.cb-customer-usual-hero\.is-empty \.cb-customer-usual-primary \{[^}]*width: 100%[^}]*min-height: 52px/.test(homeRedesignCss));
+check('Bite 6 adds no candidate or persistence behavior from incomplete history summaries',
+  !/Save as usual|Not this|latest settled/i.test(emptyUsual)
+  && !/saveCustomerMyUsualRequest|listMyCustomerOrders|publicTrackingDocRef/.test(emptyUsualAction));
+check('live order, saved usual, signed-out and BOND composition remain on their existing paths',
+  homeOverview.indexOf('{homeLiveOrder && (') < homeOverview.indexOf('<CustomerMyUsualCard')
+  && usual.includes("if (state === 'SIGNED_OUT')")
+  && usual.includes("className={`cb-customer-usual-hero is-saved")
+  && homeOverview.indexOf('<CustomerMyUsualCard') < homeOverview.indexOf('<CustomerBondSummaryCard'));
+
 // --- Behaviour parity: logic stayed in the screen ----------------------------
 check('card computes no price', !/toNumber\(|salePrice|grandTotal|taxRate/.test(card));
 check('card resolves no availability', !/getItemAvailability|customerOrderingState/.test(card));

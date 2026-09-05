@@ -2957,7 +2957,6 @@ export default function CustomerOrder() {
                     setMyUsualDialog({ type: 'SIGN_IN' });
                   }}
                   onCreate={() => {
-                    setMyUsualNotice('Add your regular items to the basket, then choose Save as My Usual.');
                     navigate({
                       pathname: routerLocation.pathname,
                       search: routerLocation.search,

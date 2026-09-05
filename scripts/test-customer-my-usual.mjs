@@ -306,6 +306,26 @@ check('no global device key remains a source of truth',
   && !/readCustomerMyUsual|writeCustomerMyUsual|clearCustomerMyUsual/.test(homeCode));
 check('the pre-release device key is purged on load', homeCode.includes('purgeLegacyDeviceMyUsual'));
 
+// --- Signed in without a saved usual ---------------------------------------
+const emptyBlock = card.slice(card.indexOf("if (state === 'EMPTY')"), card.indexOf("if (state === 'LOADING')"));
+const emptyAction = homeCode.slice(homeCode.indexOf('onCreate={() => {'), homeCode.indexOf('onOrder={() =>'));
+check('a signed-in member without a saved usual gets the relationship-aware prompt',
+  emptyBlock.includes('YOUR USUAL')
+  && emptyBlock.includes('Start a usual')
+  && emptyBlock.includes('Save the order you always make.')
+  && emptyBlock.includes('Next time it’s one tap.')
+  && emptyBlock.includes('Build it from the menu'));
+check('the no-usual prompt carries no discovery campaign image',
+  !/discoveryVisual|CustomerProductImage|cb-customer-usual-(photo|art)/.test(emptyBlock));
+check('signed-in plus no saved usual is the only path to the empty state',
+  /!verifiedCustomer\s*\?\s*'SIGNED_OUT'[\s\S]{0,140}!myUsual\s*\?\s*'EMPTY'/.test(homeCode));
+check('Build it from the menu opens the existing menu route only',
+  emptyAction.includes("hash: '#cb-full-menu'")
+  && !/setCart|commitCartItem|setPendingAddOnItem|setBasketOpen|submit|checkout|payment/i.test(emptyAction));
+check('the no-usual state invents no order-history candidate or save path',
+  !/Save as usual|Not this|latest order|settled order/i.test(emptyBlock)
+  && !/saveCustomerMyUsualRequest|listMyCustomerOrders|publicTrackingDocRef/.test(emptyAction));
+
 // --- Sign-in handoff ---
 check('the signed-out CTA invokes the EXISTING customer OTP flow',
   homeCode.includes("myUsualDialog.type === 'SIGN_IN'")
@@ -401,7 +421,8 @@ check('the basket is never modified by save or delete',
 
 // --- Revalidation rules, unchanged ---
 check('create action guides to the menu',
-  homeCode.includes('searchInputRef.current?.scrollIntoView') && homeCode.includes('Save as My Usual.'));
+  homeCode.includes('searchInputRef.current?.scrollIntoView')
+  && emptyAction.includes("hash: '#cb-full-menu'"));
 check('saving over an existing usual requires confirmation',
   homeCode.includes("{ type: 'REPLACE_USUAL' }") && home.includes('Replace your current My Usual with this basket?'));
 check('delete requires confirmation', home.includes('Delete My Usual?') && homeCode.includes("{ type: 'DELETE' }"));

@@ -25,7 +25,7 @@ type Props = {
    */
   state: 'SIGNED_OUT' | 'EMPTY' | 'LOADING' | 'SAVED';
   lines: MyUsualPreviewLine[];
-  /** Real current-menu image used as atmosphere only when no usual exists yet. */
+  /** Real current-menu image used only by the unchanged signed-out discovery state. */
   discoveryImageUrl?: string | null;
   discoveryImageName?: string;
   discoveryImageIsFood?: boolean;
@@ -119,13 +119,15 @@ export default function CustomerMyUsualCard({
   if (state === 'EMPTY') {
     return (
       <section className="cb-customer-usual-hero is-empty" aria-labelledby="cb-my-usual-heading">
-        {discoveryVisual}
         <div className="cb-customer-usual-content">
-          <p className="cb-customer-usual-eyebrow">My Usual</p>
-          <h2 id="cb-my-usual-heading" className="cb-customer-usual-name">Save your regular</h2>
-          <p className="cb-customer-usual-copy">Add your go-to coffee or food, then save the basket.</p>
+          <p className="cb-customer-usual-eyebrow">YOUR USUAL</p>
+          <h2 id="cb-my-usual-heading" className="cb-customer-usual-name">Start a usual</h2>
+          <p className="cb-customer-usual-copy">
+            Save the order you always make.<br />
+            Next time it’s one tap.
+          </p>
           <button type="button" onClick={onCreate} className="cb-customer-usual-primary">
-            Create My Usual <ArrowRight size={16} aria-hidden="true" />
+            Build it from the menu <ArrowRight size={16} aria-hidden="true" />
           </button>
         </div>
       </section>

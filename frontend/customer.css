@@ -2596,8 +2596,49 @@
 }
 .cb-customer-usual-message.is-error { color: var(--cb-danger); background: var(--cb-danger-soft); }
 
+/* Bite 6: a signed-in member without a saved usual gets a relationship-aware prompt,
+   not the signed-out discovery image or a generic campaign. It stays quieter than a
+   live-order banner while keeping the one useful next action comfortably tappable. */
+.cb-customer-usual-hero.is-empty {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  border-color: #eadcc9;
+  background: #fcf5e9;
+  box-shadow: 0 4px 13px rgba(43, 33, 24, 0.045);
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-content {
+  grid-column: 1;
+  grid-row: 1;
+  padding: 19px 18px 18px;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-name {
+  margin-top: 6px;
+  font-size: 26px;
+  line-height: 1.05;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-copy {
+  display: block;
+  margin-top: 8px;
+  overflow: visible;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-line-clamp: initial;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-primary {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 17px;
+  padding-inline: 14px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 6px 14px rgba(63, 39, 27, 0.14);
+  font-size: 13.5px;
+  font-weight: 810;
+}
+
 /* Bite 2: only a revalidated SAVED usual becomes the dominant Home hero. The
-   signed-out, empty and loading variants keep their compact Bite 1 composition. */
+   signed-out and loading variants keep their compact Bite 1 composition. */
 .cb-customer-usual-hero.is-saved {
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
