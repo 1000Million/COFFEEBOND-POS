@@ -113,8 +113,8 @@ check('the Tasting Room exposes its required context without pickup language',
   && tastingPresentation.tagline === 'For the love of discovering.'
   && tastingPresentation.orderContextLabel === 'Place order'
   && tastingPresentation.selectorDescription === 'Flights · Small plates · Experiences');
-check('the shared store card renders neutral custom ordering language',
-  storeCard.includes("`${contextLabel} · ${storeName}`")
+check('the shared store chip preserves neutral custom ordering language in its accessible name',
+  storeCard.includes("`${contextLabel} ${storeName}. ${visibleStatus}. Change store`")
   && customerOrder.includes('contextLabel={selectedStoreContextLabel}'));
 
 const tastingCategories = [
