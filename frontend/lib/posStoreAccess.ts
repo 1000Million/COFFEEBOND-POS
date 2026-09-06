@@ -46,6 +46,32 @@ export function assignedStoreIdentifiers(profile?: StoreAssignmentProfile | null
   return [...identifiers];
 }
 
+/**
+ * Assignment identifiers with their ORIGINAL case preserved.
+ *
+ * `assignedStoreIdentifiers` uppercases, which is correct for case-insensitive matching but
+ * WRONG when the value is used as a Firestore document path: three production stores use
+ * opaque mixed-case document ids (Noida 29 `cJk69Ti1mveh603L4edw`, Noida 51, Uday Park), and
+ * firestore.rules gates `stores/{storeId}` on `hasStoreAccess(storeId)` - the document id.
+ * Uppercasing an opaque id yields a path that does not exist, so non-admin staff at those
+ * stores loaded an empty store list. Use this when addressing a document.
+ */
+export function assignedStoreDocumentIds(profile?: StoreAssignmentProfile | null): string[] {
+  if (!profile) return [];
+  const identifiers = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (trimmed) identifiers.add(trimmed);
+  };
+  ARRAY_ASSIGNMENT_FIELDS.forEach((field) => {
+    const value = profile[field];
+    if (Array.isArray(value)) value.forEach(add);
+  });
+  SINGLE_ASSIGNMENT_FIELDS.forEach((field) => add(profile[field]));
+  return [...identifiers];
+}
+
 export function storeMatchesAssignment(
   store: Pick<Store, 'id' | 'code' | 'storeCode'>,
   assignments: Iterable<string>,

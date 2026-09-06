@@ -17,6 +17,12 @@ import {
 } from '../../lib/addOns';
 import { resolvePosMenuItems, STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
 import {
+  hasNearestResolvableStore,
+  POS_STORE_STORAGE_KEY,
+  resolvePosStore,
+} from '../../lib/posStoreResolution';
+import { storeCoordinate } from '../../lib/storeGeo';
+import {
   calculateTotals,
   clampDiscountPercent,
   getItemTaxRate,
@@ -67,7 +73,7 @@ import {
 import { Loader2, Plus, Minus, Trash2, Search, Store as StoreIcon, User, Phone, MapPin, SearchX, Coffee, CheckCircle, Printer, AlertCircle, AlertTriangle, X, Copy, ExternalLink, RefreshCw, Zap, LayoutGrid } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
-import { accessiblePosStores, assignedStoreIdentifiers } from '../../lib/posStoreAccess';
+import { accessiblePosStores, assignedStoreDocumentIds } from '../../lib/posStoreAccess';
 import {
   canReadMissingCheckoutOrder,
   canTreatCheckoutOrderReadAsMissing,
@@ -759,6 +765,8 @@ export default function POSHome() {
   });
 
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
+  const [storeResolutionReason, setStoreResolutionReason] = useState<string>('NEEDS_EXPLICIT_CHOICE');
+  const locationResolveAttemptedRef = useRef(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -1001,7 +1009,9 @@ export default function POSHome() {
       const fetchedStores = isAdmin
         ? (await getDocs(collection(db, 'stores'))).docs.map(d => ({ id: d.id, ...d.data() } as Store))
         : (await Promise.all(
-          assignedStoreIdentifiers(staffProfile)
+          // Original-case document ids: firestore.rules gates stores/{storeId} on the document
+          // id, and three production stores use opaque mixed-case ids.
+          assignedStoreDocumentIds(staffProfile)
             .map((storeId) => getDoc(doc(db, 'stores', storeId)).catch(() => null)),
         ))
           .filter((snap): snap is NonNullable<typeof snap> => !!snap && snap.exists())
@@ -1010,11 +1020,16 @@ export default function POSHome() {
       const allowedStores = accessiblePosStores(fetchedStores, staffProfile);
 
       setStores(allowedStores);
-      if (allowedStores.length > 0) {
-        setSelectedStoreId(allowedStores[0].id);
-      } else {
-        setSelectedStoreId('');
-      }
+      // Never positional. Resolve persisted -> only-authorised -> nearest -> explicit choice.
+      // `prev ||` keeps a live selection (and its cart) safe if this effect re-runs, which it
+      // does whenever the staff profile snapshot changes.
+      const resolution = resolvePosStore({
+        stores: allowedStores,
+        profile: staffProfile,
+        persistedStoreId: readLocalStorageJson<string>(POS_STORE_STORAGE_KEY, ''),
+      });
+      setStoreResolutionReason(resolution.reason);
+      setSelectedStoreId(prev => prev || resolution.storeId);
     } catch (error: any) {
       if (error?.code !== 'permission-denied') {
         console.error("Error fetching POS data:", error);
@@ -1058,6 +1073,46 @@ export default function POSHome() {
     }
   };
 
+  /** An explicit operator choice is remembered and wins over location on the next load. */
+  const applyStoreSelection = (nextStoreId: string) => {
+    setSelectedStoreId(nextStoreId);
+    setStoreResolutionReason('PERSISTED');
+    try {
+      window.localStorage.setItem(POS_STORE_STORAGE_KEY, JSON.stringify(nextStoreId));
+    } catch (error) {
+      console.warn('Unable to remember the selected POS store', error);
+    }
+  };
+
+  // Optional location assist: only when nothing is selected yet, only once, and only within
+  // authorised stores. Never runs while a cart exists, so it cannot move an in-progress sale.
+  useEffect(() => {
+    if (selectedStoreId) return;
+    if (locationResolveAttemptedRef.current) return;
+    if (stores.length < 2) return;
+    if (cart.length > 0) return;
+    if (!hasNearestResolvableStore(stores)) return;
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    locationResolveAttemptedRef.current = true;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const resolution = resolvePosStore({
+          stores,
+          profile: staffProfile,
+          coordinate: { latitude: position.coords.latitude, longitude: position.coords.longitude },
+        });
+        if (!resolution.storeId) return;
+        // Re-check the guards: the operator may have chosen a store or started a sale while
+        // the permission prompt was open.
+        setSelectedStoreId(prev => (prev ? prev : resolution.storeId));
+        setStoreResolutionReason(prev => (prev === 'NEEDS_EXPLICIT_CHOICE' ? resolution.reason : prev));
+      },
+      // Denied, unsupported or unavailable: stay on explicit choice. Never fall back positionally.
+      () => undefined,
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 10 * 60 * 1000 },
+    );
+  }, [selectedStoreId, stores, staffProfile, cart.length]);
+
   const handleStoreChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (razorpayPaymentLocked) {
       alert('Cancel the active Razorpay payment request before changing stores.');
@@ -1071,7 +1126,7 @@ export default function POSHome() {
         setCheckoutError(null);
         setTableNumberError(null);
         setIsRecallMenuOpen(false);
-        setSelectedStoreId(e.target.value);
+        applyStoreSelection(e.target.value);
       }
     } else {
       setPendingAddOnItem(null);
@@ -1079,7 +1134,7 @@ export default function POSHome() {
       setCheckoutError(null);
       setTableNumberError(null);
       setIsRecallMenuOpen(false);
-      setSelectedStoreId(e.target.value);
+      applyStoreSelection(e.target.value);
     }
   };
 
@@ -2812,13 +2867,24 @@ export default function POSHome() {
                 className="w-full min-w-0 max-w-full bg-transparent text-sm font-black text-[#2d1c19] outline-none md:w-auto md:min-w-[180px] lg:min-w-[190px]"
                 aria-label="Select POS store"
               >
+                {!selectedStoreId && <option value="">Select a store…</option>}
                 {stores.map(s => (
                   <option key={s.id} value={s.id}>
                     {s.name}{s.internalPosTestEnabled === true && s.isActive !== true ? ' (Setup test)' : ''}
                   </option>
                 ))}
               </select>
+              {selectedStoreId && storeResolutionReason === 'NEAREST' && (
+                <span className="shrink-0 rounded-full bg-[#efe6da] px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-[#5c4033]">
+                  Current location
+                </span>
+              )}
             </div>
+            {!selectedStoreId && stores.length > 0 && (
+              <p className="w-full text-[11px] font-bold text-amber-700 md:w-auto">
+                Choose the store you are billing for before starting a sale.
+              </p>
+            )}
 
             <div className="grid w-full min-w-0 grid-cols-3 items-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1 md:flex md:w-auto">
               {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (

@@ -46,6 +46,7 @@ import {
   unitPriceWithAddOns,
 } from '../../lib/addOns';
 import { db } from '../../lib/firebase';
+import { closestStoreToPosition, distanceKm, storeCoordinate, type StoreCoordinate } from '../../lib/storeGeo';
 import { CustomerProfile, customerFunctions, restoreCustomerProfile } from '../../lib/customerAuth';
 import {
   CheckoutHydrationState,
@@ -272,10 +273,6 @@ const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
 const STORE_CHANGE_CONFIRMATION = 'Changing store will clear your current basket so prices and availability stay correct. Continue?';
 
-type StoreCoordinate = {
-  latitude: number;
-  longitude: number;
-};
 
 function toNumber(value: unknown): number {
   if (value === null || value === undefined || value === '') return 0;
@@ -308,51 +305,6 @@ function storeTaxRate(store: Store | null, gstConfig: GstConfig): number {
   return storeRate > 0 ? storeRate : gstConfig.defaultRate;
 }
 
-function numberOrNull(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  const parsed = Number(String(value).replace(/,/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function storeCoordinate(store: Store): StoreCoordinate | null {
-  const record = store as Store & Record<string, unknown>;
-  const nested = record.location || record.geoPoint || record.coordinates;
-  const nestedRecord = nested && typeof nested === 'object' ? nested as Record<string, unknown> : {};
-  const latitude = numberOrNull(record.latitude)
-    ?? numberOrNull(record.lat)
-    ?? numberOrNull(nestedRecord.latitude)
-    ?? numberOrNull(nestedRecord.lat);
-  const longitude = numberOrNull(record.longitude)
-    ?? numberOrNull(record.lng)
-    ?? numberOrNull(nestedRecord.longitude)
-    ?? numberOrNull(nestedRecord.lng);
-  if (latitude === null || longitude === null) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  return { latitude, longitude };
-}
-
-function distanceKm(a: StoreCoordinate, b: StoreCoordinate): number {
-  const earthRadiusKm = 6371;
-  const lat1 = a.latitude * Math.PI / 180;
-  const lat2 = b.latitude * Math.PI / 180;
-  const deltaLat = (b.latitude - a.latitude) * Math.PI / 180;
-  const deltaLon = (b.longitude - a.longitude) * Math.PI / 180;
-  const sinLat = Math.sin(deltaLat / 2);
-  const sinLon = Math.sin(deltaLon / 2);
-  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
-  return 2 * earthRadiusKm * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-}
-
-function closestStoreToPosition(stores: Store[], position: StoreCoordinate): { store: Store; distanceKm: number } | null {
-  return stores.reduce<{ store: Store; distanceKm: number } | null>((closest, store) => {
-    if (store.excludeFromNearestSelection === true) return closest;
-    const coordinate = storeCoordinate(store);
-    if (!coordinate) return closest;
-    const distance = distanceKm(position, coordinate);
-    if (!closest || distance < closest.distanceKm) return { store, distanceKm: distance };
-    return closest;
-  }, null);
-}
 
 function defaultStoreIdFromStorage(stores: Store[]): string {
   try {

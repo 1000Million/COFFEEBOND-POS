@@ -72,6 +72,7 @@
     "test:pos-menu-navigation": "esbuild scripts/test-pos-menu-navigation.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-menu-navigation-test.mjs && node /tmp/pos-menu-navigation-test.mjs",
     "test:pos-menu-taxonomy": "esbuild scripts/test-pos-menu-taxonomy.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-menu-taxonomy-test.mjs && node /tmp/pos-menu-taxonomy-test.mjs",
     "test:pos-visibility-repair": "esbuild scripts/test-pos-visibility-repair.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-visibility-repair-test.mjs && node /tmp/pos-visibility-repair-test.mjs",
+    "test:pos-store-resolution": "esbuild scripts/test-pos-store-resolution.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-store-resolution-test.mjs && node /tmp/pos-store-resolution-test.mjs",
     "test:pos-store-access": "esbuild scripts/test-pos-store-access.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-store-access-test.mjs && node /tmp/pos-store-access-test.mjs",
     "test:pos-responsive-layout": "esbuild scripts/test-pos-responsive-layout.ts --bundle --platform=node --format=esm --outfile=/tmp/pos-responsive-layout-test.mjs && node /tmp/pos-responsive-layout-test.mjs",
     "test:cashier-pos-access": "esbuild scripts/test-cashier-pos-access.ts --bundle --platform=node --format=esm --outfile=/tmp/cashier-pos-access-test.mjs && node /tmp/cashier-pos-access-test.mjs",

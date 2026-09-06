@@ -134,10 +134,19 @@ assert.doesNotMatch(
   /query\(collection\(db, ['"]stores['"]\), where\(['"]isActive['"], ['"]==['"], true\)\)/,
   'non-Admin POS access must not list every active store through a query rejected by store-scoped rules',
 );
+// The intent is unchanged: non-Admins must read ONLY their assigned store documents and must
+// never list the whole collection. The helper changed because `assignedStoreIdentifiers`
+// uppercases, and three production stores use opaque mixed-case document ids
+// (Noida 29 `cJk69Ti1mveh603L4edw`), so an uppercased id is a path that does not exist.
 assert.match(
   posSource,
-  /assignedStoreIdentifiers\(staffProfile\)/,
-  'POS must read only normalized assigned store documents for non-Admins',
+  /assignedStoreDocumentIds\(staffProfile\)/,
+  'POS must read only assigned store documents for non-Admins, addressed by original-case id',
+);
+assert.doesNotMatch(
+  posSource,
+  /assignedStoreIdentifiers\(staffProfile\)\s*\n\s*\.map\(\(storeId\) => getDoc/,
+  'POS must not use the uppercased matching identifier as a Firestore document path',
 );
 
 console.log('POS store-access regression tests passed.');
