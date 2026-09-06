@@ -7,8 +7,8 @@ import process from 'node:process';
 
 const PRODUCTION_PROJECT = 'coffee-bond-pos';
 const PREVIEW_PROJECT = 'coffee-bond-pos-preview';
-const PROTECTED_BRANCH = 'codex/production-staff-baseline-027a1e1491a811eb';
-const DEFAULT_BASELINE_REF = 'production-staff-release-baseline-027a1e1491a811eb';
+const PROTECTED_BRANCH = 'codex/production-staff-baseline-b6dd6eb6c731ec98';
+const DEFAULT_BASELINE_REF = 'production-staff-release-baseline-b6dd6eb6c731ec98';
 
 function fail(message) {
   console.error(`STAFF_RELEASE_PREFLIGHT=FAIL`);

@@ -3,18 +3,19 @@
 ## Protected production baseline
 
 The currently working staff/POS release is Firebase Hosting version
-`027a1e1491a811eb` on site `coffee-bond-pos`.
+`b6dd6eb6c731ec98` on site `coffee-bond-pos`.
 
-- Exact deployed source commit: `ef196da472a8153fb9cea6bf7303ed53328c4c8c`
-- Exact-source tag: `production-staff-hosting-027a1e1491a811eb`
-- Protected branch: `codex/production-staff-baseline-027a1e1491a811eb`
+- Exact deployed source commit: `0b7f97e712c8238886c38b6534d8f1620a75782d`
+- Exact-source tag: `production-staff-hosting-b6dd6eb6c731ec98`
+- Protected release-baseline tag: `production-staff-release-baseline-b6dd6eb6c731ec98`
+- Protected branch: `codex/production-staff-baseline-b6dd6eb6c731ec98`
 - Protected worktree:
-  `/Users/narendrashukla/Developer/COFFEEBOND-POS-production-staff-baseline-027a1e1491a811eb`
+  `/Users/narendrashukla/Developer/COFFEEBOND-POS-production-staff-baseline-b6dd6eb6c731ec98`
 
-The source commit includes the narrow patch that was uncommitted when the release was
-built. It is not merely the earlier `e8c16f9` base. The retained release candidate's
-`dist/` was compared with Hosting: 110 of 110 user-file paths and Firebase gzip/SHA-256
-hashes matched.
+The source commit is the exact clean release source used to build the verified Global
+Items staff release. A fresh production build was compared with active Hosting: all 114
+user-file paths and Firebase gzip/SHA-256 hashes matched. The Hosting API reports 116
+files in total because it also includes 2 Firebase-reserved `/__/firebase/` files.
 
 The protected branch and worktree are release inputs, not development space. Never
 develop on them and never deploy a long-running feature branch directly to production.
@@ -61,7 +62,7 @@ delimited manifest:
 ```bash
 node scripts/staff-release-preflight.mjs \
   --project=coffee-bond-pos \
-  --baseline=production-staff-release-baseline-027a1e1491a811eb \
+  --baseline=production-staff-release-baseline-b6dd6eb6c731ec98 \
   --approved-file=frontend/example.tsx
 ```
 

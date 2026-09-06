@@ -2,11 +2,10 @@
 
 _Verified 2026-09-06._
 
-## Staff/POS rollback baseline
+## Staff/POS verified production baseline
 
-The production staff site is healthy after rollback to Hosting version
-`027a1e1491a811eb`. The failed successor was `11ffc03e3f5740c5`; it is not a source
-baseline.
+The production staff site is healthy on verified Global Items Hosting version
+`b6dd6eb6c731ec98`.
 
 Verified production POS state:
 
@@ -21,11 +20,14 @@ Verified production POS state:
 | Running Orders | PASS |
 | Online | PASS |
 | Reports | PASS |
+| Global Items live | YES |
+| Customer ordering smoke | PASS |
 
 Exact deployed source is committed as
-`ef196da472a8153fb9cea6bf7303ed53328c4c8c` and tagged
-`production-staff-hosting-027a1e1491a811eb`. The retained candidate matched all 110
-user-file Hosting paths and hashes. See
+`0b7f97e712c8238886c38b6534d8f1620a75782d` and tagged
+`production-staff-hosting-b6dd6eb6c731ec98`. A fresh production staff build matched all
+114 user-file Hosting paths and Firebase gzip/SHA-256 hashes; the remaining 2 of the 116
+Hosting API entries are Firebase-reserved files. See
 `../skills/10-protected-staff-release-workflow.md`.
 
 ## Projects and sites
@@ -89,20 +91,19 @@ Authoritative provenance for point earning is `PRIVATE_CHECKOUT_SESSION`.
 
 `aggregateKotOrderStatus` was newly created in production during this work.
 
-The Phase 4 composite/PENDING_BOM hotfix deployed only `submitCustomerOrder`,
-`authorizePosAddOns`, `createCustomerCheckoutSession`, and `acceptPaidRazorpayOrder`,
-followed by the staff hosting target. Customer hosting, Firestore rules, Razorpay
-configuration, and BOND functions were unchanged.
+The verified Global Items release deployed Firestore rules, only
+`createCustomerCheckoutSession` and `submitCustomerOrder`, and the staff Hosting target.
+Customer Hosting, Razorpay configuration, and BOND functions were unchanged.
 
 ## Git state
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_BASE_SHA=ef196da472a8153fb9cea6bf7303ed53328c4c8c
-PRODUCTION_STAFF_HOSTING_VERSION=027a1e1491a811eb
-PRODUCTION_STAFF_TAG=production-staff-hosting-027a1e1491a811eb
-PRODUCTION_HOTFIX_PUSHED=NO
+PRODUCTION_BASE_SHA=0b7f97e712c8238886c38b6534d8f1620a75782d
+PRODUCTION_STAFF_HOSTING_VERSION=b6dd6eb6c731ec98
+PRODUCTION_STAFF_TAG=production-staff-hosting-b6dd6eb6c731ec98
+PRODUCTION_BASELINE_TAG=production-staff-release-baseline-b6dd6eb6c731ec98
+PRODUCTION_BASELINE_BRANCH=codex/production-staff-baseline-b6dd6eb6c731ec98
 ```
 
-The exact staff baseline commit and tag are local and have not been pushed. Remote changes
-still require separate explicit approval.
+The exact-source tag and protected baseline branch/tag are preserved on `origin`.
