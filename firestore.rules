@@ -1222,6 +1222,12 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Private per-store commercial and menu-presentation overrides.
+    // Release 1B has no POS consumer, so only an active Admin may read or write them.
+    match /storeItemConfig/{configId} {
+      allow read, write: if isAdmin();
+    }
+
     match /storeStock/{stockId} {
       allow read: if isActiveStaff();
       allow create: if ((isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId))

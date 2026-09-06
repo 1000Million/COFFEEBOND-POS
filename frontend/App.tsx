@@ -48,6 +48,7 @@ const Phase7IBomAliasCorrection = lazy(() => import('./pages/admin/Phase7IBomAli
 const POSReadiness = lazy(() => import('./pages/admin/POSReadiness'));
 const ProductImages = lazy(() => import('./pages/admin/ProductImages'));
 const MenuManagementHub = lazy(() => import('./pages/admin/MenuManagementHub'));
+const GlobalItems = lazy(() => import('./pages/admin/GlobalItems'));
 const POSHome = lazy(() => import('./pages/pos/POSHome'));
 const IncomingOnlineOrders = lazy(() => import('./pages/pos/IncomingOnlineOrders'));
 const RunningOrders = lazy(() => import('./pages/pos/RunningOrders'));
@@ -149,6 +150,7 @@ export default function App() {
                   <Route path="/admin/phase-7h-stock-costing" element={<Phase7HStockCosting />} />
                   <Route path="/admin/phase-7i-bom-alias-correction" element={<Phase7IBomAliasCorrection />} />
                   <Route path="/admin/pos-readiness" element={<POSReadiness />} />
+                  <Route path="/admin/global-items" element={<GlobalItems />} />
                   <Route path="/admin/product-images" element={<ProductImages />} />
                   <Route path="/admin/seed" element={<Seed />} />
                   <Route path="/admin/staff" element={<StaffManagement />} />

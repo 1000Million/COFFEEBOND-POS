@@ -13,17 +13,20 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
-  writeBatch,
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
 import { useAuth } from '../../contexts/AuthContext';
 import { db, storage } from '../../lib/firebase';
 import { buildPublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
+import { STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
+import { canonicalDataToken, snapshotRevisionToken } from '../../lib/storeItemConfigAdmin';
 import {
   buildProductImageAuditRecord,
   buildProductImagePatch,
@@ -113,6 +116,7 @@ export default function ProductImages() {
   const [prepItems, setPrepItems] = useState<PrepItem[]>([]);
   const [storeStock, setStoreStock] = useState<(StoreStock & Record<string, unknown>)[]>([]);
   const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
+  const [storeItemConfigs, setStoreItemConfigs] = useState<StoreItemConfig[]>([]);
   const [auditRows, setAuditRows] = useState<ProductImageAudit[]>([]);
   const [selectedProductCode, setSelectedProductCode] = useState<string>('');
   const [search, setSearch] = useState('');
@@ -162,7 +166,8 @@ export default function ProductImages() {
           || (imageFilter === 'missing-image' && !hasImage);
         return matchesSearch && matchesCategory && matchesActive && matchesImage;
       })
-      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name));
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)
+        || String(a.displayName || a.name || a.code).localeCompare(String(b.displayName || b.name || b.code)));
   }, [activeFilter, categoryFilter, imageFilter, search, sellableFinishedGoods]);
 
   const coverage = useMemo(() => countCoverage(sellableFinishedGoods), [sellableFinishedGoods]);
@@ -177,13 +182,14 @@ export default function ProductImages() {
       setError('');
       setAuditWarning('');
       try {
-        const [finishedSnap, storesSnap, rawSnap, prepSnap, stockSnap, addOnGroupSnap] = await Promise.all([
-          readWithContext('LOAD_FINISHED_GOODS', 'finishedGoods', () => getDocs(query(collection(db, 'finishedGoods'), orderBy('name', 'asc')))),
+        const [finishedSnap, storesSnap, rawSnap, prepSnap, stockSnap, addOnGroupSnap, configSnap] = await Promise.all([
+          readWithContext('LOAD_FINISHED_GOODS', 'finishedGoods', () => getDocs(collection(db, 'finishedGoods'))),
           readWithContext('LOAD_STORES', 'stores', () => getDocs(query(collection(db, 'stores')))),
           readWithContext('LOAD_RAW_INGREDIENTS', 'rawIngredients', () => getDocs(query(collection(db, 'rawIngredients')))),
           readWithContext('LOAD_PREP_ITEMS', 'prepItems', () => getDocs(query(collection(db, 'prepItems')))),
           readWithContext('LOAD_STORE_STOCK', 'storeStock', () => getDocs(query(collection(db, 'storeStock')))),
           readWithContext('LOAD_ADD_ON_GROUPS', 'addOnGroups', () => getDocs(query(collection(db, 'addOnGroups')))),
+          readWithContext('LOAD_STORE_ITEM_CONFIG', STORE_ITEM_CONFIG_COLLECTION, () => getDocs(collection(db, STORE_ITEM_CONFIG_COLLECTION))),
         ]);
 
         const auditSnap = await readWithContext(
@@ -198,7 +204,18 @@ export default function ProductImages() {
         });
 
         if (!active) return;
-        const nextFinishedGoods = finishedSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as FinishedGoodRecord));
+        const nextFinishedGoods = finishedSnap.docs
+          .map((snap) => {
+            const data = snap.data() || {};
+            return {
+              id: snap.id,
+              ...data,
+              // Keep legacy nameless rows usable in this in-memory Admin view without
+              // mutating their global catalogue document.
+              name: String(data.name || data.displayName || data.code || snap.id),
+            } as FinishedGoodRecord;
+          })
+          .sort((a, b) => String(a.name || a.displayName || a.code).localeCompare(String(b.name || b.displayName || b.code)));
         const nextSellableFinishedGoods = nextFinishedGoods.filter((item) => item.isSellable !== false);
         setFinishedGoods(nextFinishedGoods);
         setStores(storesSnap.docs
@@ -209,6 +226,7 @@ export default function ProductImages() {
         setPrepItems(prepSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as PrepItem)));
         setStoreStock(stockSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as StoreStock & Record<string, unknown>)));
         setAddOnGroups(addOnGroupSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as AddOnGroup)));
+        setStoreItemConfigs(configSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as StoreItemConfig)));
         setAuditRows(auditSnap
           ? auditSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() || {}) } as ProductImageAudit))
           : []);
@@ -288,82 +306,121 @@ export default function ProductImages() {
   };
 
   const finalizeFirestoreWrite = async (mutation: PendingMutation) => {
-    if (!selectedProduct) throw new Error('Select a product first.');
-
-    const nextFinishedGoods = finishedGoods.map((item) => {
-      if (item.id !== mutation.productDocumentId) return item;
-      return {
-        ...item,
-        ...buildProductImagePatch({
-          product: item,
-          action: mutation.action,
-          newImageUrl: mutation.downloadUrl,
-          newStoragePath: mutation.storagePath,
-          actorUid: mutation.actorUid,
-          actorEmail: mutation.actorEmail,
-          timestamp: mutation.timestamp,
-        }),
-      };
-    });
-
-    const updatedProduct = nextFinishedGoods.find((item) => item.id === mutation.productDocumentId);
-    if (!updatedProduct) throw new Error('The selected product could not be found after the image update.');
-
-    const batch = writeBatch(db);
-    batch.update(
-      doc(db, 'finishedGoods', mutation.productDocumentId),
-      buildProductImagePatch({
-        product: selectedProduct,
-        action: mutation.action,
-        newImageUrl: mutation.downloadUrl,
-        newStoragePath: mutation.storagePath,
-        actorUid: mutation.actorUid,
-        actorEmail: mutation.actorEmail,
-        timestamp: mutation.timestamp,
-      }),
-    );
-    batch.set(
-      doc(collection(db, 'productImageAudit')),
-      buildProductImageAuditRecord({
-        product: selectedProduct,
-        action: mutation.action,
-        newImageUrl: mutation.downloadUrl,
-        newStoragePath: mutation.storagePath,
-        actorUid: mutation.actorUid,
-        actorEmail: mutation.actorEmail,
-        timestamp: mutation.timestamp,
-      }),
-    );
-
-    const snapshotStores = stores.length > 0 ? stores : [];
-    for (const store of snapshotStores) {
-      const snapshot = buildPublicMenuAvailabilitySnapshot({
-        store,
-        finishedGoods: nextFinishedGoods,
-        storeStock,
-        rawIngredients,
-        prepItems,
-        addOnGroups,
-      });
-      batch.set(doc(db, 'publicMenuAvailability', store.code), {
-        ...snapshot,
-        updatedAt: mutation.timestamp,
-        updatedBy: mutation.actorUid,
-      });
-    }
-
-    await batch.commit();
-    setFinishedGoods(nextFinishedGoods);
-    setMessage(`Saved image for ${selectedProduct.name}. Public menu snapshots refreshed.`);
-    setAuditRows((rows) => [buildProductImageAuditRecord({
-      product: selectedProduct,
+    // Re-read every snapshot source immediately before publishing. This operation
+    // may be retried long after the page originally loaded (for example after a
+    // completed Storage upload), so cached arrays are not safe rebuild inputs.
+    const [finishedSnap, storesSnap, rawSnap, prepSnap, stockSnap, addOnGroupSnap, configSnap] = await Promise.all([
+      getDocs(collection(db, 'finishedGoods')),
+      getDocs(collection(db, 'stores')),
+      getDocs(collection(db, 'rawIngredients')),
+      getDocs(collection(db, 'prepItems')),
+      getDocs(collection(db, 'storeStock')),
+      getDocs(collection(db, 'addOnGroups')),
+      getDocs(collection(db, STORE_ITEM_CONFIG_COLLECTION)),
+    ]);
+    const sourceProductData = finishedSnap.docs.find((entry) => entry.id === mutation.productDocumentId)?.data();
+    if (!sourceProductData) throw new Error('The selected product no longer exists. Nothing was published.');
+    const freshFinishedGoods = finishedSnap.docs
+      .map((entry) => {
+        const data = entry.data() || {};
+        return {
+          id: entry.id,
+          ...data,
+          name: String(data.name || data.displayName || data.code || entry.id),
+        } as FinishedGoodRecord;
+      })
+      .sort((left, right) => String(left.name || left.displayName || left.code).localeCompare(String(right.name || right.displayName || right.code)));
+    const freshSelectedProduct = freshFinishedGoods.find((item) => item.id === mutation.productDocumentId);
+    if (!freshSelectedProduct) throw new Error('The selected product could not be loaded. Nothing was published.');
+    const imagePatch = buildProductImagePatch({
+      product: freshSelectedProduct,
       action: mutation.action,
       newImageUrl: mutation.downloadUrl,
       newStoragePath: mutation.storagePath,
       actorUid: mutation.actorUid,
       actorEmail: mutation.actorEmail,
       timestamp: mutation.timestamp,
-    }), ...rows]);
+    });
+    const nextFinishedGoods = freshFinishedGoods.map((item) => (
+      item.id === mutation.productDocumentId ? { ...item, ...imagePatch } : item
+    ));
+    const freshStores = storesSnap.docs
+      .map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as StoreRecord))
+      .filter((store) => store.isActive !== false)
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const freshRawIngredients = rawSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as RawIngredient));
+    const freshPrepItems = prepSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as PrepItem));
+    const freshStoreStock = stockSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as StoreStock & Record<string, unknown>));
+    const freshAddOnGroups = addOnGroupSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as AddOnGroup));
+    const freshStoreItemConfigs = configSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) } as StoreItemConfig));
+    const snapshotRefs = freshStores.map((store) => doc(db, 'publicMenuAvailability', store.code));
+    const publicSnapshots = await Promise.all(snapshotRefs.map((snapshotRef) => getDoc(snapshotRef)));
+    const expectedRevisions = new Map(publicSnapshots.map((snapshot, index) => [
+      snapshotRefs[index].path,
+      snapshotRevisionToken(snapshot.exists() ? snapshot.data() : null),
+    ]));
+    const snapshotPlans = freshStores.map((store) => ({
+      store,
+      snapshot: buildPublicMenuAvailabilitySnapshot({
+        store,
+        finishedGoods: nextFinishedGoods,
+        storeStock: freshStoreStock,
+        rawIngredients: freshRawIngredients,
+        prepItems: freshPrepItems,
+        addOnGroups: freshAddOnGroups,
+        storeItemConfigs: freshStoreItemConfigs,
+      }),
+    }));
+    const productRef = doc(db, 'finishedGoods', mutation.productDocumentId);
+    const auditRef = doc(collection(db, 'productImageAudit'));
+    const publicationRevision = globalThis.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const auditRecord = buildProductImageAuditRecord({
+      product: freshSelectedProduct,
+      action: mutation.action,
+      newImageUrl: mutation.downloadUrl,
+      newStoragePath: mutation.storagePath,
+      actorUid: mutation.actorUid,
+      actorEmail: mutation.actorEmail,
+      timestamp: mutation.timestamp,
+    });
+
+    await runTransaction(db, async (transaction) => {
+      const [liveProduct, ...liveSnapshots] = await Promise.all([
+        transaction.get(productRef),
+        ...snapshotRefs.map((snapshotRef) => transaction.get(snapshotRef)),
+      ]);
+      if (!liveProduct.exists() || canonicalDataToken(liveProduct.data()) !== canonicalDataToken(sourceProductData)) {
+        throw new Error('The product changed while the image was saving. Nothing was published; review and retry.');
+      }
+      liveSnapshots.forEach((liveSnapshot, index) => {
+        const expected = expectedRevisions.get(snapshotRefs[index].path);
+        const live = snapshotRevisionToken(liveSnapshot.exists() ? liveSnapshot.data() : null);
+        if (live !== expected) {
+          throw new Error('A customer menu changed while the image was saving. Nothing was published; review and retry.');
+        }
+      });
+      transaction.update(productRef, imagePatch);
+      transaction.set(auditRef, auditRecord);
+      snapshotPlans.forEach(({ snapshot }, index) => {
+        transaction.set(snapshotRefs[index], {
+          ...snapshot,
+          publicationRevision,
+          updatedAt: mutation.timestamp,
+          updatedBy: mutation.actorUid,
+        });
+      });
+    });
+
+    setFinishedGoods(nextFinishedGoods);
+    setStores(freshStores);
+    setRawIngredients(freshRawIngredients);
+    setPrepItems(freshPrepItems);
+    setStoreStock(freshStoreStock);
+    setAddOnGroups(freshAddOnGroups);
+    setStoreItemConfigs(freshStoreItemConfigs);
+    setMessage(`Saved image for ${freshSelectedProduct.name}. Public menu snapshots refreshed.`);
+    setAuditRows((rows) => [auditRecord, ...rows]);
   };
 
   const submitUpload = async () => {

@@ -44,6 +44,7 @@ const {
   canonicalizeRequestedCart,
 } = require('../functions/posAddOnAuthorization.js');
 const { canonicalizeCustomerCheckout } = require('../functions/customerCheckoutCanonicalization.js');
+const { storeItemConfigDocId } = require('../functions/storeItemConfigPolicy.js');
 const {
   buildKotTasks,
   expandCompositeInventoryLines,
@@ -482,7 +483,7 @@ function fakeDb(documents) {
   };
 }
 
-const customerDb = fakeDb({
+const customerDocuments = {
   [`stores/${STORE_ID}`]: {
     id: STORE_ID,
     code: STORE_ID,
@@ -492,7 +493,18 @@ const customerDb = fakeDb({
   },
   'appSettings/gstConfig': { defaultGstRate: 5 },
   [`publicMenuAvailability/${STORE_ID}`]: {
-    items: { [setParent.code]: { available: true } },
+    items: { [setParent.code]: {
+      itemCode: setParent.code,
+      fgCode: setParent.code,
+      available: true,
+      publicStatus: 'AVAILABLE',
+    } },
+    menuItems: { [setParent.code]: {
+      ...setParent,
+      id: setParent.code,
+      code: setParent.code,
+      availableStoreIds: [STORE_ID],
+    } },
   },
   [`finishedGoods/${setParent.id}`]: setParent,
   [`addOnGroups/${setChoice.id}`]: setChoice,
@@ -500,7 +512,8 @@ const customerDb = fakeDb({
     `finishedGoods/${product.id}`,
     product,
   ])),
-});
+};
+const customerDb = fakeDb(customerDocuments);
 const customerCanonical = await canonicalizeCustomerCheckout({
   db: customerDb,
   sessionId: 'SESSION_1',
@@ -522,6 +535,60 @@ assert.deepEqual(
   ['TR_ESPRESSO_BUN', 'TR_TOMATO_MOZZARELLA_PIZZA'],
 );
 assert.equal(customerCanonical.items[0].components[1].prepStation, 'KITCHEN');
+
+const selectedChildCode = 'TR_TOMATO_MOZZARELLA_PIZZA';
+const childConfigPath = `storeItemConfig/${storeItemConfigDocId(STORE_ID, selectedChildCode)}`;
+await assert.rejects(
+  canonicalizeCustomerCheckout({
+    db: fakeDb({
+      ...customerDocuments,
+      [childConfigPath]: {
+        storeId: STORE_ID,
+        itemCode: selectedChildCode,
+        isAvailableOverride: false,
+      },
+    }),
+    sessionId: 'SESSION_CHILD_OFF',
+    data: {
+      storeId: STORE_ID,
+      storeCode: STORE_ID,
+      customerName: 'Child Off',
+      orderType: 'PICKUP',
+      items: [{
+        itemCode: setParent.code,
+        quantity: 1,
+        addOns: [{ groupId: setChoice.id, optionId: 'PIZZA', quantity: 1 }],
+      }],
+    },
+  }),
+  /not available|unavailable/i,
+);
+
+const childOnDocuments = {
+  ...customerDocuments,
+  [`finishedGoods/${selectedChildCode}`]: { ...children[selectedChildCode], isAvailable: false },
+  [childConfigPath]: {
+    storeId: STORE_ID,
+    itemCode: selectedChildCode,
+    isAvailableOverride: true,
+  },
+};
+const childOnCanonical = await canonicalizeCustomerCheckout({
+  db: fakeDb(childOnDocuments),
+  sessionId: 'SESSION_CHILD_ON',
+  data: {
+    storeId: STORE_ID,
+    storeCode: STORE_ID,
+    customerName: 'Child On',
+    orderType: 'PICKUP',
+    items: [{
+      itemCode: setParent.code,
+      quantity: 1,
+      addOns: [{ groupId: setChoice.id, optionId: 'PIZZA', quantity: 1 }],
+    }],
+  },
+});
+assert.equal(childOnCanonical.items[0].components[1].componentFinishedGoodCode, selectedChildCode);
 
 const expanded = expandCompositeInventoryLines([{
   lineKey: 'ORDER_LINE_1',
@@ -764,7 +831,18 @@ const deferredCustomerDb = fakeDb({
   },
   'appSettings/gstConfig': { defaultGstRate: 5 },
   [`publicMenuAvailability/${STORE_ID}`]: {
-    items: { [coffeeThreeWaysParent.code]: { available: true } },
+    items: { [coffeeThreeWaysParent.code]: {
+      itemCode: coffeeThreeWaysParent.code,
+      fgCode: coffeeThreeWaysParent.code,
+      available: true,
+      publicStatus: 'AVAILABLE',
+    } },
+    menuItems: { [coffeeThreeWaysParent.code]: {
+      ...coffeeThreeWaysParent,
+      id: coffeeThreeWaysParent.code,
+      code: coffeeThreeWaysParent.code,
+      availableStoreIds: [STORE_ID],
+    } },
   },
   [`finishedGoods/${coffeeThreeWaysParent.id}`]: coffeeThreeWaysParent,
   ...Object.fromEntries(Object.values(emptyBomChildren).map(product => [

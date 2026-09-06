@@ -4,6 +4,7 @@ const { randomBytes, createHash } = require('node:crypto');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const admin = require('firebase-admin');
+const { FieldValue } = require('firebase-admin/firestore');
 const { createParseSupplierInvoiceDraft } = require('./invoiceDraft');
 const { createComplimentaryAuthorizationFunction } = require('./complimentaryAuthorization');
 const { createPosAddOnAuthorizationFunction } = require('./posAddOnAuthorization');
@@ -25,6 +26,12 @@ const {
   resolveCanonicalCompositeComponents,
   allowsDeferredComponentBom,
 } = require('./compositeProductPolicy');
+const { resolvePublicCheckoutProduct } = require('./customerCheckoutCanonicalization');
+const {
+  STORE_ITEM_CONFIG_COLLECTION,
+  resolveStoreItem,
+  storeItemConfigDocId,
+} = require('./storeItemConfigPolicy');
 
 admin.initializeApp();
 
@@ -464,8 +471,8 @@ function buildOnlineOrderPayload(args) {
     paymentStatus: 'NOT_STARTED',
     trackingToken,
     publicOrderReference,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   };
 }
 
@@ -495,7 +502,7 @@ function buildPublicTrackingPayload(args) {
     publicStatus: 'PENDING',
     paymentProvider: onlineOrder.paymentProvider,
     paymentStatus: onlineOrder.paymentStatus,
-    submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+    submittedAt: FieldValue.serverTimestamp(),
     customerStatusMessage: publicStatusMessage('PENDING'),
   };
 }
@@ -601,15 +608,35 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       }
       return [productCode, product];
     }));
+    const storeItemConfigSnaps = await Promise.all(
+      requestedProductCodes.map((productCode) => transaction.get(
+        db.collection(STORE_ITEM_CONFIG_COLLECTION)
+          .doc(storeItemConfigDocId(store.id, productCode)),
+      )),
+    );
+    const checkoutProductsByCode = Object.fromEntries(requestedProductCodes.map((productCode, index) => {
+      const configSnapshot = storeItemConfigSnaps[index];
+      const config = configSnapshot.exists ? configSnapshot.data() : null;
+      if (config && (config.storeId !== store.id || config.itemCode !== productCode)) {
+        fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
+      }
+      const effectiveProduct = resolveStoreItem(privateProductsByCode[productCode], config);
+      return [productCode, resolvePublicCheckoutProduct({
+        product: effectiveProduct,
+        publicAvailability: availabilityItems[productCode],
+        publicMenuItem: menuItems[productCode],
+        store,
+      })];
+    }));
     const privateProductsById = Object.fromEntries(
-      Object.values(privateProductsByCode).map((product) => [product.id, product]),
+      Object.values(checkoutProductsByCode).map((product) => [product.id, product]),
     );
     const requestedGroupIds = [...new Set(requestedItems.flatMap((requestedItem) => [
       ...(Array.isArray(menuItems[requestedItem.itemCode]?.addOnGroupIds)
         ? menuItems[requestedItem.itemCode].addOnGroupIds
         : []),
-      ...(Array.isArray(privateProductsByCode[requestedItem.itemCode]?.addOnGroupIds)
-        ? privateProductsByCode[requestedItem.itemCode].addOnGroupIds
+      ...(Array.isArray(checkoutProductsByCode[requestedItem.itemCode]?.addOnGroupIds)
+        ? checkoutProductsByCode[requestedItem.itemCode].addOnGroupIds
         : []),
       ...requestedItem.addOns.map((addOn) => addOn.groupId),
     ]))];
@@ -641,17 +668,35 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         transaction.get(db.collection('finishedGoods').doc(productId))
       )),
     );
+    const componentConfigSnaps = await Promise.all(componentProductSnaps.map((snapshot) => (
+      snapshot.exists
+        ? transaction.get(db.collection(STORE_ITEM_CONFIG_COLLECTION).doc(
+          storeItemConfigDocId(store.id, snapshot.data()?.code || snapshot.id),
+        ))
+        : Promise.resolve(null)
+    )));
+    const resolvedComponentProducts = componentProductSnaps
+      .map((snapshot, index) => {
+        if (!snapshot.exists) return null;
+        const product = { id: snapshot.id, ...snapshot.data() };
+        const configSnapshot = componentConfigSnaps[index];
+        const config = configSnapshot?.exists ? configSnapshot.data() : null;
+        if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
+          fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
+        }
+        return resolveStoreItem(product, config);
+      })
+      .filter(Boolean);
     const componentProductsById = {
       ...privateProductsById,
-      ...Object.fromEntries(componentProductSnaps
-        .filter((snapshot) => snapshot.exists)
-        .map((snapshot) => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+      ...Object.fromEntries(resolvedComponentProducts
+        .map((product) => [product.id, product])),
     };
     let componentsByRequestedIndex;
     try {
       componentsByRequestedIndex = requestedItems.map((requested) => (
         resolveCanonicalCompositeComponents({
-          parentProduct: privateProductsByCode[requested.itemCode],
+          parentProduct: checkoutProductsByCode[requested.itemCode],
           requestedSelections: requested.addOns,
           groupsById: privateAddOnGroups,
           componentProductsById,
@@ -667,7 +712,10 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
     }
 
     const onlineItems = requestedItems.map((requested, index) => {
-      const item = menuItems[requested.itemCode];
+      // The private catalogue plus private store override is authoritative. The
+      // public row was already required above as an exact exposure/price gate;
+      // never copy tax, names, KOT fields, or add-on assignments back from it.
+      const item = checkoutProductsByCode[requested.itemCode];
       const itemAvailability = availabilityItems[requested.itemCode];
       if (!isItemPubliclyOrderable(item, store, itemAvailability)) {
         fail('failed-precondition', 'Some items are currently unavailable. Please update your basket.');
@@ -757,7 +805,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       trackingToken,
       publicOrderReference,
       response,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
 
     return response;

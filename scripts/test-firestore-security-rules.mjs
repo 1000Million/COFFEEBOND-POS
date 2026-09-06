@@ -105,6 +105,7 @@ const addOnGroupsBlock = extractMatchBlock(rules, 'match /addOnGroups/{groupId}'
 const addOnGroupAuditBlock = extractMatchBlock(rules, 'match /addOnGroupAudit/{auditId}');
 const productAddOnAuditBlock = extractMatchBlock(rules, 'match /productAddOnAudit/{auditId}');
 const finishedGoodsBlock = extractMatchBlock(rules, 'match /finishedGoods/{itemId}');
+const storeItemConfigBlock = extractMatchBlock(rules, 'match /storeItemConfig/{configId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const posAddOnAuthorizationsBlock = extractMatchBlock(rules, 'match /posAddOnAuthorizations/{authorizationId}');
 const razorpayPaymentIntentsBlock = extractMatchBlock(rules, 'match /razorpayPaymentIntents/{intentId}');
@@ -143,6 +144,9 @@ assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(franchiseAccessA
 
 assert(/allow\s+write:\s*if\s+isAdmin\(\);/.test(finishedGoodsBlock), 'Only active Admin may update finished-good add-on option allowlists.');
 assert(!/isStoreManager\(\)|isCashier\(\)|isFranchise/.test(finishedGoodsBlock), 'Store Manager, Cashier, and Franchise roles must not write finishedGoods.');
+assert(storeItemConfigBlock !== '', 'storeItemConfig must declare an explicit rules block.');
+assert(/allow\s+read,\s*write:\s*if\s+isAdmin\(\);/.test(storeItemConfigBlock), 'Only active Admin may read or write per-store item overrides.');
+assert(!/if\s+true|isActiveStaff\(\)|isStoreManager\(\)|isCashier\(\)|isFranchise/.test(storeItemConfigBlock), 'Private storeItemConfig documents must not be exposed to Manager, Cashier, Franchise, customer, or public clients.');
 assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(productAddOnAuditBlock), 'Only active Admin may read or create product add-on audits.');
 assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productAddOnAuditBlock), 'Product add-on audits must be append-only.');
 
@@ -426,7 +430,8 @@ const cases = [
   'Pending BOM client updates can only cancel, never apply',
   'purchaseDrafts are server-created only and readable only by assigned staff',
   'supplier invoices are private Storage files with Admin/Manager-only upload',
-  'invoice uploads are capped at 10 MB and limited to PDF/JPG/PNG'
+  'invoice uploads are capped at 10 MB and limited to PDF/JPG/PNG',
+  'storeItemConfig is private and active-Admin-only'
 ];
 
 if (failures.length > 0) {

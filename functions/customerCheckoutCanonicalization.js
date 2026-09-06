@@ -9,6 +9,11 @@ const {
   CompositeProductPolicyError,
   collectRequiredComponentFinishedGoodIds,
 } = require('./compositeProductPolicy');
+const {
+  STORE_ITEM_CONFIG_COLLECTION,
+  resolveStoreItem,
+  storeItemConfigDocId,
+} = require('./storeItemConfigPolicy');
 
 const MAX_NAME_LENGTH = 80;
 const MAX_NOTE_LENGTH = 200;
@@ -115,6 +120,64 @@ async function resolveFinishedGood(db, productId, productCode) {
   return { id: byCode.docs[0].id, ...byCode.docs[0].data() };
 }
 
+/**
+ * Verify Pay Online against the same derived public-menu row the customer selected.
+ *
+ * The supplied product has already been resolved from the private finishedGood and
+ * private storeItemConfig source documents. The public snapshot is only a
+ * consistency/exposure gate: it must match that source-derived effective state.
+ * Requiring both public maps rejects a stale cart after an item is hidden.
+ */
+function resolvePublicCheckoutProduct({ product, publicAvailability, publicMenuItem, store }) {
+  const productCode = cleanText(product?.code || product?.id, 80);
+  const menuCode = cleanText(publicMenuItem?.code || publicMenuItem?.id, 80);
+  const availabilityCode = cleanText(
+    publicAvailability?.itemCode || publicAvailability?.fgCode,
+    80,
+  );
+  const assignedStoreIds = Array.isArray(publicMenuItem?.availableStoreIds)
+    ? publicMenuItem.availableStoreIds
+    : [];
+  const sourceStoreIds = Array.isArray(product?.availableStoreIds)
+    ? product.availableStoreIds
+    : [];
+  const sourceAssigned = sourceStoreIds.length === 0 || sourceStoreIds.includes(store.id);
+  const publicPrice = Number(publicMenuItem?.salePrice);
+  const effectivePrice = Number(product?.salePrice);
+  const setupWarningOnly = isGoldenISalesFirstOrderingStore(store)
+    && publicAvailability?.publicStatus === 'SETUP_INCOMPLETE';
+
+  if (
+    !productCode
+    || !publicMenuItem
+    || !publicAvailability
+    || menuCode !== productCode
+    || availabilityCode !== productCode
+    || product.menuVisible === false
+    || product.isActive !== true
+    || product.isSellable !== true
+    || !sourceAssigned
+    || !assignedStoreIds.includes(store.id)
+    || publicMenuItem.isActive !== true
+    || publicMenuItem.isSellable !== true
+    || publicMenuItem.isAvailable !== (product.isAvailable !== false)
+    || !Number.isFinite(publicPrice)
+    || !Number.isFinite(effectivePrice)
+    || publicPrice <= 0
+    || publicPrice !== effectivePrice
+    || (publicAvailability.available !== true && !setupWarningOnly)
+  ) {
+    fail('failed-precondition', 'Some items are currently unavailable. Please update your basket.');
+  }
+
+  // canonicalizeRequestedCart intentionally keeps the stricter POS assignment
+  // contract. Adapt only this customer-checkout copy for the catalogue's legacy
+  // empty-list-means-all-stores convention; the POS resolver is untouched.
+  return sourceStoreIds.length === 0
+    ? { ...product, availableStoreIds: [store.id] }
+    : product;
+}
+
 async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
   const sanitized = sanitizeCheckoutRequest(data, sessionId);
   const store = await resolveStore(db, sanitized.storeId, sanitized.storeCode);
@@ -131,23 +194,35 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
   }
   const availability = availabilitySnapshot.data() || {};
   const availabilityItems = availability.items || {};
+  const publicMenuItems = availability.menuItems || {};
 
-  const resolvedProducts = await Promise.all(sanitized.requestedItems.map(item => (
+  const privateProducts = await Promise.all(sanitized.requestedItems.map(item => (
     resolveFinishedGood(db, item.parentProductId, item.parentProductCode)
   )));
+  const configSnapshots = await Promise.all(privateProducts.map(product => (
+    db.collection(STORE_ITEM_CONFIG_COLLECTION)
+      .doc(storeItemConfigDocId(store.id, product.code))
+      .get()
+  )));
+  const resolvedProducts = privateProducts.map((product, index) => {
+    const configSnapshot = configSnapshots[index];
+    const config = configSnapshot.exists ? configSnapshot.data() : null;
+    if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
+      fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
+    }
+    const effectiveProduct = resolveStoreItem(product, config);
+    return resolvePublicCheckoutProduct({
+      product: effectiveProduct,
+      publicAvailability: availabilityItems[product.code],
+      publicMenuItem: publicMenuItems[product.code],
+      store,
+    });
+  });
   const requestedItems = sanitized.requestedItems.map((item, index) => ({
     ...item,
     parentProductId: resolvedProducts[index].id,
     parentProductCode: resolvedProducts[index].code,
   }));
-  for (const item of requestedItems) {
-    const publicAvailability = availabilityItems[item.parentProductCode];
-    const setupWarningOnly = isGoldenISalesFirstOrderingStore(store)
-      && publicAvailability?.publicStatus === 'SETUP_INCOMPLETE';
-    if (publicAvailability?.available === false && !setupWarningOnly) {
-      fail('failed-precondition', 'Some items are currently unavailable. Please update your basket.');
-    }
-  }
 
   const productsById = Object.fromEntries(resolvedProducts.map(product => [product.id, product]));
   const groupIds = [...new Set(
@@ -176,13 +251,31 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
   const componentProductSnapshots = await Promise.all(
     missingComponentProductIds.map(productId => db.collection('finishedGoods').doc(productId).get()),
   );
+  const componentConfigSnapshots = await Promise.all(
+    componentProductSnapshots.map(snapshot => (
+      snapshot.exists
+        ? db.collection(STORE_ITEM_CONFIG_COLLECTION)
+          .doc(storeItemConfigDocId(store.id, snapshot.data()?.code || snapshot.id))
+          .get()
+        : Promise.resolve(null)
+    )),
+  );
+  const resolvedComponentProducts = componentProductSnapshots
+    .map((snapshot, index) => {
+      if (!snapshot.exists) return null;
+      const product = { id: snapshot.id, ...snapshot.data() };
+      const configSnapshot = componentConfigSnapshots[index];
+      const config = configSnapshot?.exists ? configSnapshot.data() : null;
+      if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
+        fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
+      }
+      return resolveStoreItem(product, config);
+    })
+    .filter(Boolean);
   const componentProductsById = {
     ...productsById,
     ...Object.fromEntries(
-      componentProductSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [
-        snapshot.id,
-        { id: snapshot.id, ...snapshot.data() },
-      ]),
+      resolvedComponentProducts.map(product => [product.id, product]),
     ),
   };
   const canonical = canonicalizeRequestedCart({
@@ -257,6 +350,7 @@ module.exports = {
   cleanText,
   isCustomerOrderingEnabledForStore,
   isGoldenISalesFirstOrderingStore,
+  resolvePublicCheckoutProduct,
   roundMoney,
   sanitizeCheckoutRequest,
 };

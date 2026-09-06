@@ -11,6 +11,7 @@ import {
 } from '../types/menu-management';
 import { normalizeAddOnOptionIdsByGroup, sanitizeAddOnGroupsForPublic } from './addOns';
 import { trustedDietaryClassification } from './customerMenuPresentation';
+import { resolveStoreItem, storeItemConfigByItemCode, type StoreItemConfig } from './storeItemConfig';
 
 export type PublicMenuAvailabilityStatus = 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
 
@@ -65,6 +66,8 @@ type BuildSnapshotInput = {
   rawIngredients?: RawIngredient[];
   prepItems?: PrepItem[];
   addOnGroups?: AddOnGroup[];
+  /** Per-store overrides. Omitted or empty preserves the protected baseline behavior. */
+  storeItemConfigs?: StoreItemConfig[];
 };
 
 function toNumber(value: unknown): number {
@@ -616,7 +619,9 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
   return {
     id: item.code,
     code: item.code,
-    name: item.name,
+    // Legacy catalogue rows may predate the required `name` field. Never emit
+    // `undefined` into Firestore; preserve their display name (or code) instead.
+    name: item.name || item.displayName || item.code,
     ...(item.displayName ? { displayName: item.displayName } : {}),
     ...(item.description ? { description: item.description } : {}),
     posCategoryCode: item.posCategoryCode || 'MISC',
@@ -694,7 +699,11 @@ function evaluateItemAvailability(
 }
 
 export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): PublicMenuAvailabilitySnapshot {
-  const { store, finishedGoods, rawIngredients = [], prepItems = [], addOnGroups = [] } = input;
+  const { store, rawIngredients = [], prepItems = [], addOnGroups = [] } = input;
+  const overridesByCode = storeItemConfigByItemCode(store.id, input.storeItemConfigs);
+  const finishedGoods = overridesByCode.size === 0
+    ? input.finishedGoods
+    : input.finishedGoods.map((item) => resolveStoreItem(item, overridesByCode.get(item.code)));
   const rawByCode = new Map(rawIngredients.map((item) => [item.code, item]));
   const prepByCode = new Map(prepItems.map((item) => [item.code, item]));
   const finishedByCode = new Map(finishedGoods.map((item) => [item.code, item]));
@@ -711,7 +720,9 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
 
   const visibleItems = finishedGoods
     .filter((item) => item.isActive !== false && item.isSellable !== false && isStoreAssigned(item, store.id))
-    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.displayName || a.name).localeCompare(b.displayName || b.name));
+    .filter((item) => (item as { menuVisible?: boolean }).menuVisible !== false)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)
+      || String(a.displayName || a.name || a.code).localeCompare(String(b.displayName || b.name || b.code)));
 
   const evaluatedItems = visibleItems.reduce<Record<string, PublicMenuAvailabilityItem>>((acc, item) => {
     acc[item.code] = evaluateItemAvailability(

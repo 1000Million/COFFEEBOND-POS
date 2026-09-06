@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, runTransaction, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -19,6 +19,8 @@ import {
   FOOD_ADD_ON_OPTIONS,
 } from '../../lib/addOnGroupMapping';
 import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
+import { STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
+import { snapshotRevisionToken } from '../../lib/storeItemConfigAdmin';
 import { useAuth } from '../../contexts/AuthContext';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
@@ -96,6 +98,7 @@ type LoadedData = {
   finishedGoods: (FinishedGood & { id: string })[];
   storeStock: (StoreStock & { id: string } & Record<string, unknown>)[];
   addOnGroups: AddOnGroup[];
+  storeItemConfigs: StoreItemConfig[];
   gstConfig: AppGstConfig;
 };
 
@@ -296,14 +299,15 @@ async function loadGstConfig(): Promise<AppGstConfig> {
   };
 }
 
-async function loadReadinessData(): Promise<LoadedData> {
-  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, addOnGroupSnap, gstConfig] = await Promise.all([
+async function loadReadinessData(includeStoreItemConfigs = false): Promise<LoadedData> {
+  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, addOnGroupSnap, configSnap, gstConfig] = await Promise.all([
     getDocs(collection(db, 'stores')),
     getDocs(collection(db, 'rawIngredients')),
     getDocs(collection(db, 'prepItems')),
     getDocs(collection(db, 'finishedGoods')),
     getDocs(collection(db, 'storeStock')),
     getDocs(collection(db, 'addOnGroups')),
+    includeStoreItemConfigs ? getDocs(collection(db, STORE_ITEM_CONFIG_COLLECTION)) : Promise.resolve(null),
     loadGstConfig(),
   ]);
 
@@ -319,6 +323,9 @@ async function loadReadinessData(): Promise<LoadedData> {
     finishedGoods: finishedSnap.docs.map((snap) => withId(snap.id, snap.data() as FinishedGood & Record<string, unknown>)),
     storeStock: stockSnap.docs.map((snap) => withId(snap.id, snap.data() as StoreStock & Record<string, unknown>)),
     addOnGroups: addOnGroupSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() as AddOnGroup) })),
+    storeItemConfigs: configSnap
+      ? configSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() as StoreItemConfig) }))
+      : [],
     gstConfig,
   };
 }
@@ -914,7 +921,9 @@ export default function POSReadiness() {
 
   const isAdmin = staffProfile?.role === 'ADMIN';
   const isStoreManager = staffProfile?.role === 'STORE_MANAGER';
-  const canRefreshCustomerAvailability = isAdmin || isStoreManager;
+  // A complete override-aware rebuild reads private master configuration, so it
+  // is intentionally Admin-only. Managers retain their other readiness access.
+  const canRefreshCustomerAvailability = isAdmin;
   const readiness = useMemo(() => data ? buildStoreReadiness(data) : [], [data]);
   const espressoFix = useMemo(() => buildEspressoFixState(data), [data]);
   const addOnPhase1Readiness = useMemo(() => {
@@ -941,7 +950,7 @@ export default function POSReadiness() {
     setIsLoading(true);
     setError('');
     try {
-      const loaded = await loadReadinessData();
+      const loaded = await loadReadinessData(isAdmin);
       setData(loaded);
       setRefreshedAt(new Date().toLocaleString());
     } catch (err: unknown) {
@@ -953,7 +962,7 @@ export default function POSReadiness() {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!data) return;
@@ -990,7 +999,7 @@ export default function POSReadiness() {
       return;
     }
     if (!canRefreshCustomerAvailability) {
-      setError('Admin or Store Manager access is required to refresh customer menu availability.');
+      setError('Admin access is required to refresh customer menu availability.');
       return;
     }
     if (!data) {
@@ -1021,23 +1030,41 @@ export default function POSReadiness() {
     setSuccessMessage('');
 
     try {
+      const freshData = await loadReadinessData(true);
+      const freshStore = freshData.stores.find((item) => item.id === availabilityStoreId);
+      if (!freshStore) throw new Error('That store changed or is no longer active. Refresh and try again.');
+      const snapshotRef = doc(db, 'publicMenuAvailability', freshStore.code);
+      const currentPublicSnapshot = await getDoc(snapshotRef);
       const snapshot = buildPublicMenuAvailabilitySnapshot({
-        store,
-        finishedGoods: data.finishedGoods,
-        storeStock: data.storeStock,
-        rawIngredients: data.rawIngredients,
-        prepItems: data.prepItems,
-        addOnGroups: data.addOnGroups,
+        store: freshStore,
+        finishedGoods: freshData.finishedGoods,
+        storeStock: freshData.storeStock,
+        rawIngredients: freshData.rawIngredients,
+        prepItems: freshData.prepItems,
+        addOnGroups: freshData.addOnGroups,
+        storeItemConfigs: freshData.storeItemConfigs,
       });
       const staffName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Staff';
+      const expectedRevision = snapshotRevisionToken(
+        currentPublicSnapshot.exists() ? currentPublicSnapshot.data() : null,
+      );
+      const publicationRevision = globalThis.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await runTransaction(db, async (transaction) => {
+        const liveSnapshot = await transaction.get(snapshotRef);
+        if (snapshotRevisionToken(liveSnapshot.exists() ? liveSnapshot.data() : null) !== expectedRevision) {
+          throw new Error('The store menu changed while refreshing. Nothing was published; refresh and try again.');
+        }
+        transaction.set(snapshotRef, {
+          ...snapshot,
+          publicationRevision,
+          updatedAt: serverTimestamp(),
+          updatedBy: staffProfile?.uid || '',
+          updatedByName: staffName,
+        });
+      });
 
-      await setDoc(doc(db, 'publicMenuAvailability', store.code), {
-        ...snapshot,
-        updatedAt: serverTimestamp(),
-        updatedBy: staffProfile?.uid || '',
-        updatedByName: staffName,
-      }, { merge: true });
-
+      setData(freshData);
       setAvailabilityResult({ ...snapshot, updatedAtLabel: new Date().toLocaleString() });
       setAvailabilityConfirmationText('');
       setSuccessMessage(

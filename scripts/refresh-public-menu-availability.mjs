@@ -277,6 +277,18 @@ function snapshotCount(snapshot, key) {
   return value && typeof value === 'object' ? Object.keys(value).length : 0;
 }
 
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]),
+  );
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+
 function diffSnapshot(current, next) {
   const currentItemCount = snapshotCount(current, 'menuItems');
   const nextItemCount = snapshotCount(next, 'menuItems');
@@ -289,7 +301,9 @@ function diffSnapshot(current, next) {
     needsWrite: !current
       || currentItemCount !== nextItemCount
       || currentAddOnGroupCount !== nextAddOnGroupCount
-      || JSON.stringify(current?.addOnGroups || {}) !== JSON.stringify(next.addOnGroups || {})
+      || canonicalJson(current?.items || {}) !== canonicalJson(next.items || {})
+      || canonicalJson(current?.menuItems || {}) !== canonicalJson(next.menuItems || {})
+      || canonicalJson(current?.addOnGroups || {}) !== canonicalJson(next.addOnGroups || {})
       || currentAvailable !== next.availableCount
       || currentUnavailable !== next.unavailableCount
       || current?.storeId !== next.storeId
@@ -318,12 +332,17 @@ async function main() {
   if (!targetStore) fail(`Target store not found: ${TARGET_STORE_CODE}`);
   if (!sourceStore) fail(`Source store not found: ${SOURCE_STORE_CODE}`);
 
-  const [finishedSnap, addOnGroupSnap, targetAvailabilitySnap, sourceAvailabilitySnap] = await Promise.all([
+  const [finishedSnap, addOnGroupSnap, targetAvailabilitySnap, sourceAvailabilitySnap, targetOverrideSnap] = await Promise.all([
     firestore.collection('finishedGoods').get(),
     firestore.collection('addOnGroups').get(),
     firestore.collection('publicMenuAvailability').doc(targetStore.data.code || targetStore.id).get(),
     firestore.collection('publicMenuAvailability').doc(sourceStore.data.code || sourceStore.id).get(),
+    firestore.collection('storeItemConfig').where('storeId', '==', targetStore.id).limit(1).get(),
   ]);
+
+  if (!targetOverrideSnap.empty) {
+    fail(`Target store ${targetStore.data.code || targetStore.id} has Global Items overrides. Use the override-aware Global Items or POS Readiness rebuild path; this legacy script will not overwrite derived effective values.`);
+  }
 
   const finishedGoods = finishedSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
   const addOnGroups = addOnGroupSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
@@ -371,7 +390,7 @@ async function main() {
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: 'admin-script',
     updatedByName: 'Public menu refresh script',
-  }, { merge: true });
+  });
 
   console.log(`Wrote ${targetPath}. Public items: ${nextSnapshot.itemCount}, available: ${nextSnapshot.availableCount}, unavailable: ${nextSnapshot.unavailableCount}.`);
 }
