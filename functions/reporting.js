@@ -1,6 +1,7 @@
 'use strict';
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 const PROJECT_ID = 'coffee-bond-pos';
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -228,8 +229,8 @@ async function loadOrderRecords(admin, db, context) {
   const snapshots = await Promise.all(context.selected.map((storeId) => (
     db.collection('orders')
       .where('storeId', '==', storeId)
-      .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(context.range.start))
-      .where('createdAt', '<', admin.firestore.Timestamp.fromDate(context.range.end))
+      .where('createdAt', '>=', Timestamp.fromDate(context.range.start))
+      .where('createdAt', '<', Timestamp.fromDate(context.range.end))
       .orderBy('createdAt', 'asc')
       .limit(maxOrders + 1)
       .get()
@@ -260,8 +261,8 @@ async function loadOnlineOrders(admin, db, context) {
   const snapshots = await Promise.all(context.selected.map((storeId) => (
     db.collection('onlineOrders')
       .where('storeId', '==', storeId)
-      .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(context.range.start))
-      .where('createdAt', '<', admin.firestore.Timestamp.fromDate(context.range.end))
+      .where('createdAt', '>=', Timestamp.fromDate(context.range.start))
+      .where('createdAt', '<', Timestamp.fromDate(context.range.end))
       .orderBy('createdAt', 'asc')
       .limit(MAX_DETAIL_ORDERS + 1)
       .get()
@@ -326,7 +327,7 @@ async function appendAccessAudit(admin, db, context, mode, rowCount) {
       startDate: context.range.startIso,
       endDate: context.range.endIso,
       rowCount,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
   } catch (error) {
     console.error('report-access-audit-failed', {

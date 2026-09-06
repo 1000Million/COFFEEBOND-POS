@@ -2,6 +2,7 @@
 
 const { isDeepStrictEqual } = require('node:util');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { Timestamp } = require('firebase-admin/firestore');
 const { isAuthorizedStaffProfile } = require('./complimentaryAuthorizationPolicy');
 const {
   CompositeProductPolicyError,
@@ -764,8 +765,8 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
         canonicalItems,
       });
     }
-    const createdAt = admin.firestore.Timestamp.now();
-    const expiresAt = admin.firestore.Timestamp.fromMillis(createdAt.toMillis() + AUTHORIZATION_TTL_MS);
+    const createdAt = Timestamp.now();
+    const expiresAt = Timestamp.fromMillis(createdAt.toMillis() + AUTHORIZATION_TTL_MS);
     const authorizationRef = db.collection('posAddOnAuthorizations').doc();
     const staffName = cleanText(
       staff.displayName || staff.name || request.auth.token?.name || 'Staff',
