@@ -21,6 +21,11 @@ Never reset, stash, clean, or discard existing work without owner approval. Use 
 Both root and Functions `node_modules` must resolve inside the active worktree; never
 symlink dependencies across Coffee Bond worktrees.
 
+For staff releases, follow `10-protected-staff-release-workflow.md`. Never deploy a
+long-running feature branch. Create a new clean release worktree from the protected staff
+baseline, apply only the approved patch/commit, and require
+`scripts/staff-release-preflight.mjs` to pass before any deploy is considered.
+
 Preview and production env files are distinct and gitignored. Build preview targets with
 their explicit Vite modes. Verify whole project-id tokens in bundles because the production
 id is a prefix of the preview id. Never print or recreate secrets.
@@ -97,5 +102,10 @@ exposing them.
 Capture rollback points before deployment. Deploy only required targets. Re-read live
 state after each write, smoke exact routes, and distinguish static/test proof from a real
 transaction. Never claim production-ready without evidence.
+
+The critical staff smoke is mandatory: Golden I, Noida 29, and Noida 51 menus must be
+non-zero; product search, add-to-sale, Running Orders, Online, and Reports must work. If
+any check fails, roll back staff Hosting immediately. Do not change Firestore to repair a
+frontend release failure.
 
 Read `../knowledge/ENVIRONMENT_TRAPS.md` before diagnosing a build or deployment hang.

@@ -61,6 +61,8 @@ a completed transaction. "It should work" is not evidence.
 - `07-reporting-gst-permissions.md` — attribution, GST chain, roles and rules
 - `08-store-provisioning.md` — store identity, aliasing and reusable provisioning
 - `09-release-deployment-qa.md` — build/deploy discipline and release evidence
+- `10-protected-staff-release-workflow.md` — exact staff baseline, mandatory release gate,
+  smoke test, and rollback rule
 
 **Knowledge bank — what is built, deployed, decided and verified**
 

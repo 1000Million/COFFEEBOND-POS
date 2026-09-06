@@ -8,3 +8,7 @@
 4. Confirm `pwd`, branch, HEAD, status, and `git diff --check`.
 5. Continue from verified state; preserve uncommitted work.
 6. Do not redesign or reimplement a feature unless the current implementation proves a limitation.
+7. Before any staff release, read `docs/coffee-bond-ai/skills/10-protected-staff-release-workflow.md`.
+8. Never deploy a long-running feature branch directly to production. Create a clean,
+   short-lived release worktree from the protected production baseline and apply only the
+   approved patch.

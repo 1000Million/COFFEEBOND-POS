@@ -1,6 +1,25 @@
 # Current Handoff
 
-_Last updated: 2026-09-04._
+_Last updated: 2026-09-06._
+
+## Protected staff production baseline
+
+The staff/POS site is healthy after rollback.
+
+```text
+HOSTING_VERSION=027a1e1491a811eb
+EXACT_SOURCE_COMMIT=ef196da472a8153fb9cea6bf7303ed53328c4c8c
+EXACT_SOURCE_TAG=production-staff-hosting-027a1e1491a811eb
+PROTECTED_BRANCH=codex/production-staff-baseline-027a1e1491a811eb
+```
+
+Golden I has 125 POS menu items; Noida 29 and Noida 51 each have 128. POS menu,
+product search, add-to-sale, Running Orders, Online, and Reports are verified PASS.
+
+Do not deploy a long-running feature branch. Every staff release must follow
+`skills/10-protected-staff-release-workflow.md` and pass the non-deploying preflight gate.
+If any mandatory production POS smoke check fails, roll back staff Hosting immediately
+and do not touch Firestore to compensate.
 
 ## Production
 
@@ -33,24 +52,20 @@ The four flights are live: `TR_COFFEE_THREE_WAYS`, `TR_COLD_BOND_FLIGHT`,
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
-PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_BASE_SHA=ef196da472a8153fb9cea6bf7303ed53328c4c8c
+PRODUCTION_STAFF_HOSTING_VERSION=027a1e1491a811eb
+PRODUCTION_STAFF_TAG=production-staff-hosting-027a1e1491a811eb
 PRODUCTION_HOTFIX_PUSHED=NO
 ```
 
-The earlier Tasting Room rollout is preserved in `a8bff83`; the Phase 4 immutable
-composite/PENDING_BOM hotfix is deployed and preserved by this local commit, but is not
-yet pushed. `THIS_COMMIT` is intentionally symbolic because a commit cannot contain its
-own hash; use `git rev-parse HEAD` for the concrete SHA. Production has the scoped updates to
-`submitCustomerOrder`, `authorizePosAddOns`, `createCustomerCheckoutSession`, and
-`acceptPaidRazorpayOrder`, plus the matching staff hosting bundle. Firestore rules,
-customer hosting, Razorpay configuration, and BOND logic were not changed.
+The exact staff source is committed and tagged locally but is not pushed. Production
+Hosting and Firestore were not changed while establishing this baseline.
 
 ## High-priority TODO
 
-1. **Push the preserved production hotfix only after explicit approval.** The exact
-   deployed delta is in the current local commit; origin intentionally remains at the
-   pre-hotfix base.
+1. **Push the protected baseline branch and tags only after explicit approval.** The
+   exact deployed source is tag `production-staff-hosting-027a1e1491a811eb`; origin is
+   intentionally unchanged in this task.
 2. **Complete real BOMs** for Tasting Room products.
 3. **Run the pending-BOM backfill** so inventory reflects sales already made.
 4. **Enable `TR_MINI_AFFOGATO`, `TR_SET_A`, `TR_SET_B`** — only once their structural

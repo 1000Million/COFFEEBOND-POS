@@ -1,6 +1,32 @@
 # Current Production State
 
-_Verified 2026-09-04._
+_Verified 2026-09-06._
+
+## Staff/POS rollback baseline
+
+The production staff site is healthy after rollback to Hosting version
+`027a1e1491a811eb`. The failed successor was `11ffc03e3f5740c5`; it is not a source
+baseline.
+
+Verified production POS state:
+
+| Check | Result |
+|---|---|
+| Golden I menu | 125 items |
+| Noida 29 menu | 128 items |
+| Noida 51 menu | 128 items |
+| POS menu | PASS |
+| Product search | PASS |
+| Add to sale | PASS |
+| Running Orders | PASS |
+| Online | PASS |
+| Reports | PASS |
+
+Exact deployed source is committed as
+`ef196da472a8153fb9cea6bf7303ed53328c4c8c` and tagged
+`production-staff-hosting-027a1e1491a811eb`. The retained candidate matched all 110
+user-file Hosting paths and hashes. See
+`../skills/10-protected-staff-release-workflow.md`.
 
 ## Projects and sites
 
@@ -72,13 +98,11 @@ configuration, and BOND functions were unchanged.
 
 ```
 DEPLOYED_BUT_UNCOMMITTED=NO
-PRODUCTION_BASE_SHA=85f4fec3b292aa977fa41f01b9afc6c661790fe6
-PRODUCTION_HOTFIX_COMMIT_SHA=THIS_COMMIT
+PRODUCTION_BASE_SHA=ef196da472a8153fb9cea6bf7303ed53328c4c8c
+PRODUCTION_STAFF_HOSTING_VERSION=027a1e1491a811eb
+PRODUCTION_STAFF_TAG=production-staff-hosting-027a1e1491a811eb
 PRODUCTION_HOTFIX_PUSHED=NO
 ```
 
-The earlier rollout is preserved in commit `a8bff83`
-("feat: preserve tasting room production rollout", 84 files, +8572/-577). The Phase 4
-hotfix is preserved by this local commit; `THIS_COMMIT` is a deliberate self-reference,
-and `git rev-parse HEAD` supplies its concrete SHA. Origin remains at the pre-hotfix base
-until a separate push is explicitly approved.
+The exact staff baseline commit and tag are local and have not been pushed. Remote changes
+still require separate explicit approval.
