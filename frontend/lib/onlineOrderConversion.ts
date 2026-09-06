@@ -8,6 +8,10 @@ import { authorizePosAddOns, selectedAddOnIds } from './posAddOnAuthorization';
 import { publicStatusMessage, publicTrackingDocRef, updatePublicOrderTracking } from './publicOrderTracking';
 import { buildKotTasks, CompositeKotTask, expandCompositeInventoryLines, summarizeParentInventory } from './compositeFulfillment';
 import { immutableCompositeComponentSnapshotsEqual } from './immutableCompositeSnapshot';
+import {
+  calculateOnlineOrderLineMoney,
+  calculateOnlineOrderTotals,
+} from './onlineOrderMoney.mjs';
 
 type TaxConfig = {
   rate: number;
@@ -228,20 +232,23 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       };
       const baseUnitPrice = canonicalItem.baseUnitPrice;
       const selectedAddOnTotal = addOnTotal(onlineItem.addOns);
-      const lineSubtotal = (baseUnitPrice + selectedAddOnTotal) * quantity;
       const appliedTaxRate = getAppliedTaxRate(finishedGood as unknown as Record<string, unknown>, storeTaxRate);
-      const lineTaxable = lineSubtotal;
-      const lineTax = (baseUnitPrice * quantity * appliedTaxRate / 100)
-        + addOnTaxForLine(onlineItem.addOns, quantity, 0);
+      const money = calculateOnlineOrderLineMoney({
+        baseUnitPrice,
+        selectedAddOnTotal,
+        quantity,
+        appliedTaxRate,
+        addOnLineTax: addOnTaxForLine(onlineItem.addOns, quantity, 0),
+      });
 
       calculatedLines.push({
         onlineItem,
         finishedGood,
         quantity,
-        lineSubtotal,
-        lineTaxable,
-        lineTax,
-        lineTotal: lineTaxable + lineTax,
+        lineSubtotal: money.lineSubtotal,
+        lineTaxable: money.lineTaxable,
+        lineTax: money.lineTax,
+        lineTotal: money.lineTotal,
         appliedTaxRate,
         components: canonicalItem.components || [],
       });
@@ -296,10 +303,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       throw new OnlineOrderAcceptError(deductionPlan.blockers);
     }
 
-    const subtotal = calculatedLines.reduce((sum, line) => sum + line.lineSubtotal, 0);
-    const taxableAmount = calculatedLines.reduce((sum, line) => sum + line.lineTaxable, 0);
-    const gstTotal = calculatedLines.reduce((sum, line) => sum + line.lineTax, 0);
-    const grandTotal = taxableAmount + gstTotal;
+    const { subtotal, taxableAmount, gstTotal, grandTotal } = calculateOnlineOrderTotals(calculatedLines);
     const tableNumber = buildOnlineOrderTableNumber(onlineOrder);
     const customerPhone = onlineOrder.customerPhone.trim();
     const customerName = onlineOrder.customerName.trim() || 'Online Guest';

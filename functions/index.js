@@ -16,6 +16,10 @@ const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 const { createBondLoyaltyService } = require('./bondLoyalty');
 const { createKotStatusAggregationHandler } = require('./kotStatusAggregation');
 const {
+  customerOrderLineMoney,
+  customerOrderTotals,
+} = require('./customerOrderMoney');
+const {
   CompositeProductPolicyError,
   collectRequiredComponentFinishedGoodIds,
   resolveCanonicalCompositeComponents,
@@ -679,13 +683,13 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         rate,
       );
       const addOnUnitTotal = addOns.reduce((sum, addOn) => sum + addOn.totalPrice, 0);
-      const unitPrice = baseUnitPrice + addOnUnitTotal;
-      const lineSubtotal = unitPrice * requested.quantity;
-      const baseLineTax = baseUnitPrice * requested.quantity * rate / 100;
-      const addOnLineTax = addOns.reduce((sum, addOn) => (
-        sum + addOn.totalPrice * requested.quantity * addOn.taxRate / 100
-      ), 0);
-      const lineTax = baseLineTax + addOnLineTax;
+      const money = customerOrderLineMoney({
+        baseUnitPrice,
+        addOnUnitTotal,
+        quantity: requested.quantity,
+        taxRate: rate,
+        addOns,
+      });
       const components = componentsByRequestedIndex[index];
       return {
         finishedGoodCode: item.code || requested.itemCode,
@@ -693,26 +697,23 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         categoryId: item.posCategoryCode || 'MISC',
         categoryName: item.posCategoryName || 'Other',
         quantity: requested.quantity,
-        unitPrice,
+        unitPrice: money.unitPrice,
         baseUnitPrice,
         addOns,
         addOnTotal: addOnUnitTotal,
-        unitPriceWithAddOns: unitPrice,
+        unitPriceWithAddOns: money.unitPrice,
         taxRate: rate,
-        lineSubtotal,
-        lineTaxable: lineSubtotal,
-        lineTax,
-        lineTotal: lineSubtotal + lineTax,
+        lineSubtotal: money.lineSubtotal,
+        lineTaxable: money.lineTaxable,
+        lineTax: money.lineTax,
+        lineTotal: money.lineTotal,
         prepStation: item.prepStation || 'NONE',
         itemType: item.itemType,
         ...(components.length > 0 ? { components } : {}),
       };
     });
 
-    const subtotal = onlineItems.reduce((sum, item) => sum + item.lineSubtotal, 0);
-    const taxableAmount = onlineItems.reduce((sum, item) => sum + item.lineTaxable, 0);
-    const gstTotal = onlineItems.reduce((sum, item) => sum + item.lineTax, 0);
-    const grandTotal = taxableAmount + gstTotal;
+    const { subtotal, taxableAmount, gstTotal, grandTotal } = customerOrderTotals(onlineItems);
     const trackingToken = generateTrackingToken();
     const publicOrderReference = buildPublicOrderReference(trackingToken);
     const onlineOrderRef = db.collection('onlineOrders').doc();

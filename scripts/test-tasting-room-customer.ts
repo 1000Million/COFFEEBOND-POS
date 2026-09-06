@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
-  TASTING_ROOM_BOND_TABLE_CATEGORY,
   TASTING_ROOM_CATEGORY_ORDER,
   TASTING_ROOM_STORE_CODE,
   customerCategoryOrder,
@@ -16,6 +15,7 @@ import type { Store } from '../frontend/types';
 const root = process.cwd();
 const source = (path: string) => readFileSync(resolve(root, path), 'utf8');
 const customerOrder = source('frontend/pages/customer/CustomerOrder.tsx');
+const productCard = source('frontend/components/customer/CustomerProductCard.tsx');
 const storeCard = source('frontend/components/customer/CustomerStoreCard.tsx');
 const customerApp = source('frontend/CustomerApp.tsx');
 
@@ -138,17 +138,22 @@ check('the requested Tasting category order is store-scoped',
 check('ordinary Noida category mapping remains unchanged',
   customerMenuCategory({ posCategoryCode: 'ESP', posCategoryName: 'Espresso Bar' } as never, noida) === 'Coffee');
 
-const bondTableStart = customerOrder.indexOf('const renderBondTableInformation');
-const bondTableEnd = customerOrder.indexOf("const checkoutAction", bondTableStart);
-const bondTableCode = customerOrder.slice(bondTableStart, bondTableEnd);
-check('the Bond Table is a Tasting-only informational category',
-  TASTING_ROOM_BOND_TABLE_CATEGORY === 'The Bond Table'
-  && customerOrder.includes('tastingRoomSelected && renderBondTableInformation()')
-  && customerOrder.includes('data-customer-informational-only="true"'));
-check('the Bond Table cannot enter cart, checkout, payment, or booking mutation paths',
-  bondTableStart >= 0 && bondTableEnd > bondTableStart
-  && !/addItem|commitCartItem|setCart|submitOrder|createCustomerCheckoutSession|verifyCustomerRazorpayPayment/.test(bondTableCode)
-  && bondTableCode.includes('<details')
-  && customerOrder.includes('customerMenuCategory(item, selectedStore) === TASTING_ROOM_BOND_TABLE_CATEGORY'));
+check('the Bond Table special booking-information intercept is not used',
+  !customerOrder.includes('renderBondTableInformation')
+  && !customerOrder.includes('renderBondTableBooking')
+  && !customerOrder.includes('Booking information')
+  && !customerOrder.includes('data-customer-informational-only')
+  && !customerOrder.includes('CustomerBondTableBooking')
+  && !customerOrder.includes('customerMenuCategory(item, selectedStore) === TASTING_ROOM_BOND_TABLE_CATEGORY'));
+check('the Bond Table follows the ordinary menu and cart callbacks',
+  customerOrder.includes('BOND_TABLE_ITEM_CODE = \'TR_BOND_TABLE\'')
+  && customerOrder.includes('return items.filter(item => isStoreAvailable(item, selectedStoreId))')
+  && customerOrder.includes('description={item.code === BOND_TABLE_ITEM_CODE ? cleanProductDescription(item) : undefined}')
+  && customerOrder.includes('priceLabel={customerMenuPriceLabel(item, selectedStoreTaxRate)}')
+  && customerOrder.includes('onAdd={() => addItem(item)}')
+  && productCard.includes("{opensCustomization ? 'Choose options' : 'Add'}"));
+check('the Bond Table is the only menu card with a final-price description treatment',
+  customerOrder.includes('if (item.code !== BOND_TABLE_ITEM_CODE) return formatMoney(salePrice)')
+  && productCard.includes('{description}'));
 
 console.log(`Tasting Room customer tests passed: ${results.length}/${results.length}`);

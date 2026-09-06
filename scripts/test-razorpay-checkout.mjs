@@ -98,6 +98,14 @@ test('14. Browser amount is ignored', () => {
   assert.doesNotMatch(backend, /request\.data\?\.amount|request\.data\.amount/);
   assert.match(backend, /amountPaise = rupeesToPaise\(canonical\.grandTotal\)/);
 });
+test('14a. Bond Table canonical GST rounds to the approved final payable', () => {
+  const taxable = 4761.90;
+  const gst = checkoutCanonicalization.roundMoney(taxable * 5 / 100);
+  const total = checkoutCanonicalization.roundMoney(taxable + gst);
+  assert.equal(gst, 238.10);
+  assert.equal(total, 5000.00);
+  assert.equal(policy.rupeesToPaise(total), 500000);
+});
 test('15. Captured payment creates PAID_PENDING_ACCEPTANCE order', () => {
   assert.match(backend, /status: 'PAID_PENDING_ACCEPTANCE'/);
   assert.match(backend, /paymentStatus: 'PAID'/);
@@ -973,5 +981,5 @@ for (const { name, run } of tests) {
   }
 }
 
-assert.equal(tests.length, 105);
+assert.equal(tests.length, 106);
 console.log(`Razorpay payment-first checkout tests passed: ${passed}/${tests.length}. Mocked/static checks only; no Razorpay network or Firebase writes were performed.`);

@@ -72,7 +72,6 @@ import {
 } from '../../lib/customerMyUsualApi';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE } from '../../lib/connectivity';
 import {
-  TASTING_ROOM_BOND_TABLE_CATEGORY,
   customerCategoryOrder,
   customerMenuCategory,
   customerStorePresentation,
@@ -283,6 +282,7 @@ const MAX_NOTE_LENGTH = 200;
 const SUBMISSION_LOCK_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_STORE_KEY = 'coffeeBondCustomerDefaultStoreId';
 const STORE_CHANGE_CONFIRMATION = 'Changing store will clear your current basket so prices and availability stay correct. Continue?';
+const BOND_TABLE_ITEM_CODE = 'TR_BOND_TABLE';
 
 type StoreCoordinate = {
   latitude: number;
@@ -546,6 +546,18 @@ function isSnapshotStale(snapshot: PublicAvailabilitySnapshot | null): boolean {
 
 function formatMoney(value: number): string {
   return `₹${value.toFixed(2)}`;
+}
+
+/** Matches the authoritative customer checkout's paise rounding. */
+function roundMoney(value: number): number {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function customerMenuPriceLabel(item: CustomerMenuItem, fallbackTaxRate: number): string {
+  const salePrice = toNumber(item.salePrice);
+  if (item.code !== BOND_TABLE_ITEM_CODE) return formatMoney(salePrice);
+  const gst = roundMoney(salePrice * itemTaxRate(item, fallbackTaxRate) / 100);
+  return `${formatMyUsualPrice(roundMoney(salePrice + gst))} final`;
 }
 
 /** Compact Home-hero display only. Checkout keeps its existing two-decimal formatter. */
@@ -1146,12 +1158,8 @@ export default function CustomerOrder() {
 
   const storeItems = useMemo(() => {
     if (!selectedStoreId) return [];
-    return items.filter(item => (
-      isStoreAvailable(item, selectedStoreId)
-      && !(tastingRoomSelected
-        && customerMenuCategory(item, selectedStore) === TASTING_ROOM_BOND_TABLE_CATEGORY)
-    ));
-  }, [items, selectedStore, selectedStoreId, tastingRoomSelected]);
+    return items.filter(item => isStoreAvailable(item, selectedStoreId));
+  }, [items, selectedStoreId]);
 
   const itemAvailability = useMemo(() => {
     return storeItems.reduce<Record<string, ItemAvailability>>((acc, item) => {
@@ -1283,12 +1291,8 @@ export default function CustomerOrder() {
 
   const categories = useMemo(() => {
     const names = new Set(storeItems.map(item => customerMenuCategory(item, selectedStore)));
-    return customerCategoryOrder(selectedStore).filter(name => (
-      name === 'ALL'
-      || names.has(name)
-      || (tastingRoomSelected && name === TASTING_ROOM_BOND_TABLE_CATEGORY)
-    ));
-  }, [storeItems, selectedStore, tastingRoomSelected]);
+    return customerCategoryOrder(selectedStore).filter(name => name === 'ALL' || names.has(name));
+  }, [storeItems, selectedStore]);
 
   const openPastryMenu = () => {
     if (!categories.includes('Baked by Bond')) return;
@@ -1819,19 +1823,19 @@ export default function CustomerOrder() {
    * the render and would hit the temporal dead zone with a const arrow.
    */
   function totalsForLines(lines: CartLine[]) {
-    const subtotal = lines.reduce((sum, line) => (
-      sum + unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity
-    ), 0);
-    const gstTotal = lines.reduce((sum, line) => {
+    const subtotal = roundMoney(lines.reduce((sum, line) => (
+      sum + roundMoney(unitPriceWithAddOns(toNumber(line.item.salePrice), line.addOns) * line.quantity)
+    ), 0));
+    const gstTotal = roundMoney(lines.reduce((sum, line) => {
       const rate = itemTaxRate(line.item, selectedStoreTaxRate);
       const baseTax = toNumber(line.item.salePrice) * line.quantity * rate / 100;
-      return sum + baseTax + addOnTaxForLine(line.addOns, line.quantity, 0);
-    }, 0);
+      return sum + roundMoney(baseTax + addOnTaxForLine(line.addOns, line.quantity, 0));
+    }, 0));
     return {
       subtotal,
       taxableAmount: subtotal,
       gstTotal,
-      grandTotal: subtotal + gstTotal,
+      grandTotal: roundMoney(subtotal + gstTotal),
     };
   }
 
@@ -2298,7 +2302,8 @@ export default function CustomerOrder() {
       <CustomerProductCard
         key={`menu-${item.code}`}
         name={item.displayName || item.name}
-        priceLabel={formatMoney(toNumber(item.salePrice))}
+        description={item.code === BOND_TABLE_ITEM_CODE ? cleanProductDescription(item) : undefined}
+        priceLabel={customerMenuPriceLabel(item, selectedStoreTaxRate)}
         imageUrl={getItemImage(item)}
         fallbackIcon={meta.icon}
         dietary={trustedDietaryClassification(item as unknown as Record<string, unknown>)}
@@ -2314,45 +2319,6 @@ export default function CustomerOrder() {
       />
     );
   };
-
-  /**
-   * Phase-one Bond Table treatment is intentionally informational. The disclosure
-   * neither adds a cart line nor starts payment, and therefore cannot create a booking
-   * that the current ordering architecture has no way to schedule or manage.
-   */
-  const renderBondTableInformation = () => (
-    <section
-      data-customer-category={TASTING_ROOM_BOND_TABLE_CATEGORY}
-      data-customer-informational-only="true"
-      aria-labelledby="cb-bond-table-heading"
-    >
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 id="cb-bond-table-heading" className="cb-customer-menu-section-title">The Bond Table</h3>
-        <span className="rounded-full bg-[#f5ede5] px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-[#8b5e42]">
-          Experience
-        </span>
-      </div>
-      <div className="rounded-[24px] border border-[#decdb9] bg-[#fffaf4] p-5 shadow-sm">
-        <p className="text-sm font-black text-[#3b241c]">Private · 25 Minutes · Maximum 4 Guests</p>
-        <div className="mt-3 space-y-1 text-sm font-semibold text-[#6f625b]">
-          <p>₹5,000 for two guests</p>
-          <p>₹2,000 for each additional guest</p>
-          <p>Maximum four guests</p>
-        </div>
-        <p className="mt-3 text-xs font-black uppercase tracking-[0.08em] text-[#8b5e42]">
-          Advance booking and prepayment required
-        </p>
-        <details className="mt-4">
-          <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-2xl bg-[#3b241c] px-4 py-3 text-sm font-black text-white focus:outline-none focus:ring-2 focus:ring-[#8b5e42]/40">
-            Booking information
-          </summary>
-          <p className="mt-3 text-sm font-semibold leading-relaxed text-[#6f625b]">
-            Please speak with the Tasting Room team to enquire. This page does not create a reservation or take a booking payment.
-          </p>
-        </details>
-      </div>
-    </section>
-  );
 
   /**
    * The checkout action's label, disabled state and the reason for it — derived
@@ -3223,11 +3189,8 @@ export default function CustomerOrder() {
                         </div>
                       </section>
                     ))}
-                    {tastingRoomSelected && renderBondTableInformation()}
                   </div>
                 </>
-              ) : tastingRoomSelected && category === TASTING_ROOM_BOND_TABLE_CATEGORY ? (
-                renderBondTableInformation()
               ) : (
                 /* A specific category: one compact vertical grid of just that category. */
                 <section data-customer-category={category}>

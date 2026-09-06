@@ -99,6 +99,10 @@ check('16/17/18/19. the basket still renders the parent totals object',
 check('totals still come from the single totalsForLines source',
   (homeCode.match(/function totalsForLines/g) || []).length === 1
   && /const totals = useMemo\(\s*\(\) => totalsForLines\(cart\)/.test(homeCode));
+check('checkout totals use the same paise rounding as canonical server checkout',
+  home.includes("function roundMoney(value: number): number")
+  && home.includes('sum + roundMoney(baseTax + addOnTaxForLine(line.addOns, line.quantity, 0))')
+  && home.includes('grandTotal: roundMoney(subtotal + gstTotal)'));
 check('the redesigned components compute no money at all',
   !/salePrice|taxRate|gstTotal|grandTotal|subtotal|\* *quantity/i.test(componentCode));
 check('20/21. no invented fee, delivery or discount line was added',
@@ -239,9 +243,9 @@ check('4b-2/3/4/5. the totals panel is fed from the parent totals object',
   homeCode.includes('subtotalLabel={formatMoney(totals.subtotal)}')
   && homeCode.includes('gstLabel={formatMoney(totals.gstTotal)}')
   && homeCode.includes('payableLabel={formatMoney(totals.grandTotal)}'));
-check('4b-2a. the totals calculation itself was not touched',
+check('4b-2a. the totals calculation stays parent-owned and paise-rounded',
   homeCode.includes('taxableAmount: subtotal')
-  && homeCode.includes('grandTotal: subtotal + gstTotal'));
+  && homeCode.includes('grandTotal: roundMoney(subtotal + gstTotal)'));
 check('4b. the totals panel performs no arithmetic of its own',
   !/gstTotal\s*=|subtotal\s*=|grandTotal\s*=|salePrice|taxRate/.test(stage4bCode));
 check('4b-6. a discount renders only when the parent supplies one',

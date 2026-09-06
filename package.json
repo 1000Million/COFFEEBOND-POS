@@ -42,6 +42,7 @@
     "test:kot-status-aggregation": "node scripts/test-kot-status-aggregation.mjs",
     "test:public-menu-composite-availability": "esbuild scripts/test-public-menu-composite-availability.ts --bundle --platform=node --format=esm --outfile=/tmp/public-menu-composite-availability-test.mjs && node /tmp/public-menu-composite-availability-test.mjs",
     "test:tasting-room-phase-1": "node scripts/test-tasting-room-phase-1.mjs && esbuild scripts/test-tasting-room-customer.ts --bundle --platform=node --format=esm --outfile=/tmp/tasting-room-customer-test.mjs && node /tmp/tasting-room-customer-test.mjs",
+    "test:bond-table-simple-item": "node scripts/test-bond-table-simple-item.mjs",
     "test:security-rules": "node scripts/test-firestore-security-rules.mjs",
     "test:menu-setup-unit-repair": "node scripts/test-menu-setup-unit-repair.mjs",
     "test:product-images": "esbuild scripts/test-product-images.ts --bundle --platform=node --format=esm --outfile=/tmp/product-images-test.mjs && node /tmp/product-images-test.mjs",

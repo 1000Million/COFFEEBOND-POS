@@ -664,9 +664,15 @@ check('All renders honest favourites in a compact rail, then the grouped full me
   && home.includes('menuSections.map(section =>'));
 check('the favourites rail uses the same product callbacks and real live values',
   /const renderMenuCard = \(item:[\s\S]{0,1800}variant=\{variant\}[\s\S]{0,800}onAdd=\{\(\) => addItem\(item\)\}/.test(home)
-  && home.includes('priceLabel={formatMoney(toNumber(item.salePrice))}')
+  && home.includes('priceLabel={customerMenuPriceLabel(item, selectedStoreTaxRate)}')
+  && home.includes('if (item.code !== BOND_TABLE_ITEM_CODE) return formatMoney(salePrice)')
   && home.includes('imageUrl={getItemImage(item)}')
   && card.includes("variant?: 'menu' | 'featured'"));
+check('only the fixed Bond Table card adds its catalogue description and final-price label',
+  home.includes('description={item.code === BOND_TABLE_ITEM_CODE ? cleanProductDescription(item) : undefined}')
+  && home.includes('BOND_TABLE_ITEM_CODE = \'TR_BOND_TABLE\'')
+  && card.includes('description?: string')
+  && card.includes('{description}'));
 check('the favourites rail shows roughly three compact cards and contains horizontal overscroll',
   /\.cb-customer-card\.is-featured \{[^}]*width: 132px[^}]*min-width: 132px[^}]*flex: 0 0 132px/.test(homeRedesignCss)
   && /\.cb-customer-featured-track \{[^}]*overscroll-behavior-x: contain/.test(homeRedesignCss)

@@ -6,6 +6,8 @@ import { DietaryClassification } from '../../lib/customerMenuPresentation';
 
 type Props = {
   name: string;
+  /** Optional catalogue description. Omitted for the standard compact menu cards. */
+  description?: string;
   /** Authoritative formatted price. This component never computes money. */
   priceLabel: string;
   imageUrl: string | null;
@@ -55,6 +57,7 @@ type Props = {
  */
 function CustomerProductCard({
   name,
+  description,
   priceLabel,
   imageUrl,
   fallbackIcon,
@@ -95,6 +98,10 @@ function CustomerProductCard({
           )}
           {name}
         </h3>
+
+        {description && (
+          <p className="mt-1 text-xs font-semibold leading-snug text-[#71645d]">{description}</p>
+        )}
 
         {/* Availability is stated in words, never by dimming alone. */}
         {!canOrder && unavailableReason && (
