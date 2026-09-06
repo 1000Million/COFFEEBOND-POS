@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
+import { useAuth } from "../../contexts/AuthContext";
 import {
   Package,
   ClipboardList,
@@ -12,6 +14,7 @@ import {
   Blocks,
   ListPlus,
   Tags,
+  Boxes,
 } from "lucide-react";
 import RawIngredientsTab from "../../components/admin/menu-management/RawIngredientsTab";
 import StoreStockTab from "../../components/admin/menu-management/StoreStockTab";
@@ -37,6 +40,11 @@ type TabId =
   | "costing";
 
 export default function MenuManagementHub() {
+  // /admin/menu-management is open to ADMIN and STORE_MANAGER, but /admin/global-items is
+  // ADMIN-only. Hide the affordance from a Store Manager rather than showing a link that the
+  // route guard would silently bounce.
+  const { staffProfile } = useAuth();
+  const canManageGlobalItems = staffProfile?.role === 'ADMIN' && staffProfile?.isActive === true;
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const posMenuTaxonomy = usePosMenuTaxonomy();
@@ -94,6 +102,16 @@ export default function MenuManagementHub() {
                     {tab.label}
                   </button>
                 ))}
+                {canManageGlobalItems && (
+                  <Link
+                    to="/admin/global-items"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="w-full flex items-center gap-3 p-3 text-sm font-semibold rounded-lg transition-colors text-neutral-600 hover:bg-neutral-50"
+                  >
+                    <Boxes size={18} />
+                    Global Items
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -117,6 +135,15 @@ export default function MenuManagementHub() {
                 {tab.label}
               </button>
             ))}
+            {canManageGlobalItems && (
+              <Link
+                to="/admin/global-items"
+                className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold rounded-xl transition-all text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
+              >
+                <Boxes size={18} className="text-neutral-400" />
+                Global Items
+              </Link>
+            )}
           </div>
         </aside>
 

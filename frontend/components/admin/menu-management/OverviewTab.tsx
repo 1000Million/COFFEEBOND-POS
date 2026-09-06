@@ -1,4 +1,6 @@
 import React from "react";
+import { Link } from "react-router-dom";
+import { useAuth } from "../../../contexts/AuthContext";
 import {
   Package,
   ClipboardList,
@@ -7,6 +9,7 @@ import {
   LayoutGrid,
   TrendingUp,
   Blocks,
+  Boxes,
 } from "lucide-react";
 
 interface OverviewTabProps {
@@ -23,6 +26,9 @@ interface OverviewTabProps {
 }
 
 export default function OverviewTab({ onNavigate }: OverviewTabProps) {
+  // ADMIN-only: /admin/global-items is guarded, so a Store Manager must not see the card.
+  const { staffProfile } = useAuth();
+  const canManageGlobalItems = staffProfile?.role === 'ADMIN' && staffProfile?.isActive === true;
   const cards = [
     {
       id: "raw",
@@ -91,6 +97,26 @@ export default function OverviewTab({ onNavigate }: OverviewTabProps) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {canManageGlobalItems && (
+        <Link
+          to="/admin/global-items"
+          className="bg-white border text-left border-neutral-200 rounded-2xl p-6 shadow-sm hover:shadow-md hover:border-[#5c4033]/30 transition-all cursor-pointer flex flex-col h-full"
+        >
+          <div className="flex items-start justify-between mb-4">
+            <div className="p-3 rounded-xl bg-amber-100 text-amber-700">
+              <Boxes size={24} />
+            </div>
+            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 bg-neutral-100 text-neutral-600 rounded">
+              Live
+            </span>
+          </div>
+          <h3 className="text-lg font-bold text-neutral-800 mb-2">Global Items</h3>
+          <p className="text-sm text-neutral-500 flex-grow">
+            Manage master items, store assignments, store prices, availability, visibility and
+            sort order.
+          </p>
+        </Link>
+        )}
         {cards.map((card) => (
           <div
             key={card.id}
