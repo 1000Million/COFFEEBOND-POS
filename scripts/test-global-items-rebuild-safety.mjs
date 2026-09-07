@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 const read = (path) => fs.readFileSync(path, 'utf8');
 const globalItems = read('frontend/pages/admin/GlobalItems.tsx');
+const publishEngine = read('frontend/lib/globalItemPublish.ts');
 const availability = read('frontend/lib/publicMenuAvailability.ts');
 const productImages = read('frontend/pages/admin/ProductImages.tsx');
 const posReadiness = read('frontend/pages/admin/POSReadiness.tsx');
@@ -20,7 +21,7 @@ ok(
   globalItems.includes("getDocs(collection(db, 'finishedGoods'))")
     && !globalItems.includes("orderBy('name'")
     && !globalItems.includes('orderBy("name"')
-    && globalItems.includes('name: String(data.name || data.displayName || data.code || d.id)'),
+    && globalItems.includes('name: String(data.name || data.displayName || data.code || row.id)'),
   'Global Items reads the complete catalogue, including legacy rows without a name field',
 );
 ok(
@@ -28,17 +29,19 @@ ok(
   'Public snapshots never write an undefined legacy item name',
 );
 ok(
-  globalItems.includes("snapshotRef = doc(db, 'publicMenuAvailability', storeCode)")
-    && globalItems.includes('runTransaction(db, async (transaction) =>')
-    && globalItems.includes('snapshotRevisionToken(')
-    && !globalItems.includes('{ merge: true }'),
-  'Global Items transactionally replaces the complete snapshot behind a concurrency revision gate',
+  publishEngine.includes("snapshotRef = doc(firestore, 'publicMenuAvailability', store.code)")
+    && publishEngine.includes('runTransaction(firestore, async (transaction) =>')
+    && publishEngine.includes('snapshotRevisionToken(')
+    && publishEngine.includes('transaction.set(plan.snapshotRef')
+    && !publishEngine.includes('{ merge: true }'),
+  'Global Items engine transactionally replaces every selected complete snapshot behind a concurrency revision gate',
 );
 ok(
-  (globalItems.match(/getDocs\(collection\(db, 'finishedGoods'\)\)/g) || []).length >= 2
-    && globalItems.includes('freshConfigMap')
-    && globalItems.includes('overrideIntentToken(freshExisting)'),
-  'Global Items re-reads catalogue and override sources at save time instead of publishing cached page state',
+  publishEngine.includes("getDocs(collection(firestore, 'finishedGoods'))")
+    && publishEngine.includes("getDocs(collection(firestore, STORE_ITEM_CONFIG_COLLECTION))")
+    && publishEngine.includes('canonicalDataToken(liveBase.data()) !== expectedBaseToken')
+    && publishEngine.includes('liveSnapshotToken !== plan.expectedSnapshotRevision'),
+  'Global Items engine re-reads catalogue, config, base, and snapshot sources instead of publishing cached page state',
 );
 ok(
   availability.includes('storeItemConfigs?: StoreItemConfig[]')

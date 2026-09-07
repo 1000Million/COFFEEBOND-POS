@@ -1,723 +1,685 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp } from 'firebase/firestore';
-import { AlertTriangle, ImageOff, Info, Layers, Search } from 'lucide-react';
+import { collection, doc, getDoc, getDocs, runTransaction, serverTimestamp } from 'firebase/firestore';
+import {
+  AlertTriangle,
+  Check,
+  ChevronRight,
+  ImageOff,
+  Layers,
+  PackageCheck,
+  Plus,
+  Search,
+  Store as StoreIcon,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Store } from '../../types';
-import type { AddOnGroup, FinishedGood, PrepItem, RawIngredient } from '../../types/menu-management';
+import type {
+  AddOnGroup,
+  BOMComponent,
+  FinishedGood,
+  FinishedGoodProductType,
+  PrepItem,
+  RawIngredient,
+} from '../../types/menu-management';
+import {
+  GLOBAL_ITEM_MASTER_DRAFT_COLLECTION,
+  GLOBAL_ITEM_VERSION_SCHEMA_VERSION,
+  globalItemMasterDraftDocId,
+  type GlobalItemMasterDraft,
+  type GlobalItemProductVersion,
+} from '../../types/global-items';
+import {
+  GlobalItemPublishError,
+  globalItemBaseProductToken,
+  publishGlobalItemToStores,
+  validateGlobalItemProductForPublish,
+} from '../../lib/globalItemPublish';
 import {
   STORE_ITEM_CONFIG_COLLECTION,
-  resolveStoreItem,
-  resolveEffectiveProduct,
   storeItemConfigDocId,
   type StoreItemConfig,
 } from '../../lib/storeItemConfig';
 import {
-  buildOverridePublishPlan,
-  buildOverrideWritePlan,
-  buildResolvedComparison,
-  assignedStoreCount,
-  canonicalDataToken,
-  draftFromConfig,
-  emptyDraft,
-  overrideIntentToken,
-  snapshotRevisionToken,
-  validateOverrideDraft,
-  type OverrideDraft,
-  type OverrideMode,
-} from '../../lib/storeItemConfigAdmin';
+  effectiveStoreProduct,
+  eligibleGlobalItemStores,
+  initialMasterProduct,
+  masterProductToken,
+  productWithType,
+  publishedProductDiffersFromMaster,
+  publishedStoreState,
+  publishReviewChanges,
+  selectedStoreIdsAfterSelectAll,
+  selectedStoreIdsAfterToggle,
+} from '../../lib/globalItemUx';
+import {
+  activePosMenuCategories,
+  POS_MENU_TAXONOMY_DOCUMENT_PATH,
+  resolvePosMenuTaxonomy,
+} from '../../lib/posMenuTaxonomy';
 
+type StoreRecord = Store & { id: string };
+type ConfigsByKey = Map<string, StoreItemConfig>;
+type DraftsByCode = Map<string, GlobalItemMasterDraft>;
 
-function isAdminOnlyRole(role?: string | null): boolean {
-  return role === 'ADMIN';
-}
+const inputClass = 'min-h-11 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-700 focus:ring-2 focus:ring-amber-100';
+const cardClass = 'rounded-2xl border border-stone-200 bg-white shadow-sm';
 
-function money(value: number): string {
+function money(value: unknown): string {
   return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function storeIdsOf(item: FinishedGood): string[] {
-  return Array.isArray(item.availableStoreIds) ? item.availableStoreIds.filter(Boolean) : [];
+function newRevision(): string {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function isAssignedToStore(item: FinishedGood, storeId: string): boolean {
-  const assignedStoreIds = storeIdsOf(item);
-  return assignedStoreIds.length === 0 || assignedStoreIds.includes(storeId);
+function dateTime(value: unknown): string {
+  if (!value) return '—';
+  const candidate = value as { toDate?: () => Date; seconds?: number };
+  const date = typeof candidate.toDate === 'function'
+    ? candidate.toDate()
+    : typeof candidate.seconds === 'number'
+      ? new Date(candidate.seconds * 1_000)
+      : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('en-IN');
 }
 
-type ConfigsByKey = Map<string, StoreItemConfig>;
-const keyOf = storeItemConfigDocId;
+function isAssigned(item: FinishedGood, storeId: string): boolean {
+  const ids = Array.isArray(item.availableStoreIds) ? item.availableStoreIds : [];
+  return ids.length === 0 || ids.includes(storeId);
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-1.5 text-sm font-medium text-stone-700">
+      <span>{label}</span>
+      {children}
+      {hint && <span className="block text-xs font-normal text-stone-500">{hint}</span>}
+    </label>
+  );
+}
+
+function Switch({ checked, disabled, onChange, label }: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+}) {
+  return (
+    <label className={`flex min-h-11 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm ${disabled ? 'cursor-not-allowed border-stone-200 bg-stone-100 text-stone-400' : 'cursor-pointer border-stone-300 bg-white text-stone-700'}`}>
+      <span>{label}</span>
+      <input
+        className="h-5 w-5 accent-amber-700"
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    </label>
+  );
+}
+
+function Section({ title, description, children }: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={`${cardClass} p-4 sm:p-5`}>
+      <div className="mb-4">
+        <h3 className="text-base font-semibold text-stone-900">{title}</h3>
+        {description && <p className="mt-1 text-sm text-stone-500">{description}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function StatusPill({ state }: { state: ReturnType<typeof publishedStoreState> }) {
+  const style = state === 'CURRENT'
+    ? 'bg-emerald-100 text-emerald-800'
+    : state === 'OLDER_VERSION'
+      ? 'bg-amber-100 text-amber-800'
+      : 'bg-stone-100 text-stone-600';
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{state.replace('_', ' ')}</span>;
+}
+
+function MasterHeader({ item, product, saved, dirty }: {
+  item: FinishedGood;
+  product: GlobalItemProductVersion;
+  saved: GlobalItemMasterDraft | null;
+  dirty: boolean;
+}) {
+  const type = product.productType || 'NORMAL_SELLABLE';
+  const role = type === 'INTERNAL_COMPONENT'
+    ? 'Internal — not sold directly'
+    : type === 'COMPOSITE_PARENT'
+      ? 'Set / flight / composite'
+      : 'Normal sellable';
+  return (
+    <div className={`${cardClass} overflow-hidden`}>
+      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:p-5">
+        <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-stone-100">
+          {product.imageUrl
+            ? <img src={product.imageUrl} alt="" className="h-full w-full object-cover" />
+            : <ImageOff className="h-7 w-7 text-stone-400" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Master product</p>
+          <h2 className="mt-1 truncate text-2xl font-semibold text-stone-950">{product.displayName || product.name}</h2>
+          <p className="mt-1 text-sm text-stone-500">{item.code} · {product.posCategoryName || 'Uncategorised'}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-700">{role}</span>
+            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${dirty ? 'bg-orange-100 text-orange-800' : saved ? 'bg-blue-100 text-blue-800' : 'bg-stone-100 text-stone-600'}`}>
+              {dirty ? 'Unsaved changes' : saved ? 'Master saved' : 'Master not saved'}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BomEditor({ product, rawIngredients, prepItems, finishedGoods, onChange }: {
+  product: GlobalItemProductVersion;
+  rawIngredients: RawIngredient[];
+  prepItems: PrepItem[];
+  finishedGoods: FinishedGood[];
+  onChange: (product: GlobalItemProductVersion) => void;
+}) {
+  const updateLine = (index: number, patch: Partial<BOMComponent>) => {
+    const bom = product.bom.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line);
+    onChange({ ...product, bom, bomVersion: Number(product.bomVersion || 0) + 1 });
+  };
+  const addLine = () => onChange({
+    ...product,
+    bom: [...product.bom, {
+      componentType: 'RAW_INGREDIENT', componentCode: '', componentName: '', quantity: 1,
+      uom: 'unit', costPerUnit: 0, lineCost: 0,
+    }],
+    bomVersion: Number(product.bomVersion || 0) + 1,
+  });
+  const sourceOptions = (type: BOMComponent['componentType']) => {
+    if (type === 'PREP_ITEM') return prepItems.map((row) => ({ code: row.code, name: row.name, uom: row.outputUOM, cost: row.costPerUnit }));
+    if (type === 'FINISHED_GOOD') return finishedGoods.filter((row) => row.code !== product.code).map((row) => ({ code: row.code, name: row.name, uom: 'unit', cost: row.recipeCost }));
+    return rawIngredients.map((row) => ({ code: row.code, name: row.name, uom: row.usageUOM, cost: row.costPerUsageUnit }));
+  };
+  return (
+    <div className="space-y-3">
+      {product.bom.map((line, index) => (
+        <div key={`${index}-${line.componentCode}`} className="grid gap-2 rounded-xl border border-stone-200 bg-stone-50 p-3 md:grid-cols-[150px_minmax(160px,1fr)_100px_100px_44px]">
+          <select className={inputClass} value={line.componentType} onChange={(event) => updateLine(index, { componentType: event.target.value as BOMComponent['componentType'], componentCode: '', componentName: '' })} aria-label={`Recipe component type ${index + 1}`}>
+            <option value="RAW_INGREDIENT">Ingredient</option>
+            <option value="PREP_ITEM">Prep item</option>
+            <option value="FINISHED_GOOD">Finished good</option>
+            <option value="PACKAGING">Packaging</option>
+            <option value="BOUGHT_COMPONENT">Bought component</option>
+          </select>
+          <select className={inputClass} value={line.componentCode} onChange={(event) => {
+            const option = sourceOptions(line.componentType).find((row) => row.code === event.target.value);
+            updateLine(index, {
+              componentCode: event.target.value,
+              componentName: option?.name || '',
+              uom: option?.uom || line.uom,
+              costPerUnit: Number(option?.cost || 0),
+              lineCost: Number(option?.cost || 0) * Number(line.quantity || 0),
+            });
+          }} aria-label={`Recipe component ${index + 1}`}>
+            <option value="">Select component</option>
+            {sourceOptions(line.componentType).map((row) => <option key={row.code} value={row.code}>{row.name} ({row.code})</option>)}
+          </select>
+          <input className={inputClass} type="number" min="0.001" step="0.001" value={line.quantity} onChange={(event) => {
+            const quantity = Number(event.target.value);
+            updateLine(index, { quantity, lineCost: quantity * Number(line.costPerUnit || 0) });
+          }} aria-label={`Recipe quantity ${index + 1}`} />
+          <input className={inputClass} value={line.uom} onChange={(event) => updateLine(index, { uom: event.target.value })} aria-label={`Recipe unit ${index + 1}`} />
+          <button type="button" className="flex h-11 w-11 items-center justify-center rounded-xl border border-red-200 text-red-700 hover:bg-red-50" onClick={() => onChange({ ...product, bom: product.bom.filter((_, lineIndex) => lineIndex !== index), bomVersion: Number(product.bomVersion || 0) + 1 })} aria-label={`Remove recipe row ${index + 1}`}><Trash2 className="h-4 w-4" /></button>
+        </div>
+      ))}
+      <button type="button" onClick={addLine} className="flex min-h-11 items-center gap-2 rounded-xl border border-stone-300 px-4 text-sm font-semibold text-stone-700 hover:bg-stone-50"><Plus className="h-4 w-4" /> Add recipe component</button>
+    </div>
+  );
+}
+
+function GroupPicker({ title, groups, product, compositeChoice, onChange }: {
+  title: string;
+  groups: AddOnGroup[];
+  product: GlobalItemProductVersion;
+  compositeChoice?: boolean;
+  onChange: (product: GlobalItemProductVersion) => void;
+}) {
+  const groupIds = product.addOnGroupIds || [];
+  const toggleGroup = (group: AddOnGroup & { id: string }) => {
+    const active = groupIds.includes(group.id);
+    const nextIds = active ? groupIds.filter((id) => id !== group.id) : [...groupIds, group.id];
+    const nextOptions = { ...(product.addOnOptionIdsByGroup || {}) };
+    if (active) delete nextOptions[group.id];
+    else nextOptions[group.id] = group.options.filter((option) => option.isActive !== false).map((option) => option.id);
+    const composite = compositeChoice
+      ? { ...(product.composite || { schemaVersion: 1, staticComponents: [], choiceGroupIds: [] }), choiceGroupIds: active
+        ? (product.composite?.choiceGroupIds || []).filter((id) => id !== group.id)
+        : [...(product.composite?.choiceGroupIds || []), group.id] }
+      : product.composite;
+    onChange({ ...product, addOnGroupIds: nextIds, addOnOptionIdsByGroup: nextOptions, ...(composite ? { composite } : {}) });
+  };
+  const toggleOption = (groupId: string, optionId: string) => {
+    const selected = product.addOnOptionIdsByGroup?.[groupId] || [];
+    const next = selected.includes(optionId) ? selected.filter((id) => id !== optionId) : [...selected, optionId];
+    onChange({ ...product, addOnOptionIdsByGroup: { ...(product.addOnOptionIdsByGroup || {}), [groupId]: next } });
+  };
+  return (
+    <div>
+      <h4 className="mb-2 text-sm font-semibold text-stone-800">{title}</h4>
+      {groups.length === 0 && <p className="rounded-xl bg-stone-50 p-3 text-sm text-stone-500">No active groups are available.</p>}
+      <div className="space-y-2">
+        {groups.map((group) => {
+          const id = group.id as string;
+          const active = groupIds.includes(id);
+          return (
+            <div key={id} className="rounded-xl border border-stone-200 p-3">
+              <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-semibold text-stone-800">
+                <input type="checkbox" className="h-5 w-5 accent-amber-700" checked={active} onChange={() => toggleGroup(group as AddOnGroup & { id: string })} />
+                {group.name}
+              </label>
+              {active && <div className="ml-8 mt-1 flex flex-wrap gap-2">
+                {group.options.filter((option) => option.isActive !== false).map((option) => {
+                  const selected = (product.addOnOptionIdsByGroup?.[id] || []).includes(option.id);
+                  return <label key={option.id} className={`cursor-pointer rounded-lg border px-3 py-2 text-xs ${selected ? 'border-amber-700 bg-amber-50 text-amber-900' : 'border-stone-200 text-stone-600'}`}><input type="checkbox" className="sr-only" checked={selected} onChange={() => toggleOption(id, option.id)} />{option.name}</label>;
+                })}
+              </div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CompositeEditor({ product, finishedGoods, choiceGroups, onChange }: {
+  product: GlobalItemProductVersion;
+  finishedGoods: FinishedGood[];
+  choiceGroups: AddOnGroup[];
+  onChange: (product: GlobalItemProductVersion) => void;
+}) {
+  const composite = product.composite || { schemaVersion: 1 as const, staticComponents: [], choiceGroupIds: [] };
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h4 className="text-sm font-semibold text-stone-800">Fixed child products</h4>
+          <button type="button" className="flex min-h-11 items-center gap-2 rounded-xl border border-stone-300 px-3 text-sm font-semibold" onClick={() => onChange({ ...product, composite: { ...composite, staticComponents: [...composite.staticComponents, { finishedGoodId: '', finishedGoodCode: '', quantity: 1 }] } })}><Plus className="h-4 w-4" /> Add child</button>
+        </div>
+        <div className="space-y-2">
+          {composite.staticComponents.map((child, index) => (
+            <div key={`${index}-${child.finishedGoodCode}`} className="grid gap-2 rounded-xl border border-stone-200 bg-stone-50 p-3 sm:grid-cols-[1fr_110px_44px]">
+              <select className={inputClass} value={child.finishedGoodId} onChange={(event) => {
+                const item = finishedGoods.find((row) => (row.id || row.code) === event.target.value);
+                const staticComponents = composite.staticComponents.map((entry, childIndex) => childIndex === index ? { ...entry, finishedGoodId: event.target.value, finishedGoodCode: item?.code || '' } : entry);
+                onChange({ ...product, composite: { ...composite, staticComponents } });
+              }} aria-label={`Composite child ${index + 1}`}>
+                <option value="">Select child product</option>
+                {finishedGoods.filter((row) => row.code !== product.code && row.isActive !== false).map((row) => <option key={row.id || row.code} value={row.id || row.code}>{row.name} ({row.code})</option>)}
+              </select>
+              <input className={inputClass} type="number" min="0.001" step="0.001" value={child.quantity} onChange={(event) => {
+                const staticComponents = composite.staticComponents.map((entry, childIndex) => childIndex === index ? { ...entry, quantity: Number(event.target.value) } : entry);
+                onChange({ ...product, composite: { ...composite, staticComponents } });
+              }} aria-label={`Composite child quantity ${index + 1}`} />
+              <button type="button" className="flex h-11 w-11 items-center justify-center rounded-xl border border-red-200 text-red-700" onClick={() => onChange({ ...product, composite: { ...composite, staticComponents: composite.staticComponents.filter((_, childIndex) => childIndex !== index) } })} aria-label={`Remove composite child ${index + 1}`}><Trash2 className="h-4 w-4" /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+      <GroupPicker title="Selectable child groups" groups={choiceGroups} product={product} compositeChoice onChange={onChange} />
+      <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Composite parents may use prep station NONE. At publish, every child product and choice is resolved into the operational order snapshot.</p>
+    </div>
+  );
+}
+
+function MasterEditor({ product, taxonomyDocument, rawIngredients, prepItems, finishedGoods, addOnGroups, issues, onChange, onSave, saving }: {
+  product: GlobalItemProductVersion;
+  taxonomyDocument: unknown;
+  rawIngredients: RawIngredient[];
+  prepItems: PrepItem[];
+  finishedGoods: FinishedGood[];
+  addOnGroups: AddOnGroup[];
+  issues: string[];
+  onChange: (product: GlobalItemProductVersion) => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  const categories = activePosMenuCategories(resolvePosMenuTaxonomy(taxonomyDocument).taxonomy);
+  const category = categories.find((row) => row.code === product.posCategoryCode);
+  const productType = product.productType || 'NORMAL_SELLABLE';
+  const ordinaryGroups = addOnGroups.filter((group) => group.id && group.isActive !== false && group.purpose !== 'COMPOSITE_CHOICE');
+  const choiceGroups = addOnGroups.filter((group) => group.id && group.isActive !== false && group.purpose === 'COMPOSITE_CHOICE');
+  const set = <K extends keyof GlobalItemProductVersion>(key: K, value: GlobalItemProductVersion[K]) => onChange({ ...product, [key]: value });
+  const changeProductType = (type: FinishedGoodProductType) => {
+    const next = productWithType(product, type);
+    if (type === 'INTERNAL_COMPONENT') {
+      onChange({ ...next, addOnGroupIds: [], addOnOptionIdsByGroup: {} });
+      return;
+    }
+    if (type === 'NORMAL_SELLABLE') {
+      const ordinaryIds = new Set(ordinaryGroups.map((group) => group.id as string));
+      const addOnGroupIds = (next.addOnGroupIds || []).filter((id) => ordinaryIds.has(id));
+      onChange({
+        ...next,
+        addOnGroupIds,
+        addOnOptionIdsByGroup: Object.fromEntries(
+          Object.entries(next.addOnOptionIdsByGroup || {}).filter(([id]) => ordinaryIds.has(id)),
+        ),
+      });
+      return;
+    }
+    onChange({ ...next, prepStation: product.productType === 'COMPOSITE_PARENT' ? next.prepStation : 'NONE' });
+  };
+  return (
+    <div className="space-y-4">
+      <Section title="General" description="The product identity and customer-facing presentation.">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Product name"><input className={inputClass} value={product.displayName || product.name} onChange={(event) => onChange({ ...product, name: event.target.value, displayName: event.target.value })} /></Field>
+          <Field label="Product code" hint="Identity is protected and cannot be changed here."><input className={`${inputClass} bg-stone-100 text-stone-500`} value={product.code} disabled /></Field>
+          <Field label="POS category"><select className={inputClass} value={product.posCategoryCode} onChange={(event) => {
+            const next = categories.find((row) => row.code === event.target.value);
+            if (!next) return;
+            onChange({ ...product, posCategoryCode: next.code, posCategoryName: next.name, categoryCode: next.code, categoryName: next.name, categorySortOrder: next.sortOrder, posSubcategoryCode: null, posSubcategoryName: null, subcategoryCode: null, subcategoryName: null, subcategorySortOrder: null });
+          }}>{categories.map((row) => <option key={row.code} value={row.code}>{row.name}</option>)}</select></Field>
+          <Field label="Subcategory"><select className={inputClass} value={product.posSubcategoryCode || ''} onChange={(event) => {
+            const next = category?.subcategories.find((row) => row.code === event.target.value);
+            onChange({ ...product, posSubcategoryCode: next?.code || null, posSubcategoryName: next?.name || null, subcategoryCode: next?.code || null, subcategoryName: next?.name || null, subcategorySortOrder: next?.sortOrder ?? null });
+          }}><option value="">None</option>{category?.subcategories.map((row) => <option key={row.code} value={row.code}>{row.name}</option>)}</select></Field>
+          <div className="sm:col-span-2"><Field label="Description"><textarea className={`${inputClass} min-h-24`} value={product.description || ''} onChange={(event) => set('description', event.target.value)} /></Field></div>
+          <div className="sm:col-span-2"><Field label="Image URL" hint="Use an approved HTTPS product image URL."><input className={inputClass} type="url" value={product.imageUrl || ''} onChange={(event) => onChange({ ...product, imageUrl: event.target.value, imageStoragePath: null, imageSource: null, imageUpdatedBy: null })} /></Field></div>
+        </div>
+      </Section>
+
+      <Section title="Commercial" description={productType === 'INTERNAL_COMPONENT' ? 'Internal components cannot be sold directly or shown on the customer menu.' : 'Pricing, ordering, availability, and menu presentation.'}>
+        {productType === 'INTERNAL_COMPONENT' ? (
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">Direct sale and customer-menu visibility are locked off for this product type.</div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Sale price"><input className={inputClass} type="number" min="0" step="0.01" value={product.salePrice} onChange={(event) => set('salePrice', Number(event.target.value))} /></Field>
+            <Field label="GST / tax %"><input className={inputClass} type="number" min="0" max="100" step="0.01" value={product.taxRate} onChange={(event) => set('taxRate', Number(event.target.value))} /></Field>
+            <Field label="Display order"><input className={inputClass} type="number" min="0" step="1" value={product.sortOrder ?? 0} onChange={(event) => set('sortOrder', Number(event.target.value))} /></Field>
+            <Switch label="Directly sellable" checked={product.isSellable} onChange={(checked) => set('isSellable', checked)} />
+            <Switch label="Customer menu visible" checked={product.menuVisible} onChange={(checked) => set('menuVisible', checked)} />
+          </div>
+        )}
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Switch label="Production available" checked={product.isAvailable} onChange={(checked) => set('isAvailable', checked)} />
+          <Switch label="Active product" checked={product.isActive} onChange={(checked) => set('isActive', checked)} />
+        </div>
+      </Section>
+
+      <Section title="Operations" description="Product role, preparation routing, stock behaviour, and recipe cost.">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Product type"><select className={inputClass} value={productType} onChange={(event) => changeProductType(event.target.value as FinishedGoodProductType)}>
+            <option value="NORMAL_SELLABLE">Normal sellable</option>
+            <option value="INTERNAL_COMPONENT">Internal component</option>
+            <option value="COMPOSITE_PARENT">Set / flight / composite</option>
+          </select></Field>
+          <Field label="Prep / KOT station"><select className={inputClass} value={product.prepStation} onChange={(event) => set('prepStation', event.target.value as GlobalItemProductVersion['prepStation'])}><option value="BARISTA">Barista</option><option value="KITCHEN">Kitchen</option><option value="BOTH">Both</option><option value="NONE">None</option></select></Field>
+          <Field label="Item behaviour"><select className={inputClass} value={product.itemType} onChange={(event) => set('itemType', event.target.value as GlobalItemProductVersion['itemType'])}><option value="MADE_TO_ORDER">Made to order</option><option value="DIRECT_STOCK">Direct stock</option><option value="NO_STOCK">No stock</option></select></Field>
+          <Field label="Production mode"><select className={inputClass} value={product.productionMode || ''} onChange={(event) => set('productionMode', event.target.value as GlobalItemProductVersion['productionMode'])}><option value="">Not set</option><option value="MADE_TO_ORDER">Made to order</option><option value="ASSEMBLED_TO_ORDER">Assembled to order</option><option value="BOUGHT_AND_SOLD">Bought and sold</option><option value="NO_STOCK">No stock</option></select></Field>
+          <Field label="Recipe cost"><input className={inputClass} type="number" min="0" step="0.01" value={product.recipeCost} onChange={(event) => set('recipeCost', Number(event.target.value))} /></Field>
+        </div>
+      </Section>
+
+      {productType === 'COMPOSITE_PARENT' && <Section title="Child-product configuration" description="Fixed child products and selectable component groups for sets, flights, and bundles."><CompositeEditor product={product} finishedGoods={finishedGoods} choiceGroups={choiceGroups} onChange={onChange} /></Section>}
+      {productType !== 'INTERNAL_COMPONENT' && <Section title="Add-ons and modifiers" description="Choose the active groups and option allowlist published with this version."><GroupPicker title="Modifier groups" groups={ordinaryGroups} product={product} onChange={onChange} /></Section>}
+      {productType !== 'COMPOSITE_PARENT' && <Section title="Recipe / BOM" description="Structured operational components. Made-to-order products require at least one valid row."><BomEditor product={product} rawIngredients={rawIngredients} prepItems={prepItems} finishedGoods={finishedGoods} onChange={onChange} /></Section>}
+
+      {issues.length > 0 && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" /> Resolve before publishing</div><ul className="list-disc space-y-1 pl-5">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div>}
+      <div className="flex flex-col gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-blue-900"><strong>Save master</strong> stores a non-live draft. No store, POS, KOT, customer menu, or inventory output changes until publish.</p>
+        <button type="button" disabled={saving} onClick={onSave} className="min-h-11 shrink-0 rounded-xl bg-stone-950 px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{saving ? 'Saving…' : 'Save master'}</button>
+      </div>
+    </div>
+  );
+}
 
 export default function GlobalItems() {
   const { staffProfile } = useAuth();
-  const isAdmin = isAdminOnlyRole(staffProfile?.role) && staffProfile?.isActive === true;
-
+  const isAdmin = staffProfile?.role === 'ADMIN' && staffProfile?.isActive === true;
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [items, setItems] = useState<FinishedGood[]>([]);
-  const [stores, setStores] = useState<(Store & { id: string })[]>([]);
+  const [stores, setStores] = useState<StoreRecord[]>([]);
   const [configs, setConfigs] = useState<ConfigsByKey>(new Map());
+  const [drafts, setDrafts] = useState<DraftsByCode>(new Map());
   const [rawIngredients, setRawIngredients] = useState<RawIngredient[]>([]);
   const [prepItems, setPrepItems] = useState<PrepItem[]>([]);
   const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
-
+  const [taxonomyDocument, setTaxonomyDocument] = useState<unknown>(null);
   const [search, setSearch] = useState('');
   const [selectedCode, setSelectedCode] = useState('');
-  const [editingStoreId, setEditingStoreId] = useState('');
-  const [draft, setDraft] = useState<OverrideDraft>(emptyDraft());
-  const [saving, setSaving] = useState(false);
+  const [masterProduct, setMasterProduct] = useState<GlobalItemProductVersion | null>(null);
+  const [savedProductToken, setSavedProductToken] = useState('');
+  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>([]);
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  const loadCatalogue = useCallback(async () => {
+    const [itemSnap, storeSnap, configSnap, draftSnap, rawSnap, prepSnap, addOnSnap, taxonomySnap] = await Promise.all([
+      getDocs(collection(db, 'finishedGoods')),
+      getDocs(collection(db, 'stores')),
+      getDocs(collection(db, STORE_ITEM_CONFIG_COLLECTION)),
+      getDocs(collection(db, GLOBAL_ITEM_MASTER_DRAFT_COLLECTION)),
+      getDocs(collection(db, 'rawIngredients')),
+      getDocs(collection(db, 'prepItems')),
+      getDocs(collection(db, 'addOnGroups')),
+      getDoc(doc(db, POS_MENU_TAXONOMY_DOCUMENT_PATH)),
+    ]);
+    setItems(itemSnap.docs.map((row) => {
+      const data = row.data() as Omit<FinishedGood, 'id'>;
+      return { id: row.id, ...data, name: String(data.name || data.displayName || data.code || row.id) };
+    }).sort((a, b) => String(a.name || a.code).localeCompare(String(b.name || b.code))));
+    setStores(storeSnap.docs.map((row) => ({ id: row.id, ...(row.data() as Omit<Store, 'id'>) })));
+    setConfigs(new Map(configSnap.docs.map((row) => {
+      const value = { id: row.id, ...(row.data() as Omit<StoreItemConfig, 'id'>) };
+      return [storeItemConfigDocId(value.storeId, value.itemCode), value];
+    })));
+    setDrafts(new Map(draftSnap.docs.map((row) => {
+      const value = row.data() as GlobalItemMasterDraft;
+      return [value.itemCode, value];
+    })));
+    setRawIngredients(rawSnap.docs.map((row) => ({ id: row.id, ...(row.data() as Omit<RawIngredient, 'id'>) })));
+    setPrepItems(prepSnap.docs.map((row) => ({ id: row.id, ...(row.data() as Omit<PrepItem, 'id'>) })));
+    setAddOnGroups(addOnSnap.docs.map((row) => ({ id: row.id, ...(row.data() as Omit<AddOnGroup, 'id'>) })));
+    setTaxonomyDocument(taxonomySnap.exists() ? taxonomySnap.data() : null);
+  }, []);
 
   useEffect(() => {
     if (!isAdmin) { setLoading(false); return; }
     let active = true;
-    (async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const [itemSnap, storeSnap, configSnap, rawSnap, prepSnap, addOnSnap] = await Promise.all([
-          getDocs(collection(db, 'finishedGoods')),
-          getDocs(query(collection(db, 'stores'))),
-          getDocs(query(collection(db, STORE_ITEM_CONFIG_COLLECTION))),
-          getDocs(query(collection(db, 'rawIngredients'))),
-          getDocs(query(collection(db, 'prepItems'))),
-          getDocs(query(collection(db, 'addOnGroups'))),
-        ]);
-        if (!active) return;
-        setItems(itemSnap.docs
-          .map((d) => {
-            const data = d.data() as Omit<FinishedGood, 'id'>;
-            return {
-              id: d.id,
-              ...data,
-              name: String(data.name || data.displayName || data.code || d.id),
-            };
-          })
-          .sort((a, b) => String(a.name || a.displayName || a.code).localeCompare(String(b.name || b.displayName || b.code))));
-        setStores(storeSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Store, 'id'>) })));
-        const map: ConfigsByKey = new Map();
-        configSnap.docs.forEach((d) => {
-          const data = { id: d.id, ...(d.data() as Omit<StoreItemConfig, 'id'>) };
-          if (data.storeId && data.itemCode) map.set(keyOf(data.storeId, data.itemCode), data);
-        });
-        setConfigs(map);
-        setRawIngredients(rawSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<RawIngredient, 'id'>) })));
-        setPrepItems(prepSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PrepItem, 'id'>) })));
-        setAddOnGroups(addOnSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<AddOnGroup, 'id'>) })));
-      } catch (e: unknown) {
-        if (active) setError(e instanceof Error ? e.message : 'Unable to load the global catalogue.');
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
+    setLoading(true);
+    loadCatalogue().catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : 'Unable to load the global catalogue.');
+    }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [isAdmin]);
+  }, [isAdmin, loadCatalogue]);
 
-  const overrideCountByCode = useMemo(() => {
-    const counts = new Map<string, number>();
-    configs.forEach((config) => {
-      counts.set(config.itemCode, (counts.get(config.itemCode) || 0) + 1);
-    });
-    return counts;
-  }, [configs]);
-
+  const selectedItem = useMemo(() => items.find((item) => item.code === selectedCode) || null, [items, selectedCode]);
+  const savedDraft = selectedCode ? drafts.get(selectedCode) || null : null;
+  const eligibleStores = useMemo(() => eligibleGlobalItemStores(stores), [stores]);
   const filteredItems = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    if (!needle) return items;
-    return items.filter((item) => [item.name, item.displayName, item.code, item.posCategoryName]
-      .filter(Boolean)
-      .some((field) => String(field).toLowerCase().includes(needle)));
+    const needle = search.trim().toLocaleLowerCase('en');
+    return needle ? items.filter((item) => [item.name, item.displayName, item.code, item.posCategoryName].some((value) => String(value || '').toLocaleLowerCase('en').includes(needle))) : items;
   }, [items, search]);
+  const dirty = !!masterProduct && masterProductToken(masterProduct) !== savedProductToken;
+  const validationIssues = useMemo(() => masterProduct ? validateGlobalItemProductForPublish(masterProduct, { finishedGoods: items, rawIngredients, prepItems, addOnGroups, taxonomyDocument }) : [], [addOnGroups, items, masterProduct, prepItems, rawIngredients, taxonomyDocument]);
+  const configsBySelectedStore = useMemo(() => new Map(selectedStoreIds.map((storeId) => [storeId, selectedItem ? configs.get(storeItemConfigDocId(storeId, selectedItem.code)) || null : null])), [configs, selectedItem, selectedStoreIds]);
+  const reviewChanges = useMemo(() => selectedItem && masterProduct ? publishReviewChanges(selectedItem, masterProduct, selectedStoreIds, configsBySelectedStore) : [], [configsBySelectedStore, masterProduct, selectedItem, selectedStoreIds]);
+  const allSelected = eligibleStores.length > 0 && eligibleStores.every((store) => selectedStoreIds.includes(store.id));
+  const publishDisabled = !savedDraft || dirty || selectedStoreIds.length === 0 || validationIssues.length > 0 || saving || publishing;
 
-  const selectedItem = useMemo(
-    () => items.find((item) => item.code === selectedCode) || null,
-    [items, selectedCode],
-  );
-
-  const storesById = useMemo(
-    () => new Map(stores.map((store) => [store.id, store])),
-    [stores],
-  );
-
-  const assignedStores = useMemo(() => {
-    if (!selectedItem) return [];
-    const assignedStoreIds = storeIdsOf(selectedItem);
-    const rows = assignedStoreIds.length === 0
-      ? stores
-      : assignedStoreIds.map((storeId) => storesById.get(storeId)
-        || ({ id: storeId, code: storeId, name: storeId } as Store & { id: string }));
-    return rows
-      .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
-  }, [selectedItem, stores, storesById]);
-
-  const unassignedStores = useMemo(() => {
-    if (!selectedItem) return [];
-    return stores.filter((store) => !isAssignedToStore(selectedItem, store.id));
-  }, [selectedItem, stores]);
-
-  const existingConfig = selectedItem && editingStoreId
-    ? configs.get(keyOf(editingStoreId, selectedItem.code)) || null
-    : null;
-
-  const isAssigned = !!selectedItem && !!editingStoreId && isAssignedToStore(selectedItem, editingStoreId);
-  const issues = useMemo(
-    () => (editingStoreId ? validateOverrideDraft(draft, {
-      isAssigned,
-      isFullVersionManaged: !!existingConfig?.publishedVersion,
-    }) : []),
-    [draft, editingStoreId, existingConfig?.publishedVersion, isAssigned],
-  );
-
-  const comparison = useMemo(() => {
-    if (!selectedItem || !editingStoreId) return [];
-    return buildResolvedComparison(selectedItem, existingConfig, draft, editingStoreId);
-  }, [selectedItem, editingStoreId, existingConfig, draft]);
-
-  const plannedResolved = useMemo(() => {
-    if (!selectedItem || !editingStoreId) return null;
-    if (existingConfig?.publishedVersion) return resolveEffectiveProduct(selectedItem, existingConfig);
-    const plan = buildOverrideWritePlan({ storeId: editingStoreId, itemCode: selectedItem.code, draft, existing: existingConfig, updatedBy: '' });
-    return resolveStoreItem(selectedItem, plan.action === 'SET' ? plan.data : null);
-  }, [selectedItem, editingStoreId, draft, existingConfig]);
-
-  const previewPublication = useMemo(() => {
-    if (!selectedItem || !editingStoreId || issues.length > 0) return null;
-    const store = storesById.get(editingStoreId);
-    if (!store || !String(store.code || '').trim()) return null;
-    try {
-      return buildOverridePublishPlan({
-        store,
-        itemCode: selectedItem.code,
-        draft,
-        existing: existingConfig,
-        storeConfigs: Array.from(configs.values()).filter((config) => config.storeId === editingStoreId),
-        finishedGoods: items,
-        rawIngredients,
-        prepItems,
-        addOnGroups,
-        updatedBy: staffProfile?.uid || '',
-      });
-    } catch {
-      return null;
-    }
-  }, [addOnGroups, configs, draft, editingStoreId, existingConfig, items, issues.length, prepItems, rawIngredients, selectedItem, staffProfile?.uid, storesById]);
-
-  const customerSnapshotPreview = useMemo(() => {
-    if (!selectedItem || !plannedResolved || !previewPublication) return null;
-    if (plannedResolved.menuVisible === false) {
-      return { state: 'HIDDEN', detail: 'This item will be omitted from the customer menu.' };
-    }
-    const availability = previewPublication.snapshot.items[selectedItem.code];
-    const menuItem = previewPublication.snapshot.menuItems[selectedItem.code];
-    if (!availability || !menuItem) {
-      return {
-        state: 'NOT PUBLISHED',
-        detail: 'The canonical customer snapshot will omit this item because a global eligibility or store-assignment rule is not satisfied.',
-      };
-    }
-    if (!availability.available) {
-      return {
-        state: 'UNAVAILABLE',
-        detail: availability.publicMessage || 'The canonical customer snapshot will show this item as currently unavailable.',
-      };
-    }
-    return { state: 'AVAILABLE', detail: 'The canonical customer snapshot will publish this item as available.' };
-  }, [plannedResolved, previewPublication, selectedItem]);
-
-  const selectStore = (storeId: string) => {
-    if (!selectedItem) return;
-    setEditingStoreId(storeId);
-    setDraft(draftFromConfig(configs.get(keyOf(storeId, selectedItem.code))));
-    setMessage('');
+  const chooseItem = (item: FinishedGood) => {
+    const saved = drafts.get(item.code) || null;
+    const next = initialMasterProduct(item, saved);
+    setSelectedCode(item.code);
+    setMasterProduct(next);
+    setSavedProductToken(saved ? masterProductToken(saved.product) : '');
+    setSelectedStoreIds([]);
+    setReviewOpen(false);
     setError('');
+    setMessage('');
   };
 
-  const selectItem = (code: string) => {
-    setSelectedCode(code);
-    setEditingStoreId('');
-    setDraft(emptyDraft());
-    setMessage('');
-    setError('');
-  };
-
-  const save = async () => {
-    if (!isAdmin || !selectedItem || !editingStoreId) return;
-    if (issues.length > 0) { setError(issues.map((i) => i.message).join(' ')); return; }
-
+  const saveMaster = async () => {
+    if (!selectedItem || !masterProduct || !staffProfile || !isAdmin) return;
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      // Re-read all canonical sources at save time. Cached page state must never
-      // replace a newer complete customer-menu snapshot.
-      const freshStoreSnapshot = await getDoc(doc(db, 'stores', editingStoreId));
-      if (!freshStoreSnapshot.exists()) throw new Error('That store no longer exists. Reload and try again.');
-      const store = { id: freshStoreSnapshot.id, ...(freshStoreSnapshot.data() as Omit<Store, 'id'>) };
-      const storeCode = String(store.code || '').trim();
-      if (!storeCode) throw new Error('That store has no store code, so its customer menu cannot be published.');
-      const snapshotRef = doc(db, 'publicMenuAvailability', storeCode);
-      const [itemSnap, configSnap, rawSnap, prepSnap, addOnSnap, publicSnapshot] = await Promise.all([
-        getDocs(collection(db, 'finishedGoods')),
-        getDocs(query(collection(db, STORE_ITEM_CONFIG_COLLECTION))),
-        getDocs(collection(db, 'rawIngredients')),
-        getDocs(collection(db, 'prepItems')),
-        getDocs(collection(db, 'addOnGroups')),
-        getDoc(snapshotRef),
-      ]);
-      const freshItems = itemSnap.docs
-        .map((entry) => {
-          const data = entry.data() as Omit<FinishedGood, 'id'>;
-          return {
-            id: entry.id,
-            ...data,
-            name: String(data.name || data.displayName || data.code || entry.id),
-          };
-        })
-        .sort((a, b) => String(a.name || a.displayName || a.code).localeCompare(String(b.name || b.displayName || b.code)));
-      const freshSelectedItem = freshItems.find((item) => item.code === selectedItem.code);
-      if (!freshSelectedItem) throw new Error('That item changed or was removed. Reload and try again.');
-      if (canonicalDataToken(freshSelectedItem) !== canonicalDataToken(selectedItem)) {
-        throw new Error('The global item changed while you were editing. Reload and review the current values.');
-      }
-      const freshIssues = validateOverrideDraft(draft, {
-        isAssigned: isAssignedToStore(freshSelectedItem, editingStoreId),
-      });
-      if (freshIssues.length > 0) {
-        throw new Error(freshIssues.map((issue) => issue.message).join(' '));
-      }
-      const freshSelectedSnapshot = itemSnap.docs.find((entry) => entry.id === freshSelectedItem.id);
-      if (!freshSelectedSnapshot) throw new Error('The global item identity changed. Reload and try again.');
-      const sourceItemRef = doc(db, 'finishedGoods', freshSelectedSnapshot.id);
-      const expectedSourceItemToken = canonicalDataToken(freshSelectedSnapshot.data());
-      const expectedStoreToken = canonicalDataToken(freshStoreSnapshot.data());
-
-      const freshConfigMap: ConfigsByKey = new Map();
-      configSnap.docs.forEach((entry) => {
-        const data = { id: entry.id, ...(entry.data() as Omit<StoreItemConfig, 'id'>) };
-        if (data.storeId && data.itemCode) freshConfigMap.set(keyOf(data.storeId, data.itemCode), data);
-      });
-      const freshExisting = freshConfigMap.get(keyOf(editingStoreId, freshSelectedItem.code)) || null;
-      if (overrideIntentToken(freshExisting) !== overrideIntentToken(existingConfig)) {
-        throw new Error('This override changed while you were editing. Reload and review the latest values.');
-      }
-
-      const freshRawIngredients = rawSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<RawIngredient, 'id'>) }));
-      const freshPrepItems = prepSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<PrepItem, 'id'>) }));
-      const freshAddOnGroups = addOnSnap.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<AddOnGroup, 'id'>) }));
-      const storeConfigs = Array.from(freshConfigMap.values()).filter((config) => config.storeId === editingStoreId);
-      const writeTimestamp = serverTimestamp();
-      const publish = buildOverridePublishPlan({
-        store,
-        itemCode: freshSelectedItem.code,
-        draft,
-        existing: freshExisting,
-        storeConfigs,
-        finishedGoods: freshItems,
-        rawIngredients: freshRawIngredients,
-        prepItems: freshPrepItems,
-        addOnGroups: freshAddOnGroups,
-        updatedBy: staffProfile?.uid || '',
-        updatedAt: writeTimestamp,
-        createdAt: freshExisting?.createdAt ?? writeTimestamp,
-      });
-
-      if (publish.overridePlan.action === 'NONE') {
-        setMessage('Nothing to publish — every field already inherits the global value.');
-        setSaving(false);
-        return;
-      }
-
-      const overrideRef = doc(db, STORE_ITEM_CONFIG_COLLECTION, publish.overridePlan.docId);
-      const expectedSnapshotRevision = snapshotRevisionToken(
-        publicSnapshot.exists() ? publicSnapshot.data() : null,
-      );
-      const publicationRevision = globalThis.crypto?.randomUUID?.()
-        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-      // The revision precondition makes a concurrent complete-snapshot writer
-      // fail closed. Firestore retries transactions after a conflicting write;
-      // the retry then sees the new revision and asks the Admin to refresh.
-      await runTransaction(db, async (transaction) => {
-        const [livePublicSnapshot, liveOverrideSnapshot, liveSourceItem, liveStore] = await Promise.all([
-          transaction.get(snapshotRef),
-          transaction.get(overrideRef),
-          transaction.get(sourceItemRef),
-          transaction.get(freshStoreSnapshot.ref),
-        ]);
-        if (!liveSourceItem.exists() || canonicalDataToken(liveSourceItem.data()) !== expectedSourceItemToken) {
-          throw new Error('The global item changed while publishing. Nothing was published; reload and review it.');
+      const itemRef = doc(db, 'finishedGoods', selectedItem.id || selectedItem.code);
+      const draftRef = doc(db, GLOBAL_ITEM_MASTER_DRAFT_COLLECTION, globalItemMasterDraftDocId(selectedItem.code));
+      const expectedDraftRevision = savedDraft?.draftRevision || '';
+      const revision = newRevision();
+      const savedProduct = await runTransaction(db, async (transaction) => {
+        const [freshItemSnap, freshDraftSnap] = await Promise.all([transaction.get(itemRef), transaction.get(draftRef)]);
+        if (!freshItemSnap.exists()) throw new Error('The source product no longer exists. Nothing was saved.');
+        const freshItem = { id: freshItemSnap.id, ...(freshItemSnap.data() as Omit<FinishedGood, 'id'>) };
+        if (globalItemBaseProductToken(freshItem) !== globalItemBaseProductToken(selectedItem)) {
+          throw new Error('The live source product changed while you were editing. Reload it before saving. Nothing was saved.');
         }
-        if (!liveStore.exists() || canonicalDataToken(liveStore.data()) !== expectedStoreToken) {
-          throw new Error('The store changed while publishing. Nothing was published; reload and review it.');
-        }
-        const liveRevision = snapshotRevisionToken(
-          livePublicSnapshot.exists() ? livePublicSnapshot.data() : null,
-        );
-        if (liveRevision !== expectedSnapshotRevision) {
-          throw new Error('This store menu changed while publishing. Reload and try again.');
-        }
-        const liveOverride = liveOverrideSnapshot.exists()
-          ? { id: liveOverrideSnapshot.id, ...(liveOverrideSnapshot.data() as Omit<StoreItemConfig, 'id'>) }
-          : null;
-        if (overrideIntentToken(liveOverride) !== overrideIntentToken(freshExisting)) {
-          throw new Error('This override changed while publishing. Reload and review it.');
-        }
-        if (publish.overridePlan.action === 'SET') transaction.set(overrideRef, publish.overridePlan.data);
-        else transaction.delete(overrideRef);
-        transaction.set(snapshotRef, {
-          ...publish.snapshot,
-          publicationRevision,
-          updatedAt: writeTimestamp,
-          updatedBy: staffProfile?.uid || '',
-          updatedByName: staffProfile?.displayName || staffProfile?.email || 'Admin',
+        const currentRevision = freshDraftSnap.exists() ? String((freshDraftSnap.data() as GlobalItemMasterDraft).draftRevision || '') : '';
+        if (currentRevision !== expectedDraftRevision) throw new Error('A newer master draft was saved by someone else. Reload before saving. Nothing was saved.');
+        const product: GlobalItemProductVersion = { ...masterProduct, availableStoreIds: Array.isArray(freshItem.availableStoreIds) ? freshItem.availableStoreIds : [] };
+        transaction.set(draftRef, {
+          schemaVersion: GLOBAL_ITEM_VERSION_SCHEMA_VERSION,
+          itemCode: selectedItem.code,
+          draftRevision: revision,
+          ...(selectedItem.id ? { baseProductId: selectedItem.id } : {}),
+          baseProductToken: globalItemBaseProductToken(freshItem),
+          product,
+          savedAt: serverTimestamp(),
+          savedBy: staffProfile.uid,
+          savedByName: staffProfile.displayName || staffProfile.name || staffProfile.email || null,
         });
+        return product;
       });
-
-      const next = new Map(freshConfigMap);
-      if (publish.overridePlan.action === 'DELETE') {
-        next.delete(keyOf(editingStoreId, freshSelectedItem.code));
-        setMessage(`Override removed and published. ${store.name || store.id} is back on the global values, and its customer menu was rebuilt in the same save.`);
-      } else {
-        next.set(keyOf(editingStoreId, freshSelectedItem.code), { id: publish.overridePlan.docId, ...publish.overridePlan.data });
-        setMessage(`Override published. The complete customer menu for ${store.name || store.id} was rebuilt in the same save (${publish.snapshot.itemCount} items live).`);
-      }
-      setItems(freshItems);
-      setConfigs(next);
-      setRawIngredients(freshRawIngredients);
-      setPrepItems(freshPrepItems);
-      setAddOnGroups(freshAddOnGroups);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? `Nothing was published. ${e.message}` : 'Nothing was published. The override could not be saved.');
+      const nextDraft: GlobalItemMasterDraft = {
+        schemaVersion: GLOBAL_ITEM_VERSION_SCHEMA_VERSION,
+        itemCode: selectedItem.code,
+        draftRevision: revision,
+        ...(selectedItem.id ? { baseProductId: selectedItem.id } : {}),
+        baseProductToken: globalItemBaseProductToken(selectedItem),
+        product: savedProduct,
+        savedAt: new Date(),
+        savedBy: staffProfile.uid,
+        savedByName: staffProfile.displayName || staffProfile.name || staffProfile.email || null,
+      };
+      setDrafts((current) => new Map(current).set(selectedItem.code, nextDraft));
+      setMasterProduct(savedProduct);
+      setSavedProductToken(masterProductToken(savedProduct));
+      setMessage('MASTER SAVED — NOT YET PUBLISHED. Live stores have not changed.');
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'Unable to save the master draft. Nothing was saved.');
     } finally {
       setSaving(false);
     }
   };
 
-  if (!isAdmin) {
-    return (
-      <div className="p-6 max-w-3xl mx-auto">
-        <div className="bg-white border border-neutral-200 rounded-2xl p-6">
-          <h1 className="text-xl font-black text-[#3e2723] mb-2">Admin access required</h1>
-          <p className="text-sm text-neutral-600">Only an active Admin can manage global items and store overrides.</p>
-        </div>
-      </div>
-    );
-  }
+  const publish = async () => {
+    if (!selectedItem || !savedDraft || !staffProfile || publishDisabled) return;
+    setPublishing(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await publishGlobalItemToStores(db, {
+        itemCode: selectedItem.code,
+        expectedMasterRevision: savedDraft.draftRevision,
+        targetStoreIds: selectedStoreIds,
+        publishedBy: { uid: staffProfile.uid, name: staffProfile.displayName || staffProfile.name || staffProfile.email || null },
+      });
+      await loadCatalogue();
+      setReviewOpen(false);
+      setSelectedStoreIds([]);
+      setMessage(`PUBLISHED TO ${result.publishedStoreIds.length} STORE${result.publishedStoreIds.length === 1 ? '' : 'S'}. All selected stores now use this approved version.`);
+    } catch (reason: unknown) {
+      if (reason instanceof GlobalItemPublishError) {
+        setError(`${reason.message}${reason.issues.length ? ` ${reason.issues.join(' ')}` : ''}`);
+      } else {
+        setError(reason instanceof Error ? reason.message : 'Publish failed. Nothing was published.');
+      }
+      setReviewOpen(false);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  if (!isAdmin) return <div className="rounded-2xl border border-red-200 bg-red-50 p-6"><h1 className="text-xl font-semibold text-red-900">Admin access required</h1><p className="mt-2 text-sm text-red-800">Global master products and multi-store publishing are available only to active Admin users.</p></div>;
+  if (loading) return <div className="flex min-h-[40vh] items-center justify-center text-sm text-stone-500">Loading Global Items…</div>;
 
   return (
-    <div className="p-4 md:p-6 max-w-[1400px] mx-auto">
-      <header className="mb-5">
-        <p className="text-xs font-black uppercase tracking-widest text-amber-700">Global catalogue</p>
-        <h1 className="text-2xl md:text-3xl font-black text-[#3e2723]">Global Items</h1>
-        <p className="text-sm text-neutral-600 mt-1">
-          One shared product definition per item. Stores inherit every value unless you set an explicit override.
-        </p>
+    <div className="min-h-screen bg-[#f8f6f2] pb-28 text-stone-900">
+      <header className="border-b border-stone-200 bg-white px-4 py-5 sm:px-6">
+        <div className="mx-auto max-w-[1500px]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-800">Catalogue control</p><h1 className="mt-1 text-3xl font-semibold tracking-tight text-stone-950">Global Items</h1><p className="mt-1 max-w-2xl text-sm text-stone-500">Edit one protected master, choose stores, review changes, and publish one complete product version.</p></div>
+            <Link to="/admin/menu-management" className="flex min-h-11 items-center gap-2 self-start rounded-xl border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700">Open source catalogue <ChevronRight className="h-4 w-4" /></Link>
+          </div>
+        </div>
       </header>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">{error}</div>}
-      {message && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</div>}
+      <main className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className={`${cardClass} self-start overflow-hidden lg:sticky lg:top-4`}>
+          <div className="border-b border-stone-200 p-4"><div className="relative"><Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-stone-400" /><input className={`${inputClass} pl-9`} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search products" aria-label="Search products" /></div><p className="mt-2 text-xs text-stone-500">{filteredItems.length} products</p></div>
+          <div className="max-h-[55vh] overflow-y-auto lg:max-h-[calc(100vh-220px)]">
+            {filteredItems.map((item) => {
+              const saved = drafts.get(item.code);
+              const active = selectedCode === item.code;
+              return <button key={item.id || item.code} type="button" onClick={() => chooseItem(item)} className={`flex min-h-[68px] w-full items-center gap-3 border-b border-stone-100 px-4 py-3 text-left transition ${active ? 'bg-amber-50' : 'hover:bg-stone-50'}`}><div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-stone-100">{item.imageUrl ? <img src={item.imageUrl} alt="" className="h-full w-full object-cover" /> : <Layers className="h-4 w-4 text-stone-400" />}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-stone-900">{item.displayName || item.name}</p><p className="truncate text-xs text-stone-500">{item.code} · {saved ? 'Master saved' : 'No master'}</p></div><ChevronRight className="h-4 w-4 shrink-0 text-stone-400" /></button>;
+            })}
+          </div>
+        </aside>
 
-      {loading ? (
-        <div className="rounded-2xl border border-neutral-200 bg-white p-10 text-center text-sm font-semibold text-neutral-500">Loading global catalogue…</div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,340px)_1fr] gap-4 items-start">
-          <section className="rounded-2xl border border-neutral-200 bg-white p-4">
-            <label className="block mb-3">
-              <span className="sr-only">Search items</span>
-              <div className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2 focus-within:ring-2 focus-within:ring-[#5c4033]/20">
-                <Search size={16} className="text-neutral-400 shrink-0" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search name, code or category"
-                  className="w-full outline-none text-sm font-semibold"
-                />
-              </div>
-            </label>
-            <p className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">
-              {filteredItems.length} item{filteredItems.length === 1 ? '' : 's'}
-            </p>
-            <ul className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
-              {filteredItems.map((item) => {
-                const overrides = overrideCountByCode.get(item.code) || 0;
-                const active = item.code === selectedCode;
-                return (
-                  <li key={item.code}>
-                    <button
-                      type="button"
-                      onClick={() => selectItem(item.code)}
-                      className={`w-full text-left flex items-center gap-3 rounded-xl border p-2.5 transition-colors ${active ? 'border-[#5c4033] bg-[#fff8f0]' : 'border-neutral-200 hover:border-[#5c4033]/40'}`}
-                    >
-                      <span className="w-11 h-11 rounded-lg bg-[#f7eee3] shrink-0 flex items-center justify-center overflow-hidden">
-                        {item.imageUrl
-                          ? <img src={item.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" />
-                          : <ImageOff size={16} className="text-neutral-400" />}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-bold text-sm text-neutral-800 truncate">{item.displayName || item.name}</span>
-                        <span className="block text-[11px] text-neutral-500 truncate">{item.code} · {money(item.salePrice)}</span>
-                      </span>
-                      {overrides > 0 && (
-                        <span className="shrink-0 text-[10px] font-black uppercase rounded-full bg-[#5c4033] text-white px-2 py-0.5">{overrides}</span>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-              {filteredItems.length === 0 && (
-                <li className="text-sm text-neutral-500 py-6 text-center">No items match that search.</li>
-              )}
-            </ul>
-          </section>
+        <div className="min-w-0 space-y-5">
+          {error && <div role="alert" className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span>{error}</span></div>}
+          {message && <div role="status" className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800"><Check className="mt-0.5 h-4 w-4 shrink-0" /><span>{message}</span></div>}
+          {!selectedItem || !masterProduct ? (
+            <div className={`${cardClass} flex min-h-[420px] flex-col items-center justify-center p-8 text-center`}><Layers className="h-10 w-10 text-stone-300" /><h2 className="mt-4 text-xl font-semibold">Select a product</h2><p className="mt-2 max-w-md text-sm text-stone-500">Choose a product from the catalogue to open its master editor and store publishing status.</p></div>
+          ) : (
+            <>
+              <MasterHeader item={selectedItem} product={masterProduct} saved={savedDraft} dirty={dirty} />
+              <MasterEditor product={masterProduct} taxonomyDocument={taxonomyDocument} rawIngredients={rawIngredients} prepItems={prepItems} finishedGoods={items} addOnGroups={addOnGroups} issues={validationIssues} onChange={(next) => { setMasterProduct(next); setMessage(''); setError(''); }} onSave={saveMaster} saving={saving} />
 
-          <section className="min-w-0 space-y-4">
-            {!selectedItem ? (
-              <div className="rounded-2xl border border-neutral-200 bg-white p-10 text-center">
-                <Layers size={22} className="mx-auto text-neutral-300 mb-2" />
-                <p className="text-sm font-semibold text-neutral-500">Select an item to review its global values and store overrides.</p>
-              </div>
-            ) : (
-              <>
-                <div className="rounded-2xl border border-neutral-200 bg-white p-4 md:p-5">
-                  <div className="flex flex-wrap items-start gap-4">
-                    <div className="w-20 h-20 rounded-xl bg-[#f7eee3] shrink-0 flex items-center justify-center overflow-hidden">
-                      {selectedItem.imageUrl
-                        ? <img src={selectedItem.imageUrl} alt="" className="w-full h-full object-cover" />
-                        : <ImageOff size={20} className="text-neutral-400" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h2 className="text-lg font-black text-[#3e2723]">{selectedItem.displayName || selectedItem.name}</h2>
-                      <p className="text-xs text-neutral-500 mb-2">{selectedItem.code} · {selectedItem.posCategoryName || 'Uncategorised'}</p>
-                      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                        <div><dt className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Global price</dt><dd className="font-black text-neutral-800">{money(selectedItem.salePrice)}</dd></div>
-                        <div><dt className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Global availability</dt><dd className="font-bold text-neutral-800">{selectedItem.isAvailable === false ? 'Unavailable' : 'Available'}</dd></div>
-                        <div><dt className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Display order</dt><dd className="font-bold text-neutral-800">{selectedItem.sortOrder ?? 0}</dd></div>
-                        <div><dt className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Assigned stores</dt><dd className="font-bold text-neutral-800">{assignedStoreCount(selectedItem, stores)}</dd></div>
-                      </dl>
-                      <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-neutral-500">
-                        <Info size={13} /> Image, description, add-ons, KOT station, GST and recipe are global and shared by every store. Edit them in Menu Management.
-                      </p>
-                    </div>
-                  </div>
+              <Section title="Select stores" description="Only active stores with a valid store code can be published. Existing assignments are preserved; a newly selected store is assigned atomically at publish.">
+                <button type="button" onClick={() => setSelectedStoreIds(selectedStoreIdsAfterSelectAll(selectedStoreIds, eligibleStores.map((store) => store.id)))} className="mb-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-stone-300 px-4 text-sm font-semibold"><span>{allSelected ? 'Deselect all stores' : 'Select all stores'}</span><span className="text-stone-500">{selectedStoreIds.length} selected</span></button>
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {eligibleStores.map((store) => {
+                    const selected = selectedStoreIds.includes(store.id);
+                    const newAssignment = !isAssigned(selectedItem, store.id);
+                    return <label key={store.id} className={`flex min-h-[68px] cursor-pointer items-center gap-3 rounded-xl border p-3 ${selected ? 'border-amber-700 bg-amber-50' : 'border-stone-200 bg-white'}`}><input type="checkbox" className="h-5 w-5 shrink-0 accent-amber-700" checked={selected} onChange={() => setSelectedStoreIds(selectedStoreIdsAfterToggle(selectedStoreIds, store.id))} /><StoreIcon className="h-4 w-4 shrink-0 text-stone-500" /><span className="min-w-0"><span className="block truncate text-sm font-semibold">{store.name || store.code}</span><span className="block truncate text-xs text-stone-500">{store.code}{newAssignment ? ' · Will be added to this store' : ' · Already assigned'}</span></span></label>;
+                  })}
                 </div>
+                {eligibleStores.length === 0 && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">No active stores with a valid store code are available.</p>}
+              </Section>
 
-                <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-neutral-100">
-                    <h3 className="font-black text-[#3e2723]">Stores</h3>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm min-w-[640px]">
-                      <thead className="bg-[#fcf9f5] text-[11px] uppercase tracking-widest text-neutral-500">
-                        <tr>
-                          <th className="text-left font-bold px-4 py-2">Store</th>
-                          <th className="text-left font-bold px-4 py-2">Price</th>
-                          <th className="text-left font-bold px-4 py-2">Availability</th>
-                          <th className="text-left font-bold px-4 py-2">Customer menu</th>
-                          <th className="text-left font-bold px-4 py-2">Order</th>
-                          <th className="px-4 py-2" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {assignedStores.map((store) => {
-                          const config = configs.get(keyOf(store.id, selectedItem.code)) || null;
-                          const resolved = resolveStoreItem(selectedItem, config);
-                          const applied = new Set(resolved.appliedOverrides);
-                          const tag = (on: boolean) => on
-                            ? <span className="ml-1.5 text-[10px] font-black uppercase text-[#5c4033]">Override</span>
-                            : <span className="ml-1.5 text-[10px] font-bold uppercase text-neutral-400">Global</span>;
-                          return (
-                            <tr key={store.id} className={`border-t border-neutral-100 ${editingStoreId === store.id ? 'bg-[#fff8f0]' : ''}`}>
-                              <td className="px-4 py-2.5">
-                                <span className="font-bold text-neutral-800">{store.name || store.id}</span>
-                                <span className="block text-[11px] text-neutral-500">{store.code || store.id}</span>
-                              </td>
-                              <td className="px-4 py-2.5 whitespace-nowrap">{money(resolved.salePrice)}{tag(applied.has('priceOverride'))}</td>
-                              <td className="px-4 py-2.5 whitespace-nowrap">{resolved.isAvailable === false ? 'Unavailable' : 'Available'}{tag(applied.has('isAvailableOverride'))}</td>
-                              <td className="px-4 py-2.5 whitespace-nowrap">{resolved.menuVisible === false ? 'Hidden' : 'Visible'}{tag(applied.has('menuVisibilityOverride'))}</td>
-                              <td className="px-4 py-2.5 whitespace-nowrap">{resolved.sortOrder ?? 0}{tag(applied.has('sortOrderOverride'))}</td>
-                              <td className="px-4 py-2.5 text-right">
-                                <button type="button" onClick={() => selectStore(store.id)} className="text-xs font-black uppercase tracking-wide text-[#5c4033] hover:underline">Edit</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                        {unassignedStores.map((store) => (
-                          <tr key={store.id} className="border-t border-neutral-100 text-neutral-400">
-                            <td className="px-4 py-2.5">
-                              <span className="font-bold">{store.name || store.id}</span>
-                              <span className="block text-[11px]">{store.code || store.id}</span>
-                            </td>
-                            <td className="px-4 py-2.5" colSpan={5}>Not assigned — assign this item in Menu Management before setting an override.</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+              <Section title="Published stores" description="Compare each store’s live version with the latest saved master.">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {eligibleStores.map((store) => {
+                    const config = configs.get(storeItemConfigDocId(store.id, selectedItem.code)) || null;
+                    const state = publishedStoreState(config, savedDraft?.draftRevision);
+                    const effective = effectiveStoreProduct(selectedItem, config);
+                    const differs = masterProduct ? publishedProductDiffersFromMaster(config, masterProduct) : null;
+                    return <article key={store.id} className="rounded-xl border border-stone-200 bg-stone-50 p-4"><div className="flex items-start justify-between gap-3"><div><h4 className="font-semibold text-stone-900">{store.name || store.code}</h4><p className="text-xs text-stone-500">{store.code}</p></div><StatusPill state={state} /></div><dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-xs"><dt className="text-stone-500">Revision</dt><dd className="truncate text-right font-medium">{config?.publishedVersion?.publishedRevision?.slice(0, 8) || '—'}</dd><dt className="text-stone-500">Effective price</dt><dd className="text-right font-medium">{money(effective.salePrice)}</dd><dt className="text-stone-500">Availability</dt><dd className="text-right font-medium">{effective.isAvailable ? 'Available' : 'Unavailable'}</dd><dt className="text-stone-500">Customer menu</dt><dd className="text-right font-medium">{effective.menuVisible === false ? 'Hidden' : 'Visible'}</dd><dt className="text-stone-500">Last published</dt><dd className="text-right font-medium">{dateTime(config?.publishedVersion?.publishedAt)}</dd><dt className="text-stone-500">Different from master</dt><dd className="text-right font-medium">{differs === null ? 'Not published' : differs ? 'Yes' : 'No'}</dd></dl></article>;
+                  })}
                 </div>
-
-                {editingStoreId && (
-                  <div className="rounded-2xl border border-[#5c4033]/30 bg-white p-4 md:p-5">
-                    <h3 className="font-black text-[#3e2723] mb-1">
-                      Store override — {storesById.get(editingStoreId)?.name || editingStoreId}
-                    </h3>
-                    <p className="text-xs text-neutral-500 mb-4">Inherit global keeps this store on the shared value. Override stores an explicit value for this store only.</p>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <OverrideField
-                        label="Price"
-                        mode={draft.price.mode}
-                        inheritLabel={money(selectedItem.salePrice)}
-                        onMode={(mode) => setDraft({ ...draft, price: { ...draft.price, mode, value: mode === 'OVERRIDE' && !draft.price.value ? String(selectedItem.salePrice) : draft.price.value } })}
-                      >
-                        <input
-                          type="number" min="0" step="0.01" inputMode="decimal"
-                          value={draft.price.value}
-                          onChange={(e) => setDraft({ ...draft, price: { ...draft.price, value: e.target.value } })}
-                          className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20"
-                        />
-                      </OverrideField>
-
-                      <OverrideField
-                        label="Store availability"
-                        mode={draft.availability.mode}
-                        inheritLabel={selectedItem.isAvailable === false ? 'Unavailable' : 'Available'}
-                        onMode={(mode) => setDraft({ ...draft, availability: { ...draft.availability, mode } })}
-                      >
-                        <select
-                          value={draft.availability.value ? 'AVAILABLE' : 'UNAVAILABLE'}
-                          onChange={(e) => setDraft({ ...draft, availability: { ...draft.availability, value: e.target.value === 'AVAILABLE' } })}
-                          className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20"
-                        >
-                          <option value="AVAILABLE">Available</option>
-                          <option value="UNAVAILABLE">Unavailable</option>
-                        </select>
-                      </OverrideField>
-
-                      <OverrideField
-                        label="Customer menu visibility"
-                        hint="Customer ordering only. POS keeps showing this item to staff."
-                        mode={draft.menuVisibility.mode}
-                        inheritLabel="Visible"
-                        onMode={(mode) => setDraft({ ...draft, menuVisibility: { ...draft.menuVisibility, mode } })}
-                      >
-                        <select
-                          value={draft.menuVisibility.value ? 'VISIBLE' : 'HIDDEN'}
-                          onChange={(e) => setDraft({ ...draft, menuVisibility: { ...draft.menuVisibility, value: e.target.value === 'VISIBLE' } })}
-                          className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20"
-                        >
-                          <option value="VISIBLE">Visible</option>
-                          <option value="HIDDEN">Hidden</option>
-                        </select>
-                      </OverrideField>
-
-                      <OverrideField
-                        label="Display order"
-                        mode={draft.sortOrder.mode}
-                        inheritLabel={String(selectedItem.sortOrder ?? 0)}
-                        onMode={(mode) => setDraft({ ...draft, sortOrder: { ...draft.sortOrder, mode, value: mode === 'OVERRIDE' && !draft.sortOrder.value ? String(selectedItem.sortOrder ?? 0) : draft.sortOrder.value } })}
-                      >
-                        <input
-                          type="number" step="1" inputMode="numeric"
-                          value={draft.sortOrder.value}
-                          onChange={(e) => setDraft({ ...draft, sortOrder: { ...draft.sortOrder, value: e.target.value } })}
-                          className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20"
-                        />
-                      </OverrideField>
-                    </div>
-
-                    <div className="mt-5 rounded-xl border border-neutral-200 bg-[#fcf9f5] p-4">
-                      <h4 className="text-[11px] font-black uppercase tracking-widest text-neutral-500 mb-2">Resolved preview</h4>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm min-w-[520px]">
-                          <thead className="text-[11px] uppercase tracking-widest text-neutral-400">
-                            <tr><th className="text-left font-bold py-1">Field</th><th className="text-left font-bold py-1">Global</th><th className="text-left font-bold py-1">Now</th><th className="text-left font-bold py-1">After save</th></tr>
-                          </thead>
-                          <tbody>
-                            {comparison.map((row) => (
-                              <tr key={row.field} className="border-t border-neutral-200/70">
-                                <td className="py-1.5 font-bold text-neutral-700">{row.label}</td>
-                                <td className="py-1.5 text-neutral-500">{row.globalValue}</td>
-                                <td className="py-1.5 text-neutral-500">{row.currentValue}</td>
-                                <td className={`py-1.5 font-black ${row.changed ? 'text-[#5c4033]' : 'text-neutral-700'}`}>
-                                  {row.nextValue}{row.overridden && <span className="ml-1.5 text-[10px] font-black uppercase text-[#5c4033]">Override</span>}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    {customerSnapshotPreview && (
-                      <div className={`mt-3 flex gap-2 rounded-xl border px-4 py-3 text-sm ${customerSnapshotPreview.state === 'AVAILABLE' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
-                        <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-                        <span><strong className="font-black">Customer snapshot after save: {customerSnapshotPreview.state}.</strong> {customerSnapshotPreview.detail}</span>
-                      </div>
-                    )}
-
-                    {issues.length > 0 && (
-                      <ul className="mt-3 space-y-1">
-                        {issues.map((issue) => (
-                          <li key={issue.field} className="text-sm font-semibold text-red-700">{issue.message}</li>
-                        ))}
-                      </ul>
-                    )}
-
-                    {existingConfig?.updatedBy && (
-                      <p className="mt-3 text-[11px] text-neutral-400">Last updated by {existingConfig.updatedBy}</p>
-                    )}
-
-                    <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={save}
-                        disabled={saving || issues.length > 0}
-                        className="px-4 py-2.5 rounded-xl bg-[#3e2723] text-white font-black disabled:bg-neutral-200 disabled:text-neutral-400"
-                      >
-                        {saving ? 'Publishing…' : 'Publish override'}
-                      </button>
-                      <button type="button" onClick={() => setEditingStoreId('')} className="text-sm font-bold text-neutral-500 hover:text-neutral-700">Cancel</button>
-                      <span className="text-xs text-neutral-500">
-                        Publishing updates the private override and complete customer menu snapshot together in one save. For an
-                        operational rebuild of a whole store menu, use{' '}
-                        <Link to="/admin/pos-readiness" className="font-black text-[#5c4033] hover:underline">POS Readiness</Link>.
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </section>
+              </Section>
+            </>
+          )}
         </div>
-      )}
-    </div>
-  );
-}
+      </main>
 
-function OverrideField(props: {
-  label: string;
-  hint?: string;
-  mode: OverrideMode;
-  inheritLabel: string;
-  onMode: (mode: OverrideMode) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border border-neutral-200 p-3">
-      <p className="text-[11px] font-black uppercase tracking-widest text-neutral-500">{props.label}</p>
-      {props.hint && <p className="text-[11px] text-neutral-400 mb-1.5">{props.hint}</p>}
-      <div className="mt-2 space-y-2">
-        <label className="flex items-center gap-2 text-sm font-semibold text-neutral-700 cursor-pointer">
-          <input type="radio" checked={props.mode === 'INHERIT'} onChange={() => props.onMode('INHERIT')} className="accent-[#5c4033]" />
-          <span>Inherit global — <span className="font-black">{props.inheritLabel}</span></span>
-        </label>
-        <label className="flex items-center gap-2 text-sm font-semibold text-neutral-700 cursor-pointer">
-          <input type="radio" checked={props.mode === 'OVERRIDE'} onChange={() => props.onMode('OVERRIDE')} className="accent-[#5c4033]" />
-          <span>Override</span>
-        </label>
-        <div className={props.mode === 'OVERRIDE' ? '' : 'opacity-40 pointer-events-none'}>{props.children}</div>
-      </div>
+      {selectedItem && masterProduct && <div className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-white/95 p-3 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] backdrop-blur"><div className="mx-auto flex max-w-[1500px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-end"><p className="text-center text-sm text-stone-600 sm:mr-auto sm:text-left">{!savedDraft ? 'Save the master before publishing.' : dirty ? 'Save master changes before publishing.' : validationIssues.length ? 'Resolve validation issues before publishing.' : `${selectedStoreIds.length} store${selectedStoreIds.length === 1 ? '' : 's'} selected`}</p><button type="button" disabled={publishDisabled} onClick={() => setReviewOpen(true)} className="min-h-12 rounded-xl bg-amber-800 px-6 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-stone-300">Review & publish to {selectedStoreIds.length} store{selectedStoreIds.length === 1 ? '' : 's'}</button></div></div>}
+
+      {reviewOpen && selectedItem && masterProduct && <div className="fixed inset-0 z-50 flex items-end justify-center bg-stone-950/50 p-0 sm:items-center sm:p-5" role="dialog" aria-modal="true" aria-labelledby="publish-review-title"><div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl"><div className="sticky top-0 flex items-start justify-between gap-4 border-b border-stone-200 bg-white p-5"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Final confirmation</p><h2 id="publish-review-title" className="mt-1 text-2xl font-semibold">Review publish</h2><p className="mt-1 text-sm text-stone-500">{selectedStoreIds.length} selected store{selectedStoreIds.length === 1 ? '' : 's'} · saved master revision {savedDraft?.draftRevision.slice(0, 8)}</p></div><button type="button" onClick={() => setReviewOpen(false)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-stone-200" aria-label="Close publish review"><X className="h-5 w-5" /></button></div><div className="space-y-5 p-5"><div><h3 className="mb-2 text-sm font-semibold">Selected stores</h3><div className="flex flex-wrap gap-2">{selectedStoreIds.map((storeId) => { const store = eligibleStores.find((row) => row.id === storeId); return <span key={storeId} className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-medium">{store?.name || storeId}{!isAssigned(selectedItem, storeId) ? ' · new assignment' : ''}</span>; })}</div></div><div><h3 className="mb-2 text-sm font-semibold">Changes to live effective products</h3>{reviewChanges.length === 0 ? <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">No field differences detected. Publishing will still create a current approved version for the selected stores.</p> : <div className="divide-y divide-stone-100 rounded-xl border border-stone-200">{reviewChanges.map((change) => <div key={change.key} className="grid gap-1 p-3 text-sm sm:grid-cols-[150px_1fr_24px_1fr]"><span className="font-semibold text-stone-800">{change.label}</span><span className="break-words text-stone-500">{change.before}</span><ChevronRight className="hidden h-4 w-4 text-stone-400 sm:block" /><span className="break-words font-medium text-stone-900">{change.after}</span></div>)}</div>}</div><div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>Atomic publish:</strong> all selected store versions, customer-menu snapshots, and any required assignments succeed together or nothing changes.</div></div><div className="sticky bottom-0 flex flex-col-reverse gap-2 border-t border-stone-200 bg-white p-5 sm:flex-row sm:justify-end"><button type="button" onClick={() => setReviewOpen(false)} className="min-h-11 rounded-xl border border-stone-300 px-5 text-sm font-semibold">Back</button><button type="button" disabled={publishing} onClick={publish} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-amber-800 px-5 text-sm font-semibold text-white disabled:opacity-50"><PackageCheck className="h-4 w-4" />{publishing ? 'Publishing…' : `Publish to ${selectedStoreIds.length} store${selectedStoreIds.length === 1 ? '' : 's'}`}</button></div></div></div>}
     </div>
   );
 }

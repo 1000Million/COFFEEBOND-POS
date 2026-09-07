@@ -152,31 +152,21 @@ ok(app.includes('<Route path="/admin/global-items" element={<GlobalItems />} />'
 const adminBlock = app.slice(app.indexOf("<Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>"), app.indexOf("<Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>"));
 ok(adminBlock.includes('/admin/global-items'), 'ROUTE3. Route sits in the ADMIN-only guard block, so Manager and Cashier are redirected away');
 const page = fs.readFileSync('frontend/pages/admin/GlobalItems.tsx', 'utf8');
-ok(/isAdminOnlyRole\(staffProfile\?\.role\) && staffProfile\?\.isActive === true/.test(page), 'PERM1. Page self-guards on active ADMIN as well as the route guard');
+ok(/staffProfile\?\.role === 'ADMIN' && staffProfile\?\.isActive === true/.test(page), 'PERM1. Page self-guards on active ADMIN as well as the route guard');
 ok(page.includes('if (!isAdmin) { setLoading(false); return; }'), 'PERM2. A non-admin triggers no Firestore reads');
 ok(page.includes('Admin access required'), 'PERM3. Non-admin sees an explicit denied card');
-ok(page.includes('runTransaction(db, async (transaction) =>'), 'SNAPSHOT. Page publishes through one Firestore transaction');
-ok(page.includes("snapshotRef = doc(db, 'publicMenuAvailability', storeCode)"), 'SNAPSHOT2. The customer menu snapshot is written in that same transaction');
-ok(page.includes('buildOverridePublishPlan'), 'SNAPSHOT3. Snapshot comes from the canonical planner, not a hand-patched document');
-ok(!page.includes('{ merge: true }'), 'SNAPSHOT4. Complete derived snapshot replaces the document; stale nested keys cannot survive');
-ok(page.includes("getDocs(collection(db, 'finishedGoods'))"), 'SNAPSHOT5. Full catalogue read does not omit items lacking a name field');
-ok(
-  page.includes('canonicalDataToken(freshSelectedItem) !== canonicalDataToken(selectedItem)')
-    && page.includes('isAssigned: isAssignedToStore(freshSelectedItem, editingStoreId)')
-    && page.includes('transaction.get(sourceItemRef)'),
-  'SNAPSHOT6. Save fails closed if the reviewed global item or its store assignment changes',
-);
-ok(
-  page.includes('previewPublication.snapshot.items[selectedItem.code]')
-    && page.includes('previewPublication.snapshot.menuItems[selectedItem.code]')
-    && page.includes('Customer snapshot after save:'),
-  'SNAPSHOT7. Resolved preview reports the canonical customer snapshot result instead of a partial duplicate policy',
-);
-ok(page.includes('/admin/pos-readiness'), 'SNAPSHOT8. POS Readiness remains linked for operational whole-store rebuilds');
-ok(!/Customer menu refresh required/.test(page), 'SNAPSHOT9. The stale manual-refresh instruction is gone');
+ok(page.includes('runTransaction(db, async (transaction) =>'), 'MASTER1. Master save uses one conflict-safe Firestore transaction');
+ok(page.includes('GLOBAL_ITEM_MASTER_DRAFT_COLLECTION'), 'MASTER2. Master save targets the protected non-live draft collection');
+ok(page.includes('globalItemBaseProductToken(freshItem) !== globalItemBaseProductToken(selectedItem)'), 'MASTER3. Master save fails closed if the live source changed');
+ok(page.includes('currentRevision !== expectedDraftRevision'), 'MASTER4. Master save rejects a concurrent newer draft');
+ok(page.includes('MASTER SAVED — NOT YET PUBLISHED'), 'MASTER5. Save success explicitly confirms that live stores did not change');
+ok(page.includes('publishGlobalItemToStores(db'), 'PUBLISH1. Final publish delegates to the canonical atomic multi-store engine');
+ok(page.includes('expectedMasterRevision: savedDraft.draftRevision'), 'PUBLISH2. Publish pins the reviewed saved master revision');
+ok(page.includes('targetStoreIds: selectedStoreIds'), 'PUBLISH3. Only the selected stores are sent to the engine');
+ok(page.includes('Review & publish to'), 'PUBLISH4. Publish requires an explicit review step');
 ok(!/collection\(db, 'finishedGoods'\)[\s\S]{0,400}batch\.set|batch\.set\([\s\S]{0,80}finishedGoods/.test(page), 'SAFETY1. Page never writes to finishedGoods');
 const writes = page.match(/transaction\.set\(|transaction\.delete\(|setDoc\(|deleteDoc\(|updateDoc\(|addDoc\(/g) || [];
-eq(writes.length, 3, 'SAFETY2. Exactly three transaction write call sites: delete/set override and set snapshot');
+eq(writes.length, 1, 'SAFETY2. The page has one direct write call site and it saves only the master draft');
 for (const forbidden of ['customerOrderingEnabled', 'posEnabled', 'isLive', 'readiness', 'setupStatus', 'onlineOrderingEnabled', 'acceptingOrders']) {
   // written as an object field, e.g. `readiness: {...}` — a /admin/pos-readiness link is fine
   ok(!new RegExp(`\\b${forbidden}\\s*:`).test(page), `SAFETY3. Page never writes a ${forbidden} field`);

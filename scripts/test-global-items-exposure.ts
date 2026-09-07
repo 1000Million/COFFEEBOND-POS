@@ -37,7 +37,7 @@ ok(/<h3 className="text-lg font-bold text-neutral-800 mb-2">Global Items<\/h3>/.
 ok(/Manage master items, store assignments, store prices, availability, visibility and/.test(overview), 'CARD: carries the approved description');
 ok(/canManageGlobalItems/.test(overview) && /staffProfile\?\.role === [\"']ADMIN[\"']/.test(overview), 'CARD: gated on an active ADMIN');
 ok(!/role === [\"']STORE_MANAGER[\"']|role === [\"']CASHIER[\"']/.test(overview), 'CARD: Manager and Cashier are never granted the affordance');
-ok(/assignedStoreIds\.length === 0 \|\| assignedStoreIds\.includes\(storeId\)/.test(fs.readFileSync('frontend/pages/admin/GlobalItems.tsx', 'utf8')), 'ASSIGNMENT: an empty assignment list retains the canonical all-stores meaning');
+ok(/ids\.length === 0 \|\| ids\.includes\(storeId\)/.test(fs.readFileSync('frontend/pages/admin/GlobalItems.tsx', 'utf8')), 'ASSIGNMENT: an empty assignment list retains the canonical all-stores meaning');
 
 // ---- role hiding and unchanged modules ------------------------------------------------------------------
 ok(/id: "finished", label: "Sellable Items"/.test(hub.replace(/\s+/g, ' ')) || /label: "Sellable Items"/.test(hub), 'UNCHANGED: the Sellable Items module is untouched');
