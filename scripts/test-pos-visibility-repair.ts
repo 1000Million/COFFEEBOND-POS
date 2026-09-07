@@ -145,6 +145,37 @@ assert.deepEqual(explicitPlan.patch, {
 });
 assert.ok(explicitPlan.changes.every((change) => change.requiresExplicitActivation));
 
+// Prep NONE is valid only for a structurally declared composite parent.
+const ordinaryNoStation = planPosVisibilityRepair({
+  ...visibleItem,
+  itemType: 'MADE_TO_ORDER',
+  prepStation: 'NONE',
+  productType: 'NORMAL_SELLABLE',
+}, stores, fallbackCategories);
+assert.ok(ordinaryNoStation.visibilityWarnings.some((warning) => warning.includes('no prep station')));
+const compositeNoStation = planPosVisibilityRepair({
+  ...visibleItem,
+  itemType: 'MADE_TO_ORDER',
+  prepStation: 'NONE',
+  productType: 'COMPOSITE_PARENT',
+  composite: { schemaVersion: 1, staticComponents: [{ finishedGoodId: 'CHILD', finishedGoodCode: 'CHILD', quantity: 1 }], choiceGroupIds: [] },
+}, stores, fallbackCategories);
+assert.ok(!compositeNoStation.visibilityWarnings.some((warning) => warning.includes('no prep station')));
+const malformedCompositeNoStation = planPosVisibilityRepair({
+  ...visibleItem,
+  itemType: 'MADE_TO_ORDER',
+  prepStation: 'NONE',
+  productType: 'COMPOSITE_PARENT',
+}, stores, fallbackCategories);
+assert.ok(malformedCompositeNoStation.visibilityWarnings.some((warning) => warning.includes('no prep station')));
+const internalActivation = planPosVisibilityRepair({
+  ...visibleItem,
+  productType: 'INTERNAL_COMPONENT',
+  isSellable: false,
+}, stores, fallbackCategories, { includeExplicitActivation: true });
+assert.equal(internalActivation.patch.isSellable, undefined);
+assert.ok(internalActivation.visibilityWarnings.some((warning) => warning.includes('Internal components')));
+
 // Minimal patch: normalize only the malformed approved field.
 const minimalPlan = planPosVisibilityRepair(
   { ...visibleItem, id: 'minimal-1', isActive: 'true' },

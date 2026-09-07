@@ -9,6 +9,7 @@ import type { AddOnGroup, FinishedGood, PrepItem, RawIngredient } from '../../ty
 import {
   STORE_ITEM_CONFIG_COLLECTION,
   resolveStoreItem,
+  resolveEffectiveProduct,
   storeItemConfigDocId,
   type StoreItemConfig,
 } from '../../lib/storeItemConfig';
@@ -161,8 +162,11 @@ export default function GlobalItems() {
 
   const isAssigned = !!selectedItem && !!editingStoreId && isAssignedToStore(selectedItem, editingStoreId);
   const issues = useMemo(
-    () => (editingStoreId ? validateOverrideDraft(draft, { isAssigned }) : []),
-    [draft, editingStoreId, isAssigned],
+    () => (editingStoreId ? validateOverrideDraft(draft, {
+      isAssigned,
+      isFullVersionManaged: !!existingConfig?.publishedVersion,
+    }) : []),
+    [draft, editingStoreId, existingConfig?.publishedVersion, isAssigned],
   );
 
   const comparison = useMemo(() => {
@@ -172,6 +176,7 @@ export default function GlobalItems() {
 
   const plannedResolved = useMemo(() => {
     if (!selectedItem || !editingStoreId) return null;
+    if (existingConfig?.publishedVersion) return resolveEffectiveProduct(selectedItem, existingConfig);
     const plan = buildOverrideWritePlan({ storeId: editingStoreId, itemCode: selectedItem.code, draft, existing: existingConfig, updatedBy: '' });
     return resolveStoreItem(selectedItem, plan.action === 'SET' ? plan.data : null);
   }, [selectedItem, editingStoreId, draft, existingConfig]);

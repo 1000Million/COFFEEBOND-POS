@@ -8,7 +8,7 @@
  * the single source of truth for effective values.
  */
 import { buildPublicMenuAvailabilitySnapshot, type PublicMenuAvailabilitySnapshot } from './publicMenuAvailability';
-import { resolveStoreItem, storeItemConfigDocId, type StoreItemConfig } from './storeItemConfig';
+import { resolveEffectiveProduct, resolveStoreItem, storeItemConfigDocId, type StoreItemConfig } from './storeItemConfig';
 import type { Store } from '../types';
 import type { AddOnGroup, FinishedGood, PrepItem, RawIngredient } from '../types/menu-management';
 
@@ -136,9 +136,15 @@ function parsedNumber(raw: string): number | null {
 
 export function validateOverrideDraft(
   draft: OverrideDraft,
-  context: { isAssigned: boolean },
+  context: { isAssigned: boolean; isFullVersionManaged?: boolean },
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  if (context.isFullVersionManaged) {
+    return [{
+      field: 'managementMode',
+      message: 'This store is FULL_VERSION_MANAGED. Legacy overrides are locked; publish a complete store version instead.',
+    }];
+  }
   if (!context.isAssigned) {
     issues.push({ field: 'store', message: 'This item is not assigned to this store. Assign it in Menu Management before setting an override.' });
   }
@@ -172,6 +178,9 @@ export function buildOverrideWritePlan(input: {
   createdAt?: unknown;
   updatedAt?: unknown;
 }): OverrideWritePlan {
+  if (input.existing?.publishedVersion || input.existing?.managementMode === 'FULL_VERSION_MANAGED') {
+    throw new Error('This store is FULL_VERSION_MANAGED. Legacy overrides cannot change its effective product.');
+  }
   const docId = storeItemConfigDocId(input.storeId, input.itemCode);
   const draft = input.draft;
   const data: StoreItemConfig = { storeId: input.storeId, itemCode: input.itemCode };
@@ -228,6 +237,30 @@ export function buildResolvedComparison(
   draft: OverrideDraft,
   storeId: string,
 ): ResolvedComparison[] {
+  if (existing?.publishedVersion) {
+    const effective = resolveEffectiveProduct(item, existing);
+    return [
+      {
+        field: 'price', label: 'Price', globalValue: money(item.salePrice),
+        currentValue: money(effective.salePrice), nextValue: money(effective.salePrice), changed: false, overridden: false,
+      },
+      {
+        field: 'availability', label: 'Store availability',
+        globalValue: item.isAvailable === false ? 'Unavailable' : 'Available',
+        currentValue: effective.isAvailable === false ? 'Unavailable' : 'Available',
+        nextValue: effective.isAvailable === false ? 'Unavailable' : 'Available', changed: false, overridden: false,
+      },
+      {
+        field: 'menuVisibility', label: 'Customer menu visibility', globalValue: 'Visible',
+        currentValue: effective.menuVisible === false ? 'Hidden' : 'Visible',
+        nextValue: effective.menuVisible === false ? 'Hidden' : 'Visible', changed: false, overridden: false,
+      },
+      {
+        field: 'sortOrder', label: 'Display order', globalValue: String(item.sortOrder ?? 0),
+        currentValue: String(effective.sortOrder ?? 0), nextValue: String(effective.sortOrder ?? 0), changed: false, overridden: false,
+      },
+    ];
+  }
   const plan = buildOverrideWritePlan({ storeId, itemCode: item.code, draft, existing, updatedBy: '' });
   const nextConfig = plan.action === 'SET' ? plan.data : null;
 

@@ -1,5 +1,6 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { Timestamp } = require('firebase-admin/firestore');
@@ -13,8 +14,11 @@ const {
   resolveCanonicalCompositeComponents,
   validateFrozenCanonicalCompositeComponents,
 } = require('./compositeProductPolicy');
+const { resolveEffectiveProductSnapshots } = require('./effectiveProductCatalog');
+const { isDirectlySellableProductRole } = require('./productTypePolicy');
 
 const AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
+const HELD_BILL_AUTHORIZATION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 const PROVIDER = 'SERVER_CANONICAL_ADD_ONS';
 const MAX_ITEMS = 30;
 const MAX_PARENT_QUANTITY = 20;
@@ -138,6 +142,23 @@ function isAvailableAtStore(product, storeId) {
     && product.availableStoreIds.includes(storeId);
 }
 
+function frozenProductSnapshot(sourceItem, currentProduct, expectedCode) {
+  const snapshot = sourceItem?.productSnapshot;
+  if (snapshot === undefined || snapshot === null) return currentProduct;
+  if (
+    typeof snapshot !== 'object'
+    || Array.isArray(snapshot)
+    || cleanText(snapshot.id || currentProduct.id, 120) !== cleanText(currentProduct.id, 120)
+    || cleanText(snapshot.code, 80) !== expectedCode
+    || snapshot.isActive !== true
+    || snapshot.isSellable !== true
+    || !isDirectlySellableProductRole(snapshot)
+  ) {
+    fail('failed-precondition', 'The stored effective-product snapshot is malformed.');
+  }
+  return snapshot;
+}
+
 function isDraftSetupTestAuthorizationAllowed({
   storeId,
   store,
@@ -250,7 +271,68 @@ function sanitizeCartItems(value) {
       parentProductCode,
       quantity,
       selectedAddOns: sanitizeSelections(item?.selectedAddOns),
+      ...(cleanText(item?.sourceOrderItemId, 120) ? {
+        sourceOrderItemId: cleanText(item.sourceOrderItemId, 120),
+      } : {}),
     };
+  });
+}
+
+function sourceItemsFromAuthorization(sourceAuthorization, requestedItems) {
+  const sourceCanonicalItems = sourceAuthorization?.canonicalItems;
+  if (!sourceCanonicalItems || typeof sourceCanonicalItems !== 'object' || Array.isArray(sourceCanonicalItems)) {
+    fail('failed-precondition', 'The held-bill product snapshot is malformed.');
+  }
+  return requestedItems.map(requestedItem => {
+    const sourceOrderItemId = cleanText(requestedItem.sourceOrderItemId, 120);
+    const sourceItem = sourceCanonicalItems[sourceOrderItemId];
+    if (!sourceOrderItemId || !sourceItem) {
+      fail('failed-precondition', 'The held bill no longer matches its server-approved product snapshot.');
+    }
+    return {
+      finishedGoodId: sourceItem.parentProductId,
+      finishedGoodCode: sourceItem.parentProductCode,
+      quantity: sourceItem.quantity,
+      baseUnitPrice: sourceItem.baseUnitPrice,
+      taxRate: sourceItem.taxRate,
+      addOns: sourceItem.addOns,
+      addOnTotal: sourceItem.addOnTotal,
+      productSnapshot: sourceItem.productSnapshot,
+      ...(sourceItem.components ? { components: sourceItem.components } : {}),
+    };
+  });
+}
+
+function assertReusableHeldAuthorization({ sourceAuthorizationSnapshot, staffUid, storeId, orderId }) {
+  if (!sourceAuthorizationSnapshot?.exists) {
+    fail('failed-precondition', 'The held-bill product snapshot no longer exists.');
+  }
+  const source = sourceAuthorizationSnapshot.data() || {};
+  const expiresAt = source.expiresAt;
+  if (
+    source.provider !== PROVIDER
+    || source.authorizationPurpose !== 'HELD_BILL'
+    || source.staffUid !== staffUid
+    || source.storeId !== storeId
+    || source.used !== false
+    || !(expiresAt instanceof Timestamp)
+    || expiresAt.toMillis() <= Date.now()
+    || (source.claimedOrderId && source.claimedOrderId !== orderId)
+  ) {
+    fail('failed-precondition', 'The held-bill product snapshot is expired or cannot be reused.');
+  }
+  return source;
+}
+
+function canonicalizeFrozenAuthorizationCart(input) {
+  const sourceItems = sourceItemsFromAuthorization(input.sourceAuthorization, input.requestedItems);
+  return canonicalizeFrozenOrderCart({
+    storeId: input.storeId,
+    store: input.store,
+    requestedItems: input.requestedItems,
+    sourceItems,
+    productsById: input.productsById,
+    componentProductsById: input.componentProductsById,
   });
 }
 
@@ -418,6 +500,7 @@ function canonicalizeFrozenOrderCart({
     if (
       product.isActive !== true
       || product.isSellable !== true
+      || !isDirectlySellableProductRole(product)
       || product.isAvailable === false
       || !isAvailableAtStore(product, storeId)
     ) {
@@ -449,6 +532,7 @@ function canonicalizeFrozenOrderCart({
     ) {
       fail('failed-precondition', 'The stored online-order price snapshot is malformed.');
     }
+    const productSnapshot = frozenProductSnapshot(sourceItem, product, productCode);
 
     let components;
     if (sourceItem?.components !== undefined) {
@@ -479,6 +563,7 @@ function canonicalizeFrozenOrderCart({
       taxRate,
       addOns,
       addOnTotal,
+      productSnapshot,
       ...(components ? { components } : {}),
     };
   });
@@ -509,6 +594,7 @@ function canonicalizeRequestedCart({
     if (
       product.isActive !== true
       || product.isSellable !== true
+      || !isDirectlySellableProductRole(product)
       || product.isAvailable === false
       || !isAvailableAtStore(product, storeId)
     ) {
@@ -642,6 +728,7 @@ function canonicalizeRequestedCart({
       taxRate: positiveTaxRate(product, ITEM_TAX_RATE_KEYS) || fallbackTaxRate,
       addOns: canonicalAddOns,
       addOnTotal,
+      productSnapshot: product,
       ...(components.length > 0 ? { components } : {}),
     };
   }
@@ -661,15 +748,31 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     const checkoutSource = cleanText(request.data?.checkoutSource, 40).toUpperCase();
     const paymentMethod = cleanText(request.data?.paymentMethod, 40).toUpperCase();
     const sourceOnlineOrderId = cleanText(request.data?.sourceOnlineOrderId, 120) || null;
+    const sourceAuthorizationId = cleanText(request.data?.sourceAuthorizationId, 120) || null;
+    const authorizationPurpose = cleanText(request.data?.authorizationPurpose, 40).toUpperCase() === 'HELD_BILL'
+      ? 'HELD_BILL'
+      : 'SALE';
     const requestedItems = sanitizeCartItems(request.data?.items);
     if (!storeId || !orderId) fail('invalid-argument', 'Store and order references are required.');
+    if (sourceOnlineOrderId && sourceAuthorizationId) {
+      fail('invalid-argument', 'Only one immutable checkout source may be supplied.');
+    }
+    if (sourceAuthorizationId && authorizationPurpose === 'HELD_BILL') {
+      fail('invalid-argument', 'A held-bill snapshot cannot be created from another held-bill snapshot.');
+    }
+    const sourceAuthorizationRef = sourceAuthorizationId
+      ? db.collection('posAddOnAuthorizations').doc(sourceAuthorizationId)
+      : null;
 
-    const [staffSnapshot, storeSnapshot, gstSnapshot, sourceOnlineOrderSnapshot] = await Promise.all([
+    const [staffSnapshot, storeSnapshot, gstSnapshot, sourceOnlineOrderSnapshot, sourceAuthorizationSnapshot] = await Promise.all([
       db.collection('users').doc(staffUid).get(),
       db.collection('stores').doc(storeId).get(),
       db.collection('appSettings').doc('gstConfig').get(),
       sourceOnlineOrderId
         ? db.collection('onlineOrders').doc(sourceOnlineOrderId).get()
+        : Promise.resolve(null),
+      sourceAuthorizationRef
+        ? sourceAuthorizationRef.get()
         : Promise.resolve(null),
     ]);
     if (!staffSnapshot.exists) fail('permission-denied', 'Active staff profile is required.');
@@ -689,17 +792,21 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     if (!store || (store.isActive !== true && !draftSetupTestAllowed)) {
       fail('failed-precondition', 'The selected store is not active.');
     }
+    const sourceAuthorization = sourceAuthorizationId
+      ? assertReusableHeldAuthorization({ sourceAuthorizationSnapshot, staffUid, storeId, orderId })
+      : null;
 
     const productIds = [...new Set(requestedItems.map(item => item.parentProductId))];
     const productSnapshots = await Promise.all(
       productIds.map(productId => db.collection('finishedGoods').doc(productId).get()),
     );
-    const productsById = Object.fromEntries(
-      productSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [
-        snapshot.id,
-        { id: snapshot.id, ...snapshot.data() },
-      ]),
-    );
+    const products = await resolveEffectiveProductSnapshots({
+      db,
+      storeId,
+      productSnapshots,
+      readSnapshot: reference => reference.get(),
+    });
+    const productsById = Object.fromEntries(products.map(product => [product.id, product]));
     const groupIds = [...new Set(
       Object.values(productsById).flatMap(product => uniqueStrings(product.addOnGroupIds)),
     )];
@@ -717,6 +824,8 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     try {
       componentProductIds = sourceOnlineOrderId
         ? collectFrozenComponentFinishedGoodIds(sourceOnlineOrderSnapshot?.data()?.items)
+        : sourceAuthorization
+        ? collectFrozenComponentFinishedGoodIds(sourceItemsFromAuthorization(sourceAuthorization, requestedItems))
         : collectRequiredComponentFinishedGoodIds({
           products: productsById,
           groupsById,
@@ -728,13 +837,16 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
     const componentProductSnapshots = await Promise.all(
       missingComponentProductIds.map(productId => db.collection('finishedGoods').doc(productId).get()),
     );
+    const resolvedComponentProducts = await resolveEffectiveProductSnapshots({
+      db,
+      storeId,
+      productSnapshots: componentProductSnapshots,
+      readSnapshot: reference => reference.get(),
+    });
     const componentProductsById = {
       ...productsById,
       ...Object.fromEntries(
-        componentProductSnapshots.filter(snapshot => snapshot.exists).map(snapshot => [
-          snapshot.id,
-          { id: snapshot.id, ...snapshot.data() },
-        ]),
+        resolvedComponentProducts.map(product => [product.id, product]),
       ),
     };
 
@@ -745,6 +857,15 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
         store: storeWithId,
         requestedItems,
         sourceItems: sourceOnlineOrderSnapshot?.data()?.items,
+        productsById,
+        componentProductsById,
+      })
+      : sourceAuthorization
+      ? canonicalizeFrozenAuthorizationCart({
+        storeId,
+        store: storeWithId,
+        requestedItems,
+        sourceAuthorization,
         productsById,
         componentProductsById,
       })
@@ -766,42 +887,97 @@ function createPosAddOnAuthorizationFunction({ admin, db, region }) {
       });
     }
     const createdAt = Timestamp.now();
-    const expiresAt = Timestamp.fromMillis(createdAt.toMillis() + AUTHORIZATION_TTL_MS);
-    const authorizationRef = db.collection('posAddOnAuthorizations').doc();
+    const expiresAt = Timestamp.fromMillis(createdAt.toMillis() + (
+      authorizationPurpose === 'HELD_BILL' ? HELD_BILL_AUTHORIZATION_TTL_MS : AUTHORIZATION_TTL_MS
+    ));
+    const reissueId = sourceAuthorizationId
+      ? `HOLD_${createHash('sha256').update(`${sourceAuthorizationId}:${orderId}`).digest('hex').slice(0, 48)}`
+      : null;
+    const authorizationRef = reissueId
+      ? db.collection('posAddOnAuthorizations').doc(reissueId)
+      : db.collection('posAddOnAuthorizations').doc();
     const staffName = cleanText(
       staff.displayName || staff.name || request.auth.token?.name || 'Staff',
       120,
     );
-    await authorizationRef.create({
+    const authorizationData = {
       staffUid,
       staffName,
       storeId,
       orderId,
       orderNumber: requestedOrderNumber,
       ...(sourceOnlineOrderId ? { sourceOnlineOrderId } : {}),
+      ...(sourceAuthorizationId ? { sourceAuthorizationId } : {}),
+      authorizationPurpose,
       canonicalItems,
       canonicalAddOnTotal,
       provider: PROVIDER,
       createdAt,
       expiresAt,
       used: false,
-    });
+    };
+    let storedAuthorization = authorizationData;
+    if (sourceAuthorizationId) {
+      await db.runTransaction(async transaction => {
+        const [freshSourceSnapshot, existingAuthorizationSnapshot] = await Promise.all([
+          transaction.get(sourceAuthorizationRef),
+          transaction.get(authorizationRef),
+        ]);
+        const freshSource = assertReusableHeldAuthorization({
+          sourceAuthorizationSnapshot: freshSourceSnapshot,
+          staffUid,
+          storeId,
+          orderId,
+        });
+        if (existingAuthorizationSnapshot.exists) {
+          const existing = existingAuthorizationSnapshot.data() || {};
+          if (
+            existing.sourceAuthorizationId !== sourceAuthorizationId
+            || existing.orderId !== orderId
+            || existing.staffUid !== staffUid
+            || existing.storeId !== storeId
+            || existing.used !== false
+          ) {
+            fail('failed-precondition', 'The held-bill checkout snapshot was already consumed.');
+          }
+          if (existing.expiresAt instanceof Timestamp && existing.expiresAt.toMillis() > Date.now()) {
+            storedAuthorization = existing;
+          } else {
+            transaction.set(authorizationRef, authorizationData, { merge: false });
+          }
+        } else {
+          transaction.create(authorizationRef, authorizationData);
+        }
+        if (!freshSource.claimedOrderId) {
+          transaction.update(sourceAuthorizationRef, {
+            claimedOrderId: orderId,
+            claimedAuthorizationId: authorizationRef.id,
+            claimedAt: Timestamp.now(),
+          });
+        }
+      });
+    } else {
+      await authorizationRef.create(authorizationData);
+    }
 
     return {
       authorizationId: authorizationRef.id,
-      canonicalItems,
-      canonicalAddOnTotal,
-      expiresAt: expiresAt.toDate().toISOString(),
+      canonicalItems: storedAuthorization.canonicalItems,
+      canonicalAddOnTotal: storedAuthorization.canonicalAddOnTotal,
+      expiresAt: storedAuthorization.expiresAt.toDate().toISOString(),
     };
   });
 }
 
 module.exports = {
   AUTHORIZATION_TTL_MS,
+  HELD_BILL_AUTHORIZATION_TTL_MS,
   DRAFT_SETUP_TEST_STORE_ID,
   PROVIDER,
   assertImmutableSourceOnlineOrder,
+  assertReusableHeldAuthorization,
   canonicalizeFrozenOrderCart,
+  canonicalizeFrozenAuthorizationCart,
   canonicalizeRequestedCart,
   createPosAddOnAuthorizationFunction,
   isDraftSetupTestAuthorizationAllowed,
@@ -812,4 +988,5 @@ module.exports = {
   normalizeCategory,
   optionIdsByGroup,
   sanitizeCartItems,
+  sourceItemsFromAuthorization,
 };

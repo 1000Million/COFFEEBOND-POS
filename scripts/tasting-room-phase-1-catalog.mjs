@@ -245,6 +245,7 @@ const baseFinishedGood = (code, name, station, sortOrder) => ({
   code,
   name,
   displayName: name,
+  productType: 'INTERNAL_COMPONENT',
   posCategoryCode: 'TR_INTERNAL_COMPONENTS',
   posCategoryName: 'INTERNAL COMPONENTS',
   salePrice: 0,
@@ -282,6 +283,7 @@ export const tastingRoomFinishedGoods = [
       posCategoryCode: categoryCodeByName[categoryName],
       posCategoryName: categoryName,
       salePrice,
+      productType: composite ? 'COMPOSITE_PARENT' : 'NORMAL_SELLABLE',
       isSellable: true,
       ...(groupIds.length > 0 ? { addOnGroupIds: groupIds, addOnOptionIdsByGroup: optionIdsByGroup } : {}),
       ...(composite ? {

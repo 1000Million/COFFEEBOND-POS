@@ -107,6 +107,9 @@ const acceptedPayAtCounterLine = calculateOnlineOrderLineMoney({
 const acceptedPayAtCounterTotals = calculateOnlineOrderTotals([acceptedPayAtCounterLine]);
 
 check('activation payload creates exactly one canonical line', checkout.items.length === 1);
+check('The Bond Table is explicitly an ordinary sellable product',
+  bondTableFinishedGood.productType === 'NORMAL_SELLABLE'
+  && bondTablePublicMenuItem.productType === 'NORMAL_SELLABLE');
 check('activation payload keeps the taxable price at 4761.90', checkout.taxableAmount === 4761.9);
 check('activation payload applies the existing 5% item GST rate', checkout.items[0].taxRate === 5);
 check('canonical GST rounds to 238.10', checkout.gstTotal === 238.1);

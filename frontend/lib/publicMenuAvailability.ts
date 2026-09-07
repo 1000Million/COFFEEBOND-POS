@@ -11,7 +11,8 @@ import {
 } from '../types/menu-management';
 import { normalizeAddOnOptionIdsByGroup, sanitizeAddOnGroupsForPublic } from './addOns';
 import { trustedDietaryClassification } from './customerMenuPresentation';
-import { resolveStoreItem, storeItemConfigByItemCode, type StoreItemConfig } from './storeItemConfig';
+import { resolveEffectiveProduct, storeItemConfigByItemCode, type StoreItemConfig } from './storeItemConfig';
+import { hasValidProductTypeSemantics, isDirectlySellableProductRole } from './productType';
 
 export type PublicMenuAvailabilityStatus = 'AVAILABLE' | 'CURRENTLY_UNAVAILABLE' | 'STORE_DISABLED' | 'SETUP_INCOMPLETE';
 
@@ -29,6 +30,7 @@ export type PublicMenuDisplayItem = {
   name: string;
   displayName?: string;
   description?: string;
+  productType?: FinishedGood['productType'];
   posCategoryCode: string;
   posCategoryName: string;
   salePrice: number;
@@ -176,7 +178,8 @@ export function isGoldenISetupWarningOnly(
 }
 
 function isActiveSellable(item: FinishedGood, storeId: string): boolean {
-  return item.isActive !== false
+  return isDirectlySellableProductRole(item)
+    && item.isActive !== false
     && item.isSellable !== false
     && item.isAvailable !== false
     && isStoreAssigned(item, storeId);
@@ -343,6 +346,7 @@ function validateCompositeChild(
   if (child.isActive !== true || child.isAvailable === false || !childStoreIds.includes(store.id)) {
     return UNAVAILABLE_STRUCTURE;
   }
+  if (!hasValidProductTypeSemantics(child)) return INCOMPLETE_STRUCTURE;
 
   // Component Finished Goods are intentionally permitted to be hidden from the
   // public menu. Their active/available/store/BOM state, not isSellable, decides
@@ -624,6 +628,7 @@ function publicDisplayItem(store: Store, item: FinishedGood): PublicMenuDisplayI
     name: item.name || item.displayName || item.code,
     ...(item.displayName ? { displayName: item.displayName } : {}),
     ...(item.description ? { description: item.description } : {}),
+    ...(item.productType ? { productType: item.productType } : {}),
     posCategoryCode: item.posCategoryCode || 'MISC',
     posCategoryName: item.posCategoryName || 'Other',
     salePrice: toNumber(item.salePrice),
@@ -703,7 +708,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
   const overridesByCode = storeItemConfigByItemCode(store.id, input.storeItemConfigs);
   const finishedGoods = overridesByCode.size === 0
     ? input.finishedGoods
-    : input.finishedGoods.map((item) => resolveStoreItem(item, overridesByCode.get(item.code)));
+    : input.finishedGoods.map((item) => resolveEffectiveProduct(item, overridesByCode.get(item.code)));
   const rawByCode = new Map(rawIngredients.map((item) => [item.code, item]));
   const prepByCode = new Map(prepItems.map((item) => [item.code, item]));
   const finishedByCode = new Map(finishedGoods.map((item) => [item.code, item]));
@@ -719,6 +724,7 @@ export function buildPublicMenuAvailabilitySnapshot(input: BuildSnapshotInput): 
   );
 
   const visibleItems = finishedGoods
+    .filter((item) => isDirectlySellableProductRole(item))
     .filter((item) => item.isActive !== false && item.isSellable !== false && isStoreAssigned(item, store.id))
     .filter((item) => (item as { menuVisible?: boolean }).menuVisible !== false)
     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)

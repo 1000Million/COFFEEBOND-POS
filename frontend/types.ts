@@ -1,4 +1,4 @@
-import type { CanonicalCompositeComponent } from './types/menu-management';
+import type { CanonicalCompositeComponent, FinishedGood } from './types/menu-management';
 
 export type Role = "ADMIN" | "STORE_MANAGER" | "CASHIER" | "BARISTA" | "KITCHEN" | "TRAINEE" | "FRANCHISE_VIEWER";
 
@@ -331,6 +331,8 @@ export interface OrderItem {
   baseUnitPrice?: number;
   addOnTotal?: number;
   unitPriceWithAddOns?: number;
+  /** Immutable effective-product fields approved when the customer order was created. */
+  productSnapshot?: FinishedGood & { id: string; menuVisible?: boolean };
   components?: CanonicalCompositeComponent[];
 }
 
@@ -441,6 +443,8 @@ export interface OnlineOrderItem {
   baseUnitPrice?: number;
   addOnTotal?: number;
   unitPriceWithAddOns?: number;
+  /** Immutable effective-product fields approved when the customer order was created. */
+  productSnapshot?: FinishedGood & { id: string; menuVisible?: boolean };
   components?: CanonicalCompositeComponent[];
 }
 

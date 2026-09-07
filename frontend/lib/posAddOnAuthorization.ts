@@ -1,6 +1,7 @@
 import { httpsCallable } from 'firebase/functions';
 import type { AddOnSelection } from '../types';
 import type { CanonicalCompositeComponent } from '../types/menu-management';
+import type { FinishedGood } from '../types/menu-management';
 import { functions } from './firebase';
 
 export type PosAddOnAuthorizationItemRequest = {
@@ -9,6 +10,8 @@ export type PosAddOnAuthorizationItemRequest = {
   parentProductCode: string;
   quantity: number;
   selectedAddOns: Array<Pick<AddOnSelection, 'groupId' | 'optionId' | 'quantity'>>;
+  /** Line id in an immutable server-created held-bill authorization. */
+  sourceOrderItemId?: string;
 };
 
 export type PosAddOnCanonicalItem = {
@@ -20,6 +23,7 @@ export type PosAddOnCanonicalItem = {
   taxRate: number;
   addOns: AddOnSelection[];
   addOnTotal: number;
+  productSnapshot: FinishedGood & { id: string; menuVisible?: boolean };
   components?: CanonicalCompositeComponent[];
 };
 
@@ -36,6 +40,9 @@ type AuthorizePosAddOnsRequest = {
   orderNumber: string | null;
   /** Server-read source used to bind Customer Web acceptance to its submitted snapshot. */
   sourceOnlineOrderId?: string;
+  /** Rebind a server-approved held-bill snapshot without repricing it. */
+  sourceAuthorizationId?: string;
+  authorizationPurpose?: 'SALE' | 'HELD_BILL';
   checkoutMode?: 'STANDARD_POS' | 'SETUP_TEST';
   checkoutSource?: 'POS';
   paymentMethod?: string | null;

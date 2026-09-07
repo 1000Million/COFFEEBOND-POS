@@ -11,13 +11,18 @@ const {
 const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
 const {
+  assertReusableHeldAuthorization,
+  canonicalizeFrozenAuthorizationCart,
   canonicalizeRequestedCart,
   sanitizeCartItems,
+  sourceItemsFromAuthorization,
 } = require('./posAddOnAuthorization');
 const {
   CompositeProductPolicyError,
+  collectFrozenComponentFinishedGoodIds,
   collectRequiredComponentFinishedGoodIds,
 } = require('./compositeProductPolicy');
+const { resolveEffectiveProductSnapshots } = require('./effectiveProductCatalog');
 const {
   buildKotTasks,
   expandCompositeInventoryLines,
@@ -280,6 +285,7 @@ function providerPaymentIdFromRequest(providerRequest) {
 
 async function canonicalizePosRequest({ request, db, admin, staff, sessionId, orderId }) {
   const storeId = cleanText(request.data?.storeId, 120);
+  const sourceAuthorizationId = cleanText(request.data?.sourceAuthorizationId, 120) || null;
   const orderType = sanitizeOrderType(request.data?.orderType);
   const tableNumber = cleanText(request.data?.tableNumber, 20);
   const customerName = cleanText(request.data?.customerName, 80);
@@ -303,10 +309,14 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
   return db.runTransaction(async transaction => {
     const storeRef = db.collection('stores').doc(storeId);
     const gstRef = db.collection('appSettings').doc('gstConfig');
+    const sourceAuthorizationRef = sourceAuthorizationId
+      ? db.collection('posAddOnAuthorizations').doc(sourceAuthorizationId)
+      : null;
     const productRefs = requestedItems.map(item => db.collection('finishedGoods').doc(item.parentProductId));
-    const [storeSnapshot, gstSnapshot, ...productSnapshots] = await Promise.all([
+    const [storeSnapshot, gstSnapshot, sourceAuthorizationSnapshot, ...productSnapshots] = await Promise.all([
       transaction.get(storeRef),
       transaction.get(gstRef),
+      sourceAuthorizationRef ? transaction.get(sourceAuthorizationRef) : Promise.resolve(null),
       ...productRefs.map(ref => transaction.get(ref)),
     ]);
     if (!storeSnapshot.exists) fail('not-found', 'The selected store was not found.');
@@ -329,7 +339,20 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     if (productSnapshots.some(snapshot => !snapshot.exists)) {
       fail('failed-precondition', 'One or more products are no longer available.');
     }
-    const products = productSnapshots.map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
+    const sourceAuthorization = sourceAuthorizationId
+      ? assertReusableHeldAuthorization({
+        sourceAuthorizationSnapshot,
+        staffUid: staff.uid,
+        storeId,
+        orderId,
+      })
+      : null;
+    const products = await resolveEffectiveProductSnapshots({
+      db,
+      storeId,
+      productSnapshots,
+      readSnapshot: reference => transaction.get(reference),
+    });
     const productsById = Object.fromEntries(products.map(product => [product.id, product]));
     const groupIds = [...new Set(products.flatMap(product => (
       Array.isArray(product.addOnGroupIds) ? product.addOnGroupIds : []
@@ -342,10 +365,12 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     );
     let componentProductIds;
     try {
-      componentProductIds = collectRequiredComponentFinishedGoodIds({
-        products: productsById,
-        groupsById,
-      });
+      componentProductIds = sourceAuthorization
+        ? collectFrozenComponentFinishedGoodIds(sourceItemsFromAuthorization(sourceAuthorization, requestedItems))
+        : collectRequiredComponentFinishedGoodIds({
+          products: productsById,
+          groupsById,
+        });
     } catch (error) {
       if (error instanceof CompositeProductPolicyError) {
         fail('failed-precondition', error.message);
@@ -355,21 +380,34 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     const componentProductSnapshots = await Promise.all(
       componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
     );
+    const resolvedComponentProducts = await resolveEffectiveProductSnapshots({
+      db,
+      storeId,
+      productSnapshots: componentProductSnapshots,
+      readSnapshot: reference => transaction.get(reference),
+    });
     const componentProductsById = {
       ...productsById,
-      ...Object.fromEntries(componentProductSnapshots
-        .filter(snapshot => snapshot.exists)
-        .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+      ...Object.fromEntries(resolvedComponentProducts.map(product => [product.id, product])),
     };
-    const canonical = canonicalizeRequestedCart({
-      storeId,
-      store,
-      gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
-      requestedItems,
-      productsById,
-      groupsById,
-      componentProductsById,
-    });
+    const canonical = sourceAuthorization
+      ? canonicalizeFrozenAuthorizationCart({
+        storeId,
+        store,
+        requestedItems,
+        sourceAuthorization,
+        productsById,
+        componentProductsById,
+      })
+      : canonicalizeRequestedCart({
+        storeId,
+        store,
+        gstConfig: gstSnapshot.exists ? gstSnapshot.data() : null,
+        requestedItems,
+        productsById,
+        groupsById,
+        componentProductsById,
+      });
 
     const subtotal = requestedItems.reduce((sum, requestedItem) => {
       const item = canonical.canonicalItems[requestedItem.orderItemId];
@@ -379,8 +417,8 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     const discountRatio = subtotal > 0 ? discountAmount / subtotal : 0;
     const taxableAmount = Math.max(0, subtotal - discountAmount);
     const lines = requestedItems.map(requestedItem => {
-      const product = productsById[requestedItem.parentProductId];
       const item = canonical.canonicalItems[requestedItem.orderItemId];
+      const product = item.productSnapshot || productsById[requestedItem.parentProductId];
       const baseSubtotal = item.baseUnitPrice * requestedItem.quantity;
       const addOnSubtotal = item.addOnTotal * requestedItem.quantity;
       const lineSubtotal = baseSubtotal + addOnSubtotal;
@@ -409,23 +447,7 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
         lineTax: roundMoney(lineTax),
         lineTotal: roundMoney(lineTaxable + lineTax),
         prepStation: normalizePrepStation(product.prepStation),
-        finishedGood: {
-          id: product.id,
-          code: product.code,
-          name: product.name,
-          displayName: product.displayName || product.name,
-          itemType: product.itemType,
-          productionMode: product.productionMode,
-          bom: Array.isArray(product.bom) ? product.bom : [],
-          availableStoreIds: Array.isArray(product.availableStoreIds) ? product.availableStoreIds : [],
-          isActive: product.isActive,
-          isSellable: product.isSellable,
-          isAvailable: product.isAvailable,
-          prepStation: normalizePrepStation(product.prepStation),
-          recipeCost: finiteNumber(product.recipeCost),
-          posCategoryCode: product.posCategoryCode || product.categoryId || 'MISC',
-          posCategoryName: product.posCategoryName || product.categoryName || 'Misc',
-        },
+        finishedGood: { ...product, prepStation: normalizePrepStation(product.prepStation) },
       };
     });
     const gstTotal = lines.reduce((sum, line) => sum + line.lineTax, 0);
@@ -462,6 +484,13 @@ async function canonicalizePosRequest({ request, db, admin, staff, sessionId, or
     });
     if (preflight.blockers.length > 0) {
       fail('failed-precondition', preflight.blockers.map(blocker => blocker.suggestedAdminAction || blocker.blockerType).join(' '));
+    }
+    if (sourceAuthorizationRef && !sourceAuthorization.claimedOrderId) {
+      transaction.update(sourceAuthorizationRef, {
+        claimedOrderId: orderId,
+        claimedAuthorizationId: sessionId,
+        claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     }
     const requestPayload = {
       storeId,
@@ -1051,6 +1080,7 @@ async function finalizeCapturedPosPayment({ db, admin, sessionId, providerPaymen
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.parentProductCode,
         itemType: line.finishedGood.itemType,
+        productSnapshot: line.finishedGood,
         ...(Array.isArray(line.components) && line.components.length > 0 ? { components: line.components } : {}),
       });
       const createKot = task => {

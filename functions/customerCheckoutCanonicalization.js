@@ -11,9 +11,10 @@ const {
 } = require('./compositeProductPolicy');
 const {
   STORE_ITEM_CONFIG_COLLECTION,
-  resolveStoreItem,
+  resolveEffectiveProduct,
   storeItemConfigDocId,
 } = require('./storeItemConfigPolicy');
+const { isDirectlySellableProductRole } = require('./productTypePolicy');
 
 const MAX_NAME_LENGTH = 80;
 const MAX_NOTE_LENGTH = 200;
@@ -156,6 +157,7 @@ function resolvePublicCheckoutProduct({ product, publicAvailability, publicMenuI
     || product.menuVisible === false
     || product.isActive !== true
     || product.isSellable !== true
+    || !isDirectlySellableProductRole(product)
     || !sourceAssigned
     || !assignedStoreIds.includes(store.id)
     || publicMenuItem.isActive !== true
@@ -210,7 +212,7 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
     if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
       fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
     }
-    const effectiveProduct = resolveStoreItem(product, config);
+    const effectiveProduct = resolveEffectiveProduct(product, config);
     return resolvePublicCheckoutProduct({
       product: effectiveProduct,
       publicAvailability: availabilityItems[product.code],
@@ -269,7 +271,7 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
       if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
         fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
       }
-      return resolveStoreItem(product, config);
+      return resolveEffectiveProduct(product, config);
     })
     .filter(Boolean);
   const componentProductsById = {
@@ -321,6 +323,7 @@ async function canonicalizeCustomerCheckout({ db, data, sessionId }) {
       lineTotal: roundMoney(lineSubtotal + lineTax),
       prepStation: product.prepStation || 'NONE',
       itemType: product.itemType,
+      productSnapshot: product,
       ...(canonicalItem.components ? { components: canonicalItem.components } : {}),
     };
   });

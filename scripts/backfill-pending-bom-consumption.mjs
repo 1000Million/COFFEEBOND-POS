@@ -352,7 +352,10 @@ async function planBackfillForPending(firestore, pendingDoc) {
     return { action: 'FAILED_REVIEW', reason: `Finished good ${pending.finishedGoodCode} not found`, pendingDoc, order, storeContext, movements: [] };
   }
   const finishedGood = fgSnap.data() || {};
-  const bom = Array.isArray(finishedGood.bom) ? finishedGood.bom : [];
+  const frozenBom = Array.isArray(pending.bomSnapshot) && pending.bomSnapshot.length > 0
+    ? pending.bomSnapshot
+    : null;
+  const bom = frozenBom || (Array.isArray(finishedGood.bom) ? finishedGood.bom : []);
   if (bom.length === 0) {
     return { action: 'PENDING_BOM', reason: 'Finished good still has no BOM', pendingDoc, order, storeContext, movements: [] };
   }
@@ -371,7 +374,9 @@ async function planBackfillForPending(firestore, pendingDoc) {
       order,
       storeContext,
       finishedGood,
-      appliedBomVersion: number(finishedGood.bomVersion),
+      appliedBomVersion: frozenBom
+        ? number(pending.bomVersionSnapshot)
+        : number(finishedGood.bomVersion),
       movements: movementTargets,
     };
   } catch (error) {

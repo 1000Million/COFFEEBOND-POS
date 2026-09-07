@@ -1222,10 +1222,40 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // Private per-store commercial and menu-presentation overrides.
-    // Release 1B has no POS consumer, so only an active Admin may read or write them.
-    match /storeItemConfig/{configId} {
+    // Unpublished product work. No live menu, checkout, KOT, or inventory path reads it.
+    match /globalItemMasterDrafts/{draftId} {
       allow read, write: if isAdmin();
+    }
+
+    // Private per-store effective-product versions. Operational clients receive resolved
+    // snapshots from trusted server functions; only an active Admin may access these docs.
+    match /storeItemConfig/{configId} {
+      function validFullVersionManagement() {
+        return !request.resource.data.keys().hasAny(['publishedVersion'])
+          || (request.resource.data.keys().hasAll(['publishedVersion', 'managementMode'])
+            && request.resource.data.managementMode == 'FULL_VERSION_MANAGED'
+            && request.resource.data.publishedVersion.publishedBy == request.auth.uid);
+      }
+
+      function preservesLegacyFieldsAfterFullVersion() {
+        return (!resource.data.keys().hasAny(['publishedVersion'])
+            && !request.resource.data.keys().hasAny(['publishedVersion']))
+          || (request.resource.data.keys().hasAll(['publishedVersion', 'managementMode'])
+            && request.resource.data.managementMode == 'FULL_VERSION_MANAGED'
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+              'priceOverride',
+              'isAvailableOverride',
+              'menuVisibilityOverride',
+              'sortOrderOverride'
+            ]));
+      }
+
+      allow read: if isAdmin();
+      allow create: if isAdmin() && validFullVersionManagement();
+      allow update: if isAdmin()
+        && validFullVersionManagement()
+        && preservesLegacyFieldsAfterFullVersion();
+      allow delete: if isAdmin() && !resource.data.keys().hasAny(['publishedVersion']);
     }
 
     match /storeStock/{stockId} {

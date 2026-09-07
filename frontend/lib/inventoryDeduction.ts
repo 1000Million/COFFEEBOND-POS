@@ -2,6 +2,7 @@ import { collection, doc, serverTimestamp, Transaction } from 'firebase/firestor
 import { db } from './firebase';
 import { isPackagingComponentApplicable } from './packagingApplicability';
 import { isGoldenISalesFirstOrderingStore } from './publicMenuAvailability';
+import type { CanonicalCompositeComponent } from '../types/menu-management';
 import {
   inventoryStoreAttribution,
   logicalSalesStoreAttribution,
@@ -72,6 +73,8 @@ export type InventoryDeductionLineInput = {
     name: string;
   };
   addOns?: AddOnSelection[];
+  /** Present only on an expanded composite child line. */
+  component?: CanonicalCompositeComponent;
 };
 
 type PlannedMovementEntry = {
@@ -164,6 +167,9 @@ export type PendingInventoryConsumptionPayload = {
   resolvedAt: null;
   resolvedBy: null;
   appliedBomVersion: null;
+  /** Sale-time BOM used if reconciliation is deferred for a non-BOM blocker. */
+  bomSnapshot?: BOMComponent[];
+  bomVersionSnapshot?: number | null;
   inventoryMovementIds: string[];
   idempotencyKey: string;
 };
@@ -435,6 +441,8 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       resolvedAt: null,
       resolvedBy: null,
       appliedBomVersion: null,
+      bomSnapshot: Array.isArray(line.finishedGood.bom) ? line.finishedGood.bom : [],
+      bomVersionSnapshot: lineMeta.bomVersion,
       inventoryMovementIds: [],
       idempotencyKey,
     });
@@ -1019,8 +1027,9 @@ export async function planInventoryDeductionForSale(input: PlanInput): Promise<I
       continue;
     }
 
+    const isCompositeComponent = !!line.component;
     const isAvailable = line.finishedGood.isActive !== false
-      && line.finishedGood.isSellable !== false
+      && (isCompositeComponent || line.finishedGood.isSellable !== false)
       && line.finishedGood.isAvailable !== false
       && isStoreAssigned(line.finishedGood, store.id);
 

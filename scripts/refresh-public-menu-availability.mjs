@@ -76,7 +76,11 @@ function isGoldenISalesFirstOrderingStore(store) {
 }
 
 function isActiveSellableAvailable(item, storeId) {
-  return item.isActive !== false
+  return item.productType !== 'INTERNAL_COMPONENT'
+    && ['NORMAL_SELLABLE', 'COMPOSITE_PARENT', undefined, null].includes(item.productType)
+    && !(item.productType === 'NORMAL_SELLABLE' && item.composite)
+    && !(item.productType === 'COMPOSITE_PARENT' && (!item.composite || typeof item.composite !== 'object'))
+    && item.isActive !== false
     && item.isSellable !== false
     && item.isAvailable !== false
     && isAssignedToStore(item, storeId);
@@ -98,6 +102,7 @@ function sanitizedDisplayItem(store, item) {
   const display = {
     id: item.code,
     code: item.code,
+    ...(item.productType ? { productType: item.productType } : {}),
     name: item.name,
     posCategoryCode: item.posCategoryCode || 'MISC',
     posCategoryName: item.posCategoryName || 'Other',

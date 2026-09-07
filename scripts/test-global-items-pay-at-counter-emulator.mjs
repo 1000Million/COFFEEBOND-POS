@@ -8,12 +8,14 @@ const { storeItemConfigDocId } = require('../functions/storeItemConfigPolicy.js'
 
 const PROJECT_ID = 'demo-coffee-bond-global-items-checkout';
 const STORE_ID = 'STORE_1';
-const ITEM_CODE = 'FG_A';
+const ITEM_CODE = 'AFFOGATO';
 if (!PROJECT_ID.startsWith('demo-')) throw new Error('Refusing to run against a non-demo project.');
 if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('FIRESTORE_EMULATOR_HOST is required.');
 
 const functionsHost = process.env.FUNCTIONS_EMULATOR_HOST || '127.0.0.1:5001';
 const endpoint = `http://${functionsHost}/${PROJECT_ID}/us-central1/submitCustomerOrder`;
+const posCatalogueEndpoint = `http://${functionsHost}/${PROJECT_ID}/us-central1/getEffectivePosProducts`;
+const posAuthorizationEndpoint = `http://${functionsHost}/${PROJECT_ID}/us-central1/authorizePosAddOns`;
 const app = admin.initializeApp({ projectId: PROJECT_ID }, `global-items-pay-at-counter-${Date.now()}`);
 const db = admin.firestore(app);
 let checks = 0;
@@ -202,6 +204,228 @@ await setState({
 result = await submit('all-stores');
 ok(result.ok, 'empty legacy assignment keeps its all-stores meaning in Pay at Counter');
 eq(result.result.subtotal, 375.5, 'all-stores item still uses the matching source-resolved price');
+
+const publishedProduct = product({
+  name: 'Affogato Reserve',
+  displayName: 'Affogato Reserve',
+  posCategoryCode: 'EXPERIENCES',
+  posCategoryName: 'Experiences',
+  salePrice: 300,
+  taxRate: 12,
+  prepStation: 'KITCHEN',
+  addOnGroupIds: ['B'],
+  addOnOptionIdsByGroup: { B: ['B1'] },
+  bom: [{
+    componentType: 'RAW_INGREDIENT',
+    componentCode: 'COMPONENT_B',
+    componentName: 'Component B',
+    quantity: 10,
+    uom: 'G',
+  }],
+  availableStoreIds: [STORE_ID],
+  menuVisible: true,
+});
+const fullVersionConfig = {
+  storeId: STORE_ID,
+  itemCode: ITEM_CODE,
+  priceOverride: 999,
+  managementMode: 'FULL_VERSION_MANAGED',
+  publishedVersion: {
+    schemaVersion: 1,
+    storeId: STORE_ID,
+    itemCode: ITEM_CODE,
+    sourceDraftRevision: 'affogato-draft-v1',
+    publishedRevision: 'affogato-published-v1',
+    publishedAt: new Date('2026-09-07T00:00:00.000Z'),
+    publishedBy: 'admin',
+    publishedByName: 'Admin',
+    product: publishedProduct,
+  },
+};
+await setState({
+  privateProduct: product({
+    name: 'Affogato',
+    displayName: 'Affogato',
+    salePrice: 280,
+    taxRate: 5,
+    prepStation: 'BARISTA',
+    addOnGroupIds: ['A'],
+    addOnOptionIdsByGroup: { A: ['A1'] },
+  }),
+  config: fullVersionConfig,
+  menuItem: publicItem({
+    name: 'Affogato Reserve',
+    displayName: 'Affogato Reserve',
+    posCategoryCode: 'EXPERIENCES',
+    posCategoryName: 'Experiences',
+    salePrice: 300,
+    taxRate: 12,
+    prepStation: 'KITCHEN',
+    addOnGroupIds: ['B'],
+    addOnOptionIdsByGroup: { B: ['B1'] },
+  }),
+});
+result = await submit('full-version');
+ok(result.ok, 'full published version succeeds through the actual Pay at Counter callable');
+eq(result.result.subtotal, 300, 'Pay at Counter charges the published full-version price');
+eq(result.result.gstTotal, 36, 'Pay at Counter uses the published item tax rate');
+eq(result.result.items[0].itemName, 'Affogato Reserve', 'Pay at Counter returns the published item name');
+const publishedOrderQuery = await db.collection('onlineOrders')
+  .where('trackingToken', '==', result.result.trackingToken)
+  .limit(1)
+  .get();
+const publishedOrderItem = publishedOrderQuery.docs[0].data().items[0];
+eq(publishedOrderItem.prepStation, 'KITCHEN', 'Pay at Counter freezes the published KOT station');
+eq(publishedOrderItem.productSnapshot.bom[0].componentCode, 'COMPONENT_B', 'Pay at Counter freezes the published BOM for acceptance');
+
+const authHost = process.env.FIREBASE_AUTH_EMULATOR_HOST;
+if (!authHost) throw new Error('FIREBASE_AUTH_EMULATOR_HOST is required.');
+const signUpResponse = await fetch(
+  `http://${authHost}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key`,
+  {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: `catalogue-${Date.now()}@example.test`,
+      password: 'local-emulator-only-password',
+      returnSecureToken: true,
+    }),
+  },
+);
+const signedIn = await signUpResponse.json();
+if (!signUpResponse.ok || !signedIn.localId || !signedIn.idToken) {
+  throw new Error(`Unable to create emulator staff identity: ${JSON.stringify(signedIn)}`);
+}
+await db.collection('users').doc(signedIn.localId).set({
+  uid: signedIn.localId,
+  name: 'Catalogue Cashier',
+  role: 'CASHIER',
+  isActive: true,
+  storeIds: [STORE_ID],
+  assignedStoreIds: [STORE_ID],
+});
+
+async function loadPosCatalogue(idToken = null) {
+  const response = await fetch(posCatalogueEndpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+    },
+    body: JSON.stringify({ data: { storeId: STORE_ID } }),
+  });
+  const payload = await response.json();
+  return { ok: response.ok && !payload.error, result: payload.result ?? payload.data, error: payload.error };
+}
+
+async function authorizePosCart(data) {
+  const response = await fetch(posAuthorizationEndpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${signedIn.idToken}`,
+    },
+    body: JSON.stringify({ data }),
+  });
+  const payload = await response.json();
+  return { ok: response.ok && !payload.error, result: payload.result ?? payload.data, error: payload.error };
+}
+
+let catalogueResult = await loadPosCatalogue();
+ok(!catalogueResult.ok && /sign-in/i.test(catalogueResult.error?.message || ''), 'unauthenticated public caller cannot load the private effective POS catalogue');
+catalogueResult = await loadPosCatalogue(signedIn.idToken);
+ok(catalogueResult.ok, 'assigned Cashier can load the effective POS catalogue through the server boundary');
+const effectiveAffogato = catalogueResult.result.products.find(item => item.code === ITEM_CODE);
+eq(effectiveAffogato.displayName, 'Affogato Reserve', 'actual POS catalogue callable returns the published name');
+eq(effectiveAffogato.salePrice, 300, 'actual POS catalogue callable returns the published price');
+eq(effectiveAffogato.prepStation, 'KITCHEN', 'actual POS catalogue callable returns the published KOT station');
+eq(effectiveAffogato.bom[0].componentCode, 'COMPONENT_B', 'actual POS catalogue callable returns the published BOM');
+ok(!Object.hasOwn(effectiveAffogato, 'publishedVersion'), 'POS catalogue exposes no private publish metadata');
+
+const heldAuthorization = await authorizePosCart({
+  storeId: STORE_ID,
+  orderId: 'HELD_AFFOGATO_1',
+  orderNumber: 'HELD-1',
+  authorizationPurpose: 'HELD_BILL',
+  checkoutMode: 'STANDARD_POS',
+  checkoutSource: 'POS',
+  paymentMethod: null,
+  items: [{
+    orderItemId: 'HELD_LINE_1',
+    parentProductId: ITEM_CODE,
+    parentProductCode: ITEM_CODE,
+    quantity: 1,
+    selectedAddOns: [],
+  }],
+});
+ok(heldAuthorization.ok, 'holding a bill creates a server-approved immutable product snapshot');
+eq(heldAuthorization.result.canonicalItems.HELD_LINE_1.baseUnitPrice, 300, 'held bill freezes published revision N price');
+
+await db.collection('storeItemConfig').doc(storeItemConfigDocId(STORE_ID, ITEM_CODE)).set({
+  ...fullVersionConfig,
+  publishedVersion: {
+    ...fullVersionConfig.publishedVersion,
+    sourceDraftRevision: 'affogato-draft-v2',
+    publishedRevision: 'affogato-published-v2',
+    product: {
+      ...publishedProduct,
+      salePrice: 325,
+      taxRate: 18,
+      prepStation: 'BARISTA',
+      bom: [{
+        componentType: 'RAW_INGREDIENT',
+        componentCode: 'COMPONENT_C',
+        componentName: 'Component C',
+        quantity: 15,
+        uom: 'G',
+      }],
+    },
+  },
+}, { merge: false });
+
+const recalledAuthorization = await authorizePosCart({
+  storeId: STORE_ID,
+  orderId: 'SALE_FROM_HELD_1',
+  orderNumber: 'SALE-1',
+  sourceAuthorizationId: heldAuthorization.result.authorizationId,
+  authorizationPurpose: 'SALE',
+  checkoutMode: 'STANDARD_POS',
+  checkoutSource: 'POS',
+  paymentMethod: 'CASH',
+  items: [{
+    orderItemId: 'SALE_LINE_1',
+    sourceOrderItemId: 'HELD_LINE_1',
+    parentProductId: ITEM_CODE,
+    parentProductCode: ITEM_CODE,
+    quantity: 1,
+    selectedAddOns: [],
+  }],
+});
+ok(recalledAuthorization.ok, 'recalling an unchanged held bill rebinds its immutable snapshot');
+eq(recalledAuthorization.result.canonicalItems.SALE_LINE_1.baseUnitPrice, 300, 'recalled bill keeps revision N price after revision N+1 publish');
+eq(recalledAuthorization.result.canonicalItems.SALE_LINE_1.taxRate, 12, 'recalled bill keeps revision N GST after revision N+1 publish');
+eq(recalledAuthorization.result.canonicalItems.SALE_LINE_1.productSnapshot.prepStation, 'KITCHEN', 'recalled bill keeps revision N KOT station');
+eq(recalledAuthorization.result.canonicalItems.SALE_LINE_1.productSnapshot.bom[0].componentCode, 'COMPONENT_B', 'recalled bill keeps revision N BOM');
+
+const replayedAuthorization = await authorizePosCart({
+  storeId: STORE_ID,
+  orderId: 'DIFFERENT_SALE_FROM_HELD_1',
+  orderNumber: 'SALE-2',
+  sourceAuthorizationId: heldAuthorization.result.authorizationId,
+  authorizationPurpose: 'SALE',
+  checkoutMode: 'STANDARD_POS',
+  checkoutSource: 'POS',
+  paymentMethod: 'CASH',
+  items: [{
+    orderItemId: 'SALE_LINE_2',
+    sourceOrderItemId: 'HELD_LINE_1',
+    parentProductId: ITEM_CODE,
+    parentProductCode: ITEM_CODE,
+    quantity: 1,
+    selectedAddOns: [],
+  }],
+});
+ok(!replayedAuthorization.ok, 'a held-bill snapshot cannot be replayed into a different order');
 
 await app.delete();
 console.log(`\n${checks} Pay at Counter emulator checks passed. PROJECT=${PROJECT_ID}; PRODUCTION_WRITES=0.`);

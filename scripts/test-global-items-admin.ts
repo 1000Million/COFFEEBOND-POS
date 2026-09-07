@@ -77,6 +77,17 @@ eq(validateOverrideDraft(emptyDraft(), { isAssigned: true }), [], 'F1. Assigned 
 const unassigned = validateOverrideDraft(emptyDraft(), { isAssigned: false });
 eq(unassigned.length, 1, 'F2. Unassigned store is rejected');
 ok(unassigned[0].message.includes('not assigned'), 'F3. Rejection explains the item is not assigned');
+const fullManagedConfig = {
+  storeId: GOLDEN,
+  itemCode: ITEM.code,
+  managementMode: 'FULL_VERSION_MANAGED',
+  publishedVersion: { schemaVersion: 1 },
+} as unknown as StoreItemConfig;
+const fullManagedIssues = validateOverrideDraft(emptyDraft(), { isAssigned: true, isFullVersionManaged: true });
+eq(fullManagedIssues[0].field, 'managementMode', 'F3a. Legacy editor reports the full-version authority lock');
+assert.throws(() => plan(emptyDraft(), fullManagedConfig), /FULL_VERSION_MANAGED/);
+n += 1;
+console.log(`PASS ${n}. F3b. Legacy write planner cannot alter a full-version-managed store`);
 const storeRows = [{ id: GOLDEN }, { id: NOIDA }, { id: 'NOIDA_51' }];
 eq(assignedStoreCount(ITEM, storeRows), 2, 'F4. Explicit assignments display their real store count');
 eq(

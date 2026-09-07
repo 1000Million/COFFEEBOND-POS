@@ -7,6 +7,7 @@ import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { AddOnSelection, Store, MenuItem, CartItem, OrderType, PaymentMethod, Order, OrderItem, OrderPayment, PrepStation, ReceiptLegalDetails } from '../../types';
 import type { AddOnGroup } from '../../types/menu-management';
+import { isDirectlySellableProductRole } from '../../lib/productType';
 import { InventoryDeductionBlocker, planInventoryDeductionForSale } from '../../lib/inventoryDeduction';
 import {
   activeAddOnGroupsForProduct,
@@ -70,6 +71,7 @@ import {
   uniqueSortedPosMenuItems,
 } from '../../lib/posMenuNavigation';
 import { usePosMenuTaxonomy } from '../../lib/usePosMenuTaxonomy';
+import { getEffectivePosProducts } from '../../lib/effectiveProductCatalog';
 
 type CheckoutError = {
   message: string;
@@ -177,6 +179,14 @@ type HeldBill = {
   heldAtIso: string;
   itemCount: number;
   total: number;
+  /** Server-created immutable effective-product authorization used on recall. */
+  sourceAuthorizationId?: string;
+};
+
+type PosMenuItem = MenuItem & {
+  itemType: string;
+  bom: any[];
+  finishedGoodCode: string;
 };
 
 type CheckoutAttempt = {
@@ -504,6 +514,35 @@ function normalizePrepStation(value: unknown): PrepStation {
   return 'NONE';
 }
 
+function effectiveProductToMenuItem(data: Record<string, any>): PosMenuItem {
+  const code = String(data.code || data.id || '').trim();
+  return {
+    id: code,
+    name: data.displayName || data.name || code,
+    code,
+    ...finishedGoodTaxonomyFields(data),
+    categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : null,
+    subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : null,
+    sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : null,
+    aliases: Array.isArray(data.aliases) ? data.aliases : [],
+    searchAliases: Array.isArray(data.searchAliases) ? data.searchAliases : [],
+    sku: data.sku || '',
+    description: data.description || '',
+    price: data.salePrice || 0,
+    taxRate: pickItemTaxRate(data),
+    prepStation: normalizePrepStation(data.prepStation),
+    isActive: data.isActive,
+    availableStoreIds: data.availableStoreIds || [],
+    itemType: data.itemType,
+    bom: data.bom || [],
+    finishedGoodCode: code,
+    addOnGroupIds: Array.isArray(data.addOnGroupIds) ? data.addOnGroupIds : [],
+    addOnOptionIdsByGroup: data.addOnOptionIdsByGroup || {},
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+  } as PosMenuItem;
+}
+
 function calculateTotals(items: TotalsInput[], discountPercentInput: unknown, fallbackTaxRate: number): CalculatedTotals {
   const subtotal = items.reduce(
     (sum, item) => sum + unitPriceWithAddOns(Number(item.price) || 0, item.addOns) * (Number(item.quantity) || 0),
@@ -827,6 +866,7 @@ export default function POSHome() {
   const recallMenuRef = useRef<HTMLDivElement | null>(null);
   const checkoutAttemptRef = useRef<CheckoutAttempt | null>(loadCheckoutAttempt());
   const razorpayStatusInFlightRef = useRef(false);
+  const menuRequestRef = useRef(0);
 
   const [orderType, setOrderType] = useState<OrderType>('DINE_IN');
   const [tableNumber, setTableNumber] = useState('');
@@ -861,6 +901,7 @@ export default function POSHome() {
   const [razorpayActionLoading, setRazorpayActionLoading] = useState(false);
   const [razorpayNow, setRazorpayNow] = useState(Date.now());
   const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
+  const [recalledHoldAuthorizationId, setRecalledHoldAuthorizationId] = useState<string | null>(null);
   const [recentItemIdsByStore, setRecentItemIdsByStore] = useState<Record<string, string[]>>({});
   const [topSellerItemIds, setTopSellerItemIds] = useState<string[]>([]);
   const [isUsingTopSellerData, setIsUsingTopSellerData] = useState(false);
@@ -877,9 +918,12 @@ export default function POSHome() {
   const [isRecallMenuOpen, setIsRecallMenuOpen] = useState(false);
 
   useEffect(() => {
-    fetchMenuData();
     fetchTaxConfig();
   }, []);
+
+  useEffect(() => {
+    void fetchMenuData(selectedStoreId);
+  }, [selectedStoreId]);
 
   useEffect(() => {
     void fetchData();
@@ -977,59 +1021,43 @@ export default function POSHome() {
     }
   }, [heldBills.length]);
 
-  const fetchMenuData = async () => {
+  const fetchMenuData = async (storeId: string) => {
+    const requestId = ++menuRequestRef.current;
+    if (!storeId) {
+      setMenuItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const [fgSnap, addOnGroupSnap] = await Promise.all([
-        getDocs(query(collection(db, 'finishedGoods'))),
+      const [effectiveProducts, addOnGroupSnap] = await Promise.all([
+        getEffectivePosProducts(storeId),
         getDocs(query(collection(db, 'addOnGroups'))),
       ]);
+      if (requestId !== menuRequestRef.current) return;
 
       let total = 0;
       let activeCount = 0;
       let sellableCount = 0;
       let availableCount = 0;
 
-      const mappedItems: (MenuItem & { itemType: string, bom: any[], finishedGoodCode: string })[] = [];
+      const mappedItems: PosMenuItem[] = [];
 
-      fgSnap.docs.forEach(d => {
-         const data = d.data();
+      effectiveProducts.forEach(product => {
+         const data = product as unknown as Record<string, any>;
          total++;
 
          if (!data.isActive) return;
          activeCount++;
 
          if (!data.isSellable) return;
+         if (!isDirectlySellableProductRole(data)) return;
          sellableCount++;
 
          if (data.isAvailable === false) return;
          availableCount++;
 
-         mappedItems.push({
-           id: data.code,
-           name: data.displayName || data.name,
-           code: data.code,
-           ...finishedGoodTaxonomyFields(data),
-           categorySortOrder: typeof data.categorySortOrder === 'number' ? data.categorySortOrder : null,
-           subcategorySortOrder: typeof data.subcategorySortOrder === 'number' ? data.subcategorySortOrder : null,
-           sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : null,
-           aliases: Array.isArray(data.aliases) ? data.aliases : [],
-           searchAliases: Array.isArray(data.searchAliases) ? data.searchAliases : [],
-           sku: data.sku || '',
-           description: data.description || '',
-           price: data.salePrice || 0,
-           taxRate: pickItemTaxRate(data),
-           prepStation: normalizePrepStation(data.prepStation),
-           isActive: data.isActive,
-           availableStoreIds: data.availableStoreIds || [],
-           itemType: data.itemType,
-           bom: data.bom || [],
-           finishedGoodCode: data.code,
-           addOnGroupIds: Array.isArray(data.addOnGroupIds) ? data.addOnGroupIds : [],
-           addOnOptionIdsByGroup: data.addOnOptionIdsByGroup || {},
-           createdAt: data.createdAt,
-           updatedAt: data.updatedAt
-         } as any);
+         mappedItems.push(effectiveProductToMenuItem(data));
       });
 
       setMenuItems(mappedItems);
@@ -1039,9 +1067,15 @@ export default function POSHome() {
       })));
       setDebugCounts({ total, activeCount, sellableCount, availableCount, mappedCount: mappedItems.length });
     } catch (e: any) {
+      if (requestId !== menuRequestRef.current) return;
       console.error(e);
+      setMenuItems([]);
+      setCheckoutError({
+        message: 'The effective store menu could not be loaded.',
+        details: e?.message || 'Refresh the POS and try again.',
+      });
     } finally {
-      setLoading(false);
+      if (requestId === menuRequestRef.current) setLoading(false);
     }
   }
 
@@ -1121,6 +1155,7 @@ export default function POSHome() {
     if (cart.length > 0) {
       if (window.confirm("Changing store will clear your current cart. Proceed?")) {
         setCart([]);
+        setRecalledHoldAuthorizationId(null);
         setPendingAddOnItem(null);
         setEditingAddOnCartItem(null);
         setCheckoutError(null);
@@ -1135,6 +1170,7 @@ export default function POSHome() {
       setTableNumberError(null);
       setIsRecallMenuOpen(false);
       setSelectedStoreId(e.target.value);
+      setRecalledHoldAuthorizationId(null);
     }
   };
 
@@ -1395,6 +1431,7 @@ export default function POSHome() {
 
   const commitItemToCart = (item: any, selectedAddOns: AddOnSelection[], editingCartItemId?: string) => {
     if (razorpayPaymentLocked) return;
+    setRecalledHoldAuthorizationId(null);
     setCheckoutError(null);
     const itemId = String(item?.id || item?.code || item?.finishedGoodCode || '').trim();
     const itemCode = String(item?.code || item?.finishedGoodCode || itemId).trim();
@@ -1494,6 +1531,7 @@ export default function POSHome() {
 
   const updateQuantity = (cartItemId: string, delta: number) => {
     if (razorpayPaymentLocked) return;
+    setRecalledHoldAuthorizationId(null);
     setCheckoutError(null);
     setCart(prev => prev.map(ci => {
       if (ci.id === cartItemId) {
@@ -1506,6 +1544,7 @@ export default function POSHome() {
 
   const removeCartItem = (cartItemId: string) => {
     if (razorpayPaymentLocked) return;
+    setRecalledHoldAuthorizationId(null);
     setCheckoutError(null);
     setCart(prev => prev.filter(ci => ci.id !== cartItemId));
   };
@@ -1619,6 +1658,7 @@ export default function POSHome() {
     }
     if (skipConfirm === true || window.confirm("Clear the entire cart?")) {
       setCart([]);
+      setRecalledHoldAuthorizationId(null);
       setPendingAddOnItem(null);
       setEditingAddOnCartItem(null);
       setCheckoutError(null);
@@ -1763,7 +1803,7 @@ export default function POSHome() {
     setReceiptView(lastReceipt);
   };
 
-  const holdCurrentBill = () => {
+  const holdCurrentBill = async () => {
     if (!requireOnlineAction()) return;
     if (razorpayPaymentLocked) {
       alert('Cancel the active Razorpay payment request before holding this bill.');
@@ -1780,27 +1820,95 @@ export default function POSHome() {
       return;
     }
 
-    const heldBill: HeldBill = {
-      id: createSafeClientId('held-bill'),
-      storeId: selectedStore.id,
-      storeName: selectedStore.name,
-      orderType,
-      tableNumber,
-      customerName,
-      customerPhone,
-      cart: cart.map(item => ({ ...item })),
-      discountPercentStr,
-      isSplitPayment,
-      splitPayments: splitPayments.map(payment => ({ ...payment })),
-      heldAtIso: new Date().toISOString(),
-      itemCount: cart.reduce((sum, item) => sum + item.quantity, 0),
-      total: cartTotals.grandTotal,
-    };
+    const heldBillId = createSafeClientId('held-bill');
+    setIsSaving(true);
+    setCheckoutError(null);
+    try {
+      const heldAuthorization = await authorizePosAddOns({
+        storeId: selectedStore.id,
+        orderId: heldBillId,
+        orderNumber: null,
+        authorizationPurpose: 'HELD_BILL',
+        checkoutMode: 'STANDARD_POS',
+        checkoutSource: 'POS',
+        paymentMethod: 'HOLD',
+        items: cart.map(item => {
+          const liveItem = menuItems.find(menuItem => menuItem.id === item.menuItemId);
+          if (!liveItem) throw new Error(`Menu item ${item.name} is no longer available at this store.`);
+          return {
+            orderItemId: item.id,
+            parentProductId: liveItem.id,
+            parentProductCode: liveItem.code,
+            quantity: item.quantity,
+            selectedAddOns: selectedAddOnIds(item.addOns),
+          };
+        }),
+      });
+      const frozenCart = cart.map(item => {
+        const canonicalItem = heldAuthorization.canonicalItems[item.id];
+        if (!canonicalItem?.productSnapshot) {
+          throw new Error('The server did not return a complete held-bill product snapshot.');
+        }
+        const effectiveItem = effectiveProductToMenuItem(
+          canonicalItem.productSnapshot as unknown as Record<string, any>,
+        );
+        return {
+          ...item,
+          menuItemId: effectiveItem.id,
+          menuItemCode: effectiveItem.code,
+          name: effectiveItem.name,
+          price: canonicalItem.baseUnitPrice,
+          taxRate: canonicalItem.taxRate,
+          prepStation: effectiveItem.prepStation,
+          itemType: effectiveItem.itemType,
+          finishedGoodCode: effectiveItem.finishedGoodCode,
+          bom: effectiveItem.bom,
+          addOns: canonicalItem.addOns,
+          baseUnitPrice: canonicalItem.baseUnitPrice,
+          addOnTotal: canonicalItem.addOnTotal,
+          unitPriceWithAddOns: canonicalItem.baseUnitPrice + canonicalItem.addOnTotal,
+        };
+      });
+      const frozenTotals = calculateTotals(
+        frozenCart.map(item => ({
+          price: item.price,
+          quantity: item.quantity,
+          taxRate: item.taxRate,
+          addOns: item.addOns,
+        })),
+        discountPercentStr,
+        selectedStoreTaxConfig.rate,
+      );
+      const heldBill: HeldBill = {
+        id: heldBillId,
+        storeId: selectedStore.id,
+        storeName: selectedStore.name,
+        orderType,
+        tableNumber,
+        customerName,
+        customerPhone,
+        cart: frozenCart,
+        discountPercentStr,
+        isSplitPayment,
+        splitPayments: splitPayments.map(payment => ({ ...payment })),
+        heldAtIso: new Date().toISOString(),
+        itemCount: frozenCart.reduce((sum, item) => sum + item.quantity, 0),
+        total: frozenTotals.grandTotal,
+        sourceAuthorizationId: heldAuthorization.authorizationId,
+      };
 
-    persistHeldBills([heldBill, ...heldBills]);
-    setIsRecallMenuOpen(false);
-    clearCart(true);
-    setIsMobileCartOpen(false);
+      persistHeldBills([heldBill, ...heldBills]);
+      setIsRecallMenuOpen(false);
+      clearCart(true);
+      setIsMobileCartOpen(false);
+    } catch (error: any) {
+      setCheckoutError({
+        message: 'This bill could not be held safely.',
+        details: error?.message || 'The server could not freeze the effective product version.',
+      });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const recallHeldBill = (bill: HeldBill) => {
@@ -1821,6 +1929,7 @@ export default function POSHome() {
     setCustomerName(bill.customerName);
     setCustomerPhone(bill.customerPhone);
     setCart(bill.cart.map(item => ({ ...item })));
+    setRecalledHoldAuthorizationId(bill.sourceAuthorizationId || null);
     setDiscountPercentStr(bill.discountPercentStr);
     setIsSplitPayment(bill.isSplitPayment === true);
     setSplitPayments((bill.splitPayments || []).map(payment => ({ ...payment })));
@@ -2048,13 +2157,15 @@ export default function POSHome() {
         if (!liveItem) {
           throw new Error(`Menu item ${item.name} is no longer available at this store.`);
         }
-        const canonicalAddOns = canonicalAddOnSelections(
-          liveItem.addOnGroupIds,
-          liveItem.addOnOptionIdsByGroup,
-          addOnGroups,
-          item.addOns,
-          getItemTaxRate(liveItem, selectedStoreTaxConfig.rate),
-        );
+        const canonicalAddOns = recalledHoldAuthorizationId
+          ? (item.addOns || [])
+          : canonicalAddOnSelections(
+            liveItem.addOnGroupIds,
+            liveItem.addOnOptionIdsByGroup,
+            addOnGroups,
+            item.addOns,
+            getItemTaxRate(liveItem, selectedStoreTaxConfig.rate),
+          );
         return { cartItem: item, liveItem, canonicalAddOns };
       });
       let checkoutAttempt = checkoutAttemptRef.current || loadCheckoutAttempt() || createCheckoutAttempt();
@@ -2076,6 +2187,7 @@ export default function POSHome() {
       if (!isSplitPayment && selectedPaymentMethod === 'RAZORPAY') {
         const session = await createPosRazorpaySession({
           storeId: selectedStore.id,
+          ...(recalledHoldAuthorizationId ? { sourceAuthorizationId: recalledHoldAuthorizationId } : {}),
           checkoutIdempotencyKey: checkoutAttempt.idempotencyKey,
           paymentMethod: 'RAZORPAY',
           isSplitPayment: false,
@@ -2090,6 +2202,7 @@ export default function POSHome() {
             parentProductCode: liveItem.code,
             quantity: cartItem.quantity,
             selectedAddOns: selectedAddOnIds(canonicalAddOns),
+            ...(recalledHoldAuthorizationId ? { sourceOrderItemId: cartItem.id } : {}),
           })),
         });
         checkoutAttempt = {
@@ -2105,6 +2218,7 @@ export default function POSHome() {
       }
       const posAddOnAuthorization = await authorizePosAddOns({
         storeId: selectedStore.id,
+        ...(recalledHoldAuthorizationId ? { sourceAuthorizationId: recalledHoldAuthorizationId } : {}),
         orderId: newOrderRef.id,
         orderNumber: null,
         checkoutMode: isSetupTestSale ? 'SETUP_TEST' : 'STANDARD_POS',
@@ -2116,14 +2230,20 @@ export default function POSHome() {
           parentProductCode: liveItem.code,
           quantity: cartItem.quantity,
           selectedAddOns: selectedAddOnIds(canonicalAddOns),
+          ...(recalledHoldAuthorizationId ? { sourceOrderItemId: cartItem.id } : {}),
         })),
       });
       const validatedCart = browserValidatedCart.map(({ cartItem, liveItem }, index) => {
         const canonicalItem = posAddOnAuthorization.canonicalItems[orderLineRefs[index].id];
+        const authorizedItem = canonicalItem?.productSnapshot
+          ? effectiveProductToMenuItem(canonicalItem.productSnapshot as unknown as Record<string, any>)
+          : null;
         if (
           !canonicalItem
-          || canonicalItem.parentProductId !== liveItem.id
-          || canonicalItem.parentProductCode !== liveItem.code
+          || !authorizedItem
+          || canonicalItem.parentProductId !== authorizedItem.id
+          || canonicalItem.parentProductCode !== authorizedItem.code
+          || authorizedItem.id !== liveItem.id
           || canonicalItem.quantity !== cartItem.quantity
         ) {
           throw new Error('The server returned an invalid add-on authorization. Refresh the menu and try again.');
@@ -2131,12 +2251,13 @@ export default function POSHome() {
         return {
           cartItem,
           liveItem: {
-            ...liveItem,
+            ...authorizedItem,
             price: canonicalItem.baseUnitPrice,
             taxRate: canonicalItem.taxRate,
           },
           canonicalAddOns: canonicalItem.addOns,
           components: canonicalItem.components || [],
+          productSnapshot: canonicalItem.productSnapshot,
         };
       });
       const posAddOnAuthorizationRef = doc(
@@ -2369,20 +2490,19 @@ export default function POSHome() {
         const orderNumber = `CB-${selectedStore.code}-${dateKey}-${seq.toString().padStart(4, '0')}`;
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction validation complete - order number generated: ${orderNumber}`);
         const expandedInventoryLines = expandCompositeInventoryLines(
-          validatedCart.map(({ cartItem, liveItem, canonicalAddOns, components }, index) => {
-            const liveItemData = liveItem as unknown as Record<string, unknown>;
+          validatedCart.map(({ cartItem, liveItem, canonicalAddOns, components, productSnapshot }, index) => {
             return {
               lineKey: orderLineRefs[index].id,
               quantity: cartItem.quantity,
               finishedGood: {
-                ...liveItemData,
-                code: liveItem.code,
-                name: liveItem.name,
-                itemType: liveItemData.itemType || cartItem.itemType || 'DIRECT_STOCK',
-                bom: Array.isArray(liveItemData.bom)
-                  ? liveItemData.bom
+                ...productSnapshot,
+                code: productSnapshot.code || liveItem.code,
+                name: productSnapshot.name || liveItem.name,
+                itemType: productSnapshot.itemType || cartItem.itemType || 'DIRECT_STOCK',
+                bom: Array.isArray(productSnapshot.bom)
+                  ? productSnapshot.bom
                   : (Array.isArray(cartItem.bom) ? cartItem.bom : []),
-                finishedGoodCode: liveItemData.finishedGoodCode || cartItem.finishedGoodCode || liveItem.code,
+                finishedGoodCode: productSnapshot.code || cartItem.finishedGoodCode || liveItem.code,
               } as any,
               addOns: canonicalAddOns,
               components,
@@ -2574,7 +2694,7 @@ export default function POSHome() {
         // Prep line items
         if (import.meta.env.DEV) console.log(`[CHECKOUT] Transaction: saving line items...`);
         const newItems: OrderItem[] = [];
-        validatedCart.forEach(({ cartItem: item, liveItem, canonicalAddOns, components }, index) => {
+        validatedCart.forEach(({ cartItem: item, liveItem, canonicalAddOns, components, productSnapshot }, index) => {
           const lineRef = orderLineRefs[index];
           const lineAddOnTotal = addOnTotal(canonicalAddOns);
           const lineUnitPrice = liveItem.price + lineAddOnTotal;
@@ -2619,8 +2739,9 @@ export default function POSHome() {
             status: 'PENDING',
             createdAt: serverTimestamp(),
             sourceSystem: 'FINISHED_GOODS',
-            itemType: item.itemType,
-            finishedGoodCode: item.finishedGoodCode,
+            itemType: productSnapshot.itemType || item.itemType,
+            finishedGoodCode: productSnapshot.code || item.finishedGoodCode,
+            productSnapshot,
             ...(components.length > 0 ? { components } : {}),
           };
 
@@ -2661,9 +2782,10 @@ export default function POSHome() {
           buildKotTasks({
             quantity: item.quantity,
             finishedGood: {
-              code: liveItem.code,
-              name: liveItem.name,
-              displayName: liveItem.name,
+              ...productSnapshot,
+              code: productSnapshot.code || liveItem.code,
+              name: productSnapshot.name || liveItem.name,
+              displayName: productSnapshot.displayName || liveItem.name,
               prepStation: linePrepStation,
             },
             components,

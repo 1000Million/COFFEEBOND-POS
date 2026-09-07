@@ -20,6 +20,7 @@ function virtualFinishedGood(component, storeId) {
     code: component.componentFinishedGoodCode,
     name: component.componentName,
     displayName: component.componentName,
+    productType: component.productType || 'INTERNAL_COMPONENT',
     itemType: component.itemType,
     productionMode: component.productionMode,
     prepStation: component.prepStation,
@@ -27,7 +28,7 @@ function virtualFinishedGood(component, storeId) {
     bomVersion: component.bomVersion,
     availableStoreIds: [storeId],
     isActive: true,
-    isSellable: true,
+    isSellable: false,
     isAvailable: true,
   };
 }

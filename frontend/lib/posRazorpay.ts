@@ -42,10 +42,12 @@ export type PosRazorpayCartItem = {
     optionId: string;
     quantity: number;
   }[];
+  sourceOrderItemId?: string;
 };
 
 export type CreatePosRazorpaySessionInput = {
   storeId: string;
+  sourceAuthorizationId?: string;
   checkoutIdempotencyKey: string;
   paymentMethod: 'RAZORPAY';
   isSplitPayment: false;

@@ -3,6 +3,7 @@ import {
   classifyPosMenuItemWithCategories,
   type PosMenuCategoryDefinition,
 } from './posMenuNavigation';
+import { isCompositeParentProduct, resolveFinishedGoodProductType } from './productType';
 
 export const POS_VISIBILITY_REPAIR_ALLOWED_FIELDS = [
   'isActive',
@@ -136,6 +137,7 @@ export function planPosVisibilityRepair(
   const changes: PosVisibilityRepairChange[] = [];
   const visibilityWarnings: string[] = [];
   const includeExplicitActivation = options.includeExplicitActivation === true;
+  const internalComponent = resolveFinishedGoodProductType(item) === 'INTERNAL_COMPONENT';
 
   const addChange = (
     field: PosVisibilityRepairField,
@@ -150,6 +152,14 @@ export function planPosVisibilityRepair(
   for (const field of ['isActive', 'isSellable', 'isAvailable'] as const) {
     const currentValue = item[field];
     const parsed = parsedBoolean(currentValue);
+
+    if (field === 'isSellable' && internalComponent) {
+      visibilityWarnings.push('Internal components cannot be activated for direct sale by visibility repair.');
+      if (typeof currentValue === 'string' && parsed === false) {
+        addChange(field, currentValue, false, 'isSellable is stored as text and will be normalized without exposing the internal component.');
+      }
+      continue;
+    }
 
     if (parsed === true && typeof currentValue === 'string') {
       addChange(field, currentValue, true, `${field} is stored as text and will be normalized to true.`);
@@ -213,7 +223,11 @@ export function planPosVisibilityRepair(
   if (item.salePrice === undefined || item.salePrice === null || !Number.isFinite(Number(item.salePrice))) {
     visibilityWarnings.push('Sale price is missing or invalid; visibility repair will not change pricing.');
   }
-  if (item.itemType === 'MADE_TO_ORDER' && (!item.prepStation || item.prepStation === 'NONE')) {
+  if (
+    item.itemType === 'MADE_TO_ORDER'
+    && (!item.prepStation || item.prepStation === 'NONE')
+    && !isCompositeParentProduct(item)
+  ) {
     visibilityWarnings.push('Made-to-order item has no prep station; visibility repair will not change routing.');
   }
 

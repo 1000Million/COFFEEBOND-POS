@@ -346,9 +346,12 @@ export default function ReadyToServe() {
               const finishedGoodCode = String(freshOrderItem.finishedGoodCode || freshOrderItem.itemCode || '').trim();
               if (!finishedGoodCode) throw new Error('The order item is missing its finished good code.');
               const finishedGoodSnapshot = await t.get(doc(db, 'finishedGoods', finishedGoodCode));
-              liveFinishedGood = finishedGoodSnapshot.exists()
-                ? ({ id: finishedGoodSnapshot.id, ...finishedGoodSnapshot.data() } as FinishedGood)
-                : null;
+              if (finishedGoodSnapshot.exists()) {
+                const persistedProduct = freshOrderItem.productSnapshot;
+                liveFinishedGood = persistedProduct?.code === finishedGoodCode
+                  ? persistedProduct
+                  : ({ id: finishedGoodSnapshot.id, ...finishedGoodSnapshot.data() } as FinishedGood);
+              }
             }
 
             const remakeLine = buildFinishedGoodsRemakeLine({

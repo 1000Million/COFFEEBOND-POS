@@ -442,7 +442,13 @@ async function planOnlineOrderInventory({
     const assigned = !Array.isArray(item.availableStoreIds)
       || item.availableStoreIds.length === 0
       || item.availableStoreIds.includes(store.id);
-    if (item.isActive === false || item.isSellable === false || item.isAvailable === false || !assigned) {
+    const isCompositeComponent = !!line.component;
+    if (
+      item.isActive === false
+      || (!isCompositeComponent && item.isSellable === false)
+      || item.isAvailable === false
+      || !assigned
+    ) {
       block(line, 'Finished good unavailable', {
         suggestedAdminAction: 'Make the finished good active, sellable, available, and assigned before billing.',
       });
@@ -502,6 +508,8 @@ async function planOnlineOrderInventory({
           resolvedAt: null,
           resolvedBy: null,
           appliedBomVersion: null,
+          bomSnapshot: Array.isArray(item.bom) ? item.bom : [],
+          bomVersionSnapshot: Number.isFinite(Number(item.bomVersion)) ? Number(item.bomVersion) : null,
           inventoryMovementIds: [],
         });
         warn({

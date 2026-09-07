@@ -22,8 +22,8 @@ function test(name, fn) {
   passed.push(name);
 }
 
-const displayedItems = tastingRoomFinishedGoods.filter((item) => item.isSellable === true);
-const internalComponents = tastingRoomFinishedGoods.filter((item) => item.isSellable === false);
+const displayedItems = tastingRoomFinishedGoods.filter((item) => item.productType !== 'INTERNAL_COMPONENT');
+const internalComponents = tastingRoomFinishedGoods.filter((item) => item.productType === 'INTERNAL_COMPONENT');
 const byCode = Object.fromEntries(tastingRoomFinishedGoods.map((item) => [item.code, item]));
 const groupById = Object.fromEntries(tastingRoomAddOnGroups.map((group) => [group.id, group]));
 
@@ -61,6 +61,16 @@ test('internal component Finished Goods remain hidden and BOM-blocked', () => {
   assert.equal(internalComponents.length, 14);
   assert.ok(internalComponents.every((item) => item.salePrice === 0 && item.isSellable === false));
   assert.ok(internalComponents.every((item) => ['BARISTA', 'KITCHEN'].includes(item.prepStation)));
+});
+
+test('every Tasting Room Finished Good has one explicit commercial role', () => {
+  const composites = displayedItems.filter((item) => item.productType === 'COMPOSITE_PARENT');
+  const normal = displayedItems.filter((item) => item.productType === 'NORMAL_SELLABLE');
+  assert.equal(composites.length, 7);
+  assert.equal(normal.length, 14);
+  assert.equal(internalComponents.length, 14);
+  assert.ok(composites.every((item) => item.composite && item.prepStation === 'NONE'));
+  assert.ok(normal.every((item) => !item.composite));
 });
 
 test('fixed flights and Mini Affogato use independent component routing', () => {

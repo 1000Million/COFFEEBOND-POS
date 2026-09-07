@@ -105,6 +105,7 @@ const addOnGroupsBlock = extractMatchBlock(rules, 'match /addOnGroups/{groupId}'
 const addOnGroupAuditBlock = extractMatchBlock(rules, 'match /addOnGroupAudit/{auditId}');
 const productAddOnAuditBlock = extractMatchBlock(rules, 'match /productAddOnAudit/{auditId}');
 const finishedGoodsBlock = extractMatchBlock(rules, 'match /finishedGoods/{itemId}');
+const globalItemMasterDraftsBlock = extractMatchBlock(rules, 'match /globalItemMasterDrafts/{draftId}');
 const storeItemConfigBlock = extractMatchBlock(rules, 'match /storeItemConfig/{configId}');
 const complimentaryAuthorizationsBlock = extractMatchBlock(rules, 'match /complimentaryAuthorizations/{authorizationId}');
 const posAddOnAuthorizationsBlock = extractMatchBlock(rules, 'match /posAddOnAuthorizations/{authorizationId}');
@@ -144,8 +145,20 @@ assert(/allow\s+create,\s*update,\s*delete:\s*if\s+false;/.test(franchiseAccessA
 
 assert(/allow\s+write:\s*if\s+isAdmin\(\);/.test(finishedGoodsBlock), 'Only active Admin may update finished-good add-on option allowlists.');
 assert(!/isStoreManager\(\)|isCashier\(\)|isFranchise/.test(finishedGoodsBlock), 'Store Manager, Cashier, and Franchise roles must not write finishedGoods.');
+assert(globalItemMasterDraftsBlock !== '', 'globalItemMasterDrafts must declare an explicit rules block.');
+assert(/allow\s+read,\s*write:\s*if\s+isAdmin\(\);/.test(globalItemMasterDraftsBlock), 'Only active Admin may read or write unpublished Global Item master drafts.');
+assert(!/if\s+true|isActiveStaff\(\)|isStoreManager\(\)|isCashier\(\)|isFranchise/.test(globalItemMasterDraftsBlock), 'Master drafts must not be exposed to Manager, Cashier, Franchise, customer, or public clients.');
 assert(storeItemConfigBlock !== '', 'storeItemConfig must declare an explicit rules block.');
-assert(/allow\s+read,\s*write:\s*if\s+isAdmin\(\);/.test(storeItemConfigBlock), 'Only active Admin may read or write per-store item overrides.');
+assert(
+  /allow\s+read:\s*if\s+isAdmin\(\);/.test(storeItemConfigBlock)
+    && /allow\s+create:\s*if\s+isAdmin\(\)\s*&&\s*validFullVersionManagement\(\);/.test(storeItemConfigBlock)
+    && /allow\s+update:\s*if\s+isAdmin\(\)[\s\S]*validFullVersionManagement\(\)[\s\S]*preservesLegacyFieldsAfterFullVersion\(\);/.test(storeItemConfigBlock)
+    && /allow\s+delete:\s*if\s+isAdmin\(\)\s*&&\s*!resource\.data\.keys\(\)\.hasAny\(\['publishedVersion'\]\);/.test(storeItemConfigBlock),
+  'Only active Admin may access per-store item versions, with full-version authority guards on writes.',
+);
+assert(/managementMode\s*==\s*'FULL_VERSION_MANAGED'/.test(storeItemConfigBlock), 'Published versions must declare full-version management authority.');
+assert(/publishedVersion\.publishedBy\s*==\s*request\.auth\.uid/.test(storeItemConfigBlock), 'Published versions must bind publisher identity to the active Admin.');
+assert(/!request\.resource\.data\.diff\(resource\.data\)\.affectedKeys\(\)\.hasAny\(\[[\s\S]*'priceOverride'[\s\S]*'isAvailableOverride'[\s\S]*'menuVisibilityOverride'[\s\S]*'sortOrderOverride'[\s\S]*\]\)/.test(storeItemConfigBlock), 'Full-version-managed rows must reject later legacy override mutations.');
 assert(!/if\s+true|isActiveStaff\(\)|isStoreManager\(\)|isCashier\(\)|isFranchise/.test(storeItemConfigBlock), 'Private storeItemConfig documents must not be exposed to Manager, Cashier, Franchise, customer, or public clients.');
 assert(/allow\s+read,\s*create:\s*if\s+isAdmin\(\);/.test(productAddOnAuditBlock), 'Only active Admin may read or create product add-on audits.');
 assert(/allow\s+update,\s*delete:\s*if\s+false;/.test(productAddOnAuditBlock), 'Product add-on audits must be append-only.');

@@ -21,6 +21,7 @@ import {
 import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
 import { STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
 import { snapshotRevisionToken } from '../../lib/storeItemConfigAdmin';
+import { isDirectlySellableProductRole } from '../../lib/productType';
 import { useAuth } from '../../contexts/AuthContext';
 import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
 import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
@@ -220,7 +221,8 @@ function usesBom(fg: FinishedGood): boolean {
 
 function isActiveSellableFinishedGood(fg: FinishedGood, storeId: string): boolean {
   const storeIds = Array.isArray(fg.availableStoreIds) ? fg.availableStoreIds : [];
-  return fg.isActive !== false
+  return isDirectlySellableProductRole(fg)
+    && fg.isActive !== false
     && fg.isSellable !== false
     && fg.isAvailable !== false
     && (storeIds.length === 0 || storeIds.includes(storeId));

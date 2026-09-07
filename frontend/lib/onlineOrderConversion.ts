@@ -13,11 +13,6 @@ import {
   calculateOnlineOrderTotals,
 } from './onlineOrderMoney.mjs';
 
-type TaxConfig = {
-  rate: number;
-  source: string;
-};
-
 type AcceptResult = {
   orderId: string;
   orderNumber: string;
@@ -38,11 +33,6 @@ type CalculatedLine = {
   appliedTaxRate: number;
   components: CanonicalCompositeComponent[];
 };
-
-const GST_CONFIG_DOC_ID = 'gstConfig';
-const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
-const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
-const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 
 export class OnlineOrderAcceptError extends Error {
   blockers: OnlineOrderAcceptBlocker[];
@@ -65,55 +55,12 @@ function toFiniteNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function normalizeTaxRate(value: unknown): number {
-  const parsed = toFiniteNumber(value);
-  return parsed !== null && parsed > 0 ? parsed : 0;
-}
-
-function pickTaxConfig(data: Record<string, unknown>, source: string, keys: string[]): TaxConfig | null {
-  for (const key of keys) {
-    const rate = normalizeTaxRate(data[key]);
-    if (rate > 0) return { rate, source: `${source}.${key}` };
-  }
-  return null;
-}
-
-function normalizeStoreOverrides(value: unknown): Record<string, number> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((acc, [key, rate]) => {
-    const normalizedRate = normalizeTaxRate(rate);
-    if (normalizedRate > 0) acc[key] = normalizedRate;
-    return acc;
-  }, {});
-}
-
-function pickItemTaxRate(item: Record<string, unknown>): number {
-  return pickTaxConfig(item, 'item', ITEM_TAX_RATE_KEYS)?.rate || 0;
-}
-
 function normalizePrepStation(value: unknown): PrepStation {
   const normalized = String(value || 'NONE').trim().toUpperCase().replace(/[\s-]+/g, '_');
   if (normalized === 'BARISTA' || normalized === 'BAR') return 'BARISTA';
   if (normalized === 'KITCHEN' || normalized === 'KITCHEN_KOT') return 'KITCHEN';
   if (normalized === 'BOTH' || normalized === 'BARISTA_KITCHEN' || normalized === 'BAR_AND_KITCHEN') return 'BOTH';
   return 'NONE';
-}
-
-function getAppliedTaxRate(item: Record<string, unknown>, fallbackTaxRate: number): number {
-  const itemTax = pickItemTaxRate(item);
-  return itemTax > 0 ? itemTax : fallbackTaxRate;
-}
-
-function calculateStoreTaxRate(store: Store, gstConfig: Record<string, unknown> | null): number {
-  const overrides = normalizeStoreOverrides(gstConfig?.storeOverrides);
-  const overrideRate = overrides[store.id] || overrides[store.code];
-  if (overrideRate > 0) return overrideRate;
-
-  const storeTax = pickTaxConfig(store as unknown as Record<string, unknown>, `stores/${store.id}`, STORE_TAX_RATE_KEYS);
-  if (storeTax) return storeTax.rate;
-
-  const appTax = gstConfig ? pickTaxConfig(gstConfig, `appSettings/${GST_CONFIG_DOC_ID}`, APP_TAX_RATE_KEYS) : null;
-  return appTax?.rate || 0;
 }
 
 function buildOrderType(onlineOrder: OnlineOrder): Order['orderType'] {
@@ -173,17 +120,10 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     }
 
     const storeRef = doc(db, 'stores', onlineOrder.storeId);
-    const gstRef = doc(db, 'appSettings', GST_CONFIG_DOC_ID);
-    const [storeSnap, gstSnap] = await Promise.all([
-      transaction.get(storeRef),
-      transaction.get(gstRef),
-    ]);
+    const storeSnap = await transaction.get(storeRef);
 
     if (!storeSnap.exists()) throw new Error('Selected store no longer exists.');
     const store = { id: storeSnap.id, ...storeSnap.data() } as Store;
-    const gstConfig = gstSnap.exists() ? gstSnap.data() as Record<string, unknown> : null;
-    const storeTaxRate = calculateStoreTaxRate(store, gstConfig);
-
     const finishedGoodRefs = onlineOrder.items.map(item => doc(db, 'finishedGoods', item.finishedGoodCode));
     const finishedGoodSnaps = await Promise.all(finishedGoodRefs.map(ref => transaction.get(ref)));
     const finishedGoods = finishedGoodSnaps.map((snap, index) => {
@@ -208,13 +148,15 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
     onlineOrder.items.forEach((storedOnlineItem, index) => {
       const finishedGood = finishedGoods[index];
       const canonicalItem = posAddOnAuthorization.canonicalItems[lineRefs[index].id];
+      const effectiveProduct = canonicalItem?.productSnapshot || finishedGood;
       const quantity = Number(storedOnlineItem.quantity) || 0;
       if (
         !canonicalItem
-        || canonicalItem.parentProductId !== finishedGood.id
-        || canonicalItem.parentProductCode !== finishedGood.code
+        || canonicalItem.parentProductId !== effectiveProduct.id
+        || canonicalItem.parentProductCode !== effectiveProduct.code
+        || effectiveProduct.id !== finishedGood.id
+        || effectiveProduct.code !== finishedGood.code
         || canonicalItem.quantity !== quantity
-        || Number(finishedGood.salePrice) !== canonicalItem.baseUnitPrice
       ) {
         throw new Error('Online order add-on authorization no longer matches the live menu. Please retry.');
       }
@@ -232,7 +174,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
       };
       const baseUnitPrice = canonicalItem.baseUnitPrice;
       const selectedAddOnTotal = addOnTotal(onlineItem.addOns);
-      const appliedTaxRate = getAppliedTaxRate(finishedGood as unknown as Record<string, unknown>, storeTaxRate);
+      const appliedTaxRate = canonicalItem.taxRate;
       const money = calculateOnlineOrderLineMoney({
         baseUnitPrice,
         selectedAddOnTotal,
@@ -243,7 +185,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
 
       calculatedLines.push({
         onlineItem,
-        finishedGood,
+        finishedGood: effectiveProduct,
         quantity,
         lineSubtotal: money.lineSubtotal,
         lineTaxable: money.lineTaxable,
@@ -436,6 +378,7 @@ export async function acceptOnlineOrder(onlineOrderId: string, staffProfile: Sta
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.finishedGood.code,
         itemType: line.finishedGood.itemType,
+        productSnapshot: line.finishedGood,
         ...(line.components.length > 0 ? { components: line.components } : {}),
       };
       transaction.set(lineRef, itemData);

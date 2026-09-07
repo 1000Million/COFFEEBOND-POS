@@ -53,6 +53,7 @@ function virtualFinishedGood(component: CanonicalCompositeComponent, storeId: st
     code: component.componentFinishedGoodCode,
     name: component.componentName,
     displayName: component.componentName,
+    productType: component.productType || 'INTERNAL_COMPONENT',
     itemType: component.itemType || 'MADE_TO_ORDER',
     productionMode: component.productionMode || 'MADE_TO_ORDER',
     prepStation: component.prepStation,
@@ -68,7 +69,7 @@ function virtualFinishedGood(component: CanonicalCompositeComponent, storeId: st
     sortOrder: component.sequence,
     availableStoreIds: [storeId],
     isActive: true,
-    isSellable: true,
+    isSellable: false,
     isAvailable: true,
   };
 }

@@ -13,6 +13,7 @@ const { createReportingFunctions } = require('./reporting');
 const { createRazorpayPaymentFirstFunctions } = require('./razorpayPaymentFirst');
 const { createCustomerMyUsualFunctions } = require('./customerMyUsual');
 const { createPosRazorpayFunctions } = require('./posRazorpay');
+const { createGetEffectivePosProductsFunction } = require('./effectiveProductCatalog');
 const { createStoreProvisioningFunctions } = require('./storeProvisioning');
 const { createBondLoyaltyService } = require('./bondLoyalty');
 const { createKotStatusAggregationHandler } = require('./kotStatusAggregation');
@@ -29,7 +30,7 @@ const {
 const { resolvePublicCheckoutProduct } = require('./customerCheckoutCanonicalization');
 const {
   STORE_ITEM_CONFIG_COLLECTION,
-  resolveStoreItem,
+  resolveEffectiveProduct,
   storeItemConfigDocId,
 } = require('./storeItemConfigPolicy');
 
@@ -51,6 +52,7 @@ const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
 exports.parseSupplierInvoiceDraft = createParseSupplierInvoiceDraft({ admin, db, region: REGION });
 exports.createComplimentaryAuthorization = createComplimentaryAuthorizationFunction({ admin, db, region: REGION });
 exports.authorizePosAddOns = createPosAddOnAuthorizationFunction({ admin, db, region: REGION });
+exports.getEffectivePosProducts = createGetEffectivePosProductsFunction({ db, region: REGION });
 
 const franchiseSalesFunctions = createFranchiseSalesFunctions({ admin, db, region: REGION });
 exports.manageFranchiseViewer = franchiseSalesFunctions.manageFranchiseViewer;
@@ -620,7 +622,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
       if (config && (config.storeId !== store.id || config.itemCode !== productCode)) {
         fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
       }
-      const effectiveProduct = resolveStoreItem(privateProductsByCode[productCode], config);
+      const effectiveProduct = resolveEffectiveProduct(privateProductsByCode[productCode], config);
       return [productCode, resolvePublicCheckoutProduct({
         product: effectiveProduct,
         publicAvailability: availabilityItems[productCode],
@@ -684,7 +686,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         if (config && (config.storeId !== store.id || config.itemCode !== product.code)) {
           fail('failed-precondition', 'Menu configuration is being refreshed. Please try again.');
         }
-        return resolveStoreItem(product, config);
+        return resolveEffectiveProduct(product, config);
       })
       .filter(Boolean);
     const componentProductsById = {
@@ -757,6 +759,7 @@ exports.submitCustomerOrder = onCall({ region: REGION }, async (request) => {
         lineTotal: money.lineTotal,
         prepStation: item.prepStation || 'NONE',
         itemType: item.itemType,
+        productSnapshot: item,
         ...(components.length > 0 ? { components } : {}),
       };
     });

@@ -1,6 +1,11 @@
 'use strict';
 
 const { isDeepStrictEqual } = require('node:util');
+const {
+  hasValidProductTypeSemantics,
+  isCompositeParentProduct,
+  resolveFinishedGoodProductType,
+} = require('./productTypePolicy');
 
 /**
  * Pure, persistence-agnostic policy for one-level Finished Good composites.
@@ -94,7 +99,7 @@ function optionIdsByGroup(value) {
 }
 
 function isCompositeProduct(product) {
-  return isRecord(product?.composite);
+  return isCompositeParentProduct(product);
 }
 
 function isCompositeChoiceGroup(group) {
@@ -119,6 +124,9 @@ function componentReference(value, context) {
 }
 
 function compositeDefinition(product, groupsById) {
+  if (!hasValidProductTypeSemantics(product)) {
+    policyError('This product has invalid product-type semantics.');
+  }
   const configuredProductGroupIds = uniqueStrings(product?.addOnGroupIds);
   const assignedCompositeGroupIds = configuredProductGroupIds.filter(groupId => (
     isCompositeChoiceGroup(groupsById?.[groupId])
@@ -316,6 +324,9 @@ function canonicalChildSnapshot({
   ) {
     policyError(`${childName || 'A composite component'} is unavailable at this store.`);
   }
+  if (!hasValidProductTypeSemantics(child)) {
+    policyError(`${childName || 'A composite component'} has invalid product-type semantics.`);
+  }
   if (isCompositeProduct(child)) {
     policyError('Nested composite products are not supported.');
   }
@@ -357,6 +368,7 @@ function canonicalChildSnapshot({
     componentFinishedGoodId: childId,
     componentFinishedGoodCode: childCode,
     componentName: childName,
+    productType: resolveFinishedGoodProductType(child),
     quantity: reference.quantity,
     prepStation,
     itemType,
@@ -420,6 +432,10 @@ function validateFrozenCanonicalCompositeComponents({
     const prepStation = cleanText(component.prepStation, 20).toUpperCase();
     const itemType = cleanText(component.itemType, 40).toUpperCase();
     const productionMode = cleanText(component.productionMode, 40).toUpperCase();
+    const hasFrozenProductType = Object.prototype.hasOwnProperty.call(component, 'productType');
+    const productType = hasFrozenProductType
+      ? resolveFinishedGoodProductType({ productType: component.productType })
+      : null;
 
     if (
       sequence !== index + 1
@@ -434,6 +450,7 @@ function validateFrozenCanonicalCompositeComponents({
       || !FINISHED_GOOD_ITEM_TYPES.has(itemType)
       || (productionMode && !PRODUCTION_MODES.has(productionMode))
       || !Array.isArray(component.bom)
+      || (hasFrozenProductType && !productType)
     ) {
       policyError('A stored composite component snapshot is malformed.');
     }
@@ -451,6 +468,9 @@ function validateFrozenCanonicalCompositeComponents({
       || !currentChild.availableStoreIds.includes(storeId)
     ) {
       policyError(`${componentName} is unavailable at this store.`);
+    }
+    if (!hasValidProductTypeSemantics(currentChild)) {
+      policyError(`${componentName} has invalid product-type semantics.`);
     }
 
     const bom = component.bom.map((line, bomIndex) => (
@@ -486,6 +506,7 @@ function validateFrozenCanonicalCompositeComponents({
       componentFinishedGoodId,
       componentFinishedGoodCode,
       componentName,
+      ...(hasFrozenProductType ? { productType } : {}),
       quantity,
       prepStation,
       itemType,

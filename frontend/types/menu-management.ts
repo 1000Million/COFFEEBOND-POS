@@ -18,6 +18,7 @@ export type BOMComponentType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'BOUGHT_COMPONEN
 export type PackagingApplicability = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'ALL';
 
 export type AddOnInventoryItemType = 'RAW_INGREDIENT' | 'PREP_ITEM' | 'PACKAGING';
+export type FinishedGoodProductType = 'NORMAL_SELLABLE' | 'INTERNAL_COMPONENT' | 'COMPOSITE_PARENT';
 
 /**
  * A reference to a Finished Good that is prepared/consumed as one component of
@@ -56,6 +57,8 @@ export interface CanonicalCompositeComponent {
   componentFinishedGoodId: string;
   componentFinishedGoodCode: string;
   componentName: string;
+  /** Frozen role from the child version; absent only on legacy order snapshots. */
+  productType?: FinishedGoodProductType;
   /** Quantity per one unit of the parent order line. */
   quantity: number;
   prepStation: PrepStation;
@@ -122,13 +125,18 @@ export type FinishedGoodItemType = 'MADE_TO_ORDER' | 'DIRECT_STOCK' | 'NO_STOCK'
 export type PrepStation = 'BARISTA' | 'KITCHEN' | 'BOTH' | 'NONE';
 
 export type ProductionMode = 'MADE_TO_ORDER' | 'ASSEMBLED_TO_ORDER' | 'BOUGHT_AND_SOLD' | 'NO_STOCK';
-
 export interface FinishedGood {
   id?: string;
   code: string;
   name: string;
   displayName?: string;
   description?: string;
+  /**
+   * Commercial role, independent of itemType/productionMode. Optional only for
+   * legacy documents: a legacy composite derives COMPOSITE_PARENT and every other
+   * legacy Finished Good derives NORMAL_SELLABLE.
+   */
+  productType?: FinishedGoodProductType;
   dietaryClassification?: 'VEGETARIAN' | 'NON_VEGETARIAN' | 'EGG';
   imageUrl?: string;
   imageStoragePath?: string | null;

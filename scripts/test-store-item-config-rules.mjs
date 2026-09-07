@@ -13,8 +13,11 @@ const PROJECT_ID = 'demo-coffee-bond-g32-rules';
 const [HOST, portText] = String(process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080').split(':');
 const PORT = Number(portText || 8080);
 const COLLECTION = 'storeItemConfig';
+const DRAFT_COLLECTION = 'globalItemMasterDrafts';
 const DOC_A = 'GOLDEN_I__BOND_FRAPPE';
 const DOC_B = 'NOIDA_29__BOND_FRAPPE';
+const DRAFT_ID = 'BOND_FRAPPE';
+const FULL_DOC = 'v1|GOLDEN_I|FULL_ITEM';
 
 let n = 0;
 const record = (m) => { n += 1; console.log(`PASS ${n}. ${m}`); };
@@ -38,12 +41,32 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   for (const [uid, data] of Object.entries(users)) await setDoc(doc(db, 'users', uid), data);
   await setDoc(doc(db, COLLECTION, DOC_A), { storeId: 'GOLDEN_I', itemCode: 'BOND_FRAPPE', priceOverride: 375 });
   await setDoc(doc(db, COLLECTION, DOC_B), { storeId: 'NOIDA_29', itemCode: 'BOND_FRAPPE', priceOverride: 360 });
+  await setDoc(doc(db, DRAFT_COLLECTION, DRAFT_ID), {
+    schemaVersion: 1,
+    itemCode: DRAFT_ID,
+    draftRevision: 'draft-1',
+    product: { code: DRAFT_ID, name: 'Bond Frappe' },
+  });
+  await setDoc(doc(db, COLLECTION, FULL_DOC), {
+    storeId: 'GOLDEN_I',
+    itemCode: 'FULL_ITEM',
+    priceOverride: 375,
+    managementMode: 'FULL_VERSION_MANAGED',
+    publishedVersion: { schemaVersion: 1, publishedRevision: 'full-1', publishedBy: 'admin-uid' },
+  });
 });
 
 const asUser = (uid) => testEnv.authenticatedContext(uid).firestore();
 const asPublic = () => testEnv.unauthenticatedContext().firestore();
 const ref = (db, id = DOC_A) => doc(db, COLLECTION, id);
 const payload = { storeId: 'GOLDEN_I', itemCode: 'BOND_FRAPPE', priceOverride: 400 };
+const draftRef = (db, id = DRAFT_ID) => doc(db, DRAFT_COLLECTION, id);
+const draftPayload = {
+  schemaVersion: 1,
+  itemCode: DRAFT_ID,
+  draftRevision: 'draft-2',
+  product: { code: DRAFT_ID, name: 'Bond Frappe Draft' },
+};
 
 // ---- ADMIN: full control ------------------------------------------------------
 await assertSucceeds(getDoc(ref(asUser('admin-uid')))); record('ADMIN read ALLOWED');
@@ -51,6 +74,41 @@ await assertSucceeds(getDocs(collection(asUser('admin-uid'), COLLECTION))); reco
 await assertSucceeds(setDoc(ref(asUser('admin-uid'), 'GOLDEN_I__NEW_ITEM'), { storeId: 'GOLDEN_I', itemCode: 'NEW_ITEM', priceOverride: 100 })); record('ADMIN create ALLOWED');
 await assertSucceeds(setDoc(ref(asUser('admin-uid')), payload, { merge: true })); record('ADMIN update ALLOWED');
 await assertSucceeds(deleteDoc(ref(asUser('admin-uid'), 'GOLDEN_I__NEW_ITEM'))); record('ADMIN delete ALLOWED');
+await assertSucceeds(setDoc(ref(asUser('admin-uid'), FULL_DOC), {
+  storeId: 'GOLDEN_I',
+  itemCode: 'FULL_ITEM',
+  priceOverride: 375,
+  managementMode: 'FULL_VERSION_MANAGED',
+  publishedVersion: { schemaVersion: 1, publishedRevision: 'full-2', publishedBy: 'admin-uid' },
+}, { merge: false })); record('FULL VERSION: ADMIN roll-forward ALLOWED');
+await assertFails(setDoc(ref(asUser('admin-uid'), FULL_DOC), { priceOverride: 400 }, { merge: true })); record('FULL VERSION: legacy field mutation DENIED');
+await assertFails(setDoc(ref(asUser('admin-uid'), FULL_DOC), { managementMode: 'LEGACY' }, { merge: true })); record('FULL VERSION: authority downgrade DENIED');
+await assertFails(deleteDoc(ref(asUser('admin-uid'), FULL_DOC))); record('FULL VERSION: deletion through legacy path DENIED');
+await assertFails(setDoc(ref(asUser('admin-uid'), 'FULL_SPOOFED_ACTOR'), {
+  storeId: 'GOLDEN_I',
+  itemCode: 'FULL_SPOOFED_ACTOR',
+  managementMode: 'FULL_VERSION_MANAGED',
+  publishedVersion: { schemaVersion: 1, publishedRevision: 'full-1', publishedBy: 'another-admin' },
+})); record('FULL VERSION: spoofed publisher identity DENIED');
+await assertFails(setDoc(ref(asUser('admin-uid'), DOC_B), {
+  storeId: 'NOIDA_29',
+  itemCode: 'BOND_FRAPPE',
+  priceOverride: 400,
+  managementMode: 'FULL_VERSION_MANAGED',
+  publishedVersion: { schemaVersion: 1, publishedRevision: 'full-1', publishedBy: 'admin-uid' },
+}, { merge: false })); record('FULL VERSION: first authority transition cannot rewrite a legacy field');
+
+// ---- MASTER DRAFT: Admin-only and invisible to every live consumer -----------
+await assertSucceeds(getDoc(draftRef(asUser('admin-uid')))); record('MASTER DRAFT: ADMIN read ALLOWED');
+await assertSucceeds(getDocs(collection(asUser('admin-uid'), DRAFT_COLLECTION))); record('MASTER DRAFT: ADMIN list ALLOWED');
+await assertSucceeds(setDoc(draftRef(asUser('admin-uid')), draftPayload)); record('MASTER DRAFT: ADMIN update ALLOWED');
+await assertFails(getDoc(draftRef(asUser('manager-uid')))); record('MASTER DRAFT: STORE_MANAGER read DENIED');
+await assertFails(setDoc(draftRef(asUser('manager-uid')), draftPayload)); record('MASTER DRAFT: STORE_MANAGER write DENIED');
+await assertFails(getDoc(draftRef(asUser('cashier-uid')))); record('MASTER DRAFT: CASHIER read DENIED');
+await assertFails(setDoc(draftRef(asUser('cashier-uid')), draftPayload)); record('MASTER DRAFT: CASHIER write DENIED');
+await assertFails(getDoc(draftRef(asUser('customer-uid')))); record('MASTER DRAFT: SIGNED-IN CUSTOMER read DENIED');
+await assertFails(getDoc(draftRef(asPublic()))); record('MASTER DRAFT: PUBLIC read DENIED');
+await assertFails(setDoc(draftRef(asPublic()), draftPayload)); record('MASTER DRAFT: PUBLIC write DENIED');
 
 // ---- STORE MANAGER: private overrides are hidden and immutable -----------------
 await assertFails(getDoc(ref(asUser('manager-uid')))); record('STORE_MANAGER read DENIED');

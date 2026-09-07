@@ -6,6 +6,7 @@ const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https')
 const { defineSecret, defineString } = require('firebase-functions/params');
 const { isAuthorizedStaffForStorePair } = require('./complimentaryAuthorizationPolicy');
 const { canonicalizeFrozenOrderCart } = require('./posAddOnAuthorization');
+const { resolveEffectiveProductSnapshots } = require('./effectiveProductCatalog');
 const { resolveInventoryStore } = require('./inventoryStoreResolver');
 const { planOnlineOrderInventory } = require('./onlineOrderInventory');
 const { collectFrozenComponentFinishedGoodIds } = require('./compositeProductPolicy');
@@ -469,7 +470,12 @@ async function finalizePaidOnlineOrder({
       }, { merge: true });
       return { reviewRequired: true, code: 'FINISHED_GOOD_MISSING_AFTER_PAYMENT' };
     }
-    const finishedGoods = finishedGoodSnapshots.map(snapshot => ({ id: snapshot.id, ...snapshot.data() }));
+    const finishedGoods = await resolveEffectiveProductSnapshots({
+      db,
+      storeId: store.id,
+      productSnapshots: finishedGoodSnapshots,
+      readSnapshot: reference => transaction.get(reference),
+    });
     const productsById = Object.fromEntries(finishedGoods.map(item => [item.id, item]));
     const lineIds = onlineOrder.items.map((_, index) => deterministicLineId(onlineOrder.id, index));
     const requestedItems = onlineOrder.items.map((item, index) => ({
@@ -485,11 +491,15 @@ async function finalizePaidOnlineOrder({
       const componentProductSnapshots = await Promise.all(
         componentProductIds.map(productId => transaction.get(db.collection('finishedGoods').doc(productId))),
       );
+      const resolvedComponentProducts = await resolveEffectiveProductSnapshots({
+        db,
+        storeId: store.id,
+        productSnapshots: componentProductSnapshots,
+        readSnapshot: reference => transaction.get(reference),
+      });
       const componentProductsById = {
         ...productsById,
-        ...Object.fromEntries(componentProductSnapshots
-          .filter(snapshot => snapshot.exists)
-          .map(snapshot => [snapshot.id, { id: snapshot.id, ...snapshot.data() }])),
+        ...Object.fromEntries(resolvedComponentProducts.map(product => [product.id, product])),
       };
       canonical = canonicalizeFrozenOrderCart({
         storeId: store.id,
@@ -522,8 +532,8 @@ async function finalizePaidOnlineOrder({
     }
 
     const calculatedLines = onlineOrder.items.map((storedItem, index) => {
-      const item = finishedGoods[index];
       const canonicalItem = canonical.canonicalItems[lineIds[index]];
+      const item = canonicalItem.productSnapshot || finishedGoods[index];
       const quantity = Number(storedItem.quantity);
       const baseSubtotal = canonicalItem.baseUnitPrice * quantity;
       const addOnSubtotal = canonicalItem.addOnTotal * quantity;
@@ -755,6 +765,7 @@ async function finalizePaidOnlineOrder({
         sourceSystem: 'FINISHED_GOODS',
         finishedGoodCode: line.finishedGood.code,
         itemType: line.finishedGood.itemType,
+        productSnapshot: line.finishedGood,
         ...(line.components.length > 0 ? { components: line.components } : {}),
       });
       const createKot = task => {
