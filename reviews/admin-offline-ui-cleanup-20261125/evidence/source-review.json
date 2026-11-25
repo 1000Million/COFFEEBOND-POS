@@ -1,0 +1,28 @@
+{
+  "baseCommit": "4c0ad1bd904561c70d72d534f03b3ba89948fd82",
+  "modifiedFiles": {
+    "frontend/App.tsx": "617c0cd8967545f4b1c3c3641c6f4c758cca21e1bb875b8ded71955151078b2a",
+    "frontend/pages/admin/AdminHome.tsx": "c190a99a7788e64e8ff4b5bc480ffb578a51311d25134782ec6dc719101f9d35",
+    "frontend/lib/firebase.ts": "57581101b754edfb94de6834c2e4de0adb1cdc30c54327317a686f2963546c40",
+    "frontend/contexts/AuthContext.tsx": "3c8768936a2b07d97f46a5c4c731c8f54768b9020326ad8e71ce30146ef7eb87",
+    "frontend/components/ConnectionStatusBanner.tsx": "226a5077068098df5978e98708e84612e87e9f4e02c6cf33300fb65391665590",
+    "vite.config.ts": "cc59fb05f93710b90e3f31550ea1413784dbaae3c408e58505e11d3388b948af",
+    "public/sw.js": "ad9f55434c9ade52d765e0b6fe7439e2ade3d91f28cbf27ad36c495419bf5f4b",
+    "package.json": "c0a131aa666b5f1eb88a051b894b0d7fe84a2556b3af946cbc429d71fa138188",
+    "package-lock.json": "6a1d32b5ef3f4e86c271e0feb578d5d6350c9a0201eded87a921724d337090c4"
+  },
+  "restoredOriginalSourceDependency": {
+    "data/imports/addon-product-reconciliation-approvals.json": "42c7ef9e6beef6685f69dbd30c84d8ebbcc23914ca1464627bdd744b34277499"
+  },
+  "protectedSourceUnchanged": [
+    "releases/general-pwa-offline-20261125/backend",
+    "releases/general-pwa-offline-20261125/staff/frontend/lib/offline",
+    "releases/general-pwa-offline-20261125/staff/frontend/pages/pos/POSHome.tsx",
+    "releases/general-pwa-offline-20261125/staff/frontend/components/admin/menu-management",
+    "releases/general-pwa-offline-20261125/staff/frontend/lib/pwa.ts",
+    "releases/general-pwa-offline-20261125/staff/firestore.rules",
+    "releases/general-pwa-offline-20261125/staff/firestore.indexes.json"
+  ],
+  "productionOperations": 0,
+  "deploymentAuthorized": false
+}

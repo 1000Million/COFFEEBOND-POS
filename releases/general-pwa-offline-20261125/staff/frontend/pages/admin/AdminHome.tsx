@@ -1,16 +1,13 @@
-import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  Tags, MenuSquare, DatabaseZap, Package, Database, MapPinned,
-  BookOpen, FileSpreadsheet, Calculator, LineChart, Coffee, 
-  ChefHat, Bell, ChevronDown, ChevronRight, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag, ListChecks, Wrench, PackagePlus, ImageUp
+import {
+  DatabaseZap, Package, MapPinned, Calculator, LineChart, Coffee,
+  ChefHat, Bell, Users, FileCheck2, FileSearch, ShieldCheck, ShoppingBag,
+  ListChecks, Wrench, PackagePlus, ImageUp
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { APP_BUILD_TIME, APP_ENVIRONMENT, APP_VERSION, FIREBASE_PROJECT_ID } from '../../lib/appVersion';
 
 export default function AdminHome() {
-  const [showHistoricalTools, setShowHistoricalTools] = useState(false);
-
   const containerVariants = {
     hidden: { opacity: 0 },
     show: {
@@ -305,149 +302,6 @@ export default function AdminHome() {
         </div>
       </motion.div>
 
-      {/* Historical Setup Tools Overlay */}
-      <motion.div 
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
-        className="bg-neutral-50 border border-neutral-200 rounded-3xl p-6"
-      >
-        <button 
-          onClick={() => setShowHistoricalTools(!showHistoricalTools)}
-          className="flex items-center justify-between w-full group cursor-pointer outline-none"
-        >
-          <div className="text-left font-sans">
-            <h3 className="text-xl font-bold text-neutral-800 flex items-center gap-2 group-hover:text-[#5c4033] transition-colors">
-              Historical Setup Tools
-              {showHistoricalTools ? <ChevronDown size={20} className="text-neutral-400" /> : <ChevronRight size={20} className="text-neutral-400" />}
-            </h3>
-            <p className="text-sm text-neutral-500 mt-1 block">Older setup and import utilities remain available for review while POS V2 is tested.</p>
-          </div>
-        </button>
-
-        {showHistoricalTools && (
-          <motion.div 
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            transition={{ ease: "easeInOut", duration: 0.3 }}
-            className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 pt-6 border-t border-neutral-200 border-dashed overflow-hidden"
-          >
-            <Link to="/admin/categories" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <Tags size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Categories</h4>
-              </div>
-            </Link>
-            
-            <Link to="/admin/menu" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <MenuSquare size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Menu Items</h4>
-              </div>
-            </Link>
-            
-            <Link to="/admin/inventory" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <Package size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Global Inventory</h4>
-              </div>
-            </Link>
-
-            <Link to="/admin/store-inventory" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <Database size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Store Inventory</h4>
-              </div>
-            </Link>
-
-            <Link to="/admin/recipes" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <BookOpen size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Recipes</h4>
-              </div>
-            </Link>
-
-            <Link to="/admin/seed" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <DatabaseZap size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">System Seed</h4>
-              </div>
-            </Link>
-
-            <Link to="/admin/data" className="bg-white p-4 rounded-xl shadow-sm border border-neutral-100 hover:border-neutral-300 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-neutral-100 text-neutral-600 rounded-lg flex items-center justify-center shrink-0">
-                <FileSpreadsheet size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Excel Data Import/Export</h4>
-              </div>
-            </Link>
-
-            <Link to="/admin/phase-7a-validation" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
-                <FileCheck2 size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Phase 7A Validation</h4>
-                <p className="text-xs text-neutral-500">Readiness check only</p>
-              </div>
-            </Link>
-
-            <Link to="/admin/phase-7h-stock-costing" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
-                <FileSpreadsheet size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Phase 7H Stock + Costing</h4>
-                <p className="text-xs text-neutral-500">Costs and opening stock</p>
-              </div>
-            </Link>
-
-            <Link to="/admin/phase-7i-bom-alias-correction" className="bg-white p-4 rounded-xl shadow-sm border border-amber-200 hover:border-amber-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-amber-50 text-amber-700 rounded-lg flex items-center justify-center shrink-0">
-                <FileSearch size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Phase 7I BOM Alias Correction</h4>
-                <p className="text-xs text-neutral-500">Correct V2 BOM aliases</p>
-              </div>
-            </Link>
-
-            <Link to="/inventory/stock-correction" className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200 hover:border-emerald-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-emerald-50 text-emerald-700 rounded-lg flex items-center justify-center shrink-0">
-                <Wrench size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Stock Correction</h4>
-                <p className="text-xs text-neutral-500">Correct counts and costs</p>
-              </div>
-            </Link>
-
-            <Link to="/inventory/purchase-entry" className="bg-white p-4 rounded-xl shadow-sm border border-emerald-200 hover:border-emerald-400 transition-all flex items-center gap-3">
-              <div className="w-8 h-8 bg-emerald-50 text-emerald-700 rounded-lg flex items-center justify-center shrink-0">
-                <PackagePlus size={16} />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-neutral-800">Purchase Entry</h4>
-                <p className="text-xs text-neutral-500">Post inward stock purchases</p>
-              </div>
-            </Link>
-
-          </motion.div>
-        )}
-      </motion.div>
     </div>
   );
 }

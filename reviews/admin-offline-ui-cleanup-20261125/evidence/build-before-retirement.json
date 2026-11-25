@@ -1,0 +1,25 @@
+{
+  "status": "PASS",
+  "phase": "pre-deletion",
+  "checks": [
+    {
+      "check": "typecheck",
+      "exit": 0,
+      "seconds": 7.884
+    },
+    {
+      "check": "production-build",
+      "exit": 0,
+      "seconds": 3.714
+    }
+  ],
+  "sourceSHA256": "a0cf92446f39e453ff47cb122121a7693eaa3cc05834f7478505acf68f69e9c9",
+  "sourceFiles": 270,
+  "sourceUnchangedDuringBuild": true,
+  "configurationSource": "previous locally qualified November production build",
+  "project": "coffee-bond-pos",
+  "storageBucket": "coffee-bond-pos.firebasestorage.app",
+  "productionNetworkRequests": 0,
+  "productionWrites": 0,
+  "financialSubmissions": 0
+}

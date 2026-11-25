@@ -38,20 +38,9 @@ const PurchaseEntry = lazy(() => import('./pages/inventory/PurchaseEntry'));
 const AdminHome = lazy(() => import('./pages/admin/AdminHome'));
 const StoreGstSettings = lazy(() => import('./pages/admin/StoreGstSettings'));
 const LocationManagement = lazy(() => import('./pages/admin/LocationManagement'));
-const Categories = lazy(() => import('./pages/admin/Categories'));
-const MenuItems = lazy(() => import('./pages/admin/MenuItems'));
-const InventoryItems = lazy(() => import('./pages/admin/InventoryItems'));
-const StoreInventory = lazy(() => import('./pages/admin/StoreInventory'));
-const Recipes = lazy(() => import('./pages/admin/Recipes'));
-const Seed = lazy(() => import('./pages/admin/Seed'));
-const MenuImport = lazy(() => import('./pages/admin/MenuImport'));
-const DataManagement = lazy(() => import('./pages/admin/DataManagement'));
 const StaffManagement = lazy(() => import('./pages/admin/StaffManagement'));
 const MyAccount = lazy(() => import('./pages/MyAccount'));
 const GoLiveReadiness = lazy(() => import('./pages/admin/GoLiveReadiness'));
-const Phase7AValidation = lazy(() => import('./pages/admin/Phase7AValidation'));
-const Phase7HStockCosting = lazy(() => import('./pages/admin/Phase7HStockCosting'));
-const Phase7IBomAliasCorrection = lazy(() => import('./pages/admin/Phase7IBomAliasCorrection'));
 const POSReadiness = lazy(() => import('./pages/admin/POSReadiness'));
 const ProductImages = lazy(() => import('./pages/admin/ProductImages'));
 const MenuManagementHub = lazy(() => import('./pages/admin/MenuManagementHub'));
@@ -161,25 +150,14 @@ export default function App() {
                   <Route path="/admin/locations" element={<LocationManagement />} />
                   <Route path="/admin/stores/gst" element={<StoreGstSettings />} />
                   <Route path="/admin/stores" element={<Navigate to="/admin/locations" replace />} />
-                  <Route path="/admin/categories" element={<Categories />} />
-                  <Route path="/admin/inventory" element={<InventoryItems />} />
-                  <Route path="/admin/recipes" element={<Recipes />} />
-                  <Route path="/admin/menu-import" element={<MenuImport />} />
-                  <Route path="/admin/data" element={<DataManagement />} />
-                  <Route path="/admin/phase-7a-validation" element={<Phase7AValidation />} />
-                  <Route path="/admin/phase-7h-stock-costing" element={<Phase7HStockCosting />} />
-                  <Route path="/admin/phase-7i-bom-alias-correction" element={<Phase7IBomAliasCorrection />} />
                   <Route path="/admin/pos-readiness" element={<POSReadiness />} />
                   <Route path="/admin/global-items" element={<GlobalItems />} />
                   <Route path="/admin/product-images" element={<ProductImages />} />
-                  <Route path="/admin/seed" element={<Seed />} />
                   <Route path="/admin/staff" element={<StaffManagement />} />
                 </Route>
 
                 <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'STORE_MANAGER']} />}>
                   <Route path="/settings/kot-printers" element={<KotPrinters />} />
-                  <Route path="/admin/menu" element={<MenuItems />} />
-                  <Route path="/admin/store-inventory" element={<StoreInventory />} />
                   <Route path="/admin/menu-management" element={<MenuManagementHub />} />
                   <Route path="/admin/go-live-readiness" element={<GoLiveReadiness />} />
                 </Route>

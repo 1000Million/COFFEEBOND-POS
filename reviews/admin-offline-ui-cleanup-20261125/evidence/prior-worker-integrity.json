@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "version": "v3-722894fb3cea563e4ba215c0",
+  "precachedPaths": 83,
+  "allEmittedJavaScriptAndCss": 66,
+  "brandedStandaloneManifestUnchanged": true,
+  "oneManifestLink": true,
+  "noInjectedRegistration": true,
+  "guardedWorkerOnly": true,
+  "workerSHA256": "5ddecbfd0b666c4c0a18c90699af15d57616bdf1e620a9692428b094099d6916",
+  "networkRequests": 0
+}

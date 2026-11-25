@@ -1,5 +1,7 @@
 # Current production source
 
+> **Review branch notice:** This branch contains an undeployed Admin/PWA candidate over the November snapshot. See [the scoped review](reviews/admin-offline-ui-cleanup-20261125/README.md). The deployed source is preserved at commit `4c0ad1bd904561c70d72d534f03b3ba89948fd82` on `codex/production-source-20261125-6adb2e7f34961c2c`; this candidate does not change the production versions below.
+
 The authoritative source snapshot for the November 25, 2026 Staff release is [releases/general-pwa-offline-20261125](releases/general-pwa-offline-20261125/README.md).
 
 | Deployed surface | Identity | Source |

@@ -53,6 +53,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setFirebaseUser(user);
+      // A persisted profile from a previous login is not current authorization.
+      setStaffProfile(null);
       
       if (!user) {
         setStaffProfile(null);
@@ -67,9 +69,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const profileRef = doc(db, 'users', user.uid);
       
       unsubscribeProfile = onSnapshot(profileRef, {includeMetadataChanges:true}, (docSnap) => {
-        if (docSnap.metadata.fromCache && !docSnap.exists()) {
-          setStaffProfile(null);setAuthStatus('checking-profile');return;
-        }
+        // Persistent Firestore data must not grant roles or store access on startup.
+        // Disconnected POS access is provided by the existing signed offline session.
+        // Keep an already server-verified session during a transient cache event.
+        if (docSnap.metadata.fromCache || docSnap.metadata.hasPendingWrites) return;
         if (!docSnap.exists()) {
           setStaffProfile(null);
           setAuthStatus("missing-profile");

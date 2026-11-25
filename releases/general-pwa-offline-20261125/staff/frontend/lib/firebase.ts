@@ -1,7 +1,12 @@
 /// <reference types="vite/client" />
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
-import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import {
+  connectFirestoreEmulator,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions } from "firebase/functions";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
 
@@ -60,7 +65,13 @@ export const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+// Cache reads across reloads and coordinate tabs on the same trusted till.
+// Financial offline writes still use the signed Cash journal and server reconciliation.
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+  }),
+});
 export const functions = getFunctions(app, firebaseEnv.VITE_FIREBASE_FUNCTIONS_REGION || "us-central1");
 export const storage = getStorage(app);
 
