@@ -1,0 +1,78 @@
+{
+  "status": "PASS",
+  "cases": [
+    {
+      "name": "Actual candidate Firebase module connects only to demo emulator",
+      "status": "PASS",
+      "detail": "Real SDK read; no production endpoint"
+    },
+    {
+      "name": "Persistent multi-tab cache shares fetched data with second tab",
+      "status": "PASS",
+      "detail": "Second tab had not fetched the document"
+    },
+    {
+      "name": "Persistent cached document survives full page reload with SDK network disabled",
+      "status": "PASS",
+      "detail": "Fresh Firebase instance, same synthetic browser context"
+    },
+    {
+      "name": "Remaining tab reads durable cache after peer tab closes",
+      "status": "PASS",
+      "detail": "No single-tab persistence conflict"
+    },
+    {
+      "name": "Persisted Admin profile does not authorize startup",
+      "status": "PASS",
+      "detail": "Real AuthProvider rendered with controlled snapshot metadata"
+    },
+    {
+      "name": "Locally pending profile write cannot grant privileges",
+      "status": "PASS"
+    },
+    {
+      "name": "Server-confirmed role and assigned store accepted",
+      "status": "PASS"
+    },
+    {
+      "name": "Later cached escalation cannot replace server-confirmed role",
+      "status": "PASS"
+    },
+    {
+      "name": "Cached GST snapshot is not reported as server synchronization",
+      "status": "PASS"
+    },
+    {
+      "name": "Server GST snapshot establishes sync timestamp",
+      "status": "PASS"
+    },
+    {
+      "name": "Server deactivation remains enforced",
+      "status": "PASS"
+    },
+    {
+      "name": "Account switch clears previous role and rejects cached replacement",
+      "status": "PASS"
+    },
+    {
+      "name": "Existing connection banner remains visible offline",
+      "status": "PASS"
+    },
+    {
+      "name": "Sign-out clears current profile",
+      "status": "PASS"
+    }
+  ],
+  "errors": [],
+  "blockedExternalOrigins": [],
+  "scope": "Local synthetic browser and Firestore emulator; no production access or financial transaction",
+  "limits": [
+    "Auth/profile and banner tests use controlled transport callbacks with actual React components",
+    "SDK cache tests use real demo Firestore, network disable and page reload; installed PWA shell or full browser restart not tested here"
+  ],
+  "sourceHashes": {
+    "frontend/lib/firebase.ts": "57581101b754edfb94de6834c2e4de0adb1cdc30c54327317a686f2963546c40",
+    "frontend/contexts/AuthContext.tsx": "3c8768936a2b07d97f46a5c4c731c8f54768b9020326ad8e71ce30146ef7eb87",
+    "frontend/components/ConnectionStatusBanner.tsx": "226a5077068098df5978e98708e84612e87e9f4e02c6cf33300fb65391665590"
+  }
+}

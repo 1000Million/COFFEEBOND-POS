@@ -35,7 +35,10 @@ export default function ConnectionStatusBanner() {
 
     const unsubscribe = onSnapshot(
       doc(db, 'appSettings', 'gstConfig'),
-      () => {
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        // A restored local document is not a successful server synchronization.
+        if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
         setLastFirestoreSyncAt(new Date());
         setSyncError(null);
       },

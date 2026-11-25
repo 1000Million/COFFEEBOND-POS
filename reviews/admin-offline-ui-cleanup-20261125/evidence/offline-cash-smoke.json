@@ -1,0 +1,162 @@
+{
+  "status": "PASS",
+  "scope": "Synthetic local full-app offline Cash smoke; no installed-device or physical printing qualification",
+  "startedAtUTC": "2026-11-25T10:12:02.202Z",
+  "completedAtUTC": "2026-11-25T10:12:38.940Z",
+  "cases": [
+    {
+      "test": "Real candidate online POS and guarded worker load",
+      "status": "PASS",
+      "actual": {
+        "browser": "151.0.7922.34",
+        "url": "http://127.0.0.1:54742/pos",
+        "workerReady": true
+      }
+    },
+    {
+      "test": "Normal POS prepares signed Cash snapshot and unopened occupied table",
+      "status": "PASS",
+      "actual": {
+        "store": "QA_DESIGNATED_CAFE",
+        "menuItems": 10,
+        "tables": 2,
+        "printStation": null
+      }
+    },
+    {
+      "test": "Disconnected counter checkout writes durable Cash journal and pending receipt only",
+      "status": "PASS",
+      "actual": {
+        "id": "4cd2b4e4-4f37-4124-8e7c-07946ea79d8a",
+        "total": 194.25,
+        "cashReceived": 200,
+        "status": "PENDING",
+        "emulatorEffectsUnchanged": true
+      }
+    },
+    {
+      "test": "Previously unopened occupied table accepts a local round and settles its original bill",
+      "status": "PASS",
+      "actual": {
+        "round": "3d208c6d-3686-4406-8496-548523bcc5aa",
+        "cash": "e1ec051a-e9d8-4df0-9ca2-ae269b1132a3",
+        "orderId": "TABLE_QA_INSTALLED_ORDER_SESSION",
+        "total": 572.25,
+        "emulatorEffectsUnchanged": true
+      }
+    },
+    {
+      "test": "Reconnect syncs through existing offlineCash server handler exactly once",
+      "status": "PASS",
+      "actual": {
+        "counterTotal": 194.25,
+        "originalTableTotal": 572.25,
+        "paymentsPerBill": 1,
+        "before": [
+          1,
+          1,
+          1,
+          0
+        ],
+        "after": [
+          2,
+          4,
+          4,
+          3
+        ],
+        "stock": {
+          "PREVIEW_CAPPUCCINO": 998,
+          "PREVIEW_FLAT_WHITE": 999,
+          "PREVIEW_CROISSANT": 999
+        },
+        "originalTableOrderPreserved": true,
+        "journalRecords": 3
+      }
+    },
+    {
+      "test": "Another disconnect and reconnect creates no duplicate financial, KOT or stock effects",
+      "status": "PASS",
+      "actual": {
+        "after": [
+          2,
+          4,
+          4,
+          3
+        ],
+        "paymentsPerBill": 1
+      }
+    }
+  ],
+  "sourceHashes": {
+    "frontend/App.tsx": "617c0cd8967545f4b1c3c3641c6f4c758cca21e1bb875b8ded71955151078b2a",
+    "frontend/lib/firebase.ts": "57581101b754edfb94de6834c2e4de0adb1cdc30c54327317a686f2963546c40",
+    "frontend/contexts/AuthContext.tsx": "3c8768936a2b07d97f46a5c4c731c8f54768b9020326ad8e71ce30146ef7eb87",
+    "frontend/components/ConnectionStatusBanner.tsx": "226a5077068098df5978e98708e84612e87e9f4e02c6cf33300fb65391665590",
+    "frontend/pages/admin/AdminHome.tsx": "c190a99a7788e64e8ff4b5bc480ffb578a51311d25134782ec6dc719101f9d35",
+    "public/sw.js": "ad9f55434c9ade52d765e0b6fe7439e2ade3d91f28cbf27ad36c495419bf5f4b",
+    "vite.config.ts": "cc59fb05f93710b90e3f31550ea1413784dbaae3c408e58505e11d3388b948af",
+    "package.json": "c0a131aa666b5f1eb88a051b894b0d7fe84a2556b3af946cbc429d71fa138188",
+    "package-lock.json": "6a1d32b5ef3f4e86c271e0feb578d5d6350c9a0201eded87a921724d337090c4"
+  },
+  "events": [
+    {
+      "action": "PREPARE"
+    },
+    {
+      "action": "STATUS",
+      "id": "4cd2b4e4-4f37-4124-8e7c-07946ea79d8a"
+    },
+    {
+      "action": "SYNC",
+      "id": "4cd2b4e4-4f37-4124-8e7c-07946ea79d8a"
+    },
+    {
+      "action": "STATUS",
+      "id": "3d208c6d-3686-4406-8496-548523bcc5aa"
+    },
+    {
+      "action": "SYNC",
+      "id": "3d208c6d-3686-4406-8496-548523bcc5aa"
+    },
+    {
+      "action": "STATUS",
+      "id": "e1ec051a-e9d8-4df0-9ca2-ae269b1132a3"
+    },
+    {
+      "action": "SYNC",
+      "id": "e1ec051a-e9d8-4df0-9ca2-ae269b1132a3"
+    },
+    {
+      "action": "PREPARE"
+    }
+  ],
+  "networkGates": [
+    {
+      "atUTC": "2026-11-25T10:12:35.831Z",
+      "reachable": false,
+      "terminatedTransportSockets": 8
+    },
+    {
+      "atUTC": "2026-11-25T10:12:37.224Z",
+      "reachable": true,
+      "terminatedTransportSockets": 0
+    },
+    {
+      "atUTC": "2026-11-25T10:12:38.870Z",
+      "reachable": false,
+      "terminatedTransportSockets": 8
+    },
+    {
+      "atUTC": "2026-11-25T10:12:38.886Z",
+      "reachable": true,
+      "terminatedTransportSockets": 0
+    }
+  ],
+  "pageErrors": [],
+  "blockedForeignDestinations": [
+    "https://www.google.com"
+  ],
+  "productionRequests": 0,
+  "productionWrites": 0,
+  "physicalPrints": 0
+}

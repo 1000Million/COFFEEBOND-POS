@@ -1,0 +1,46 @@
+{
+  "status": "PASS",
+  "phase": "after",
+  "baselineCommit": "4c0ad1bd904561c70d72d534f03b3ba89948fd82",
+  "checkedAt": "2026-11-25T10:16:17.359Z",
+  "retiredPageCount": 13,
+  "preservedActiveFileCount": 20,
+  "originalFixtureAssertionsPreserved": 129,
+  "preservedGuardedEntries": 10,
+  "productionOperations": 0,
+  "checks": [
+    {
+      "test": "exact retired-page inventory and source preservation",
+      "status": "PASS"
+    },
+    {
+      "test": "all active Menu Management and inventory source files preserved",
+      "status": "PASS"
+    },
+    {
+      "test": "active routes, lazy import and Admin links preserved",
+      "status": "PASS"
+    },
+    {
+      "test": "historical section and routes stay removed",
+      "status": "PASS"
+    },
+    {
+      "test": "fixture removes only obsolete path and preserves original assertions",
+      "status": "PASS"
+    },
+    {
+      "test": "no active imports of retired pages",
+      "status": "PASS"
+    },
+    {
+      "test": "no residual file references after retirement",
+      "status": "PASS"
+    },
+    {
+      "test": "verifier rejects assertion drift and revived imports",
+      "status": "PASS"
+    }
+  ],
+  "evidenceOrigin": "Observed completed local verifier output; original JSON remains on the disconnected Mac under qualification/review-20261125/retirement-after.json."
+}

@@ -1,0 +1,26 @@
+{
+  "status": "PASS",
+  "phase": "post-deletion",
+  "checks": [
+    {
+      "check": "typecheck",
+      "exit": 0,
+      "seconds": 7.771
+    },
+    {
+      "check": "production-build",
+      "exit": 0,
+      "seconds": 4.696
+    }
+  ],
+  "sourceSHA256": "db7669eb313f26209034d101067123ad9168f3beb1797ebfb0a80ccabc4ffd55",
+  "sourceFiles": 257,
+  "sourceUnchangedDuringBuild": true,
+  "configurationSource": "previous locally qualified November production build",
+  "project": "coffee-bond-pos",
+  "storageBucket": "coffee-bond-pos.firebasestorage.app",
+  "productionNetworkRequests": 0,
+  "productionWrites": 0,
+  "financialSubmissions": 0,
+  "evidenceOrigin": "Observed completed local build output; original JSON remains on the disconnected Mac under qualification/review-20261125/post-deletion/RESULT.json."
+}

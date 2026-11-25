@@ -1,0 +1,246 @@
+{
+  "manifestVersion": 1,
+  "ownerApprovedAt": "2026-07-23T08:18:37Z",
+  "source": "OWNER_APPROVED_ADD_ON_RECONCILIATION",
+  "phase1": {
+    "projectId": "coffee-bond-pos",
+    "approved": true,
+    "approvedAt": "2026-07-23T08:18:37Z",
+    "expectedSourceAssignments": 54,
+    "expectedDeferredProducts": 10,
+    "inventoryPolicy": "PRICING_ONLY_NOT_CONFIGURED"
+  },
+  "entries": [
+    {
+      "menuItemDocumentId": "36G_PROTIEN_POWER",
+      "menuProductCode": "36G_PROTIEN_POWER",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "36G_PROTEIN_POWER",
+      "approvedFinishedGoodCode": "36G_PROTEIN_POWER",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved spelling reconciliation to the canonical 36G Protein Power Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "CLASSIC_CHEESE_JAFFLE",
+      "menuProductCode": "CLASSIC_CHEESE_JAFFLE",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "CLASSIC_ZAFFLE",
+      "approvedFinishedGoodCode": "CLASSIC_ZAFFLE",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved Classic Cheese Jaffle to Classic Zaffle reconciliation.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "CORTADO_COFFEE",
+      "menuProductCode": "CORTADO_COFFEE",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "CORTADO",
+      "approvedFinishedGoodCode": "CORTADO",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved removal of the redundant Coffee suffix.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "JYB2voByMCEKAoeM4E02",
+      "menuProductCode": "Frappe",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "BOND_FRAPPE",
+      "approvedFinishedGoodCode": "BOND_FRAPPE",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Owner approved Frappe as the legacy source for Bond Frappe.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "LEMON",
+      "menuProductCode": "LEMON",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "LEMON_ICE_CREAM",
+      "approvedFinishedGoodCode": "LEMON_ICE_CREAM",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved Homemade Ice Cream flavour reconciliation.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "MACCHIATO_COFFEE",
+      "menuProductCode": "MACCHIATO_COFFEE",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "MACCHIATO",
+      "approvedFinishedGoodCode": "MACCHIATO",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved removal of the redundant Coffee suffix.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "MAGIK_TEAM_FAVORITE",
+      "menuProductCode": "MAGIK_TEAM_FAVORITE",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "MAGIK",
+      "approvedFinishedGoodCode": "MAGIK",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved removal of the Team Favorite display annotation.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "MANGO",
+      "menuProductCode": "MANGO",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "MANGO_ICE_CREAM",
+      "approvedFinishedGoodCode": "MANGO_ICE_CREAM",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved Homemade Ice Cream flavour reconciliation.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "WATERMELON",
+      "menuProductCode": "WATERMELON",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "WATERMELON_ICE_CREAM",
+      "approvedFinishedGoodCode": "WATERMELON_ICE_CREAM",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Approved Homemade Ice Cream flavour reconciliation.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "uwCiFV64ewd3R7yBpWo4",
+      "menuProductCode": "Potato_zaffle",
+      "approvedAction": "MAP_EXISTING_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": "POTATO_ONION_ZAFFLE",
+      "approvedFinishedGoodCode": "POTATO_ONION_ZAFFLE",
+      "phase1Disposition": "ASSIGN_ADD_ON_GROUP",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Owner approved the legacy Potato Zaffle source as Potato & Onion Zaffle.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "0CfjGbFFYIFGI4vO79Ff",
+      "menuProductCode": "MUSHROOM_MELT",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "MUSHROOM_MELT",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Mushroom Melt is different from The Mighty Mushroom and requires its own Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "24NO1JvhI9RsqCbqPsYb",
+      "menuProductCode": "BUTTER_COOKIE",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "BUTTER_COOKIE",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Butter Cookie must not map to the Hazelnut/Chocolate Cookie variant.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "COOKIEE",
+      "menuProductCode": "COOKIEE",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "COOKIEE",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Cookiee requires a dedicated Finished Good; its flavour must not be inferred.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "IFDpErhUy0WVcDXOe3bC",
+      "menuProductCode": "AMERICANO",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "AMERICANO",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Hot Americano must not map to Iced Americano.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "LaNfWaNX6QeAudqAl6ak",
+      "menuProductCode": "PANEER_SANDWICH",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "PANEER_SANDWICH",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Paneer Sandwich requires its own Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "Qigv6UnbBgRbKm7hBAYe",
+      "menuProductCode": "BUTTER_CROISSANT",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "BUTTER_CROISSANT",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Butter Croissant requires its own Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "V_C_BURST",
+      "menuProductCode": "V_C_BURST",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "V_C_BURST",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "V-C Burst is different from Vita-C Bliss and requires its own Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "kBUS9QlUjFcD2RgfgbfJ",
+      "menuProductCode": "ORANGE_ESPRESSO_TONIC",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "ORANGE_ESPRESSO_TONIC",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Orange Espresso Tonic must not map to Espresso Tonic.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "yLitmx6hzw4p6yBjJYhG",
+      "menuProductCode": "DOUBLE_CHOCOLATE_COOKIE",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "DOUBLE_CHOCOLATE_COOKIE",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Double Chocolate Cookie must not map to the combined Hazelnut/Chocolate Cookie.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "zU9TTITYsgKRsXOzyNBG",
+      "menuProductCode": "ALMOND_CROISSANT",
+      "approvedAction": "REQUIRE_DEDICATED_FINISHED_GOOD",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": "ALMOND_CROISSANT",
+      "phase1Disposition": "DEFERRED_MISSING_FINISHED_GOOD_DATA",
+      "exclusionReason": null,
+      "ownerApprovalNote": "Almond Croissant requires its own Finished Good.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    },
+    {
+      "menuItemDocumentId": "ALMONDS",
+      "menuProductCode": "ALMONDS",
+      "approvedAction": "EXCLUDE_LEGACY",
+      "approvedFinishedGoodDocumentId": null,
+      "approvedFinishedGoodCode": null,
+      "phase1Disposition": "EXCLUDED_LEGACY",
+      "exclusionReason": "Legacy non-sellable menu record; do not attach add-on groups.",
+      "ownerApprovalNote": "Owner explicitly excluded Almonds from add-on mapping.",
+      "approvedAt": "2026-07-23T08:18:37Z"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "status": "PASS",
+  "environment": "Node22 isolated service-worker runtime, synthetic network/cache/indexedDB; no live browser or production requests",
+  "count": 12,
+  "results": [
+    {
+      "test": "Original journal and all-client update quorum preserved byte-for-byte",
+      "status": "PASS"
+    },
+    {
+      "test": "Install caches injected lazy chunks and branded existing app shell without takeover",
+      "status": "PASS"
+    },
+    {
+      "test": "Unsettled offline journal blocks explicit worker activation",
+      "status": "PASS"
+    },
+    {
+      "test": "Any unsafe client blocks; unanimous safe clients permit activation",
+      "status": "PASS"
+    },
+    {
+      "test": "Default no-cors image uses inspectable CORS omit fetch and works from cache when offline",
+      "status": "PASS"
+    },
+    {
+      "test": "Storage metadata, foreign bucket/private paths and non-image requests bypass cache",
+      "status": "PASS"
+    },
+    {
+      "test": "JSON, private cache control and errors are displayed but never cached",
+      "status": "PASS"
+    },
+    {
+      "test": "CORS rejection falls back to original request without caching opaque output",
+      "status": "PASS"
+    },
+    {
+      "test": "Expired and future-dated image entries cannot be served as valid cache",
+      "status": "PASS"
+    },
+    {
+      "test": "Concurrent image writes maintain the 100-entry cache limit",
+      "status": "PASS"
+    },
+    {
+      "test": "Existing offline navigation fallback and customer redirect preserved",
+      "status": "PASS"
+    },
+    {
+      "test": "Mutation and reserved Firebase requests remain untouched",
+      "status": "PASS"
+    }
+  ]
+}
