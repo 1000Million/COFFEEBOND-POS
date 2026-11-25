@@ -1,0 +1,605 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import {tableKitchenProgress} from '../../lib/tables/kitchen';
+import { db } from '../../lib/firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import { KotItem, KotStatus } from '../../types';
+import { Loader2, Clock, X, ChefHat, Coffee, Store as StoreIcon, Search, AlertTriangle } from 'lucide-react';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { useKotRealtime } from '../../lib/useKotRealtime';
+import { OrderAlertBanner } from '../../lib/orderAlerts';
+
+const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+
+const toDate = (value: any): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (value.toDate) return value.toDate();
+  return null;
+};
+
+const isToday = (date: Date | null) => {
+  if (!date) return false;
+  const today = new Date();
+  return date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+};
+
+const isStaleKot = (item: KotItem, now: Date) => {
+  const createdAt = toDate(item.createdAt);
+  return Boolean(createdAt && now.getTime() - createdAt.getTime() > STALE_THRESHOLD_MS);
+};
+
+const shortOrderNumber = (orderNumber: string) => orderNumber.split('-').slice(2).join('-') || orderNumber;
+
+const timeSince = (date: Date) => {
+  const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+  let interval = seconds / 31536000;
+  if (interval > 1) return Math.floor(interval) + "y";
+  interval = seconds / 2592000;
+  if (interval > 1) return Math.floor(interval) + "m";
+  interval = seconds / 86400;
+  if (interval > 1) return Math.floor(interval) + "d";
+  interval = seconds / 3600;
+  if (interval > 1) return Math.floor(interval) + "h";
+  interval = seconds / 60;
+  if (interval > 1) return Math.floor(interval) + "m";
+  return Math.floor(seconds) + "s";
+};
+
+export default function KOTScreen({ station }: { station: "BARISTA" | "KITCHEN" }) {
+  const { staffProfile } = useAuth();
+  const { items, stores, loading, error: readError } = useKotRealtime('ACTIVE', station);
+  const [selectedStoreId, setSelectedStoreId] = useState<string>('ALL');
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
+  const [now, setNow] = useState(new Date());
+  const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
+  const [ageFilter, setAgeFilter] = useState<'ALL' | 'TODAY' | 'STALE'>('TODAY');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTicketOrder, setSelectedTicketOrder] = useState<string | null>(null);
+  const [cancellingItem, setCancellingItem] = useState<KotItem | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+
+  // refresh time every minute
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (stores.length === 1) setSelectedStoreId(current => current === 'ALL' ? stores[0].id : current);
+  }, [stores]);
+
+  const displayedItems = useMemo(() => {
+    let list = [...items];
+    
+    if (selectedStoreId !== 'ALL') {
+      list = list.filter(item => item.storeId === selectedStoreId);
+    }
+    
+    if (selectedStatus !== 'ALL') {
+      list = list.filter(item => item.status === selectedStatus);
+    }
+
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(item => 
+        item.orderNumber.toLowerCase().includes(q) || 
+        item.itemName.toLowerCase().includes(q)
+      );
+    }
+
+    if (ageFilter === 'TODAY') {
+      list = list.filter(item => isToday(toDate(item.createdAt)));
+    }
+
+    if (ageFilter === 'STALE') {
+      list = list.filter(item => isStaleKot(item, now));
+    }
+
+    // Sort oldest first so they get fulfilled first
+    list.sort((a, b) => {
+       const aTime = a.createdAt ? (a.createdAt.toMillis ? a.createdAt.toMillis() : 0) : 0;
+       const bTime = b.createdAt ? (b.createdAt.toMillis ? b.createdAt.toMillis() : 0) : 0;
+       return aTime - bTime;
+    });
+    return list;
+  }, [items, selectedStoreId, selectedStatus, searchQuery, ageFilter, now]);
+
+  const staleTicketCount = useMemo(() => {
+    const activeStaleOrders = new Set<string>();
+    items.forEach(item => {
+      if (selectedStoreId !== 'ALL' && item.storeId !== selectedStoreId) return;
+      if (isStaleKot(item, now)) activeStaleOrders.add(item.orderNumber);
+    });
+    return activeStaleOrders.size;
+  }, [items, selectedStoreId, now]);
+
+  // Group by orderNumber for display
+  const groupedTickets = useMemo(() => {
+    const map = new Map<string, KotItem[]>();
+    displayedItems.forEach(item => {
+      if (!map.has(item.orderNumber)) map.set(item.orderNumber, []);
+      map.get(item.orderNumber)!.push(item);
+    });
+    // Return array of entries
+    return Array.from(map.entries());
+  }, [displayedItems]);
+
+
+  const canUpdateStatus = staffProfile?.role === 'ADMIN'
+    || staffProfile?.role === 'STORE_MANAGER'
+    || staffProfile?.role === 'CASHIER'
+    || staffProfile?.role === station;
+  const canCancel = canUpdateStatus;
+
+  // The client writes only the station-scoped KOT. A secured Firestore trigger
+  // aggregates every sibling task into the commercial line and public status.
+  const handleStatusChange = async (item: KotItem, newStatus: KotStatus, reason?: string) => {
+    if (!canUpdateStatus) {
+      setError("You don't have permission to update this ticket.");
+      return;
+    }
+    if (!item.id) return;
+    if (savingItemId) return;
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    const endCriticalOperation = beginCriticalOperation();
+    setSavingItemId(item.id);
+    setFeedback('');
+    setError('');
+
+    try {
+      const itemRef = doc(db, 'kotItems', item.id);
+      const updateData: any = {
+        ...tableKitchenProgress(item),
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      };
+      
+      if (newStatus === 'READY' && item.status !== 'READY') {
+        updateData.readyAt = serverTimestamp();
+      }
+
+      if (newStatus === 'CANCELLED') {
+        updateData.cancelledAt = serverTimestamp();
+        updateData.cancelledBy = staffProfile?.uid || null;
+        updateData.cancelledByName = staffProfile?.name || staffProfile?.displayName || null;
+        updateData.cancellationReason = reason || 'No reason provided';
+      }
+
+      await updateDoc(itemRef, updateData);
+
+      setFeedback(`${item.itemName} updated to ${newStatus.replace('_', ' ').toLowerCase()}.`);
+      if (newStatus === 'READY' && selectedTicketOrder === item.orderNumber) {
+        const remainingInTicket = items.filter(i => (
+          i.orderNumber === item.orderNumber
+          && i.id !== item.id
+          && i.status !== 'READY'
+          && i.status !== 'SERVED'
+          && i.status !== 'CANCELLED'
+        ));
+        if (remainingInTicket.length === 0) setSelectedTicketOrder(null);
+      }
+    } catch (e: any) {
+       console.error("Error updating KOT status", e);
+       setError(e.message || 'Failed to update KOT ticket.');
+    } finally {
+       setSavingItemId(null);
+       endCriticalOperation();
+    }
+  };
+
+  const openCancelDialog = (item: KotItem) => {
+    setCancellingItem(item);
+    setCancelReason('');
+    setError('');
+    setFeedback('');
+  };
+
+  const executeCancel = async () => {
+    if (!cancellingItem) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setError('Cancellation reason is required.');
+      return;
+    }
+    await handleStatusChange(cancellingItem, 'CANCELLED', reason);
+    setCancellingItem(null);
+    setCancelReason('');
+  };
+
+  const nextStatusInfo = (status: KotStatus): { label: string, next: KotStatus, color: string } | null => {
+    if (status === 'PENDING') return { label: 'Start Preparing', next: 'PREPARING', color: 'bg-amber-500 hover:bg-amber-600' };
+    if (status === 'PREPARING') return { label: 'Mark Ready', next: 'READY', color: 'bg-emerald-600 hover:bg-emerald-700' };
+    return null;
+  };
+
+  const selectedTicketItems = useMemo(() => {
+    if (!selectedTicketOrder) return [];
+    return items
+      .filter(item => item.orderNumber === selectedTicketOrder && item.station === station)
+      .sort((a, b) => {
+        const aTime = toDate(a.createdAt)?.getTime() || 0;
+        const bTime = toDate(b.createdAt)?.getTime() || 0;
+        return aTime - bTime;
+      });
+  }, [items, selectedTicketOrder, station]);
+  const selectedTicketFirst = selectedTicketItems[0];
+
+  return (
+    <div className="max-w-7xl mx-auto w-full min-w-0 p-4 md:p-8">
+       <div className="flex min-w-0 flex-col md:flex-row md:items-center justify-between mb-5 gap-4">
+         <div className="flex min-w-0 items-center gap-3">
+           {station === 'BARISTA' ? <Coffee size={30} className="text-[#5c4033]" /> : <ChefHat size={30} className="text-[#5c4033]" />}
+           <div>
+             <h1 className="text-2xl font-black tracking-tight text-neutral-900 sm:text-3xl">{station === 'BARISTA' ? 'Barista Station' : 'Kitchen KOT'}</h1>
+             <p className="text-sm font-medium text-neutral-500">Live {station === 'BARISTA' ? 'drink' : 'food'} production tickets</p>
+           </div>
+         </div>
+
+         <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
+           <div className="relative w-full sm:w-auto">
+             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={18} />
+             <input
+                type="text"
+                placeholder="Search order or item..."
+                className="w-full pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none font-medium shadow-sm transition-shadow sm:w-48"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+             />
+           </div>
+
+           <select
+              className="w-full px-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow sm:w-auto sm:min-w-[120px]"
+              value={selectedStatus}
+              onChange={e => setSelectedStatus(e.target.value)}
+           >
+              <option value="ALL">All Active</option>
+              <option value="PENDING">Pending</option>
+              <option value="PREPARING">Preparing</option>
+           </select>
+
+           {(staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER') && (
+             <div className="relative w-full sm:w-auto">
+               <StoreIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={18} />
+               <select
+                  className="w-full pl-10 pr-4 py-2 bg-white border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] outline-none appearance-none font-medium shadow-sm transition-shadow sm:w-auto sm:min-w-[160px]"
+                  value={selectedStoreId}
+                  onChange={e => setSelectedStoreId(e.target.value)}
+               >
+                  <option value="ALL">All Accessible Stores</option>
+                  {stores.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+               </select>
+             </div>
+           )}
+         </div>
+       </div>
+
+       <OrderAlertBanner
+         pendingCount={items.filter(item => item.station === station && item.status === 'PENDING'
+           && (selectedStoreId === 'ALL' || item.storeId === selectedStoreId)).length}
+         action="Use Start Preparing on each pending item to acknowledge it. Check All Active if a filter hides an item."
+       />
+
+       <div className="mb-5 flex flex-col gap-3 rounded-2xl border border-[#eadfd2] bg-[#fffaf5] p-3 sm:flex-row sm:items-center sm:justify-between">
+         <div className="flex flex-wrap items-center gap-2">
+           {[
+             { id: 'ALL', label: 'All Active' },
+             { id: 'TODAY', label: 'Today' },
+             { id: 'STALE', label: 'Stale' },
+           ].map(filter => (
+             <button
+               key={filter.id}
+               type="button"
+               onClick={() => setAgeFilter(filter.id as 'ALL' | 'TODAY' | 'STALE')}
+               className={`rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-wide transition-colors ${
+                 ageFilter === filter.id
+                   ? 'bg-[#3b2418] text-white shadow-sm'
+                   : 'bg-white text-[#5c4033] ring-1 ring-[#eadfd2] hover:bg-[#f6eee6]'
+               }`}
+             >
+               {filter.label}
+             </button>
+           ))}
+         </div>
+         <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-black ${
+           staleTicketCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+         }`}>
+           <AlertTriangle size={14} />
+           {staleTicketCount} stale ticket{staleTicketCount === 1 ? '' : 's'}
+         </div>
+       </div>
+
+       {(feedback || error || readError) && (
+         <div className={`mb-5 rounded-2xl px-4 py-3 text-sm font-bold ${
+           (error || readError) ? 'border border-red-200 bg-red-50 text-red-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+         }`}>
+           {error || readError || feedback}
+         </div>
+       )}
+
+       {loading && displayedItems.length === 0 ? (
+         <div className="flex items-center justify-center p-12">
+            <Loader2 size={32} className="animate-spin text-[#5c4033]" />
+         </div>
+       ) : readError && items.length === 0 ? null : groupedTickets.length === 0 ? (
+         <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-12 text-center">
+            {station === 'BARISTA' ? <Coffee size={48} className="mx-auto mb-4 text-neutral-300" /> : <ChefHat size={48} className="mx-auto mb-4 text-neutral-300" />}
+            <h3 className="text-xl font-bold text-neutral-400">No active {station.toLowerCase()} tickets.</h3>
+            <p className="text-neutral-500 text-sm mt-2">All caught up! Time to brew some magic.</p>
+         </div>
+       ) : (
+         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start">
+            {groupedTickets.map(([orderNumber, ticketItems]) => {
+               // Render a ticket card for each order
+               const first = ticketItems[0];
+               const timeCreated = toDate(first.createdAt) || new Date();
+               const ticketIsStale = ticketItems.some(item => isStaleKot(item, now));
+               const pendingCount = ticketItems.filter(item => item.status === 'PENDING').length;
+               const preparingCount = ticketItems.filter(item => item.status === 'PREPARING').length;
+               
+               return (
+                 <div
+                   key={orderNumber}
+                   role="button"
+                   tabIndex={0}
+                   onClick={() => setSelectedTicketOrder(orderNumber)}
+                   onKeyDown={event => {
+                     if (event.key === 'Enter' || event.key === ' ') {
+                       event.preventDefault();
+                       setSelectedTicketOrder(orderNumber);
+                     }
+                   }}
+                   className={`flex min-w-0 cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#5c4033] ${
+                   ticketIsStale ? 'border-red-300 ring-2 ring-red-100' : 'border-[#eadfd2]'
+                 }`}>
+                    <div className="border-b border-dashed border-[#eadfd2] bg-[#fffaf5] p-3">
+                       <div className="mb-2 flex items-start justify-between gap-2">
+                         <div className="min-w-0">
+                           <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#9a6a3a]">Order</p>
+                           <h3 className="min-w-0 break-words font-mono text-lg font-black tracking-tight text-neutral-950">{shortOrderNumber(orderNumber)}</h3>
+                         </div>
+                         <span className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black ${
+                           ticketIsStale ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-600'
+                         }`}>
+                           <Clock size={12} /> {timeSince(timeCreated)}
+                         </span>
+                       </div>
+                       
+                       <div className="flex flex-wrap gap-1.5">
+                         {ticketIsStale && <span className="rounded-full bg-red-600 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-white">Stale</span>}
+                         <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[#795C34] ring-1 ring-[#eadfd2]">{first.orderType.replace('_', ' ')}</span>
+                         {first.tableNumber && <span className="rounded-full bg-yellow-100 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-yellow-800">Table {first.tableNumber}</span>}
+                         <span className="rounded-full bg-neutral-100 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-neutral-600">{ticketItems.length} item{ticketItems.length === 1 ? '' : 's'}</span>
+                       </div>
+                       <div className="mt-2 grid grid-cols-1 gap-1 text-xs font-bold text-neutral-600">
+                         <p className="truncate">{first.storeName}</p>
+                         {first.customerName && <p className="truncate">Guest: {first.customerName}</p>}
+                         <p className="text-neutral-500">{pendingCount} pending · {preparingCount} preparing</p>
+                         <p className="text-[11px] font-black uppercase tracking-wide text-[#9a6a3a]">Tap ticket for actions</p>
+                       </div>
+                    </div>
+
+                    <div className="flex-1 p-0">
+                       {ticketItems.map((item, idx) => {
+                          const action = nextStatusInfo(item.status);
+                          const itemIsStale = isStaleKot(item, now);
+                          const isSaving = savingItemId === item.id;
+                          return (
+                            <div key={item.id} className={`p-3 ${idx !== ticketItems.length - 1 ? 'border-b border-neutral-100' : ''}`}>
+                               <div className="mb-2 flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1 pr-2">
+                                    <div className="flex items-start gap-2">
+                                      <span className="rounded-lg bg-[#3b2418] px-2 py-1 font-mono text-sm font-black text-white">{item.quantity}x</span>
+                                      <div className="min-w-0">
+                                        <p className="break-words text-sm font-black leading-snug text-neutral-900">{item.itemName}</p>
+                                        <p className="break-words text-[11px] font-bold uppercase tracking-wide text-neutral-400">{item.itemCode}</p>
+                                        {(item.addOns || []).map(addOn => (
+                                          <p key={`${addOn.groupId}-${addOn.optionId}`} className="mt-0.5 break-words pl-2 text-xs font-bold text-[#795C34]">
+                                            + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                                          </p>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-widest ${
+                                        item.status === 'PENDING' ? 'bg-neutral-100 text-neutral-500' :
+                                        item.status === 'PREPARING' ? 'bg-yellow-100 text-yellow-700' : ''
+                                      }`}>{item.status}</span>
+                                      {itemIsStale && <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-red-700">STALE</span>}
+                                    </div>
+                                  </div>
+                               </div>
+
+                               <div className="flex gap-2 mt-3">
+                                 {action && canUpdateStatus && (
+                                   <button 
+                                     onClick={event => {
+                                       event.stopPropagation();
+                                       handleStatusChange(item, action.next);
+                                     }}
+                                     disabled={Boolean(savingItemId)}
+                                     className={`min-h-[44px] flex-1 rounded-xl px-3 py-2 text-sm font-black text-white transition-colors ${action.color} disabled:opacity-50`}
+                                   >
+                                      {isSaving ? 'Saving...' : action.label}
+                                    </button>
+                                 )}
+                                 {canCancel && !(item as any).tableSessionId && item.status !== 'CANCELLED' && item.status !== 'SERVED' && (
+                                    <button 
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        openCancelDialog(item);
+                                      }}
+                                      disabled={Boolean(savingItemId)}
+                                      className="min-h-[44px] rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-100 disabled:opacity-50"
+                                    >
+                                       Cancel
+                                    </button>
+                                 )}
+                               </div>
+                            </div>
+                          );
+                       })}
+                    </div>
+                 </div>
+               );
+            })}
+         </div>
+       )}
+
+       {selectedTicketFirst && (
+         <div className="fixed inset-0 z-50 flex items-end bg-black/35 p-0 sm:items-center sm:justify-center sm:p-4">
+           <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white shadow-2xl sm:max-w-2xl sm:rounded-3xl">
+             <div className="sticky top-0 z-10 border-b border-[#eadfd2] bg-[#fffaf5] p-4">
+               <div className="flex items-start justify-between gap-3">
+                 <div className="min-w-0">
+                   <p className="text-xs font-black uppercase tracking-[0.2em] text-[#9a6a3a]">{station === 'BARISTA' ? 'Barista Actions' : 'Kitchen Actions'}</p>
+                   <h2 className="break-words font-mono text-2xl font-black text-neutral-950">{shortOrderNumber(selectedTicketFirst.orderNumber)}</h2>
+                   <p className="text-sm font-bold text-neutral-600">
+                     {selectedTicketFirst.orderType.replace('_', ' ')}
+                     {selectedTicketFirst.tableNumber ? ` · Table ${selectedTicketFirst.tableNumber}` : ''}
+                     {selectedTicketFirst.customerName ? ` · ${selectedTicketFirst.customerName}` : ''}
+                   </p>
+                 </div>
+                 <button
+                   type="button"
+                   onClick={() => setSelectedTicketOrder(null)}
+                   className="rounded-full bg-white p-2 text-neutral-500 ring-1 ring-[#eadfd2] hover:bg-[#f6eee6]"
+                   aria-label="Close ticket actions"
+                 >
+                   <X size={18} />
+                 </button>
+               </div>
+               <div className="mt-3 flex flex-wrap gap-2 text-xs font-black uppercase tracking-wide">
+                 <span className="rounded-full bg-white px-2.5 py-1 text-[#5c4033] ring-1 ring-[#eadfd2]">{selectedTicketFirst.storeName}</span>
+                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-neutral-600">{selectedTicketItems.length} routed item{selectedTicketItems.length === 1 ? '' : 's'}</span>
+                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-neutral-600">
+                   {timeSince(toDate(selectedTicketFirst.createdAt) || new Date())} old
+                 </span>
+               </div>
+             </div>
+
+             <div className="space-y-3 p-4">
+               {selectedTicketItems.map(item => {
+                 const action = nextStatusInfo(item.status);
+                 const itemIsStale = isStaleKot(item, now);
+                 const isSaving = savingItemId === item.id;
+                 return (
+                   <div key={item.id} className="rounded-2xl border border-[#eadfd2] bg-white p-4">
+                     <div className="flex items-start justify-between gap-3">
+                       <div className="min-w-0">
+                         <div className="flex items-start gap-2">
+                           <span className="rounded-lg bg-[#3b2418] px-2 py-1 font-mono text-sm font-black text-white">{item.quantity}x</span>
+                           <div className="min-w-0">
+                             <p className="break-words text-lg font-black text-neutral-950">{item.itemName}</p>
+                             <p className="break-words text-xs font-bold uppercase tracking-wide text-neutral-400">{item.itemCode}</p>
+                             {(item.addOns || []).map(addOn => (
+                               <p key={`${addOn.groupId}-${addOn.optionId}`} className="mt-0.5 break-words pl-2 text-sm font-bold text-[#795C34]">
+                                 + {addOn.optionName}{addOn.quantity > 1 ? ` × ${addOn.quantity}` : ''}
+                               </p>
+                             ))}
+                           </div>
+                         </div>
+                       </div>
+                       <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-black ${
+                         item.status === 'PENDING' ? 'bg-neutral-100 text-neutral-600' :
+                         item.status === 'PREPARING' ? 'bg-yellow-100 text-yellow-700' :
+                         'bg-emerald-100 text-emerald-700'
+                       }`}>
+                         {item.status}
+                       </span>
+                     </div>
+                     {itemIsStale && (
+                       <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+                         STALE: this ticket is older than 2 hours. Resolve manually; it was not auto-completed.
+                       </p>
+                     )}
+                     <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                       {action && canUpdateStatus && (
+                         <button
+                           type="button"
+                           onClick={() => handleStatusChange(item, action.next)}
+                           data-requires-online="true"
+                           disabled={Boolean(savingItemId)}
+                           className={`min-h-[52px] flex-1 rounded-2xl px-4 py-3 text-base font-black text-white transition-colors ${action.color} disabled:opacity-50`}
+                         >
+                           {isSaving ? 'Saving...' : action.label}
+                         </button>
+                       )}
+                       {canCancel && !(item as any).tableSessionId && item.status !== 'CANCELLED' && item.status !== 'SERVED' && (
+                         <button
+                           type="button"
+                           onClick={() => openCancelDialog(item)}
+                           disabled={Boolean(savingItemId)}
+                           className="min-h-[52px] rounded-2xl bg-red-50 px-4 py-3 text-base font-black text-red-700 ring-1 ring-red-200 transition-colors hover:bg-red-100 disabled:opacity-50 sm:w-36"
+                         >
+                           Cancel
+                         </button>
+                       )}
+                     </div>
+                   </div>
+                 );
+               })}
+             </div>
+           </div>
+         </div>
+       )}
+
+       {cancellingItem && (
+         <div className="fixed inset-0 z-[60] flex items-end bg-black/40 p-0 sm:items-center sm:justify-center sm:p-4">
+           <div className="w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl">
+             <div className="mb-4 flex items-start justify-between gap-3">
+               <div>
+                 <p className="text-xs font-black uppercase tracking-[0.2em] text-red-600">Cancel Ticket</p>
+                 <h2 className="text-xl font-black text-neutral-950">{cancellingItem.itemName}</h2>
+                 <p className="text-sm font-bold text-neutral-500">{shortOrderNumber(cancellingItem.orderNumber)} · {cancellingItem.station}</p>
+               </div>
+               <button
+                 type="button"
+                 onClick={() => setCancellingItem(null)}
+                 className="rounded-full bg-neutral-100 p-2 text-neutral-500 hover:bg-neutral-200"
+                 aria-label="Close cancellation"
+               >
+                 <X size={18} />
+               </button>
+             </div>
+             <label className="mb-2 block text-sm font-black text-neutral-700" htmlFor="kot-cancel-reason">
+               Cancellation reason
+             </label>
+             <textarea
+               id="kot-cancel-reason"
+               value={cancelReason}
+               onChange={event => setCancelReason(event.target.value)}
+               className="min-h-28 w-full rounded-2xl border border-[#eadfd2] p-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-[#5c4033]"
+               placeholder="Example: duplicate ticket, customer cancelled, item unavailable..."
+             />
+             <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+               <button
+                 type="button"
+                 onClick={() => setCancellingItem(null)}
+                 className="min-h-[48px] rounded-2xl px-4 py-3 font-black text-neutral-600 hover:bg-neutral-100"
+               >
+                 Keep Ticket
+               </button>
+               <button
+                 type="button"
+                 onClick={executeCancel}
+                 data-requires-online="true"
+                 disabled={Boolean(savingItemId)}
+                 className="min-h-[48px] rounded-2xl bg-red-600 px-4 py-3 font-black text-white hover:bg-red-700 disabled:opacity-50"
+               >
+                 {savingItemId ? 'Cancelling...' : 'Cancel Ticket'}
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
+    </div>
+  );
+}

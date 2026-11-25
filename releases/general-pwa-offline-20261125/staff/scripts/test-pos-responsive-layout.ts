@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+// The same responsive contract now spans the composition page and its UI components.
+const source = ['frontend/pages/pos/POSHome.tsx', ...['MenuGrid', 'CartPanel', 'PaymentPanel'].map(name => `frontend/components/pos/${name}.tsx`)]
+  .map(file => readFileSync(resolve(file), 'utf8')).join('\n');
+
+assert.match(
+  source,
+  /grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4/,
+  'product cards must scale from one mobile column to four wide-desktop columns',
+);
+assert.doesNotMatch(
+  source,
+  /flex min-w-max items-center gap-2 whitespace-nowrap/,
+  'the top POS controls must not force page-level horizontal overflow',
+);
+assert.match(
+  source,
+  /h-\[100dvh\][^\n]+lg:h-\[calc\(100dvh-92px\)\]/,
+  'the mobile POS root must fill the viewport instead of leaving a blank bottom band',
+);
+assert.match(
+  source,
+  /w-full min-w-0 max-w-full bg-transparent[^\n]+md:min-w-\[180px\]/,
+  'the store selector must be fluid on mobile and retain its desktop minimum width',
+);
+assert.match(
+  source,
+  /grid w-full min-w-0 grid-cols-3[^\n]+md:flex md:w-auto/,
+  'service-mode controls must fit the mobile viewport and return to a desktop row',
+);
+assert.match(
+  source,
+  /flex min-w-0 flex-col gap-1\.5 md:flex-row md:flex-wrap md:items-center md:gap-2/,
+  'store, service, and secondary controls must use separate mobile rows',
+);
+assert.match(
+  source,
+  /xl:grid-cols-\[minmax\(0,1fr\)_420px\]/,
+  'the persistent Current Sale column must start only at the desktop breakpoint',
+);
+assert.match(
+  source,
+  /translate-y-full xl:translate-y-0/,
+  'the Current Sale panel must remain a drawer below the desktop breakpoint',
+);
+assert.match(
+  source,
+  /grid w-full min-w-0 grid-cols-1 gap-2 md:grid-cols-2 xl:hidden/,
+  'the compact category selector must remain visible on mobile, tablet, and laptop widths',
+);
+assert.match(
+  source,
+  /flex flex-wrap gap-1\.5/,
+  'payment methods must wrap instead of forcing horizontal overflow',
+);
+assert.match(
+  source,
+  /grid min-w-0 grid-cols-1 gap-1\.5 md:grid-cols-\[minmax\(0,1fr\)_minmax\(0,1fr\)_auto\]/,
+  'split-payment controls must stack below 768px and stay bounded on larger screens',
+);
+assert.match(
+  source,
+  /sm:p-4 xl:hidden/,
+  'the sticky cart summary must remain available below the desktop breakpoint',
+);
+assert.match(
+  source,
+  /!table\.enabled \? 'pb-28' : 'pb-3'/,
+  'the menu pane must reserve space for the mobile cart bar even when the sale is empty',
+);
+assert.match(
+  source,
+  /min-h-\[108px\][^\n]+sm:min-h-\[112px\]/,
+  'product cards must stay compact on phone widths while preserving desktop readability',
+);
+assert.match(
+  source,
+  /'Current Sale'[\s\S]*cartItemCount/,
+  'the sticky cart action must identify Current Sale and show its item count',
+);
+assert.match(
+  source,
+  /const dismissMobileKeyboard = \(\) =>[\s\S]*document\.activeElement\.blur\(\)/,
+  'POS must provide a local keyboard dismissal helper',
+);
+assert.match(
+  source,
+  /isSearchInputFocused &&[\s\S]*Hide Keyboard/,
+  'focused mobile search must expose a Hide Keyboard action',
+);
+assert.match(
+  source,
+  /onKeyDown=\{blurInputOnEnter\}[\s\S]*enterKeyHint="search"/,
+  'search Enter must dismiss the focused field',
+);
+assert.match(
+  source,
+  /matchMedia\('\(max-width: 1279px\)'\)[\s\S]*event\.stopPropagation\(\)/,
+  'mobile Enter dismissal must preserve the existing desktop Enter-to-add shortcut',
+);
+assert.match(
+  source,
+  /inputMode="decimal"[\s\S]*enterKeyHint="done"[\s\S]*onKeyDown=\{blurInputOnEnter\}/,
+  'numeric POS inputs must use a done keyboard action',
+);
+
+console.log('POS responsive layout tests passed.');

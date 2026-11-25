@@ -1,0 +1,34 @@
+// Execute existing inventory persistence slices against an atomic in-memory transaction.
+// No Firebase initialization, credentials, network, or production mutation.
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {createRequire} from 'node:module';
+import vm from 'node:vm';
+const require=createRequire(import.meta.url),root=resolve(import.meta.dirname,'..');
+const resolver=require(resolve(root,'functions/inventoryStoreResolver.js'));
+const source=readFileSync(resolve(root,'scripts/backfill-pending-bom-consumption.mjs'),'utf8');
+const backfill=vm.runInNewContext(source.slice(source.indexOf('const UOM_ALIASES'),source.indexOf('async function loadNegativeBalances'))+'; ({planBackfillForPending,applyBackfillPlan})',{...resolver,FieldValue:{serverTimestamp:()=> 'LOCAL_TIMESTAMP'},process:{argv:[]},console});
+function database(initial,{client=false}={}){const records=new Map(Object.entries(structuredClone(initial)));let seq=0,queue=Promise.resolve();const writes=[];const snap=(p,m)=>({id:p.split('/').at(-1),exists:client?()=>m.has(p):m.has(p),data:()=>structuredClone(m.get(p))});const ref=p=>({id:p.split('/').at(-1),path:p,get:async()=>snap(p,records)});const db={collection:p=>({doc:(id='AUTO_'+(++seq))=>ref(p+'/'+id)}),async runTransaction(fn){const execute=async()=>{const copy=new Map(records),log=[];const tx={get:async r=>snap(r.path,copy),update(r,v){assert(copy.has(r.path));copy.set(r.path,{...copy.get(r.path),...v});log.push(r.path);},set(r,v,opt){copy.set(r.path,opt?.merge?{...copy.get(r.path),...v}:v);log.push(r.path);}};const result=await fn(tx);records.clear();for(const x of copy)records.set(...x);writes.push(...log);return result;};const result=queue.then(execute);queue=result.catch(()=>{});return result;}};return{db,records,writes,ref};}
+const store={id:'NOIDA_29',code:'NOIDA_29',name:'Noida29'};
+const pending={storeId:store.id,inventoryStoreId:store.id,logicalSalesStoreId:store.id,orderId:'ORDER_LOCAL',orderNumber:'LOCAL',orderLineId:'LINE_1',finishedGoodCode:'ALMOND_MILK',finishedGoodName:'Almond Milk',quantitySold:1,status:'PENDING_BOM',source:'POS'};
+// Synthetic quantity tests the engine, never asserts an approved Almond Milk recipe.
+const bom=[{componentType:'RAW_INGREDIENT',componentCode:'RAW_FIXTURE',quantity:150,uom:'ML'}];
+function harness(extra={}){return database({'pendingInventoryConsumption/PENDING_LOCAL':pending,'orders/ORDER_LOCAL':{status:'COMPLETED',storeId:store.id,orderType:'TAKEAWAY'},['stores/'+store.id]:store,'finishedGoods/ALMOND_MILK':{code:'ALMOND_MILK',bom,bomVersion:1},'rawIngredients/RAW_FIXTURE':{name:'Synthetic ingredient',usageUOM:'ML',costPerUsageUnit:1},'storeStock/NOIDA_29_RAW_INGREDIENT_RAW_FIXTURE':{currentStock:1000,uom:'ML'},...extra});}
+async function plan(h){return backfill.planBackfillForPending(h.db,{id:'PENDING_LOCAL',ref:h.ref('pendingInventoryConsumption/PENDING_LOCAL'),data:h.records.get('pendingInventoryConsumption/PENDING_LOCAL')});}
+let passed=0,failed=0;async function test(name,fn){try{await fn();passed++;console.log('PASS '+name);}catch(e){failed++;console.error('FAIL '+name+': '+e.message);}}
+await test('PENDING_READY_FOR_RECONCILE',async()=>{const p=await plan(harness());assert.equal(p.action,'READY_FOR_BACKFILL');assert.equal(p.movements[0].quantity,150);});
+await test('MISSING_BOM_REMAINS_PENDING',async()=>{const p=await plan(harness({'finishedGoods/ALMOND_MILK':{bom:[]}}));assert.equal(p.action,'PENDING_BOM');assert.equal(p.movements.length,0);});
+await test('MISSING_COMPONENT_REMAINS_PENDING',async()=>{const p=await plan(harness({'finishedGoods/ALMOND_MILK':{bom:[{...bom[0],componentCode:'UNKNOWN'}]}}));assert.equal(p.action,'PENDING_BOM');assert.equal(p.movements.length,0);});
+await test('RECONCILE_EXACTLY_ONCE_AND_ALREADY_APPLIED_BLOCKED',async()=>{const h=harness(),p=await plan(h);await Promise.all([backfill.applyBackfillPlan(h.db,p),backfill.applyBackfillPlan(h.db,p)]);const count=h.writes.length;await backfill.applyBackfillPlan(h.db,p);assert.equal(h.writes.length,count);assert.equal(h.records.get('pendingInventoryConsumption/PENDING_LOCAL').status,'APPLIED');assert.equal(h.records.get('storeStock/NOIDA_29_RAW_INGREDIENT_RAW_FIXTURE').currentStock,850);assert.equal([...h.records.keys()].filter(p=>p.startsWith('stockMovements/')).length,1);});
+await test('VOID_BEFORE_RECONCILE_CANCELS_WITHOUT_STOCK',async()=>{const h=harness(),p=await plan(h);h.records.set('orders/ORDER_LOCAL',{status:'VOIDED',storeId:store.id});await backfill.applyBackfillPlan(h.db,p);assert.equal(h.records.get('pendingInventoryConsumption/PENDING_LOCAL').status,'CANCELLED');assert.equal(h.records.get('storeStock/NOIDA_29_RAW_INGREDIENT_RAW_FIXTURE').currentStock,1000);assert.equal([...h.records.keys()].filter(p=>p.startsWith('stockMovements/')).length,0);});
+// Run the exact existing inventory part of the void transaction, excluding payment/report code.
+const voidSource=readFileSync(resolve(root,'frontend/pages/pos/RunningOrders.tsx'),'utf8');
+const helpers=voidSource.slice(voidSource.indexOf('function sanitizeFirestoreId'),voidSource.indexOf('function formatMoney'));
+const inventoryBody=voidSource.slice(voidSource.indexOf('        const stockTargets = saleMovements.map'),voidSource.indexOf('        pendingSnap.docs.forEach'));
+const {transformSync}=require('esbuild');
+const js=transformSync(helpers+'\n(async function reverse(transaction,saleMovements,freshOrder){'+inventoryBody+'})',{loader:'ts',format:'cjs'}).code;
+const reverse=vm.runInNewContext(js,{doc:(_,c,id)=>({path:c+'/'+id,id}),db:{},roundStock:v=>Math.round(v*10000)/10000,serverTimestamp:()=> 'LOCAL_TIMESTAMP',inventoryStore:store,orderStore:store,voidReason:'LOCAL_QA',auth:{currentUser:{uid:'LOCAL'}},staffProfile:{name:'Local test'}});
+await test('VOID_REVERSAL_PLAN_AND_DUPLICATE_BLOCKED',async()=>{const h=database({'storeStock/NOIDA_29_RAW_INGREDIENT_RAW_FIXTURE':{currentStock:850}},{client:true});const movements=[{id:'MOVEMENT_LOCAL',storeId:'NOIDA_29',stockItemType:'RAW_INGREDIENT',stockItemCode:'RAW_FIXTURE',movementType:'SALE_DEDUCTION',quantity:-150}];const order={id:'ORDER_LOCAL',storeId:'NOIDA_29',orderNumber:'LOCAL'};await h.db.runTransaction(tx=>reverse(tx,movements,order));assert.equal(h.records.get('storeStock/NOIDA_29_RAW_INGREDIENT_RAW_FIXTURE').currentStock,1000);assert.equal([...h.records.keys()].filter(p=>p.startsWith('stockMovements/')).length,1);const writes=h.writes.length;await assert.rejects(h.db.runTransaction(tx=>reverse(tx,movements,order)),/already has a void reversal/);assert.equal(h.writes.length,writes);});
+await test('PENDING_ONLY_VOID_HAS_ZERO_REVERSAL_MOVEMENTS',async()=>{const h=database({},{client:true});await h.db.runTransaction(tx=>reverse(tx,[],{id:'ORDER_LOCAL'}));assert.equal(h.writes.length,0);});
+console.log(JSON.stringify({passed,failed}));process.exitCode=failed?1:0;

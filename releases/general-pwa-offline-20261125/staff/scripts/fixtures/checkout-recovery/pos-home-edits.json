@@ -1,0 +1,115 @@
+{
+  "scope": "Reviewed pending-checkout recovery changes only. Reversal must reproduce the exact sealed staff POSHome hash before original extraction assertions run. Actual changed hold/recall handlers are restored for execution.",
+  "baselineSha256": "95f6b151c3e40d8c3317a757e8142fbd1b4fb344d3296477cdb102721530f21c",
+  "candidateSha256": "b5d33b65ced3cf43bc7108b4a3e04c8076ceb586392402343ff5d9d7395230f0",
+  "edits": [
+    {
+      "before": "",
+      "after": "import PendingCheckoutRecoveryPanel from '../../components/pos/PendingCheckoutRecoveryPanel';\nimport { hasBoundCheckoutAttempt, reconcilePendingCheckout, type PendingCheckoutResolution } from '../../lib/pos/pendingCheckoutRecovery';\n",
+      "beforeOffset": 306,
+      "afterOffset": 306
+    },
+    {
+      "before": "import { collection, query, getDocs, where, doc, getDoc, Timestamp } from 'firebase/firestore';\n",
+      "after": "import { collection, query, getDocs, getDocsFromServer, where, doc, getDoc, getDocFromServer, Timestamp } from 'firebase/firestore';\n",
+      "beforeOffset": 1825,
+      "afterOffset": 2058
+    },
+    {
+      "before": "",
+      "after": "  previousPayloadHashes?: string[];\n",
+      "beforeOffset": 5036,
+      "afterOffset": 5306
+    },
+    {
+      "before": "  if (Date.now() - Number(attempt.createdAt) > CHECKOUT_ATTEMPT_TTL_MS) return null;\n",
+      "after": "  // A bound attempt can have an unknown commit/payment outcome; age cannot resolve it.\n  if (!hasBoundCheckoutAttempt(attempt as CheckoutAttempt) && Date.now() - Number(attempt.createdAt) > CHECKOUT_ATTEMPT_TTL_MS) return null;\n",
+      "beforeOffset": 7490,
+      "afterOffset": 7796
+    },
+    {
+      "before": "",
+      "after": "    previousPayloadHashes: Array.isArray(attempt.previousPayloadHashes)\n      ? attempt.previousPayloadHashes.filter(hash => typeof hash === 'string' && hash.length > 0 && hash.length <= 100).slice(0, 10)\n      : undefined,\n",
+      "beforeOffset": 7834,
+      "afterOffset": 8284
+    },
+    {
+      "before": "",
+      "after": "  const [pendingRecovery, setPendingRecovery] = useState<{ attempt: CheckoutAttempt; resolution: PendingCheckoutResolution | null } | null>(null);\n  const [recoveryBusy, setRecoveryBusy] = useState(false);\n  const recoveryGenerationRef = useRef(0);\n",
+      "beforeOffset": 18327,
+      "afterOffset": 19001
+    },
+    {
+      "before": "",
+      "after": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n      void checkPendingCheckout(checkoutAttemptRef.current!);\n      return;\n    }\n",
+      "beforeOffset": 29207,
+      "afterOffset": 30130
+    },
+    {
+      "before": "",
+      "after": "  const checkPendingCheckout = async (attempt: CheckoutAttempt): Promise<PendingCheckoutResolution> => {\n    const generation = ++recoveryGenerationRef.current;\n    const checkedUid = auth.currentUser?.uid;\n    setRecoveryBusy(true);\n    setPendingRecovery({ attempt, resolution: null });\n    const resolution = await reconcilePendingCheckout(attempt, async orderId => {\n      const snapshot = await getDocFromServer(doc(db, 'orders', orderId));\n      return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;\n    });\n    if (generation === recoveryGenerationRef.current && auth.currentUser?.uid === checkedUid\n      && checkoutAttemptRef.current?.orderId === attempt.orderId\n      && checkoutAttemptRef.current?.payloadHash === attempt.payloadHash) {\n      setPendingRecovery({ attempt, resolution });\n      setCheckoutError(null);\n    }\n    if (generation === recoveryGenerationRef.current) setRecoveryBusy(false);\n    return generation === recoveryGenerationRef.current && auth.currentUser?.uid === checkedUid\n      ? resolution : { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n  };\n\n  const viewPendingReceipt = async () => {\n    if (!pendingRecovery || recoveryBusy || isSaving) return;\n    const checkedUid = auth.currentUser?.uid;\n    const { attempt } = pendingRecovery;\n    const resolution = await checkPendingCheckout(attempt);\n    if (resolution.status !== 'COMMITTED') return;\n    try {\n      const order = resolution.order as unknown as Order;\n      const receiptStore = stores.find(store => store.id === order.storeId);\n      if (!receiptStore) throw new Error('The saved order store is not available in this staff session.');\n      const orderRef = doc(db, 'orders', attempt.orderId);\n      const [items, payments] = await Promise.all([\n        getDocsFromServer(collection(orderRef, 'items')),\n        getDocsFromServer(collection(orderRef, 'payments')),\n      ]);\n      if (auth.currentUser?.uid !== checkedUid || checkoutAttemptRef.current?.orderId !== attempt.orderId) return;\n      const receipt = buildReceiptSnapshot(order,\n        items.docs.map(item => ({ id: item.id, ...item.data() } as OrderItem)),\n        payments.docs.map(payment => ({ id: payment.id, ...payment.data() } as OrderPayment)), receiptStore);\n      setReceiptViewTitle('Previously Saved Order');\n      setReceiptView(receipt);\n    } catch {\n      setCheckoutError({ message: 'The earlier sale is saved, but its receipt could not be loaded. Check Running Orders or ask an Admin. Your basket is kept.' });\n    }\n  };\n\n  const startSeparateBill = async () => {\n    if (!pendingRecovery || recoveryBusy || isSaving || razorpaySession) return;\n    const { attempt } = pendingRecovery;\n    const checkedUid = auth.currentUser?.uid;\n    const resolution = await checkPendingCheckout(attempt);\n    if (resolution.status !== 'COMMITTED'\n      || auth.currentUser?.uid !== checkedUid\n      || checkoutAttemptRef.current?.orderId !== attempt.orderId\n      || checkoutAttemptRef.current?.payloadHash !== attempt.payloadHash) return;\n    if (!window.confirm('The earlier bill is already saved. Continue only if this basket is a separate NEW sale. Do not collect payment again for the earlier bill.')) return;\n    const resolvedKey = 'coffeeBondPos:resolvedCheckoutAttempts:v1';\n    const history = readLocalStorageJson<CheckoutAttempt[]>(resolvedKey, []);\n    writeLocalStorageJson(resolvedKey, [attempt, ...(Array.isArray(history) ? history : [])].slice(0, 10));\n    const next = createCheckoutAttempt();\n    checkoutAttemptRef.current = next;\n    writeCheckoutAttempt(next);\n    setPendingRecovery(null);\n    setCheckoutError(null);\n    setReceiptView(null);\n  };\n\n  const retryOriginalReference = async () => {\n    if (staffProfile?.role !== 'ADMIN' || !pendingRecovery || recoveryBusy || isSaving || razorpaySession) return;\n    const { attempt } = pendingRecovery;\n    const checkedUid = auth.currentUser?.uid;\n    const resolution = await checkPendingCheckout(attempt);\n    if (resolution.status !== 'NOT_SAVED' || auth.currentUser?.uid !== checkedUid\n      || checkoutAttemptRef.current?.orderId !== attempt.orderId\n      || checkoutAttemptRef.current?.payloadHash !== attempt.payloadHash) return;\n    if (!window.confirm('ADMIN CHECK REQUIRED: Continue only after checking the earlier tender and confirming no payment was collected and no Razorpay request is outstanding. This keeps the SAME sale reference for the edited basket. If payment is uncertain, cancel and review it.')) return;\n    const next: CheckoutAttempt = {\n      ...attempt,\n      previousPayloadHashes: [...new Set([...(attempt.previousPayloadHashes || []), attempt.payloadHash].filter((hash): hash is string => Boolean(hash)))].slice(-10),\n      payloadHash: undefined,\n    };\n    checkoutAttemptRef.current = next;\n    writeCheckoutAttempt(next);\n    setPendingRecovery(null);\n    setCheckoutError(null);\n  };\n\n",
+      "beforeOffset": 44635,
+      "afterOffset": 45703
+    },
+    {
+      "before": "",
+      "after": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current) && skipConfirm !== true) {\n      void checkPendingCheckout(checkoutAttemptRef.current!);\n      return;\n    }\n",
+      "beforeOffset": 44691,
+      "afterOffset": 50647
+    },
+    {
+      "before": "",
+      "after": "      setPendingRecovery(null);\n",
+      "beforeOffset": 45484,
+      "afterOffset": 51609
+    },
+    {
+      "before": "",
+      "after": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n      void checkPendingCheckout(checkoutAttemptRef.current!);\n      return;\n    }\n",
+      "beforeOffset": 50767,
+      "afterOffset": 56924
+    },
+    {
+      "before": "",
+      "after": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n      void checkPendingCheckout(checkoutAttemptRef.current!);\n      return;\n    }\n",
+      "beforeOffset": 51660,
+      "afterOffset": 57962
+    },
+    {
+      "before": "",
+      "after": "    if (isSaving || recoveryBusy) return;\n",
+      "beforeOffset": 57991,
+      "afterOffset": 64438
+    },
+    {
+      "before": "      let checkoutAttempt = checkoutAttemptRef.current || loadCheckoutAttempt() || createCheckoutAttempt();\n",
+      "after": "      let checkoutAttempt = validStoredCheckoutAttempt(checkoutAttemptRef.current) || loadCheckoutAttempt() || createCheckoutAttempt();\n",
+      "beforeOffset": 61047,
+      "afterOffset": 67536
+    },
+    {
+      "before": "",
+      "after": "        if (hasBoundCheckoutAttempt(checkoutAttempt) && !razorpaySession) {\n          await checkPendingCheckout(checkoutAttempt);\n          return;\n        }\n",
+      "beforeOffset": 62073,
+      "afterOffset": 68590
+    },
+    {
+      "before": "        throw new Error('Checkout retry conflict: the pending checkout key belongs to a different sale payload.');\n",
+      "after": "        await checkPendingCheckout(checkoutAttempt);\n        return;\n",
+      "beforeOffset": 67806,
+      "afterOffset": 74482
+    },
+    {
+      "before": "",
+      "after": "      if (String(err?.message || '').startsWith('Checkout retry conflict:') && hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n        await checkPendingCheckout(checkoutAttemptRef.current!);\n        return;\n      }\n",
+      "beforeOffset": 78492,
+      "afterOffset": 85122
+    },
+    {
+      "before": "",
+      "after": "\n          {pendingRecovery && <PendingCheckoutRecoveryPanel\n            orderId={pendingRecovery.attempt.orderId}\n            resolution={pendingRecovery.resolution}\n            busy={recoveryBusy || isSaving}\n            paymentPending={Boolean(razorpaySession)}\n            canReviewAbsent={staffProfile?.role === 'ADMIN'}\n            onCheck={() => { if (!recoveryBusy && !isSaving) void checkPendingCheckout(pendingRecovery.attempt); }}\n            onReceipt={() => { void viewPendingReceipt(); }}\n            onSeparateBill={() => { void startSeparateBill(); }}\n            onRetryOriginalReference={() => { void retryOriginalReference(); }}\n          />}\n",
+      "beforeOffset": 104984,
+      "afterOffset": 111837
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "sourceSha256": "67957bda0659aa9775af05f4a671779dfaac6d537439cbec7dfd2e84f938cbec",
+  "lines": 4172,
+  "declarations": {
+    "normalizePaymentAmount": "function normalizePaymentAmount(value: unknown): number {\n  const parsed = toFiniteNumber(value);\n  return parsed !== null && parsed > 0 ? parsed : 0;\n}",
+    "paymentRowsAllocated": "function paymentRowsAllocated(rows: SplitPaymentRow[]): number {\n  return rows.reduce((sum, row) => sum + normalizePaymentAmount(row.amountStr), 0);\n}",
+    "paymentRowsAreBalanced": "function paymentRowsAreBalanced(totalDue: number, allocated: number): boolean {\n  return Math.abs(totalDue - allocated) <= PAYMENT_TOLERANCE;\n}",
+    "buildPaymentLabel": "function buildPaymentLabel(payments: ReceiptPaymentSnapshot[]): string {\n  if (payments.length === 0) return 'UNKNOWN';\n  if (payments.length === 1) return payments[0].method;\n  return payments.map(payment => `${payment.method} \u20b9${payment.amount.toFixed(2)}`).join(' + ');\n}",
+    "splitPaymentStatus": "function splitPaymentStatus(payments: ReceiptPaymentSnapshot[], totalDue: number): Order['paymentStatus'] {\n  const creditAmount = payments\n    .filter(payment => payment.method === 'CREDIT')\n    .reduce((sum, payment) => sum + payment.amount, 0);\n\n  if (creditAmount <= PAYMENT_TOLERANCE) return 'PAID';\n  return creditAmount >= totalDue - PAYMENT_TOLERANCE ? 'UNPAID' : 'PARTIAL';\n}"
+  },
+  "normalizedClosure": "  const normalizedSplitPayments = (totalDue: number): ReceiptPaymentSnapshot[] => {\n    return splitPayments.map(payment => ({\n      method: payment.method,\n      amount: normalizePaymentAmount(payment.amountStr),\n    })).filter(payment => payment.amount > 0 || totalDue === 0);\n  };",
+  "checkout": "      const paymentRows: ReceiptPaymentSnapshot[] = isComplimentaryCheckout\n        ? []\n        : isSplitPayment\n        ? normalizedSplitPayments(trueGrandTotal)\n        : [{\n          method: selectedPaymentMethod as PaymentMethod,\n          amount: selectedPaymentMethod === 'CREDIT' ? 0 : trueGrandTotal,\n        }];\n      const allocatedPaymentAmount = isSplitPayment\n        ? paymentRows.reduce((sum, payment) => sum + payment.amount, 0)\n        : trueGrandTotal;\n\n      if (isSplitPayment) {\n        if (paymentRows.length === 0) {\n          throw new Error('Split payment needs at least one payment row with an amount greater than zero.');\n        }\n        if (!paymentRowsAreBalanced(trueGrandTotal, allocatedPaymentAmount)) {\n          throw new Error(`Split payment must equal the total due. Allocated \u20b9${allocatedPaymentAmount.toFixed(2)} against \u20b9${trueGrandTotal.toFixed(2)}.`);\n        }\n      }\n\n",
+  "balanceExpression": "displayedCartTotals.grandTotal - splitAllocatedAmount"
+}

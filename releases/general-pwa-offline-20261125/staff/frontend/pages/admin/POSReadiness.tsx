@@ -1,0 +1,1598 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { collection, doc, getDoc, getDocs, runTransaction, serverTimestamp, setDoc } from 'firebase/firestore';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Coffee,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  Wrench,
+  XCircle,
+} from 'lucide-react';
+import { db } from '../../lib/firebase';
+import {
+  BEVERAGE_ADD_ON_GROUP_ID,
+  BEVERAGE_ADD_ON_OPTIONS,
+  FOOD_ADD_ON_GROUP_ID,
+  FOOD_ADD_ON_OPTIONS,
+} from '../../lib/addOnGroupMapping';
+import { buildPublicMenuAvailabilitySnapshot, PublicMenuAvailabilitySnapshot } from '../../lib/publicMenuAvailability';
+import { STORE_ITEM_CONFIG_COLLECTION, type StoreItemConfig } from '../../lib/storeItemConfig';
+import { snapshotRevisionToken } from '../../lib/storeItemConfigAdmin';
+import { useAuth } from '../../contexts/AuthContext';
+import { beginCriticalOperation, OFFLINE_ACTION_MESSAGE, requireOnlineAction } from '../../lib/connectivity';
+import { effectiveInventoryStoreId } from '../../lib/inventoryStoreResolver';
+import { Store } from '../../types';
+import { AddOnGroup, BOMComponent, FinishedGood, FinishedGoodComponentReference, PrepItem, RawIngredient, StockItemType, StoreStock } from '../../types/menu-management';
+import addOnApprovalManifest from '../../../data/imports/addon-product-reconciliation-approvals.json';
+
+type StatusTone = 'ready' | 'warning' | 'blocked';
+
+type RequiredStockRow = {
+  docId: string;
+  stockItemType: StockItemType;
+  stockItemCode: string;
+  stockItemName: string;
+  fallbackDocId?: string;
+};
+
+type ReadinessBlocker = {
+  storeCode: string;
+  stockItemType: string;
+  stockItemCode: string;
+  stockItemName: string;
+  currentOpeningStock: number | null;
+  currentCurrentStock: number | null;
+  confirmedZero: boolean;
+  blockerReason: string;
+  severity: 'RED' | 'AMBER';
+};
+
+type KotCoverage = {
+  barista: number;
+  kitchen: number;
+  both: number;
+  none: number;
+  missing: number;
+};
+
+type StoreReadiness = {
+  storeId: string;
+  inventoryStoreId: string;
+  storeCode: string;
+  storeName: string;
+  posSource: 'FINISHED_GOODS';
+  activePosMenuItemCount: number;
+  finishedGoodsAvailableCount: number;
+  stockBlockers: ReadinessBlocker[];
+  bomBlockers: ReadinessBlocker[];
+  zeroCurrentStockCount: number;
+  unconfirmedZeroCount: number;
+  kotCoverage: KotCoverage;
+  gstStatus: StoreGstStatus;
+  tone: StatusTone;
+  summary: string;
+};
+
+type StoreGstStatus = {
+  configured: boolean;
+  source: 'item' | 'store' | 'app' | 'missing';
+  rateLabel: string;
+  missingFinishedGoodsTaxCount: number;
+  detail: string;
+};
+
+type AppGstConfig = {
+  exists: boolean;
+  defaultRate: number;
+  defaultSource: string;
+  storeOverrides: Record<string, number>;
+};
+
+type LoadedData = {
+  stores: (Store & { id: string })[];
+  rawIngredients: (RawIngredient & { id: string })[];
+  prepItems: (PrepItem & { id: string })[];
+  finishedGoods: (FinishedGood & { id: string })[];
+  storeStock: (StoreStock & { id: string } & Record<string, unknown>)[];
+  addOnGroups: AddOnGroup[];
+  storeItemConfigs: StoreItemConfig[];
+  gstConfig: AppGstConfig;
+};
+
+type EspressoFixState = {
+  stockRow: (StoreStock & { id: string } & Record<string, unknown>) | null;
+  openingStock: number;
+  currentStock: number;
+  confirmedZero: boolean;
+  canRestore: boolean;
+  message: string;
+};
+
+const TARGET_STORE_CODES = ['UDAY_PARK', 'NOIDA_29', 'NOIDA_51', 'GOLDEN_I', 'TASTING_ROOM_29'];
+const ESPRESSO_STOCK_CODE = 'ESPRESSO_DOUBLE_RISTRETTO';
+const ESPRESSO_FIX_CONFIRMATION = 'RESTORE ESPRESSO STOCK';
+const AVAILABILITY_REFRESH_CONFIRMATION = 'REFRESH CUSTOMER AVAILABILITY';
+const GST_CONFIG_DOC_ID = 'gstConfig';
+const GST_CONFIG_CONFIRMATION = 'SAVE GST CONFIG';
+const TAX_SETTING_DOC_IDS = [GST_CONFIG_DOC_ID, 'tax', 'taxSettings', 'posSettings', 'settings'];
+const APP_TAX_RATE_KEYS = ['defaultGstRate', 'gstRate', 'taxRate', 'defaultTaxRate', 'defaultGSTPercent', 'gstPercent', 'taxPercent'];
+const STORE_TAX_RATE_KEYS = ['gstRate', 'taxRate', 'defaultGstRate', 'defaultTaxRate', 'gstPercent', 'taxPercent'];
+const ITEM_TAX_RATE_KEYS = ['taxRate', 'gstRate', 'taxPercent', 'gstPercent'];
+const PHASE_1_ADD_ON_GROUP_IDS = new Set([FOOD_ADD_ON_GROUP_ID, BEVERAGE_ADD_ON_GROUP_ID]);
+const PHASE_1_DEFERRED_PRODUCTS = addOnApprovalManifest.entries
+  .filter((entry) => entry.phase1Disposition === 'DEFERRED_MISSING_FINISHED_GOOD_DATA')
+  .map((entry) => entry.menuProductCode);
+const PHASE_1_PLANNED_OPTION_COUNT = FOOD_ADD_ON_OPTIONS.length + BEVERAGE_ADD_ON_OPTIONS.length;
+
+function cleanValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  const cleaned = cleanValue(value).replace(/,/g, '');
+  if (!cleaned) return fallback;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toOptionalNumber(value: unknown): number | null {
+  const cleaned = cleanValue(value).replace(/,/g, '');
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeTaxRate(value: unknown): number {
+  const parsed = toOptionalNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function pickTaxRate(data: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const rate = normalizeTaxRate(data[key]);
+    if (rate > 0) return rate;
+  }
+  return 0;
+}
+
+function normalizeStoreOverrides(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((acc, [key, rate]) => {
+    const normalizedRate = normalizeTaxRate(rate);
+    if (normalizedRate > 0) acc[key] = normalizedRate;
+    return acc;
+  }, {});
+}
+
+function withId<T extends Record<string, unknown>>(id: string, data: T): T & { id: string } {
+  return { id, ...data };
+}
+
+function getStockDocId(storeId: string, stockItemType: string, stockItemCode: string): string {
+  return `${storeId}_${stockItemType}_${stockItemCode}`;
+}
+
+function isStockItemType(value: string): value is StockItemType {
+  return ['RAW_INGREDIENT', 'PREP_ITEM', 'BOUGHT_COMPONENT', 'FINISHED_GOOD', 'PACKAGING'].includes(value);
+}
+
+function isStockTrackedFinishedGood(fg: FinishedGood): boolean {
+  return fg.itemType === 'MADE_TO_ORDER' || fg.itemType === 'DIRECT_STOCK' || fg.productionMode === 'MADE_TO_ORDER' || fg.productionMode === 'ASSEMBLED_TO_ORDER' || fg.productionMode === 'BOUGHT_AND_SOLD';
+}
+
+function normalizedIds(value: unknown): string[] {
+  return Array.from(new Set(
+    (Array.isArray(value) ? value : [])
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim()),
+  ));
+}
+
+function componentReference(value: unknown): FinishedGoodComponentReference | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<FinishedGoodComponentReference>;
+  const finishedGoodId = cleanValue(candidate.finishedGoodId);
+  const finishedGoodCode = cleanValue(candidate.finishedGoodCode);
+  const quantity = toNumber(candidate.quantity);
+  if (!finishedGoodId || !finishedGoodCode || quantity <= 0 || quantity > 100) {
+    return null;
+  }
+  return { finishedGoodId, finishedGoodCode, quantity };
+}
+
+function optionIdsByGroup(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .map(([groupId, optionIds]) => [groupId.trim(), normalizedIds(optionIds)] as const)
+    .filter(([groupId]) => groupId.length > 0));
+}
+
+function usesBom(fg: FinishedGood): boolean {
+  return fg.itemType === 'MADE_TO_ORDER'
+    || (fg.itemType === 'DIRECT_STOCK' && Array.isArray(fg.bom) && fg.bom.length > 0)
+    || fg.productionMode === 'MADE_TO_ORDER'
+    || fg.productionMode === 'ASSEMBLED_TO_ORDER';
+}
+
+function isActiveSellableFinishedGood(fg: FinishedGood, storeId: string): boolean {
+  const storeIds = Array.isArray(fg.availableStoreIds) ? fg.availableStoreIds : [];
+  return fg.isActive !== false
+    && fg.isSellable !== false
+    && fg.isAvailable !== false
+    && (storeIds.length === 0 || storeIds.includes(storeId));
+}
+
+function getConfirmedZero(stock: (StoreStock & Record<string, unknown>) | undefined): boolean {
+  return stock?.confirmedZero === true;
+}
+
+function componentName(
+  line: BOMComponent,
+  rawByCode: Map<string, RawIngredient & { id: string }>,
+  prepByCode: Map<string, PrepItem & { id: string }>,
+  finishedByCode: Map<string, FinishedGood & { id: string }>,
+): string {
+  if (line.componentName) return line.componentName;
+  if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
+    return rawByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  if (line.componentType === 'PREP_ITEM') {
+    return prepByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  if (line.componentType === 'FINISHED_GOOD') {
+    return finishedByCode.get(line.componentCode)?.name || line.componentCode;
+  }
+  return line.componentCode;
+}
+
+function componentMasterExists(
+  line: BOMComponent,
+  rawByCode: Map<string, RawIngredient & { id: string }>,
+  prepByCode: Map<string, PrepItem & { id: string }>,
+  finishedByCode: Map<string, FinishedGood & { id: string }>,
+): boolean {
+  if (line.componentType === 'RAW_INGREDIENT' || line.componentType === 'PACKAGING') {
+    return rawByCode.has(line.componentCode);
+  }
+  if (line.componentType === 'PREP_ITEM') {
+    return prepByCode.has(line.componentCode);
+  }
+  if (line.componentType === 'FINISHED_GOOD') {
+    return finishedByCode.has(line.componentCode);
+  }
+  return true;
+}
+
+async function loadGstConfig(): Promise<AppGstConfig> {
+  let defaultRate = 0;
+  let defaultSource = 'No app GST fallback configured';
+  let storeOverrides: Record<string, number> = {};
+  let exists = false;
+
+  for (const docId of TAX_SETTING_DOC_IDS) {
+    const snap = await getDoc(doc(db, 'appSettings', docId));
+    if (!snap.exists()) continue;
+
+    exists = exists || docId === GST_CONFIG_DOC_ID;
+    const data = snap.data() as Record<string, unknown>;
+    if (docId === GST_CONFIG_DOC_ID) {
+      storeOverrides = normalizeStoreOverrides(data.storeOverrides);
+    }
+
+    const pickedRate = pickTaxRate(data, APP_TAX_RATE_KEYS);
+    if (pickedRate > 0) {
+      defaultRate = pickedRate;
+      defaultSource = `appSettings/${docId}`;
+      break;
+    }
+  }
+
+  return {
+    exists,
+    defaultRate,
+    defaultSource,
+    storeOverrides,
+  };
+}
+
+async function loadReadinessData(includeStoreItemConfigs = false): Promise<LoadedData> {
+  const [storesSnap, rawSnap, prepSnap, finishedSnap, stockSnap, addOnGroupSnap, configSnap, gstConfig] = await Promise.all([
+    getDocs(collection(db, 'stores')),
+    getDocs(collection(db, 'rawIngredients')),
+    getDocs(collection(db, 'prepItems')),
+    getDocs(collection(db, 'finishedGoods')),
+    getDocs(collection(db, 'storeStock')),
+    getDocs(collection(db, 'addOnGroups')),
+    includeStoreItemConfigs ? getDocs(collection(db, STORE_ITEM_CONFIG_COLLECTION)) : Promise.resolve(null),
+    loadGstConfig(),
+  ]);
+
+  const allStores = storesSnap.docs.map((snap) => withId(snap.id, snap.data() as Store & Record<string, unknown>));
+  const stores = TARGET_STORE_CODES
+    .map((code) => allStores.find((store) => store.code === code && store.isActive))
+    .filter((store): store is Store & Record<string, unknown> & { id: string } => !!store);
+
+  return {
+    stores,
+    rawIngredients: rawSnap.docs.map((snap) => withId(snap.id, snap.data() as RawIngredient & Record<string, unknown>)),
+    prepItems: prepSnap.docs.map((snap) => withId(snap.id, snap.data() as PrepItem & Record<string, unknown>)),
+    finishedGoods: finishedSnap.docs.map((snap) => withId(snap.id, snap.data() as FinishedGood & Record<string, unknown>)),
+    storeStock: stockSnap.docs.map((snap) => withId(snap.id, snap.data() as StoreStock & Record<string, unknown>)),
+    addOnGroups: addOnGroupSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() as AddOnGroup) })),
+    storeItemConfigs: configSnap
+      ? configSnap.docs.map((snap) => ({ id: snap.id, ...(snap.data() as StoreItemConfig) }))
+      : [],
+    gstConfig,
+  };
+}
+
+function resolveStoreGstFallback(store: Store & { id: string }, gstConfig: AppGstConfig): { rate: number; source: 'store' | 'app' | 'missing'; detail: string } {
+  const overrideRate = gstConfig.storeOverrides[store.id] || gstConfig.storeOverrides[store.code] || 0;
+  if (overrideRate > 0) {
+    return {
+      rate: overrideRate,
+      source: 'store',
+      detail: `appSettings/${GST_CONFIG_DOC_ID}.storeOverrides.${store.code}`,
+    };
+  }
+
+  const storeRate = pickTaxRate(store as unknown as Record<string, unknown>, STORE_TAX_RATE_KEYS);
+  if (storeRate > 0) {
+    return {
+      rate: storeRate,
+      source: 'store',
+      detail: `stores/${store.id}`,
+    };
+  }
+
+  if (gstConfig.defaultRate > 0) {
+    return {
+      rate: gstConfig.defaultRate,
+      source: 'app',
+      detail: gstConfig.defaultSource,
+    };
+  }
+
+  return {
+    rate: 0,
+    source: 'missing',
+    detail: 'No item, store, or app GST rate configured.',
+  };
+}
+
+function buildStoreGstStatus(
+  store: Store & { id: string },
+  finishedGoods: (FinishedGood & { id: string })[],
+  gstConfig: AppGstConfig,
+): StoreGstStatus {
+  const itemRates = finishedGoods
+    .map((fg) => pickTaxRate(fg as unknown as Record<string, unknown>, ITEM_TAX_RATE_KEYS))
+    .filter(rate => rate > 0);
+  const missingFinishedGoodsTaxCount = Math.max(0, finishedGoods.length - itemRates.length);
+  const uniqueItemRates = Array.from(new Set(itemRates));
+  const fallback = resolveStoreGstFallback(store, gstConfig);
+
+  if (missingFinishedGoodsTaxCount === 0 && finishedGoods.length > 0) {
+    return {
+      configured: true,
+      source: 'item',
+      rateLabel: uniqueItemRates.length === 1 ? `${uniqueItemRates[0]}%` : 'Mixed item rates',
+      missingFinishedGoodsTaxCount,
+      detail: 'Every active finished good has its own GST/tax rate.',
+    };
+  }
+
+  if (fallback.rate > 0) {
+    return {
+      configured: true,
+      source: fallback.source,
+      rateLabel: `${fallback.rate}%`,
+      missingFinishedGoodsTaxCount,
+      detail: fallback.detail,
+    };
+  }
+
+  return {
+    configured: false,
+    source: 'missing',
+    rateLabel: '0%',
+    missingFinishedGoodsTaxCount,
+    detail: 'GST will calculate as 0 until item, store, or app GST is configured.',
+  };
+}
+
+function buildStoreReadiness(data: LoadedData): StoreReadiness[] {
+  const rawByCode = new Map(data.rawIngredients.map((raw) => [raw.code, raw]));
+  const prepByCode = new Map(data.prepItems.map((prep) => [prep.code, prep]));
+  const finishedByCode = new Map(data.finishedGoods.map((fg) => [fg.code, fg]));
+  const finishedById = new Map(data.finishedGoods.map((fg) => [fg.id, fg]));
+  const addOnGroupsById = new Map(data.addOnGroups
+    .filter((group): group is AddOnGroup & { id: string } => typeof group.id === 'string' && group.id.trim().length > 0)
+    .map((group) => [group.id.trim(), group]));
+  const stockById = new Map(data.storeStock.map((row) => [row.id, row]));
+
+  return data.stores.map((store) => {
+    const posSource = 'FINISHED_GOODS' as const;
+    const inventoryStoreId = effectiveInventoryStoreId(store);
+    const finishedGoods = data.finishedGoods.filter((fg) => isActiveSellableFinishedGood(fg, store.id));
+    const stockRowsForStore = data.storeStock.filter((stock) => stock.storeId === inventoryStoreId);
+    const requiredStockRows = new Map<string, RequiredStockRow>();
+    const stockBlockers: ReadinessBlocker[] = [];
+    const bomBlockers: ReadinessBlocker[] = [];
+
+    const addRequiredStock = (requirement: RequiredStockRow) => {
+      if (!requiredStockRows.has(requirement.docId)) {
+        requiredStockRows.set(requirement.docId, requirement);
+      }
+    };
+
+    const addCompositeBlocker = (parent: FinishedGood, reason: string, child?: FinishedGoodComponentReference) => {
+      bomBlockers.push({
+        storeCode: store.code,
+        stockItemType: 'FINISHED_GOOD',
+        stockItemCode: child?.finishedGoodCode || parent.code,
+        stockItemName: child?.finishedGoodCode || parent.displayName || parent.name,
+        currentOpeningStock: null,
+        currentCurrentStock: null,
+        confirmedZero: false,
+        blockerReason: `${parent.displayName || parent.name}: ${reason}`,
+        severity: 'RED',
+      });
+    };
+
+    const addCompositeChildStockRequirements = (parent: FinishedGood, child: FinishedGood) => {
+      if (usesBom(child)) {
+        if (!Array.isArray(child.bom) || child.bom.length === 0) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no authoritative BOM.`, {
+            finishedGoodId: child.id || child.code,
+            finishedGoodCode: child.code,
+            quantity: 1,
+          });
+          return;
+        }
+        child.bom.forEach((line) => {
+          if (
+            !line.componentCode
+            || !isStockItemType(line.componentType)
+            || toNumber(line.quantity) <= 0
+            || !cleanValue(line.uom)
+          ) {
+            addCompositeBlocker(parent, `${child.displayName || child.name} has an incomplete BOM component.`);
+            return;
+          }
+          if (!componentMasterExists(line, rawByCode, prepByCode, finishedByCode)) {
+            addCompositeBlocker(
+              parent,
+              `${child.displayName || child.name} references missing ${line.componentType} / ${line.componentCode}.`,
+            );
+          }
+          const fallbackDocId = line.componentType === 'PACKAGING'
+            ? getStockDocId(inventoryStoreId, 'RAW_INGREDIENT', line.componentCode)
+            : undefined;
+          addRequiredStock({
+            docId: getStockDocId(inventoryStoreId, line.componentType, line.componentCode),
+            stockItemType: line.componentType,
+            stockItemCode: line.componentCode,
+            stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
+            fallbackDocId,
+          });
+        });
+        return;
+      }
+      if (child.itemType === 'DIRECT_STOCK' || child.productionMode === 'BOUGHT_AND_SOLD') {
+        addRequiredStock({
+          docId: getStockDocId(inventoryStoreId, 'FINISHED_GOOD', child.code),
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: child.code,
+          stockItemName: child.displayName || child.name,
+        });
+      }
+    };
+
+    const scanComposite = (parent: FinishedGood) => {
+      const composite = parent.composite;
+      if (
+        !composite
+        || Number(composite.schemaVersion) !== 1
+        || !Array.isArray(composite.staticComponents)
+        || !Array.isArray(composite.choiceGroupIds)
+      ) {
+        addCompositeBlocker(parent, 'composite definition is missing or uses an unsupported schema.');
+        return;
+      }
+      if (
+        parent.unresolvedCompositeRequirements !== undefined
+        && (
+          !Array.isArray(parent.unresolvedCompositeRequirements)
+          || parent.unresolvedCompositeRequirements.length > 0
+        )
+      ) {
+        addCompositeBlocker(parent, 'component requirements still need owner confirmation.');
+        return;
+      }
+
+      const staticReferences = composite.staticComponents.map(componentReference);
+      if (staticReferences.some((reference) => !reference)) {
+        addCompositeBlocker(parent, 'a static component has an invalid Finished Good reference.');
+        return;
+      }
+      const references = staticReferences as FinishedGoodComponentReference[];
+      if (new Set(references.map((reference) => reference.finishedGoodId)).size !== references.length) {
+        addCompositeBlocker(parent, 'repeated static components must use one reference with the required quantity.');
+        return;
+      }
+      if (references.some((reference) => reference.finishedGoodId === parent.id || reference.finishedGoodCode === parent.code)) {
+        addCompositeBlocker(parent, 'a composite cannot contain itself.');
+        return;
+      }
+
+      const rawChoiceGroupIds = composite.choiceGroupIds
+        .map((groupId) => cleanValue(groupId))
+        .filter(Boolean);
+      const choiceGroupIds = normalizedIds(rawChoiceGroupIds);
+      if (choiceGroupIds.length !== composite.choiceGroupIds.length) {
+        addCompositeBlocker(parent, 'choice group ids are missing or repeated.');
+        return;
+      }
+      const configuredGroupIds = normalizedIds(parent.addOnGroupIds);
+      const assignedCompositeGroupIds = configuredGroupIds.filter((groupId) => (
+        addOnGroupsById.get(groupId)?.purpose === 'COMPOSITE_CHOICE'
+      ));
+      if (
+        assignedCompositeGroupIds.length !== choiceGroupIds.length
+        || assignedCompositeGroupIds.some((groupId) => !choiceGroupIds.includes(groupId))
+      ) {
+        addCompositeBlocker(parent, 'assigned composite choice groups do not match the parent definition.');
+        return;
+      }
+
+      const enabledOptionIdsByGroup = optionIdsByGroup(parent.addOnOptionIdsByGroup);
+      for (const groupId of choiceGroupIds) {
+        if (!configuredGroupIds.includes(groupId)) {
+          addCompositeBlocker(parent, `choice group ${groupId} is not assigned to the parent.`);
+          return;
+        }
+        const group = addOnGroupsById.get(groupId);
+        if (!group || group.isActive !== true || group.purpose !== 'COMPOSITE_CHOICE') {
+          addCompositeBlocker(parent, `choice group ${groupId} is missing, inactive, or has the wrong purpose.`);
+          return;
+        }
+        const enabledOptionIds = enabledOptionIdsByGroup[groupId] || [];
+        if (enabledOptionIds.length === 0) {
+          addCompositeBlocker(parent, `choice group ${groupId} has no enabled options for this product.`);
+          return;
+        }
+        const minimumSelections = Math.max(0, toNumber(group.minimumSelections));
+        const maximumSelections = group.maximumSelections === null || group.maximumSelections === undefined
+          ? Number.POSITIVE_INFINITY
+          : Math.max(minimumSelections, toNumber(group.maximumSelections));
+        const selectionMode = cleanValue(group.selectionMode).toUpperCase();
+        if (!['SINGLE', 'EXACT_DISTINCT'].includes(selectionMode)) {
+          addCompositeBlocker(parent, `choice group ${groupId} must use SINGLE or EXACT_DISTINCT selection.`);
+          return;
+        }
+        if (
+          selectionMode === 'EXACT_DISTINCT'
+          && (
+            !Number.isInteger(minimumSelections)
+            || minimumSelections <= 0
+            || maximumSelections !== minimumSelections
+          )
+        ) {
+          addCompositeBlocker(parent, `exact-distinct group ${groupId} must require one exact positive selection count.`);
+          return;
+        }
+        if (
+          (selectionMode === 'SINGLE' && minimumSelections > 1)
+          || minimumSelections > enabledOptionIds.length
+        ) {
+          addCompositeBlocker(parent, `choice group ${groupId} cannot satisfy its configured selection count.`);
+          return;
+        }
+        const optionsById = new Map((Array.isArray(group.options) ? group.options : [])
+          .filter((option) => cleanValue(option.id))
+          .map((option) => [cleanValue(option.id), option]));
+        const groupReferences: FinishedGoodComponentReference[] = [];
+        for (const optionId of enabledOptionIds) {
+          const option = optionsById.get(optionId);
+          const reference = componentReference(option?.finishedGoodComponent);
+          if (!option || option.isActive !== true || !reference) {
+            addCompositeBlocker(parent, `choice option ${optionId} is missing, inactive, or has an invalid Finished Good reference.`);
+            return;
+          }
+          groupReferences.push(reference);
+        }
+        if (
+          selectionMode === 'EXACT_DISTINCT'
+          && new Set(groupReferences.map((reference) => reference.finishedGoodId)).size !== groupReferences.length
+        ) {
+          addCompositeBlocker(parent, `exact-distinct group ${groupId} contains repeated Finished Goods.`);
+          return;
+        }
+        references.push(...groupReferences);
+      }
+
+      if (references.length === 0 || references.length > 40) {
+        addCompositeBlocker(parent, 'composite must define between 1 and 40 possible components.');
+        return;
+      }
+
+      references.forEach((reference) => {
+        const child = finishedById.get(reference.finishedGoodId);
+        if (
+          !child
+          || cleanValue(child.id) !== reference.finishedGoodId
+          || cleanValue(child.code) !== reference.finishedGoodCode
+          || finishedByCode.get(reference.finishedGoodCode) !== child
+        ) {
+          addCompositeBlocker(parent, 'a component Finished Good reference is missing or changed.', reference);
+          return;
+        }
+        const childStoreIds = Array.isArray(child.availableStoreIds) ? child.availableStoreIds : [];
+        if (child.isActive !== true || child.isAvailable === false || !childStoreIds.includes(store.id)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} is unavailable at ${store.name}.`, reference);
+          return;
+        }
+        if (child.composite) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} is nested composite; only one level is supported.`, reference);
+          return;
+        }
+        if (!['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(child.prepStation)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid preparation station.`, reference);
+          return;
+        }
+        if (!['MADE_TO_ORDER', 'DIRECT_STOCK', 'NO_STOCK'].includes(child.itemType)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid item type.`, reference);
+          return;
+        }
+        if (child.productionMode && !['MADE_TO_ORDER', 'ASSEMBLED_TO_ORDER', 'BOUGHT_AND_SOLD', 'NO_STOCK'].includes(child.productionMode)) {
+          addCompositeBlocker(parent, `${child.displayName || child.name} has no valid production mode.`, reference);
+          return;
+        }
+        addCompositeChildStockRequirements(parent, child);
+      });
+    };
+
+    finishedGoods.forEach((fg) => {
+      if (fg.composite) {
+        scanComposite(fg);
+        return;
+      }
+      if (isStockTrackedFinishedGood(fg) && usesBom(fg) && (!fg.bom || fg.bom.length === 0)) {
+        bomBlockers.push({
+          storeCode: store.code,
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: fg.code,
+          stockItemName: fg.displayName || fg.name,
+          currentOpeningStock: null,
+          currentCurrentStock: null,
+          confirmedZero: false,
+          blockerReason: 'Sellable FINISHED_GOODS item needs a BOM before checkout can safely deduct stock.',
+          severity: 'RED',
+        });
+      }
+
+      if (usesBom(fg)) {
+        fg.bom?.forEach((line) => {
+          if (!line.componentCode || !isStockItemType(line.componentType)) return;
+          if (!componentMasterExists(line, rawByCode, prepByCode, finishedByCode)) {
+            bomBlockers.push({
+              storeCode: store.code,
+              stockItemType: line.componentType,
+              stockItemCode: line.componentCode,
+              stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
+              currentOpeningStock: null,
+              currentCurrentStock: null,
+              confirmedZero: false,
+              blockerReason: `Missing BOM component master for ${line.componentType} / ${line.componentCode}.`,
+              severity: 'RED',
+            });
+          }
+          const fallbackDocId = line.componentType === 'PACKAGING' ? getStockDocId(inventoryStoreId, 'RAW_INGREDIENT', line.componentCode) : undefined;
+          addRequiredStock({
+            docId: getStockDocId(inventoryStoreId, line.componentType, line.componentCode),
+            stockItemType: line.componentType,
+            stockItemCode: line.componentCode,
+            stockItemName: componentName(line, rawByCode, prepByCode, finishedByCode),
+            fallbackDocId,
+          });
+        });
+      } else if (fg.itemType === 'DIRECT_STOCK' || fg.productionMode === 'BOUGHT_AND_SOLD') {
+        addRequiredStock({
+          docId: getStockDocId(inventoryStoreId, 'FINISHED_GOOD', fg.code),
+          stockItemType: 'FINISHED_GOOD',
+          stockItemCode: fg.code,
+          stockItemName: fg.displayName || fg.name,
+        });
+      }
+    });
+
+    requiredStockRows.forEach((requirement) => {
+      const stock = stockById.get(requirement.docId) || (requirement.fallbackDocId ? stockById.get(requirement.fallbackDocId) : undefined);
+      if (!stock) {
+        stockBlockers.push({
+          storeCode: store.code,
+          stockItemType: requirement.stockItemType,
+          stockItemCode: requirement.stockItemCode,
+          stockItemName: requirement.stockItemName,
+          currentOpeningStock: null,
+          currentCurrentStock: null,
+          confirmedZero: false,
+          blockerReason: `Missing required stock row ${requirement.docId}.`,
+          severity: 'RED',
+        });
+        return;
+      }
+
+      const openingStock = toNumber(stock.openingStock);
+      const currentStock = toNumber(stock.currentStock);
+      const confirmedZero = getConfirmedZero(stock);
+      if ((openingStock <= 0 || currentStock <= 0) && !confirmedZero) {
+        stockBlockers.push({
+          storeCode: store.code,
+          stockItemType: stock.stockItemType || requirement.stockItemType,
+          stockItemCode: stock.stockItemCode || requirement.stockItemCode,
+          stockItemName: stock.stockItemName || requirement.stockItemName,
+          currentOpeningStock: openingStock,
+          currentCurrentStock: currentStock,
+          confirmedZero,
+          blockerReason: 'Opening/current stock must be greater than 0 unless confirmedZero is TRUE.',
+          severity: 'RED',
+        });
+      }
+    });
+
+    const zeroCurrentStockCount = stockRowsForStore.filter((stock) => toNumber(stock.currentStock) <= 0).length;
+    const unconfirmedZeroCount = stockRowsForStore.filter((stock) => toNumber(stock.currentStock) <= 0 && !getConfirmedZero(stock)).length;
+    const activePosItems = finishedGoods;
+    const kotCoverage = activePosItems.reduce<KotCoverage>((counts, item) => {
+      const station = (item as { prepStation?: string }).prepStation || 'NONE';
+      if (station === 'BARISTA') counts.barista += 1;
+      else if (station === 'KITCHEN') counts.kitchen += 1;
+      else if (station === 'BOTH') counts.both += 1;
+      else if (station === 'NONE') counts.none += 1;
+      else counts.missing += 1;
+      return counts;
+    }, { barista: 0, kitchen: 0, both: 0, none: 0, missing: 0 });
+
+    const hasCheckoutBlockers = activePosItems.length === 0 || stockBlockers.length > 0 || bomBlockers.length > 0;
+    const gstStatus = buildStoreGstStatus(store, finishedGoods, data.gstConfig);
+    const tone: StatusTone = hasCheckoutBlockers
+      ? 'blocked'
+      : unconfirmedZeroCount > 0 || kotCoverage.missing > 0 || !gstStatus.configured
+        ? 'warning'
+        : 'ready';
+    const summary = tone === 'blocked'
+      ? activePosItems.length === 0 ? 'No active Finished Goods are available for billing.' : 'Checkout will fail for at least one item.'
+      : tone === 'warning'
+        ? 'Checkout can proceed, but review warnings.'
+        : 'Ready for billing.';
+
+    return {
+      storeId: store.id,
+      inventoryStoreId,
+      storeCode: store.code,
+      storeName: store.name,
+      posSource,
+      activePosMenuItemCount: activePosItems.length,
+      finishedGoodsAvailableCount: finishedGoods.length,
+      stockBlockers,
+      bomBlockers,
+      zeroCurrentStockCount,
+      unconfirmedZeroCount,
+      kotCoverage,
+      gstStatus,
+      tone,
+      summary,
+    };
+  });
+}
+
+function getToneClasses(tone: StatusTone): string {
+  if (tone === 'blocked') return 'bg-red-50 border-red-200 text-red-900';
+  if (tone === 'warning') return 'bg-amber-50 border-amber-200 text-amber-900';
+  return 'bg-emerald-50 border-emerald-200 text-emerald-900';
+}
+
+function getToneIcon(tone: StatusTone) {
+  if (tone === 'blocked') return <XCircle size={20} className="text-red-600" />;
+  if (tone === 'warning') return <ShieldAlert size={20} className="text-amber-600" />;
+  return <CheckCircle2 size={20} className="text-emerald-600" />;
+}
+
+function buildEspressoFixState(data: LoadedData | null): EspressoFixState {
+  const udayStore = data?.stores.find((store) => store.code === 'UDAY_PARK');
+  if (!data || !udayStore) {
+    return {
+      stockRow: null,
+      openingStock: 0,
+      currentStock: 0,
+      confirmedZero: false,
+      canRestore: false,
+      message: 'Uday Park store is not loaded.',
+    };
+  }
+
+  const stockRow = data.storeStock.find((stock) => (
+    stock.storeId === effectiveInventoryStoreId(udayStore)
+    && stock.stockItemType === 'PREP_ITEM'
+    && stock.stockItemCode === ESPRESSO_STOCK_CODE
+  )) || null;
+
+  if (!stockRow) {
+    return {
+      stockRow: null,
+      openingStock: 0,
+      currentStock: 0,
+      confirmedZero: false,
+      canRestore: false,
+      message: `Missing Uday Park stock row for PREP_ITEM / ${ESPRESSO_STOCK_CODE}.`,
+    };
+  }
+
+  const openingStock = toNumber(stockRow.openingStock);
+  const currentStock = toNumber(stockRow.currentStock);
+  const confirmedZero = getConfirmedZero(stockRow);
+  const canRestore = openingStock > 0 && currentStock <= 0 && !confirmedZero;
+
+  return {
+    stockRow,
+    openingStock,
+    currentStock,
+    confirmedZero,
+    canRestore,
+    message: canRestore
+      ? 'Known espresso blocker detected. This can be restored from opening stock.'
+      : 'No restore needed for this espresso stock row.',
+  };
+}
+
+function Stat({ label, value, tone = 'neutral' }: { label: string; value: React.ReactNode; tone?: 'neutral' | 'red' | 'amber' | 'green' }) {
+  const toneClass = tone === 'red'
+    ? 'bg-red-50 text-red-900 border-red-200'
+    : tone === 'amber'
+      ? 'bg-amber-50 text-amber-900 border-amber-200'
+      : tone === 'green'
+        ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+        : 'bg-white text-neutral-800 border-neutral-200';
+  return (
+    <div className={`rounded-xl border p-3 ${toneClass}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wider opacity-70">{label}</p>
+      <p className="mt-1 text-xl font-black">{value}</p>
+    </div>
+  );
+}
+
+function BlockerTable({ blockers }: { blockers: ReadinessBlocker[] }) {
+  if (blockers.length === 0) return null;
+  return (
+    <div className="mt-4 overflow-x-auto rounded-xl border border-red-200 bg-white">
+      <table className="min-w-full text-sm">
+        <thead className="bg-red-50 text-red-900">
+          <tr className="text-left">
+            <th className="py-2 px-3">Type</th>
+            <th className="py-2 px-3">Code</th>
+            <th className="py-2 px-3">Name</th>
+            <th className="py-2 px-3">Opening</th>
+            <th className="py-2 px-3">Current</th>
+            <th className="py-2 px-3">confirmedZero</th>
+            <th className="py-2 px-3">Reason</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-red-100">
+          {blockers.map((blocker, index) => (
+            <tr key={`${blocker.storeCode}_${blocker.stockItemType}_${blocker.stockItemCode}_${index}`}>
+              <td className="py-2 px-3 font-bold">{blocker.stockItemType}</td>
+              <td className="py-2 px-3 font-mono">{blocker.stockItemCode}</td>
+              <td className="py-2 px-3">{blocker.stockItemName}</td>
+              <td className="py-2 px-3 font-mono">{blocker.currentOpeningStock ?? '-'}</td>
+              <td className="py-2 px-3 font-mono">{blocker.currentCurrentStock ?? '-'}</td>
+              <td className="py-2 px-3">{blocker.confirmedZero ? 'TRUE' : 'FALSE'}</td>
+              <td className="py-2 px-3 text-red-800">{blocker.blockerReason}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function POSReadiness() {
+  const { staffProfile } = useAuth();
+  const [data, setData] = useState<LoadedData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [confirmationText, setConfirmationText] = useState('');
+  const [gstDefaultRateInput, setGstDefaultRateInput] = useState('');
+  const [gstStoreRateInputs, setGstStoreRateInputs] = useState<Record<string, string>>({});
+  const [gstConfirmationText, setGstConfirmationText] = useState('');
+  const [isSavingGst, setIsSavingGst] = useState(false);
+  const [availabilityStoreId, setAvailabilityStoreId] = useState('');
+  const [availabilityConfirmationText, setAvailabilityConfirmationText] = useState('');
+  const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
+  const [availabilityResult, setAvailabilityResult] = useState<(PublicMenuAvailabilitySnapshot & { updatedAtLabel: string }) | null>(null);
+  const [refreshedAt, setRefreshedAt] = useState('');
+
+  const isAdmin = staffProfile?.role === 'ADMIN';
+  const isStoreManager = staffProfile?.role === 'STORE_MANAGER';
+  // A complete override-aware rebuild reads private master configuration, so it
+  // is intentionally Admin-only. Managers retain their other readiness access.
+  const canRefreshCustomerAvailability = isAdmin;
+  const readiness = useMemo(() => data ? buildStoreReadiness(data) : [], [data]);
+  const espressoFix = useMemo(() => buildEspressoFixState(data), [data]);
+  const addOnPhase1Readiness = useMemo(() => {
+    const deployedGroups = (data?.addOnGroups || [])
+      .filter((group) => group.id && PHASE_1_ADD_ON_GROUP_IDS.has(group.id));
+    const deployedOptions = deployedGroups.flatMap((group) => group.options || []);
+    const inventoryConfiguredCount = deployedOptions.filter((option) => (
+      option.inventoryItemType
+      && option.inventoryItemCode
+      && Number(option.consumptionQuantity) > 0
+      && option.consumptionUnit
+    )).length;
+    return {
+      deployedGroupCount: deployedGroups.length,
+      deployedOptionCount: deployedOptions.length,
+      inventoryConfiguredCount,
+      inventoryNotConfiguredCount: deployedOptions.length > 0
+        ? deployedOptions.length - inventoryConfiguredCount
+        : PHASE_1_PLANNED_OPTION_COUNT,
+    };
+  }, [data]);
+
+  const refresh = async () => {
+    setIsLoading(true);
+    setError('');
+    try {
+      const loaded = await loadReadinessData(isAdmin);
+      setData(loaded);
+      setRefreshedAt(new Date().toLocaleString());
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to load POS readiness data.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!data) return;
+    setAvailabilityStoreId(prev => prev || data.stores[0]?.id || '');
+    setGstDefaultRateInput(data.gstConfig.defaultRate > 0 ? String(data.gstConfig.defaultRate) : '');
+    setGstStoreRateInputs(data.stores.reduce<Record<string, string>>((acc, store) => {
+      const rate = data.gstConfig.storeOverrides[store.id] || data.gstConfig.storeOverrides[store.code] || 0;
+      acc[store.id] = rate > 0 ? String(rate) : '';
+      return acc;
+    }, {}));
+  }, [data]);
+
+  const hasStaffStoreAccess = (storeId: string): boolean => {
+    if (isAdmin) return true;
+    const ids = new Set([...(staffProfile?.storeIds || []), ...(staffProfile?.assignedStoreIds || [])]);
+    return ids.has(storeId);
+  };
+
+  const selectedAvailabilityStore = useMemo(
+    () => data?.stores.find((store) => store.id === availabilityStoreId) || null,
+    [availabilityStoreId, data],
+  );
+  const availabilityStoreSelected = Boolean(selectedAvailabilityStore);
+  const availabilityRoleAllowed = canRefreshCustomerAvailability;
+  const availabilityConfirmationMatched = availabilityConfirmationText.trim() === AVAILABILITY_REFRESH_CONFIRMATION;
+  const availabilityRefreshDisabled = !availabilityStoreSelected
+    || !availabilityRoleAllowed
+    || !availabilityConfirmationMatched
+    || isRefreshingAvailability;
+
+  const refreshCustomerAvailabilitySnapshot = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    if (!canRefreshCustomerAvailability) {
+      setError('Admin access is required to refresh customer menu availability.');
+      return;
+    }
+    if (!data) {
+      setError('Readiness data is still loading.');
+      return;
+    }
+    if (availabilityConfirmationText.trim() !== AVAILABILITY_REFRESH_CONFIRMATION) {
+      setError(`Type ${AVAILABILITY_REFRESH_CONFIRMATION} to confirm this public availability refresh.`);
+      return;
+    }
+
+    const store = data.stores.find((item) => item.id === availabilityStoreId);
+    if (!store) {
+      setError('Select a store before refreshing customer availability.');
+      return;
+    }
+    if (!hasStaffStoreAccess(store.id)) {
+      setError('You do not have access to refresh customer availability for this store.');
+      return;
+    }
+    if (!window.confirm(`Refresh public customer menu availability for ${store.name}? This writes only sanitized available/unavailable statuses.`)) {
+      return;
+    }
+
+    const endCriticalOperation = beginCriticalOperation();
+    setIsRefreshingAvailability(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const freshData = await loadReadinessData(true);
+      const freshStore = freshData.stores.find((item) => item.id === availabilityStoreId);
+      if (!freshStore) throw new Error('That store changed or is no longer active. Refresh and try again.');
+      const snapshotRef = doc(db, 'publicMenuAvailability', freshStore.code);
+      const currentPublicSnapshot = await getDoc(snapshotRef);
+      const snapshot = buildPublicMenuAvailabilitySnapshot({
+        store: freshStore,
+        finishedGoods: freshData.finishedGoods,
+        storeStock: freshData.storeStock,
+        rawIngredients: freshData.rawIngredients,
+        prepItems: freshData.prepItems,
+        addOnGroups: freshData.addOnGroups,
+        storeItemConfigs: freshData.storeItemConfigs,
+      });
+      const staffName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Staff';
+      const expectedRevision = snapshotRevisionToken(
+        currentPublicSnapshot.exists() ? currentPublicSnapshot.data() : null,
+      );
+      const publicationRevision = globalThis.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await runTransaction(db, async (transaction) => {
+        const liveSnapshot = await transaction.get(snapshotRef);
+        if (snapshotRevisionToken(liveSnapshot.exists() ? liveSnapshot.data() : null) !== expectedRevision) {
+          throw new Error('The store menu changed while refreshing. Nothing was published; refresh and try again.');
+        }
+        transaction.set(snapshotRef, {
+          ...snapshot,
+          publicationRevision,
+          updatedAt: serverTimestamp(),
+          updatedBy: staffProfile?.uid || '',
+          updatedByName: staffName,
+        });
+      });
+
+      setData(freshData);
+      setAvailabilityResult({ ...snapshot, updatedAtLabel: new Date().toLocaleString() });
+      setAvailabilityConfirmationText('');
+      setSuccessMessage(
+        `Customer menu availability refreshed for ${store.name}. Total: ${snapshot.itemCount}, available: ${snapshot.availableCount}, unavailable: ${snapshot.unavailableCount}.`,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to refresh customer menu availability.';
+      if (message.toLowerCase().includes('missing or insufficient permissions')) {
+        setError('Firestore permissions blocked this refresh. Deploy the latest Firestore rules with firebase deploy --only firestore:rules, then try again.');
+      } else {
+        setError(message);
+      }
+    } finally {
+      setIsRefreshingAvailability(false);
+      endCriticalOperation();
+    }
+  };
+
+  const saveGstConfig = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    if (!isAdmin) {
+      setError('Admin access is required to update GST settings.');
+      return;
+    }
+    if (!data) {
+      setError('Readiness data is still loading.');
+      return;
+    }
+    if (gstConfirmationText.trim() !== GST_CONFIG_CONFIRMATION) {
+      setError(`Type ${GST_CONFIG_CONFIRMATION} to confirm this GST configuration update.`);
+      return;
+    }
+
+    const defaultRate = toOptionalNumber(gstDefaultRateInput) || 0;
+    if (defaultRate < 0 || defaultRate > 100) {
+      setError('Default GST rate must be between 0 and 100.');
+      return;
+    }
+
+    const storeOverrides: Record<string, number> = {};
+    for (const store of data.stores) {
+      const rawValue = cleanValue(gstStoreRateInputs[store.id]);
+      if (!rawValue) continue;
+      const rate = toOptionalNumber(rawValue);
+      if (rate === null || rate < 0 || rate > 100) {
+        setError(`GST override for ${store.name} must be between 0 and 100.`);
+        return;
+      }
+      if (rate > 0) storeOverrides[store.id] = rate;
+    }
+
+    if (defaultRate <= 0 && Object.keys(storeOverrides).length === 0) {
+      setError('Enter a positive default GST rate or at least one positive store GST override.');
+      return;
+    }
+
+    if (!window.confirm('Save GST settings for POS V2? This updates appSettings/gstConfig only and does not modify historical orders.')) {
+      return;
+    }
+
+    const endCriticalOperation = beginCriticalOperation();
+    setIsSavingGst(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const adminName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Admin';
+      await setDoc(doc(db, 'appSettings', GST_CONFIG_DOC_ID), {
+        defaultGstRate: defaultRate,
+        storeOverrides,
+        updatedAt: serverTimestamp(),
+        updatedByUserId: staffProfile?.uid || '',
+        updatedByName: adminName,
+        ...(data.gstConfig.exists ? {} : { createdAt: serverTimestamp(), createdByUserId: staffProfile?.uid || '', createdByName: adminName }),
+      }, { merge: true });
+
+      setSuccessMessage('GST configuration saved. Readiness has been refreshed.');
+      setGstConfirmationText('');
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to save GST configuration.');
+    } finally {
+      setIsSavingGst(false);
+      endCriticalOperation();
+    }
+  };
+
+  const restoreEspressoStock = async () => {
+    if (!requireOnlineAction()) {
+      setError(OFFLINE_ACTION_MESSAGE);
+      return;
+    }
+    if (!isAdmin) {
+      setError('Admin access is required for this stock fix.');
+      return;
+    }
+    if (!espressoFix.stockRow || !espressoFix.canRestore) {
+      setError('Espresso stock restore is not available for the current data.');
+      return;
+    }
+    if (confirmationText.trim() !== ESPRESSO_FIX_CONFIRMATION) {
+      setError(`Type ${ESPRESSO_FIX_CONFIRMATION} to confirm this stock adjustment.`);
+      return;
+    }
+    if (!window.confirm('Restore ESPRESSO_DOUBLE_RISTRETTO current stock from opening stock for Uday Park only?')) {
+      return;
+    }
+
+    const endCriticalOperation = beginCriticalOperation();
+    setIsRestoring(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const stockRow = espressoFix.stockRow;
+      const restoreQuantity = espressoFix.openingStock - espressoFix.currentStock;
+      if (restoreQuantity <= 0) throw new Error('Restore quantity is not positive.');
+      const adminName = staffProfile?.displayName || staffProfile?.name || staffProfile?.email || 'Admin';
+      const movementRef = doc(collection(db, 'stockMovements'));
+
+      await setDoc(doc(db, 'storeStock', stockRow.id), {
+        currentStock: espressoFix.openingStock,
+        updatedAt: serverTimestamp(),
+        updatedByUserId: staffProfile?.uid || '',
+        updatedByName: adminName,
+        phase8AReadinessFix: true,
+      }, { merge: true });
+
+      await setDoc(movementRef, {
+        storeId: stockRow.storeId,
+        storeName: stockRow.storeName,
+        inventoryItemId: stockRow.stockItemCode,
+        inventoryItemName: stockRow.stockItemName,
+        movementType: 'ADJUSTMENT',
+        quantity: restoreQuantity,
+        unit: stockRow.uom,
+        referenceType: 'MANUAL',
+        referenceId: stockRow.id,
+        reason: 'ADMIN_READINESS_FIX',
+        notes: 'ADMIN_READINESS_FIX: Restored current stock from opening stock on POS Readiness screen.',
+        createdByUserId: staffProfile?.uid || '',
+        createdByName: adminName,
+        createdAt: serverTimestamp(),
+        stockSystem: 'MENU_MANAGEMENT',
+        stockItemType: stockRow.stockItemType,
+        stockItemCode: stockRow.stockItemCode,
+      });
+
+      setSuccessMessage('Espresso current stock restored from opening stock. Readiness has been refreshed.');
+      setConfirmationText('');
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to restore espresso stock.');
+    } finally {
+      setIsRestoring(false);
+      endCriticalOperation();
+    }
+  };
+
+  if (isLoading && !data) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 size={32} className="animate-spin text-[#5c4033]" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto w-full min-w-0 pb-20 space-y-6">
+        <div className="flex min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <p className="text-sm font-bold text-emerald-700 uppercase tracking-wide">Phase 8A</p>
+          <h1 className="text-3xl font-black text-[#5c4033]">POS Go-Live Readiness</h1>
+          <p className="text-neutral-600 mt-2">
+            Single-source POS V2 checks for Finished Goods menu availability, stock, BOM, and KOT routing.
+          </p>
+          {refreshedAt && <p className="text-xs text-neutral-500 mt-1">Last refreshed: {refreshedAt}</p>}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={isLoading}
+            className="px-4 py-2 bg-white border border-neutral-200 rounded-xl font-bold text-neutral-700 hover:bg-neutral-50 disabled:opacity-60 flex items-center gap-2"
+          >
+            {isLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            Refresh
+          </button>
+          <Link to="/admin" className="px-4 py-2 bg-[#5c4033] text-white rounded-xl font-bold hover:bg-[#4a332a]">
+            Admin Dashboard
+          </Link>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-2xl flex gap-3">
+          <AlertCircle size={20} className="shrink-0 mt-0.5" />
+          <p className="font-bold">{error}</p>
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-4 rounded-2xl flex gap-3">
+          <CheckCircle2 size={20} className="shrink-0 mt-0.5" />
+          <p className="font-bold">{successMessage}</p>
+        </div>
+      )}
+
+      <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+        <div className="flex min-w-0 flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-700 border border-amber-200 flex items-center justify-center shrink-0">
+              <Wrench size={24} />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-neutral-900">Uday Park Espresso Stock Fix</h2>
+              <p className="text-sm text-neutral-600 mt-1">{espressoFix.message}</p>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+                <div><span className="font-bold text-neutral-500">Item</span><p className="font-mono">{ESPRESSO_STOCK_CODE}</p></div>
+                <div><span className="font-bold text-neutral-500">Opening</span><p className="font-mono">{espressoFix.openingStock}</p></div>
+                <div><span className="font-bold text-neutral-500">Current</span><p className="font-mono">{espressoFix.currentStock}</p></div>
+                <div><span className="font-bold text-neutral-500">confirmedZero</span><p>{espressoFix.confirmedZero ? 'TRUE' : 'FALSE'}</p></div>
+              </div>
+            </div>
+          </div>
+          <div className="w-full md:w-80 space-y-3">
+            <input
+              type="text"
+              value={confirmationText}
+              onChange={(event) => setConfirmationText(event.target.value)}
+              placeholder={ESPRESSO_FIX_CONFIRMATION}
+              disabled={!espressoFix.canRestore || isRestoring}
+              className="w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033] disabled:bg-neutral-100"
+            />
+            <button
+              type="button"
+              onClick={restoreEspressoStock}
+              disabled={!espressoFix.canRestore || confirmationText.trim() !== ESPRESSO_FIX_CONFIRMATION || isRestoring || !isAdmin}
+              className="w-full px-4 py-3 bg-amber-600 text-white rounded-xl font-black hover:bg-amber-700 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isRestoring ? <Loader2 size={18} className="animate-spin" /> : <Coffee size={18} />}
+              Restore Current Stock from Opening Stock
+            </button>
+            <p className="text-xs text-neutral-500">
+              Writes only the Uday Park storeStock row and one stockMovements audit record after confirmation.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-2xl p-4 flex gap-3">
+        <AlertCircle size={20} className="shrink-0 mt-0.5" />
+        <div className="text-sm">
+          <p className="font-black">POS V2 is the single source for billing.</p>
+          <p>The billing screen uses Finished Goods, BOM, prep components, and storeStock for every Coffee Bond store.</p>
+        </div>
+      </div>
+
+      <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-start gap-3">
+          <ShieldAlert size={22} className="mt-0.5 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-black text-neutral-900">Add-on Phase 1 Readiness</h2>
+                <p className="mt-1 text-sm text-neutral-600">
+                  Pricing, GST, receipt, KOT, and reporting are enabled independently of inventory mapping.
+                </p>
+              </div>
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">
+                PRICING ONLY
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Stat label="Groups Deployed" value={`${addOnPhase1Readiness.deployedGroupCount}/2`} tone={addOnPhase1Readiness.deployedGroupCount === 2 ? 'green' : 'amber'} />
+              <Stat label="Options Deployed" value={`${addOnPhase1Readiness.deployedOptionCount}/${PHASE_1_PLANNED_OPTION_COUNT}`} tone={addOnPhase1Readiness.deployedOptionCount === PHASE_1_PLANNED_OPTION_COUNT ? 'green' : 'amber'} />
+              <Stat label="Inventory Configured" value={addOnPhase1Readiness.inventoryConfiguredCount} tone="amber" />
+              <Stat label="Inventory Not Configured" value={addOnPhase1Readiness.inventoryNotConfiguredCount} tone="amber" />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+              <p className="font-black">Inventory limitation</p>
+              <p className="mt-1">
+                All 27 Phase 1 options remain <strong>NOT_CONFIGURED</strong>. Checkout is allowed, and no assumed add-on stock movement is created.
+              </p>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs font-black uppercase tracking-widest text-neutral-500">
+                Deferred products ({PHASE_1_DEFERRED_PRODUCTS.length})
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {PHASE_1_DEFERRED_PRODUCTS.map((productCode) => (
+                  <span key={productCode} className="rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs font-bold text-neutral-700">
+                    {productCode} · DEFERRED_MISSING_FINISHED_GOOD_DATA
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {canRefreshCustomerAvailability && data && (
+        <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div>
+              <h2 className="text-xl font-black text-neutral-900">Refresh Customer Menu Availability</h2>
+              <p className="text-sm text-neutral-600 mt-1">
+                Builds a public-safe snapshot for the customer app. It writes only item code, available/unavailable status, and customer-safe messages.
+              </p>
+              <p className="mt-2 text-xs font-bold text-neutral-500">
+                Private stock quantities, BOM components, raw ingredients, prep item codes, and blocker details are not written to the public document.
+              </p>
+            </div>
+
+            <div className="w-full lg:max-w-xl space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Store</span>
+                  <select
+                    value={availabilityStoreId}
+                    onChange={(event) => setAvailabilityStoreId(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-bold outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                  >
+                    {data.stores
+                      .filter((store) => hasStaffStoreAccess(store.id))
+                      .map((store) => (
+                        <option key={store.id} value={store.id}>{store.name}</option>
+                      ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Confirmation</span>
+                  <input
+                    type="text"
+                    value={availabilityConfirmationText}
+                    onChange={(event) => setAvailabilityConfirmationText(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder={AVAILABILITY_REFRESH_CONFIRMATION}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={refreshCustomerAvailabilitySnapshot}
+                data-requires-online="true"
+                disabled={availabilityRefreshDisabled}
+                className="w-full md:w-auto px-4 py-3 bg-[#5c4033] text-white rounded-xl font-black hover:bg-[#4a332a] disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+              >
+                {isRefreshingAvailability ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                Refresh Customer Menu Availability
+              </button>
+
+              {isAdmin && (
+                <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600">
+                  <span className="mr-3">Store selected: {availabilityStoreSelected ? 'yes' : 'no'}</span>
+                  <span className="mr-3">Role allowed: {availabilityRoleAllowed ? 'yes' : 'no'}</span>
+                  <span className="mr-3">Confirmation matched: {availabilityConfirmationMatched ? 'yes' : 'no'}</span>
+                  <span>Refresh running: {isRefreshingAvailability ? 'yes' : 'no'}</span>
+                </div>
+              )}
+
+              {availabilityResult && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 rounded-xl bg-neutral-50 border border-neutral-200 p-3 text-sm">
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Store</p>
+                    <p className="font-black">{availabilityResult.storeName}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Available</p>
+                    <p className="font-black text-emerald-700">{availabilityResult.availableCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Unavailable</p>
+                    <p className="font-black text-red-700">{availabilityResult.unavailableCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-neutral-500">Updated</p>
+                    <p className="font-bold">{availabilityResult.updatedAtLabel}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && data && (
+        <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div>
+              <h2 className="text-xl font-black text-neutral-900">GST Configuration</h2>
+              <p className="text-sm text-neutral-600 mt-1">
+                Checkout uses item GST first, then store GST override, then this app default. Historical orders are not changed.
+              </p>
+              <div className="mt-3 text-xs text-neutral-500">
+                <p><strong>Current app default:</strong> {data.gstConfig.defaultRate > 0 ? `${data.gstConfig.defaultRate}%` : 'Not configured'}</p>
+                <p><strong>Source:</strong> {data.gstConfig.defaultSource}</p>
+              </div>
+            </div>
+            <div className="w-full lg:max-w-2xl space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Default GST rate (%)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={gstDefaultRateInput}
+                    onChange={(event) => setGstDefaultRateInput(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder="5"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-black uppercase tracking-widest text-neutral-500">Confirmation</span>
+                  <input
+                    type="text"
+                    value={gstConfirmationText}
+                    onChange={(event) => setGstConfirmationText(event.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                    placeholder={GST_CONFIG_CONFIRMATION}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {data.stores.map((store) => (
+                  <label key={store.id} className="block">
+                    <span className="text-xs font-black uppercase tracking-widest text-neutral-500">{store.name} override (%)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={gstStoreRateInputs[store.id] || ''}
+                      onChange={(event) => setGstStoreRateInputs(prev => ({ ...prev, [store.id]: event.target.value }))}
+                      className="mt-1 w-full px-3 py-2 border border-neutral-200 rounded-xl font-mono outline-none focus:ring-2 focus:ring-[#5c4033]/20 focus:border-[#5c4033]"
+                      placeholder="Optional"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={saveGstConfig}
+                disabled={isSavingGst || gstConfirmationText.trim() !== GST_CONFIG_CONFIRMATION}
+                className="w-full md:w-auto px-4 py-3 bg-[#5c4033] text-white rounded-xl font-black hover:bg-[#4a332a] disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+              >
+                {isSavingGst ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+                Save GST Configuration
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-5">
+        {readiness.map((store) => {
+          const blockers = [...store.stockBlockers, ...store.bomBlockers];
+          return (
+            <section key={store.storeId} className={`rounded-2xl border p-5 shadow-sm ${getToneClasses(store.tone)}`}>
+              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-1">{getToneIcon(store.tone)}</div>
+                  <div>
+                    <h2 className="text-2xl font-black">{store.storeName}</h2>
+                    <p className="font-mono text-xs opacity-70">{store.storeCode}</p>
+                    <p className="mt-2 font-bold">{store.summary}</p>
+                  </div>
+                </div>
+                <div className="text-left lg:text-right text-sm">
+                  <p className="font-bold uppercase tracking-wide opacity-70">POS Source</p>
+                  <p className="text-lg font-black font-mono">{store.posSource}</p>
+                  <p className="text-xs font-bold opacity-70">Finished Goods Menu</p>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">
+                <Stat label="Active Finished Goods" value={store.activePosMenuItemCount} tone={store.activePosMenuItemCount ? 'green' : 'red'} />
+                <Stat label="Finished Goods Menu" value={store.finishedGoodsAvailableCount} />
+                <Stat label="Stock Blockers" value={store.stockBlockers.length} tone={store.stockBlockers.length ? 'red' : 'green'} />
+                <Stat label="BOM Blockers" value={store.bomBlockers.length} tone={store.bomBlockers.length ? 'red' : 'green'} />
+                <Stat label="Current <= 0" value={store.zeroCurrentStockCount} tone={store.zeroCurrentStockCount ? 'amber' : 'green'} />
+                <Stat label="Zero Not Confirmed" value={store.unconfirmedZeroCount} tone={store.unconfirmedZeroCount ? 'amber' : 'green'} />
+                <Stat label="KOT Missing" value={store.kotCoverage.missing} tone={store.kotCoverage.missing ? 'amber' : 'green'} />
+                <Stat label="GST Configured" value={store.gstStatus.configured ? 'Yes' : 'No'} tone={store.gstStatus.configured ? 'green' : 'amber'} />
+                <Stat label="Missing Item GST" value={store.gstStatus.missingFinishedGoodsTaxCount} tone={store.gstStatus.missingFinishedGoodsTaxCount ? 'amber' : 'green'} />
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="bg-white/70 border border-white/70 rounded-xl p-4">
+                  <p className="text-sm font-black mb-2">KOT Station Coverage</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                    <span>Barista: <strong>{store.kotCoverage.barista}</strong></span>
+                    <span>Kitchen: <strong>{store.kotCoverage.kitchen}</strong></span>
+                    <span>Both: <strong>{store.kotCoverage.both}</strong></span>
+                    <span>No KOT: <strong>{store.kotCoverage.none}</strong></span>
+                    <span>Missing: <strong>{store.kotCoverage.missing}</strong></span>
+                  </div>
+                </div>
+
+                <div className="bg-white/70 border border-white/70 rounded-xl p-4">
+                  <p className="text-sm font-black mb-2">GST Status</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                    <span>Configured: <strong>{store.gstStatus.configured ? 'Yes' : 'No'}</strong></span>
+                    <span>Source: <strong>{store.gstStatus.source}</strong></span>
+                    <span>Rate used: <strong>{store.gstStatus.rateLabel}</strong></span>
+                    <span>Missing item GST: <strong>{store.gstStatus.missingFinishedGoodsTaxCount}</strong></span>
+                  </div>
+                  <p className="mt-2 text-xs font-bold opacity-70 break-words">{store.gstStatus.detail}</p>
+                </div>
+              </div>
+
+              <BlockerTable blockers={blockers} />
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

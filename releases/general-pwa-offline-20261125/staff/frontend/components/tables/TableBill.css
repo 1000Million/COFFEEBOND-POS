@@ -1,0 +1,196 @@
+/* Release 1: main POS table bill only. Other stores and /pos/tables retain their layout. */
+.pos-table-workspace{--bill-bg:#faf5ec;--bill-card:#fffdf8;--bill-soft:#f3eadb;--bill-ink:#392719;--bill-muted:#766854;--bill-line:#dfd1bd;--bill-accent:#704c2d;--bill-accent-ink:#fffaf2;--bill-focus:#9b693c;background:var(--bill-bg)!important;color:var(--bill-ink);height:auto!important;min-height:calc(100dvh - 140px);overflow:visible!important}
+html[data-staff-theme=dark] .pos-table-workspace{--bill-bg:#181613;--bill-card:#24211d;--bill-soft:#302a23;--bill-ink:#f5ecde;--bill-muted:#c3b39e;--bill-line:#514536;--bill-accent:#e0c2a0;--bill-accent-ink:#291e15;--bill-focus:#f0c68e}
+.pos-table-workspace .pos-control-bar{background:var(--bill-bg)!important;border-color:var(--bill-line);box-shadow:none;padding:12px 16px;z-index:90}
+.pos-table-workspace .pos-control-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1.05fr);gap:10px;max-width:820px;margin:auto}
+.pos-table-workspace .pos-store-control,.pos-order-control,.pos-table-workspace .table-select-compact{display:flex;align-items:center;gap:8px;width:auto;min-width:0;min-height:52px;padding:0 12px;border:1px solid var(--bill-line);border-radius:12px;background:var(--bill-card);color:var(--bill-ink);flex-wrap:nowrap}
+.pos-table-workspace .pos-store-control select,.pos-order-control select{width:100%;min-width:0;min-height:50px;background:transparent;color:var(--bill-ink);font-size:15px;font-weight:650;outline:none;text-overflow:ellipsis}
+.pos-table-workspace .pos-store-control svg{color:var(--bill-accent);flex-shrink:0}
+.pos-table-workspace .pos-order-tabs{display:none!important}
+.pos-table-workspace .pos-secondary-links{display:none}
+.pos-table-workspace .table-select-compact{position:relative;padding-right:10px}
+.pos-table-workspace .table-select-compact input{flex:1;width:0;min-width:0;max-width:none;padding:0;border:0;min-height:50px;border-radius:0;background:transparent;color:var(--bill-ink);font-size:16px;font-weight:750}
+.pos-table-workspace .table-select-compact input::placeholder{color:var(--bill-ink);opacity:1}
+.pos-table-workspace .table-select-compact>svg{flex-shrink:0;color:var(--bill-accent);pointer-events:none}
+.pos-table-workspace .table-select-popover{top:calc(100% + 6px);left:auto;right:0;min-width:min(340px,calc(100vw - 32px));max-height:min(510px,65dvh);padding:5px;border-color:var(--bill-line);background:var(--bill-card);color:var(--bill-ink)}
+.pos-table-workspace .table-select-popover [role=listbox]{max-height:340px;overflow:auto}
+.pos-table-workspace .table-select-popover button{min-height:48px;border-bottom:1px solid var(--bill-line);border-radius:0;gap:3px}
+.pos-table-workspace .table-select-popover span{color:var(--bill-muted)}
+.pos-table-workspace .table-select-popover button:hover,.pos-table-workspace .table-select-popover [aria-selected=true]{background:var(--bill-soft)}
+.pos-table-workspace .pos-main-grid{display:block;overflow:visible;padding:0 16px 24px}
+.pos-table-workspace .pos-menu-region{display:none}
+.pos-table-workspace[data-menu-open=true] .pos-menu-region{display:flex;position:fixed;inset:20px;z-index:170;max-width:1160px;margin:auto;padding-top:68px;border:1px solid var(--bill-line);border-radius:20px;background:var(--bill-card);box-shadow:0 0 0 100vmax #0008,0 20px 70px #0005}
+.pos-full-menu-heading{position:absolute;inset:0 0 auto;min-height:68px;display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--bill-line);background:var(--bill-card);color:var(--bill-ink)}
+.pos-full-menu-heading h2{font-size:20px;font-weight:750}.pos-full-menu-heading p{font-size:13px;color:var(--bill-muted)}
+.pos-full-menu-heading button{margin-left:auto;min-width:44px;min-height:44px;display:grid;place-items:center;border:1px solid var(--bill-line);border-radius:12px}
+.pos-table-workspace .pos-bill-region{position:relative!important;inset:auto!important;transform:none!important;translate:none!important;z-index:20!important;height:auto!important;width:100%!important;max-width:820px!important;margin:0 auto;border:1px solid var(--bill-line);border-radius:16px;background:var(--bill-card)!important;box-shadow:0 4px 22px #4f321309;overflow:visible}
+.pos-table-workspace .pos-bill-scroll{overflow:visible;padding:0!important;min-height:0}
+.table-bill{gap:0;margin:0;max-width:none;color:var(--bill-ink)}
+.table-bill .table-order-fields{gap:0}.table-bill .table-detail{padding:0;gap:0;border:0;border-radius:16px;background:var(--bill-card)}
+.table-bill button,.table-bill input,.table-bill select,.table-bill textarea{font:inherit;color:var(--bill-ink)}
+.table-bill button{min-height:44px;border-color:var(--bill-line);background:var(--bill-card);border-radius:10px}
+.table-bill button:disabled{opacity:.48;cursor:not-allowed}
+.table-bill button:focus-visible,.table-bill textarea:focus-visible,.table-bill input:focus-visible,.pos-table-workspace select:focus-visible,.bill-item-entry button:focus-visible{outline:3px solid var(--bill-focus);outline-offset:2px}
+.table-bill .table-warning{margin:12px;border-color:var(--bill-line);background:var(--bill-soft);color:var(--bill-ink)}
+.table-bill .table-card{margin:12px;background:var(--bill-card);border-color:var(--bill-line)}
+.table-bill>p[role=status]{padding:8px 18px;font-size:12px;color:var(--bill-muted)}
+.bill-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 20px 10px}
+.table-bill .bill-heading h2{font-size:19px;line-height:1.35;overflow-wrap:anywhere;letter-spacing:-.025em}
+.table-bill .bill-eyebrow{font-size:11px;font-weight:650;color:var(--bill-muted);margin-bottom:3px}
+.bill-time{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;color:var(--bill-muted)}
+.bill-entry-surface{padding:0 18px 9px}
+.bill-item-entry{margin:0;color:var(--bill-ink)}
+.bill-search-field{display:flex;align-items:center;gap:10px;min-height:49px;border:1px solid var(--bill-line);border-radius:10px;background:var(--bill-card);padding:0 13px}
+.bill-search-field:focus-within{outline:2px solid var(--bill-focus);outline-offset:2px}
+.bill-search-field>svg{flex-shrink:0;color:var(--bill-accent)}
+.bill-item-entry .bill-search-field input{flex:1;min-width:0;width:100%;min-height:47px;border:0!important;border-radius:0!important;padding:0!important;background:transparent!important;font-size:16px;outline:none!important;color:var(--bill-ink);box-shadow:none}
+.bill-item-entry .bill-search-field input::placeholder{color:var(--bill-muted)}
+.bill-item-entry .inline-item-suggestions{top:calc(100% + 4px);z-index:115;max-height:min(400px,55dvh);padding:0;border:1px solid var(--bill-line);border-radius:10px;min-width:0;background:var(--bill-card);color:var(--bill-ink);overflow:auto;box-shadow:0 12px 28px #39271922}
+.bill-suggestion-heading{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;padding:8px 14px;background:var(--bill-soft);color:var(--bill-ink)}
+.bill-suggestion-heading>span{font-size:10px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--bill-muted)}
+.bill-item-entry .inline-item-suggestions [role=option]{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:14px;padding:10px 16px;border-bottom:1px solid var(--bill-line);border-radius:0;min-height:60px;color:var(--bill-ink)}
+.bill-item-entry .inline-item-suggestions [role=option]:hover,.bill-item-entry [role=option][aria-selected=true]{background:var(--bill-soft)}
+.bill-suggestion-name{min-width:0;display:flex;flex-direction:column;gap:3px}.bill-suggestion-name strong{font-size:15px;font-weight:650}.bill-suggestion-name>span{font-size:12px;color:var(--bill-muted)}
+.bill-item-entry .bill-suggestion-price{font-size:15px;white-space:nowrap;color:var(--bill-ink)}
+.bill-item-entry .bill-menu-link{display:flex;align-items:center;justify-content:space-between;flex-direction:row;width:100%;min-height:43px;border-radius:0;border:0;padding:9px 16px;background:var(--bill-accent);color:var(--bill-accent-ink);font-size:13px}
+.bill-item-entry .bill-menu-shortcut{display:flex;flex-direction:row;align-items:center;justify-content:flex-end;gap:5px;width:100%;min-height:30px;padding:3px 0;border:0;background:transparent;color:var(--bill-accent);font-size:11px;font-weight:650}
+.bill-section{border-top:1px solid var(--bill-line)}
+.bill-section-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 18px;background:var(--bill-soft)}
+.table-bill .bill-section-heading h3{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;letter-spacing:.06em}
+.bill-section-heading h3>span{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:50px;background:var(--bill-accent);color:var(--bill-accent-ink);font-size:11px;letter-spacing:0}
+.table-bill .bill-section-heading p{font-size:12px;white-space:nowrap;color:var(--bill-ink)}
+.table-bill .bill-empty{padding:15px 18px;color:var(--bill-muted);font-size:13px}
+.bill-order-line{display:grid;grid-template-columns:minmax(0,1fr) auto 44px;column-gap:12px;row-gap:5px;align-items:center;border-top:1px solid var(--bill-line);padding:12px 18px}
+.bill-line-name{min-width:0;grid-column:1;grid-row:1 / span 2;display:flex;flex-direction:column;gap:4px}.bill-line-name>strong{font-size:15px;font-weight:700;line-height:1.35}.bill-line-name>span{font-size:11px;color:var(--bill-muted);line-height:1.5}
+.bill-line-price{grid-column:2;grid-row:1;white-space:nowrap;font-size:15px;font-weight:700;justify-self:end}
+.bill-quantity{grid-column:2;grid-row:2;display:flex;align-items:center;justify-self:end;border:1px solid var(--bill-line);border-radius:8px;overflow:hidden}
+.table-bill .bill-quantity button{min-width:44px;min-height:44px;padding:0;display:grid;place-items:center;border:0;border-radius:0;background:var(--bill-soft)}
+.bill-quantity>span{min-width:32px;text-align:center;font-size:14px;font-weight:650}
+.table-bill .bill-remove{grid-column:3;grid-row:1 / span 2;min-width:44px;padding:0;border:0;background:transparent;color:var(--bill-accent)}
+.table-bill .bill-preview-note{font-size:10px;color:var(--bill-muted);line-height:1.55;padding:5px 18px 9px}
+.bill-round h4{display:flex;align-items:center;justify-content:space-between;padding:9px 18px 6px;font-size:11px;color:var(--bill-muted)}
+.bill-round h4 span{font-weight:500}
+.bill-sent-line{grid-template-columns:minmax(0,1fr) auto;row-gap:0;padding-top:9px;padding-bottom:12px}
+.bill-sent-line .bill-line-name{grid-row:1}.bill-sent-line .bill-line-price{align-self:start}
+.bill-sent-status{display:flex;align-items:center;gap:5px;color:var(--bill-muted)}
+.bill-kitchen-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px;border-top:1px solid var(--bill-line);padding:10px 18px}
+.table-bill .bill-kitchen-summary .table-badges{gap:5px;flex:1}.table-bill .bill-kitchen-summary .table-badges span{border-color:var(--bill-line);font-size:10px}
+.table-bill .bill-kitchen-summary>button{min-height:34px;padding:4px 8px;font-size:10px}
+.bill-inline-editor{border-top:1px solid var(--bill-line);padding:14px 18px;background:var(--bill-soft)}
+.table-bill .bill-inline-editor label{display:flex;align-items:center;gap:12px;font-size:14px;font-weight:650}.table-bill .bill-inline-editor textarea{flex:1;width:100%;min-height:80px;resize:vertical;background:var(--bill-card);border:1px solid var(--bill-line);border-radius:8px;padding:8px}
+.table-bill .bill-inline-editor p{font-size:11px;color:var(--bill-muted);margin-top:8px}
+.bill-footer{padding:12px 12px 14px;border-top:1px solid var(--bill-line);background:var(--bill-card);border-radius:0 0 16px 16px}
+.bill-totals{display:grid;gap:7px;padding:0 6px 10px;font-size:14px}.bill-totals>div{display:flex;justify-content:space-between;align-items:center;gap:20px}.bill-totals dd{font-variant-numeric:tabular-nums}.bill-totals .bill-total{border-top:1px solid var(--bill-line);padding-top:11px;margin-top:4px;font-size:21px;font-weight:800}
+.bill-action-row{display:grid;grid-template-columns:1fr .85fr 1.75fr;gap:8px}.table-bill .bill-action-row button{display:flex;align-items:center;justify-content:center;gap:7px;min-height:46px;font-size:13px;padding:8px 10px;font-weight:650;white-space:nowrap}
+.table-bill .bill-action-row .bill-send,.table-bill .bill-checkout{background:var(--bill-accent);color:var(--bill-accent-ink);border-color:var(--bill-accent)}
+.table-bill .bill-checkout{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;min-height:48px;margin-top:8px;padding:11px 16px;font-size:17px;font-weight:700}
+.table-bill .table-order-fields>details{margin:0 18px 12px;color:var(--bill-muted);font-size:12px}.table-bill .table-order-fields>details>summary{font-size:12px}
+.kot-print-backdrop{position:fixed;inset:0;z-index:260;background:#0009;display:grid;place-items:center;padding:20px}.kot-print-sheet{width:min(100%,470px);max-height:85dvh;overflow:auto;border-radius:16px;border:1px solid var(--border);background:var(--card);color:var(--foreground);padding:22px}.kot-print-sheet header{display:flex;align-items:center;justify-content:space-between;gap:15px}.kot-print-sheet h2{font-size:19px;font-weight:750}.kot-print-sheet p{font-size:12px;color:var(--muted-foreground);margin:8px 0}.kot-print-sheet button{min-height:44px;min-width:44px;padding:8px;border:1px solid var(--border);border-radius:9px}.kot-print-sheet button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}.kot-print-line{display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border);padding:14px 0}.kot-print-line span{font-size:12px}.kot-print-button{display:flex;justify-content:center;align-items:center;gap:8px;width:100%;font-weight:700}
+@media(min-width:900px){.pos-table-workspace .pos-main-grid{padding-bottom:35px}.bill-heading{padding-top:20px}.bill-order-line{padding-top:15px;padding-bottom:15px}.table-bill .bill-line-name>strong{font-size:17px}.bill-footer{padding:18px}.bill-action-row{gap:12px}}
+@media(max-width:600px){.pos-table-workspace .pos-control-bar{padding:9px 10px}.pos-table-workspace .pos-control-row{gap:6px;grid-template-columns:minmax(0,1fr) minmax(0,.8fr) minmax(0,1fr)}.pos-table-workspace .pos-store-control,.pos-order-control,.pos-table-workspace .table-select-compact{padding:0 8px;gap:5px;min-height:46px;border-radius:10px}.pos-table-workspace .pos-store-control select,.pos-order-control select{font-size:12px;min-height:44px}.pos-table-workspace .pos-store-control svg{width:15px}.pos-table-workspace .table-select-compact input{font-size:13px;min-height:44px}.pos-table-workspace .table-select-compact>svg{width:15px}.pos-table-workspace .pos-main-grid{padding:0 10px 14px}.pos-table-workspace .pos-bill-region{border-radius:12px}.bill-heading{padding:13px 13px 9px}.table-bill .bill-heading h2{font-size:15px}.bill-time{font-size:10px}.bill-entry-surface{padding:0 12px 8px}.bill-section-heading{padding:9px 12px}.table-bill .bill-section-heading h3{font-size:11px}.bill-order-line{padding:11px 12px;column-gap:8px}.bill-line-name>strong{font-size:14px}.bill-line-price{font-size:14px}.table-bill .bill-quantity button{min-width:44px;min-height:44px}.bill-round h4{padding-left:12px;padding-right:12px}.bill-action-row{gap:5px;grid-template-columns:1fr .7fr 1.65fr}.table-bill .bill-action-row button{font-size:11px;padding:6px;gap:5px}.bill-action-row svg{width:16px}.bill-totals{font-size:13px}.bill-totals .bill-total{font-size:20px}.bill-suggestion-heading>span{display:none}.bill-search-field{gap:8px;padding:0 10px}.bill-search-field>svg:last-child{width:17px}.pos-table-workspace[data-menu-open=true] .pos-menu-region{inset:10px;border-radius:12px}.pos-full-menu-heading{padding:10px 12px;gap:8px}.pos-full-menu-heading p{max-width:110px;font-size:11px}.bill-kitchen-summary{padding:9px 12px}}
+@media print{body:has(.kot-print-backdrop)>:not(.kot-print-backdrop){display:none!important}.kot-print-backdrop{position:static;display:block;background:white;padding:0}.kot-print-sheet{border:0;border-radius:0;max-height:none;width:100%;overflow:visible;background:white!important;color:black!important}.kot-print-sheet button,.kot-print-help{display:none!important}.kot-print-sheet p,.kot-print-sheet span{color:black!important}.pos-table-workspace,.table-bill{background:white!important;color:black!important}}
+
+/* Brand hierarchy is scoped to this Uday Park main-POS surface. */
+.staff-layout:has(.pos-table-workspace)>header>div:first-child>div:last-child{display:block}
+.staff-layout:has(.pos-table-workspace)>header h1{font-family:Georgia,serif;font-size:25px;font-weight:700;letter-spacing:-.04em}
+@media(max-width:600px){.staff-layout:has(.pos-table-workspace)>header{padding:12px;gap:8px}.staff-layout:has(.pos-table-workspace)>header>div:first-child{gap:8px}.staff-layout:has(.pos-table-workspace)>header>div:first-child>div:nth-child(2){display:none}.staff-layout:has(.pos-table-workspace)>header h1{font-size:24px}.staff-layout:has(.pos-table-workspace)>header>div:first-child>div:last-child>span{display:none}}
+
+.pos-table-workspace .table-select-compact:focus-within{outline:2px solid var(--bill-focus);outline-offset:2px}.pos-table-workspace .table-select-compact input:focus-visible{outline:none}
+
+.bill-closing-choice{display:flex;flex-direction:column;gap:6px;margin-top:12px;font-size:12px;font-weight:650}.table-bill .bill-closing-choice select{width:100%;min-height:44px;background:var(--bill-card);color:var(--bill-ink);border:1px solid var(--bill-line);border-radius:9px;padding:9px}.table-bill .table-complimentary{margin:12px 0 0;background:var(--bill-soft);color:var(--bill-ink)}.table-complimentary>label{display:flex;flex-direction:column;gap:5px;margin:10px 0}.table-complimentary input,.table-complimentary textarea{background:var(--bill-card);color:var(--bill-ink);border:1px solid var(--bill-line);border-radius:8px;min-height:44px;padding:9px;max-width:100%}.table-complimentary p{font-size:12px;line-height:1.5;margin:9px 0}.table-complimentary button{margin:5px 5px 5px 0}.table-complimentary :focus-visible,.bill-closing-choice select:focus-visible{outline:3px solid var(--bill-focus);outline-offset:2px}
+
+/* Japandi polish: existing main-POS hooks only; no layout/visibility/print changes. */
+@media screen {
+  .pos-table-workspace {
+    --bill-bg:#F5F2EC; --bill-card:#FFFDFA; --bill-soft:#ECEEE7;
+    --bill-ink:#232321; --bill-muted:#62675E; --bill-line:#DED9CF;
+    --bill-accent:#594234; --bill-accent-ink:#FFFDFA; --bill-focus:#90661F;
+    --bill-warning-bg:#FFF4DF; --bill-warning-ink:#714A0E; --bill-warning-line:#D4B679;
+    --bill-error-bg:#FBEDEA; --bill-error-ink:#9A342B; --bill-error-line:#DBA49C;
+    --bill-info-bg:#EAF0F5; --bill-info-ink:#315B78;
+    --bill-success-bg:#E8F0E7; --bill-success-ink:#355D3B;
+  }
+  html[data-staff-theme=dark] .pos-table-workspace {
+    --bill-bg:#20221F; --bill-card:#292C27; --bill-soft:#32362F;
+    --bill-ink:#F5F2EC; --bill-muted:#C0C5BA; --bill-line:#4A5045;
+    --bill-accent:#E4CFB9; --bill-accent-ink:#29231E; --bill-focus:#D9A74A;
+    --bill-warning-bg:#393122; --bill-warning-ink:#F1D69B; --bill-warning-line:#8C7446;
+    --bill-error-bg:#3C2826; --bill-error-ink:#F4B7AC; --bill-error-line:#A56B63;
+    --bill-info-bg:#293640; --bill-info-ink:#B6D3E8;
+    --bill-success-bg:#2C3A2D; --bill-success-ink:#BCD9B9;
+  }
+  .pos-table-workspace .pos-control-row { gap:12px; }
+  .pos-table-workspace :is(.pos-store-control,.pos-order-control,.table-select-compact) {
+    min-height:48px; border-radius:10px; background:var(--bill-card); color:var(--bill-ink);
+  }
+  .pos-table-workspace :is(.pos-store-control,.pos-order-control) select {
+    min-height:46px; font-weight:500; color:var(--bill-ink); background:transparent;
+  }
+  .pos-table-workspace :is(.pos-store-control,.pos-order-control) option {
+    background:var(--bill-card); color:var(--bill-ink);
+  }
+  .pos-table-workspace .table-select-compact input { min-height:46px; font-weight:600; background:transparent; }
+  .pos-table-workspace .table-select-popover { border-radius:10px; box-shadow:0 8px 24px #0002; }
+  .pos-table-workspace .table-select-popover [aria-selected=true] { box-shadow:inset 3px 0 #D9A74A; }
+  .pos-table-workspace .pos-bill-region { border-radius:12px; box-shadow:0 2px 12px #23232108; }
+  .pos-table-workspace .table-bill .table-detail { border-radius:12px; }
+  .pos-table-workspace .table-bill :is(h2,h3,h4,strong,dt,dd) { color:var(--bill-ink); }
+  .pos-table-workspace .bill-heading { padding:16px 16px 12px; }
+  .pos-table-workspace .table-bill .bill-heading h2 { font-weight:600; }
+  .pos-table-workspace .table-bill .bill-eyebrow { font-size:13px; font-weight:600; color:var(--bill-ink); }
+  .pos-table-workspace .bill-time { font-size:12px; }
+  .pos-table-workspace .bill-entry-surface { padding:0 16px 12px; }
+  .pos-table-workspace .bill-item-entry .bill-menu-shortcut { font-size:12px; min-height:44px; font-weight:500; }
+  .pos-table-workspace .bill-suggestion-heading { text-transform:none; letter-spacing:0; font-size:13px; font-weight:500; }
+  .pos-table-workspace .bill-suggestion-heading>span { font-size:12px; }
+  .pos-table-workspace .bill-suggestion-name strong { font-weight:500; }
+  .pos-table-workspace :is(.bill-suggestion-price,.bill-line-price,.bill-totals,.bill-quantity) { font-variant-numeric:tabular-nums; }
+  .pos-table-workspace .bill-section-heading { padding:12px 16px; }
+  .pos-table-workspace .table-bill .bill-section-heading h3 { font-size:13px; font-weight:600; letter-spacing:.01em; }
+  .pos-table-workspace .bill-section-heading h3>span { background:var(--bill-card); color:var(--bill-ink); border:1px solid var(--bill-line); }
+  .pos-table-workspace .bill-sent-section>.bill-section-heading { background:var(--bill-card); box-shadow:inset 3px 0 #8A9A86; }
+  .pos-table-workspace .bill-order-line { padding:12px 16px; }
+  .pos-table-workspace .bill-line-name>strong { font-size:16px; font-weight:500; }
+  .pos-table-workspace .bill-line-name>span { font-size:12px; }
+  .pos-table-workspace .bill-line-price { font-weight:600; }
+  .pos-table-workspace .table-bill .bill-remove,
+  .pos-table-workspace .table-bill .bill-sent-line>button { color:var(--bill-error-ink); }
+  .pos-table-workspace .bill-sent-status { color:var(--bill-muted); }
+  .pos-table-workspace .bill-round h4 { font-size:12px; font-weight:500; padding:12px 16px 8px; }
+  .pos-table-workspace .table-bill .bill-preview-note { font-size:12px; line-height:1.5; padding:8px 16px; }
+  .pos-table-workspace .table-bill .table-warning {
+    margin:8px 12px; padding:10px 12px; border-radius:8px;
+    border-color:var(--bill-warning-line); background:var(--bill-warning-bg); color:var(--bill-warning-ink);
+    font-size:14px; line-height:1.5;
+  }
+  .pos-table-workspace .table-bill .table-warning[role=alert] {
+    border-color:var(--bill-error-line); background:var(--bill-error-bg); color:var(--bill-error-ink);
+  }
+  .pos-table-workspace .bill-kitchen-summary { padding:12px 16px; gap:8px; }
+  .pos-table-workspace .table-bill .bill-kitchen-summary .table-badges span { font-size:12px; font-weight:500; }
+  .pos-table-workspace .bill-kitchen-summary .table-badges span:nth-child(1) { background:var(--bill-warning-bg); color:var(--bill-warning-ink); }
+  .pos-table-workspace .bill-kitchen-summary .table-badges span:nth-child(2) { background:var(--bill-info-bg); color:var(--bill-info-ink); }
+  .pos-table-workspace .bill-kitchen-summary .table-badges span:nth-child(3) { background:var(--bill-success-bg); color:var(--bill-success-ink); }
+  .pos-table-workspace .table-bill .bill-kitchen-summary>button { min-height:44px; font-size:12px; padding:8px; font-weight:500; }
+  .pos-table-workspace .bill-footer { padding:16px; border-radius:0 0 12px 12px; }
+  .pos-table-workspace .bill-totals { gap:8px; padding:0 0 12px; }
+  .pos-table-workspace .bill-totals .bill-total { font-size:24px; font-weight:600; padding-top:12px; }
+  .pos-table-workspace .table-bill .bill-action-row button { font-weight:500; }
+  .pos-table-workspace .table-bill .bill-checkout { font-weight:600; }
+  .pos-table-workspace .table-bill button:disabled { opacity:.65; }
+  .pos-table-workspace .table-bill .table-card { border-radius:10px; padding:12px; }
+  .pos-table-workspace .table-complimentary>label { align-items:stretch; }
+  .pos-table-workspace .table-complimentary :is(input,textarea) { width:100%; }
+  @media(max-width:600px) {
+    .staff-layout:has(.pos-table-workspace)>header { padding-right:96px; flex-wrap:wrap; row-gap:8px; }
+    .staff-layout:has(.pos-table-workspace)>header h1 { font-size:20px; }
+    .staff-layout:has(.pos-table-workspace)>header>div:last-child { margin-left:auto; }
+    .staff-layout:has(.pos-table-workspace)>header button { min-width:44px; min-height:44px; }
+    .pos-table-workspace .pos-control-row { gap:8px; }
+    .pos-table-workspace :is(.bill-heading,.bill-section-heading,.bill-order-line,.bill-kitchen-summary) { padding-left:12px; padding-right:12px; }
+    .pos-table-workspace .bill-entry-surface { padding-left:12px; padding-right:12px; }
+    .pos-table-workspace .bill-line-name>strong { font-size:15px; }
+    .pos-table-workspace .bill-footer { padding:12px; }
+    .pos-table-workspace .table-bill .bill-action-row button { font-size:12px; white-space:normal; }
+  }
+}

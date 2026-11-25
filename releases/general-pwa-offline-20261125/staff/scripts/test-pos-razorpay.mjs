@@ -1,0 +1,507 @@
+import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+
+const require = createRequire(import.meta.url);
+const root = resolve(import.meta.dirname, '..');
+const posRazorpay = require(resolve(root, 'functions/posRazorpay.js'));
+const reporting = await import(resolve(root, 'functions/reportingCore.mjs'));
+
+const source = path => readFileSync(resolve(root, path), 'utf8');
+const backend = source('functions/posRazorpay.js');
+const webhook = source('functions/razorpayPaymentFirst.js');
+const indexSource = source('functions/index.js');
+const posHome = source('frontend/pages/pos/POSHome.tsx');
+const runningOrders = source('frontend/pages/pos/RunningOrders.tsx');
+const helper = source('frontend/lib/posRazorpay.ts');
+const inventory = source('functions/onlineOrderInventory.js');
+const dayClose = source('frontend/pages/reports/DayClose.tsx');
+const auditControl = source('frontend/pages/reports/AuditControl.tsx');
+const inventoryControl = source('frontend/pages/inventory/InventoryControl.tsx');
+const rules = source('firestore.rules');
+const envExample = source('.env.example');
+const packageJson = JSON.parse(source('package.json'));
+
+const tests = [];
+function test(name, run) {
+  tests.push({ name, run });
+}
+
+test('Razorpay appears as a full-payment POS tender', () => {
+  assert.match(posHome, /'RAZORPAY'/);
+  assert.match(posHome, /Generate Razorpay Payment/);
+  assert.match(posHome, /SPLIT_PAYMENT_METHODS = PAYMENT_METHODS\.filter\(method => !\['COMPLIMENTARY', 'RAZORPAY'\]/);
+});
+
+test('server ignores browser-supplied amount and calculates canonical totals', () => {
+  const canonicalSection = backend.slice(backend.indexOf('async function canonicalizePosRequest'), backend.indexOf('async function findExistingProviderRequest'));
+  assert.doesNotMatch(canonicalSection, /request\.data\?\.amount|request\.data\.amount/);
+  assert.match(canonicalSection, /canonicalizeRequestedCart/);
+  assert.match(canonicalSection, /amountPaise = rupeesToPaise\(totals\.grandTotal\)/);
+});
+
+test('POS session authorization covers both logical sales and physical inventory stores', () => {
+  const canonicalSection = backend.slice(backend.indexOf('async function canonicalizePosRequest'), backend.indexOf('async function findExistingProviderRequest'));
+  const storeLoad = canonicalSection.indexOf("const store = { id: storeSnapshot.id");
+  const aliasResolution = canonicalSection.indexOf('resolveInventoryStore(store');
+  const pairAuthorization = canonicalSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, store.id, inventoryStore.id)');
+  const inventoryPreflight = canonicalSection.indexOf('planOnlineOrderInventory({');
+  assert.ok(storeLoad >= 0 && aliasResolution > storeLoad);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(inventoryPreflight > pairAuthorization);
+});
+
+test('stable idempotency key produces one deterministic session and order', () => {
+  assert.equal(posRazorpay.sessionIdFor('checkout-123'), posRazorpay.sessionIdFor('checkout-123'));
+  assert.notEqual(posRazorpay.sessionIdFor('checkout-123'), posRazorpay.sessionIdFor('checkout-124'));
+  assert.match(backend, /requestChecksum !== canonical\.requestChecksum/);
+  assert.match(backend, /different store, cart, total, discount, tax, or tender/);
+  assert.match(backend, /existing\?\.providerRequestType \|\| configuredProviderRequestType/);
+  assert.match(backend, /reservation\.providerRequestType === 'DYNAMIC_QR'/);
+});
+
+test('provider request retry recovers by deterministic reference', async () => {
+  let createCount = 0;
+  let stored = null;
+  const client = {
+    paymentLink: {
+      all: async () => ({ items: stored ? [stored] : [] }),
+      create: async payload => {
+        createCount += 1;
+        stored = { id: 'plink_1', short_url: 'https://rzp.io/i/example', amount: payload.amount, reference_id: payload.reference_id };
+        return stored;
+      },
+    },
+  };
+  const input = {
+    client,
+    session: {
+      orderId: 'POS_TEST', storeId: 'GOLDEN_I', storeCode: 'GOLDEN_I', amountPaise: 22500, providerReferenceId: 'CBPOSREF',
+    },
+    dynamicQrEnabled: false,
+    now: Date.now(),
+  };
+  const first = await posRazorpay.createProviderRequest(input);
+  const second = await posRazorpay.createProviderRequest(input);
+  assert.equal(first.entity.id, second.entity.id);
+  assert.equal(createCount, 1);
+  assert.equal(second.recovered, true);
+});
+
+test('Payment Link is the safe default and Dynamic QR is explicitly gated', () => {
+  assert.equal(posRazorpay.booleanParameter({ value: () => 'false' }), false);
+  assert.equal(posRazorpay.booleanParameter({ value: () => 'true' }), true);
+  assert.match(backend, /POS_RAZORPAY_DYNAMIC_QR_ENABLED/);
+  assert.match(backend, /dynamicQrEnabled \? 'DYNAMIC_QR' : 'PAYMENT_LINK'/);
+  assert.match(posHome, /<QRCode/);
+  assert.doesNotThrow(() => posRazorpay.validateProviderRequest({
+    providerRequestType: 'PAYMENT_LINK',
+    entity: {
+      id: 'plink_1',
+      amount: 22500,
+      short_url: 'https://rzp.io/i/example',
+      reference_id: 'CBPOSREF',
+    },
+  }, 22500, 'CBPOSREF'));
+  assert.throws(() => posRazorpay.validateProviderRequest({
+    providerRequestType: 'PAYMENT_LINK',
+    entity: { id: 'plink_1', short_url: 'https://rzp.io/i/example', reference_id: 'CBPOSREF' },
+  }, 22500, 'CBPOSREF'), /amount failed validation/);
+});
+
+test('Dynamic QR verifies its captured payment without inventing a provider order', () => {
+  const qrResult = posRazorpay.verifyCapturedProviderPayment({
+    session: { providerRequestType: 'DYNAMIC_QR', amountPaise: 22500 },
+    providerPayment: { id: 'pay_qr_1', status: 'captured', amount: 22500, currency: 'INR', order_id: null },
+    providerOrder: null,
+  });
+  assert.equal(qrResult.valid, true);
+  const linkResult = posRazorpay.verifyCapturedProviderPayment({
+    session: { providerRequestType: 'PAYMENT_LINK', amountPaise: 22500 },
+    providerPayment: { id: 'pay_link_1', status: 'captured', amount: 22500, currency: 'INR', order_id: null },
+    providerOrder: null,
+  });
+  assert.equal(linkResult.valid, false);
+  assert.equal(linkResult.code, 'PROVIDER_ORDER_MISSING');
+});
+
+test('no order KOT stock or payment is created before capture', () => {
+  const createSection = backend.slice(backend.indexOf('async function createPosSession'), backend.indexOf('async function providerStateForSession'));
+  assert.doesNotMatch(createSection, /collection\('orders'\)|collection\('kotItems'\)|collection\('stockMovements'\)/);
+  assert.match(createSection, /POS_SESSION_COLLECTION/);
+});
+
+test('captured payment finalises deterministic order payment KOT and inventory once', () => {
+  const finalizeSection = backend.slice(backend.indexOf('async function finalizeCapturedPosPayment'), backend.indexOf('async function verifyAndFinalizeSession'));
+  assert.match(finalizeSection, /existingOrderSnapshot\.exists/);
+  assert.match(finalizeSection, /transaction\.create\(orderRef/);
+  assert.match(finalizeSection, /deterministicKotId/);
+  assert.match(finalizeSection, /deterministicMovementId/);
+  assert.match(finalizeSection, /status: 'CAPTURED'/);
+  assert.match(finalizeSection, /verifiedServerSide: true/);
+  assert.match(backend, /authoritativeRequestState\.paymentId !== paymentId/);
+  assert.match(backend, /captured payment does not belong to this Razorpay request/);
+});
+
+test('captured payment revalidates staff and alias before stock or safely requires review', () => {
+  const finalizeSection = backend.slice(backend.indexOf('async function finalizeCapturedPosPayment'), backend.indexOf('async function verifyAndFinalizeSession'));
+  const staffReload = finalizeSection.indexOf("db.collection('users').doc(session.staffUid)");
+  const aliasResolution = finalizeSection.indexOf('resolveInventoryStore(store');
+  const pairAuthorization = finalizeSection.indexOf('isAuthorizedStaffForStorePair(currentStaffProfile, store.id, inventoryStore.id)');
+  const stockWrites = finalizeSection.indexOf('inventoryPlan.stockUpdates.forEach');
+  assert.ok(staffReload >= 0);
+  assert.ok(aliasResolution > staffReload);
+  assert.ok(pairAuthorization > aliasResolution);
+  assert.ok(stockWrites > pairAuthorization);
+  assert.match(finalizeSection, /INVENTORY_STORE_CONFIGURATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizeSection, /STAFF_FULFILMENT_AUTHORIZATION_CHANGED_AFTER_PAYMENT/);
+  assert.match(finalizeSection, /status: 'PAYMENT_REVIEW_REQUIRED'/);
+});
+
+test('lost browser callback recovers through status fetch and signed webhook', () => {
+  assert.match(helper, /getPosRazorpayStatus/);
+  assert.match(posHome, /setInterval\(\(\) => void refreshRazorpayStatus\(false\), 5000\)/);
+  assert.match(indexSource, /exports\.posRazorpayWebhook = posRazorpayFunctions\.posRazorpayWebhook/);
+  assert.match(backend, /payment_link\.paid/);
+  assert.match(backend, /verifyWebhookSignature/);
+  assert.match(backend, /response\.status\(result\.retry \? 500 : 200\)/);
+});
+
+test('duplicate webhook and finalisation remain idempotent', () => {
+  assert.match(webhook, /auditSnapshot\.exists && auditSnapshot\.data\(\)\?\.status === 'PROCESSED'/);
+  assert.match(backend, /alreadyFinalized: true/);
+});
+
+test('expired cancelled and failed requests create no sale', () => {
+  assert.match(backend, /if \(linkStatus === 'cancelled'\)/);
+  assert.match(backend, /if \(linkStatus === 'expired'\)/);
+  assert.match(backend, /status: 'FAILED'/);
+  assert.match(backend, /client\.paymentLink\.cancel/);
+});
+
+test('a failed payment attempt cannot unlock a still-live provider request', () => {
+  const webhookSection = backend.slice(backend.indexOf('async function processPosPaymentWebhook'), backend.indexOf('async function processPosRefundWebhook'));
+  assert.match(webhookSection, /eventName === 'payment\.failed'/);
+  assert.match(webhookSection, /'WAITING_FOR_PAYMENT'/);
+  assert.match(webhookSection, /PROVIDER_PAYMENT_ATTEMPT_FAILED/);
+  assert.doesNotMatch(webhookSection, /status: 'FAILED'/);
+});
+
+test('dynamic QR expiry includes provider minimum-time safety margin', () => {
+  assert.match(backend, /POS_SESSION_TTL_MS = 16 \* 60 \* 1000/);
+  assert.match(backend, /closeAtSeconds = Math\.floor\(\(now \+ POS_SESSION_TTL_MS\) \/ 1000\)/);
+  assert.match(backend, /entity\.expire_by \|\| entity\.close_by/);
+});
+
+test('cart is locked until provider request is cancelled or completed', () => {
+  assert.match(helper, /PAYMENT_REVIEW_REQUIRED/);
+  assert.match(posHome, /Cancel the active Razorpay payment request before changing stores/);
+  assert.match(posHome, /razorpayPaymentLocked && skipConfirm !== true/);
+});
+
+test('hold creates no Razorpay request', () => {
+  const holdSection = posHome.slice(posHome.indexOf('const holdCurrentBill'), posHome.indexOf('const recallHeldBill'));
+  assert.doesNotMatch(holdSection, /createPosRazorpaySession/);
+  assert.match(holdSection, /razorpayPaymentLocked/);
+});
+
+test('Cashier cannot refund while Admin and Manager can', () => {
+  const refundSection = backend.slice(backend.indexOf('async function requestPosRefund'), backend.indexOf('async function processPosPaymentWebhook'));
+  assert.match(refundSection, /\['ADMIN', 'STORE_MANAGER'\]/);
+  assert.doesNotMatch(refundSection.match(/staffIdentity[\s\S]{0,100}/)?.[0] || '', /CASHIER/);
+  assert.match(refundSection, /assertStoreAccess\(staff, order\.storeId\)/);
+  assert.match(runningOrders, /requestPosRazorpayRefund/);
+});
+
+test('POS refund requires logical, current physical, and historical physical store access before provider API', () => {
+  const refundSection = backend.slice(backend.indexOf('async function requestPosRefund'), backend.indexOf('async function processPosPaymentWebhook'));
+  const currentAlias = refundSection.indexOf('resolveInventoryStore(salesStore');
+  const currentPairAuthorization = refundSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, salesStore.id, currentInventoryStore.id)');
+  const movementQuery = refundSection.indexOf("collection('stockMovements').where('referenceId', '==', orderId)");
+  const historicalAuthorization = refundSection.indexOf('isAuthorizedStaffForStorePair(staff.profile, salesStore.id, inventoryStoreId)');
+  const refundClaim = refundSection.indexOf('const claim = await db.runTransaction');
+  const providerRefund = refundSection.indexOf('createIdempotentProviderRefund({');
+  assert.ok(movementQuery >= 0);
+  assert.ok(currentAlias >= 0 && currentPairAuthorization > currentAlias);
+  assert.ok(historicalAuthorization > currentPairAuthorization);
+  assert.ok(refundClaim > historicalAuthorization);
+  assert.ok(providerRefund > refundClaim);
+  assert.match(refundSection, /Refunding this order requires access to both its sales and inventory stores/);
+  assert.match(refundSection, /requires access to every physical store recorded by its inventory movements/);
+});
+
+test('refund is reasoned idempotent and provider-confirmed', async () => {
+  const refundId = posRazorpay.deterministicRefundId('POS_TEST_ORDER');
+  assert.equal(refundId, posRazorpay.deterministicRefundId('POS_TEST_ORDER'));
+  assert.match(refundId, /^[A-Z0-9_-]{10,40}$/);
+  let request = null;
+  const providerRefund = await posRazorpay.createIdempotentProviderRefund({
+    keyId: 'rzp_test_public_identifier',
+    keySecret: 'server_only_test_secret',
+    paymentId: 'pay_test_123',
+    refundId,
+    payload: { amount: 22500, receipt: refundId },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'rfnd_test_123', status: 'pending' }),
+      };
+    },
+  });
+  assert.equal(providerRefund.id, 'rfnd_test_123');
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers['X-Refund-Idempotency'], refundId);
+  assert.match(request.options.headers.Authorization, /^Basic /);
+  assert.deepEqual(JSON.parse(request.options.body), { amount: 22500, receipt: refundId });
+  assert.match(backend, /deterministicRefundId\(orderId\)/);
+  assert.match(backend, /'X-Refund-Idempotency': refundId/);
+  assert.match(backend, /providerPaymentId/);
+  assert.match(backend, /capturedAmount !== orderAmount/);
+  assert.match(backend, /String\(payment\.currency \|\| ''\)\.toUpperCase\(\) !== CURRENCY/);
+  assert.match(backend, /\['REFUND_PENDING', 'REFUNDED'\]\.includes\(existing\.status\)/);
+  assert.match(backend, /POS_REFUND_WEBHOOK_EVENTS/);
+  assert.match(backend, /processPosRefundWebhook/);
+  assert.match(runningOrders, /Razorpay: \{order\.refundStatus\}/);
+  assert.match(runningOrders, /Razorpay refund/);
+});
+
+test('Golden I missing BOM remains an explicit PENDING_BOM audit', () => {
+  assert.match(inventory, /ALLOW_NEGATIVE_DEFER_BOM/);
+  assert.match(inventory, /status: 'PENDING_BOM'/);
+  assert.match(inventory, /source = 'CUSTOMER_WEB_ACCEPT'/);
+  assert.match(backend, /source: 'POS_RAZORPAY'/);
+});
+
+test('Razorpay is reported separately from manual UPI', () => {
+  const rows = reporting.normalizedPaymentRows({
+    paymentStatus: 'PAID',
+    paymentMethod: 'RAZORPAY',
+    paymentProvider: 'RAZORPAY',
+    grandTotal: 350,
+  }, [{ method: 'RAZORPAY', provider: 'RAZORPAY', providerMethod: 'UPI', amount: 350 }]);
+  assert.deepEqual(rows.map(row => row.method), ['RAZORPAY']);
+  assert.match(dayClose, /'CARD', 'RAZORPAY', 'ONLINE'/);
+  assert.match(dayClose, /method === 'RAZORPAY'/);
+  assert.match(auditControl, /'CARD', 'RAZORPAY', 'ONLINE'/);
+  assert.match(inventoryControl, /'CARD', 'RAZORPAY', 'ONLINE'/);
+  assert.match(runningOrders, /const PAYMENT_METHODS[^\n]+\['CASH', 'UPI', 'CARD', 'SWIGGY'/);
+  assert.match(source('functions/reportingCore.mjs'), /razorpay: metrics\.paymentBreakdown\.RAZORPAY \|\| 0/);
+});
+
+test('existing manual tenders and customer payment-first exports remain present', () => {
+  for (const tender of ['CASH', 'UPI', 'CARD', 'COMPLIMENTARY']) assert.match(posHome, new RegExp(`'${tender}'`));
+  assert.match(indexSource, /createCustomerCheckoutSession/);
+  assert.match(indexSource, /verifyCustomerRazorpayPayment/);
+});
+
+test('POS functions use isolated POS Razorpay credentials only', () => {
+  assert.match(backend, /defineString\('POS_RAZORPAY_KEY_ID'/);
+  assert.match(backend, /defineSecret\('POS_RAZORPAY_KEY_SECRET'\)/);
+  assert.match(backend, /defineSecret\('POS_RAZORPAY_WEBHOOK_SECRET'\)/);
+  assert.match(backend, /keyIdParameter = POS_RAZORPAY_KEY_ID/);
+  assert.match(backend, /keySecretParameter = POS_RAZORPAY_KEY_SECRET/);
+  assert.match(backend, /webhookSecretParameter = POS_RAZORPAY_WEBHOOK_SECRET/);
+  assert.doesNotMatch(backend, /\bRAZORPAY_KEY_ID\b|\bRAZORPAY_KEY_SECRET\b|\bRAZORPAY_WEBHOOK_SECRET\b/);
+});
+
+test('customer Razorpay functions keep their existing credentials and webhook', () => {
+  assert.match(webhook, /keyIdParameter = RAZORPAY_KEY_ID/);
+  assert.match(webhook, /keySecretParameter = RAZORPAY_KEY_SECRET/);
+  assert.match(webhook, /webhookSecretParameter = RAZORPAY_WEBHOOK_SECRET/);
+  assert.doesNotMatch(webhook, /POS_RAZORPAY_KEY_ID|POS_RAZORPAY_KEY_SECRET|POS_RAZORPAY_WEBHOOK_SECRET/);
+  assert.doesNotMatch(webhook, /posPaymentWebhookHandler|posRefundWebhookHandler|POS_PAYMENT_WEBHOOK_EVENTS/);
+  assert.match(indexSource, /createRazorpayPaymentFirstFunctions\(\{ admin, db, region: REGION \}\)/);
+});
+
+test('POS Test Mode accepts a test key and rejects a live key before provider use', () => {
+  assert.equal(posRazorpay.assertPosRazorpayTestMode('rzp_test_PosIsolation123'), 'rzp_test_PosIsolation123');
+  assert.throws(
+    () => posRazorpay.assertPosRazorpayTestMode('rzp_live_MustNeverRun'),
+    /POS Razorpay mode mismatch: Test Mode required/,
+  );
+  assert.throws(
+    () => posRazorpay.assertPosRazorpayTestMode(''),
+    /POS Razorpay mode mismatch: Test Mode required/,
+  );
+  assert.match(backend, /keyId: assertPosRazorpayTestMode\(keyIdParameter\.value\(\)\)/);
+});
+
+test('POS webhook rejects an invalid signature before any Firestore access', async () => {
+  let firestoreAccessed = false;
+  const responseState = { status: null, body: null };
+  const response = {
+    status(code) { responseState.status = code; return this; },
+    send(body) { responseState.body = body; return this; },
+    json(body) { responseState.body = body; return this; },
+  };
+  await posRazorpay.handlePosRazorpayWebhook({
+    request: {
+      rawBody: Buffer.from(JSON.stringify({ event: 'payment_link.paid' })),
+      body: { event: 'payment_link.paid' },
+      get: () => 'invalid-signature',
+    },
+    response,
+    db: {
+      collection() { firestoreAccessed = true; throw new Error('Firestore must not be read'); },
+    },
+    admin: {},
+    keyId: 'rzp_test_PosIsolation123',
+    keySecret: 'test-secret-not-a-real-credential',
+    webhookSecret: 'test-webhook-secret',
+  });
+  assert.equal(responseState.status, 400);
+  assert.equal(firestoreAccessed, false);
+});
+
+test('POS webhook cannot process a customer-order payment', async () => {
+  const webhookSecret = 'test-pos-webhook-secret';
+  const event = {
+    event: 'payment_link.paid',
+    payload: {
+      payment: { entity: { id: 'pay_customer_test', order_id: 'order_customer_test', notes: {} } },
+    },
+  };
+  const rawBody = Buffer.from(JSON.stringify(event));
+  const signature = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+  const queriedCollections = [];
+  const auditRef = { path: 'posRazorpayWebhookEvents/evt_customer_payment' };
+  let auditData = null;
+  const emptyQuery = {
+    where() { return this; },
+    limit() { return this; },
+    get: async () => ({ size: 0, docs: [] }),
+  };
+  const db = {
+    collection(name) {
+      queriedCollections.push(name);
+      if (name === 'posRazorpayWebhookEvents') return { doc: () => auditRef };
+      assert.equal(name, 'posRazorpaySessions');
+      return emptyQuery;
+    },
+    runTransaction: async run => run({
+      get: async ref => {
+        assert.equal(ref, auditRef);
+        return { exists: auditData !== null, data: () => auditData };
+      },
+      set: (ref, payload) => {
+        assert.equal(ref, auditRef);
+        auditData = { ...(auditData || {}), ...payload };
+      },
+    }),
+  };
+  const admin = {
+    firestore: {
+      Timestamp: { fromMillis: value => value },
+      FieldValue: {
+        serverTimestamp: () => 'SERVER_TIMESTAMP',
+        delete: () => 'DELETE_FIELD',
+      },
+    },
+  };
+  const responseState = { status: null, body: null };
+  const response = {
+    status(code) { responseState.status = code; return this; },
+    send(body) { responseState.body = body; return this; },
+    json(body) { responseState.body = body; return this; },
+  };
+  class FakeRazorpay {}
+  await posRazorpay.handlePosRazorpayWebhook({
+    request: {
+      rawBody,
+      body: event,
+      get: name => name === 'x-razorpay-signature' ? signature : 'evt_customer_payment',
+    },
+    response,
+    db,
+    admin,
+    keyId: 'rzp_test_PosIsolation123',
+    keySecret: 'test-secret-not-a-real-credential',
+    webhookSecret,
+    RazorpayClass: FakeRazorpay,
+  });
+  assert.equal(responseState.status, 400);
+  assert.equal(auditData.status, 'REJECTED');
+  assert.equal(auditData.outcome, 'POS_SESSION_NOT_FOUND');
+  assert.deepEqual(queriedCollections, [
+    'posRazorpayWebhookEvents',
+    'posRazorpaySessions',
+  ]);
+  const directResult = await posRazorpay.processPosPaymentWebhook({
+    db: {
+      collection(name) {
+        assert.equal(name, 'posRazorpaySessions');
+        return emptyQuery;
+      },
+    },
+    admin: {},
+    eventName: 'payment_link.paid',
+    paymentEntity: { id: 'pay_customer_test', order_id: 'order_customer_test', notes: {} },
+    paymentLinkEntity: null,
+    qrCodeEntity: null,
+    client: {},
+  });
+  assert.deepEqual(directResult, { handled: false, outcome: 'POS_SESSION_NOT_FOUND' });
+});
+
+test('customer webhook cannot process a POS session', () => {
+  assert.doesNotMatch(webhook, /posRazorpaySessions|processPosPaymentWebhook|processPosRefundWebhook/);
+  assert.doesNotMatch(indexSource, /posPaymentWebhookHandler|posRefundWebhookHandler/);
+  assert.match(indexSource, /exports\.razorpayWebhook = razorpayCheckoutFunctions\.razorpayWebhook/);
+});
+
+test('duplicate POS webhook claims do not re-run finalisation', async () => {
+  let writes = 0;
+  const auditRef = { id: 'evt_duplicate' };
+  const result = await posRazorpay.claimPosWebhookEvent({
+    db: {
+      collection(name) {
+        assert.equal(name, 'posRazorpayWebhookEvents');
+        return { doc: () => auditRef };
+      },
+      runTransaction: async run => run({
+        get: async () => ({ exists: true, data: () => ({ status: 'PROCESSED' }) }),
+        set: () => { writes += 1; },
+      }),
+    },
+    admin: {},
+    eventId: 'evt_duplicate',
+    eventName: 'payment_link.paid',
+  });
+  assert.equal(result.kind, 'DUPLICATE');
+  assert.equal(writes, 0);
+});
+
+test('provider secrets remain backend-only', () => {
+  assert.doesNotMatch(posHome, /RAZORPAY_KEY_SECRET|RAZORPAY_WEBHOOK_SECRET/);
+  assert.doesNotMatch(helper, /RAZORPAY_KEY_SECRET|RAZORPAY_WEBHOOK_SECRET/);
+  assert.match(backend, /secrets: \[keySecretParameter\]/);
+  assert.match(backend, /secrets: \[keySecretParameter, webhookSecretParameter\]/);
+  assert.match(envExample, /POS_RAZORPAY_KEY_ID="rzp_test_REPLACE_WITH_POS_TEST_KEY_ID"/);
+  assert.doesNotMatch(envExample, /^POS_RAZORPAY_KEY_SECRET=|^POS_RAZORPAY_WEBHOOK_SECRET=/m);
+});
+
+test('POS Razorpay sessions and webhook audits are denied to all Firestore clients', () => {
+  assert.match(rules, /match \/posRazorpaySessions\/\{sessionId\} \{\s*allow read, create, update, delete: if false;/);
+  assert.match(rules, /match \/posRazorpayWebhookEvents\/\{eventId\} \{\s*allow read, create, update, delete: if false;/);
+});
+
+test('dedicated test command is registered', () => {
+  assert.equal(packageJson.scripts['test:pos-razorpay'], 'node scripts/test-pos-razorpay.mjs');
+});
+
+let passed = 0;
+for (const { name, run } of tests) {
+  try {
+    await run();
+    passed += 1;
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    console.error(`FAIL ${name}`);
+    throw error;
+  }
+}
+console.log(`\n${passed}/${tests.length} POS Razorpay tests passed.`);

@@ -1,0 +1,30 @@
+{
+  "name": "Coffee Bond",
+  "short_name": "Coffee Bond",
+  "description": "Order ahead from Coffee Bond and track your order",
+  "id": "/order",
+  "start_url": "/order",
+  "scope": "/order",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fbf7f1",
+  "theme_color": "#5c4033",
+  "icons": [
+    {
+      "src": "/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/pwa/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

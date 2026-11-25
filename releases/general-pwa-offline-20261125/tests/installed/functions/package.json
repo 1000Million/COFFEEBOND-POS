@@ -1,0 +1,1 @@
+{"name":"full-app-synthetic-functions","private":true,"main":"index.cjs","engines":{"node":"22"},"dependencies":{"firebase-admin":"^13.10.0","firebase-functions":"^6.1.2"}}

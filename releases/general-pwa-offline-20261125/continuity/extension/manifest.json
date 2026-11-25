@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Coffee Bond offline session clock",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxAw8QPhtBaQF97eZrMnojxdGyEZ5ukNXGcUaiQub+iSf9QO1cNVj/KAaALoYAxyWhtYy1L8GChMUzQP4DIWaSDqCr98kqCZUJb1h2c8vNpRcG5Wuj/NPLiKKLvIb6Rw46d6gp6oSL+cBZUcMuGoLk0LDbtyvFQ0DmKa6b2qepqyqdb0WFUMAwjp6a08WyWfB9XLMoZSGvxGBoCOWHDhMe9A+KN3XBolu6UVM9RHeB8EuGforwcTGj/VlXo1HdPQWtYtvI7isLsm4HLf32o53CQVNeGDUfQJgGfIiYYu7EtiH0UCuOtn3z+Gl7Hp8EXWa7Av0960x/WZ31imz2AEbwwIDAQAB",
+  "permissions": [
+    "storage",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://us-central1-coffee-bond-pos.cloudfunctions.net/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://pos.coffeebond.in/*"
+    ]
+  },
+  "background": {
+    "service_worker": "clock.js",
+    "type": "module"
+  }
+}
