@@ -4,8 +4,8 @@ FULL_RELEASE_QA = PARTIAL. Local source-review candidate; no production requests
 
 | Test | Expected | Actual | Status | Evidence | Corrective Action |
 | --- | --- | --- | --- | --- | --- |
-| Historical UI and routes | Retire old pages, retain active Menu Management | Historical section/state/icons and 11 routes/imports removed; 13 unreferenced page modules listed | PASS | Source diff and reference audit | Fixture cleanup before physically deleting MenuItems |
-| TypeScript | Candidate compiles | TypeScript 5.8.3 exit 0 | PASS | typecheck.log | None |
+| Historical UI and routes | Retire old pages, retain active Menu Management | Historical section/routes removed; 13 files deleted; only obsolete fixture entry removed; all 129 assertions retained | PASS | evidence/retirement-final.json | None for deletion |
+| TypeScript | Candidate compiles | TypeScript 5.8.3 exit 0 before and after deletion | PASS | evidence/build-after-retirement.json | None |
 | Staff production build | Compile guarded PWA and active app | Build exit 0; 82 injected manifest entries | PASS | production-build.log | No deployment in this task |
 | Firestore persistent cache | Reload and multiple tabs retain data | Real demo SDK/emulator and two-tab/reload cases pass | PASS | persistence-tests/RESULT.json | Installed-device check remains separate |
 | Profile and connection metadata | Cached data cannot authorize or imply server sync | Actual React components passed controlled callback cases | PASS | persistence-tests/RESULT.json | Preserve signed offline authorization |
@@ -26,3 +26,9 @@ FULL_RELEASE_QA = PARTIAL. Local source-review candidate; no production requests
 | Receipt/legal display | Preserve receipts | Counter and original table pending receipts shown locally; physical/legal scenarios not requalified | PARTIAL | evidence/offline-cash-smoke.json | No physical-output claim |
 
 The six new full-app smoke cases and fresh build were run on November 25. The 14 persistence controls and 12 worker controls are prior exact-source evidence. The broad historical `test-pwa-customer-ux` suite retains obsolete pre-November worker source assertions; it is not claimed as passing or weakened in this review.
+
+| Final retirement follow-up | Expected | Actual | Status | Evidence | Corrective Action |
+| --- | --- | --- | --- | --- | --- |
+| Active code and fixture preservation | 20 active files and all assertions unchanged | Eight focused retirement checks PASS; 129 original assertions and ten non-retired guarded entries retained | PASS | evidence/retirement-final.json | None |
+| Final production build | Build the source after deleting old pages | TypeScript and build exit 0; generated asset bytes differ from earlier build | PASS | evidence/build-after-retirement.json | No identical-byte claim |
+| Extra post-deletion browser rerun | Repeat six Cash checks on final built assets | Remote call timed out before PID/output; earlier six-case PASS preserved | BLOCKED | evidence/followup-limitations.json | Inspect existing process/evidence state after Mac reconnects before retrying |

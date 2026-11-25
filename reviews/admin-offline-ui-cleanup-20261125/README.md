@@ -16,7 +16,25 @@ All browser/backend destinations were restricted to loopback emulators. The actu
 
 ## Ordered retirement
 
-This first review commit deliberately retains the thirteen old page modules. After its successful branch push, the obsolete MenuItems fixture entry will be removed, active Menu Management references verified and those thirteen files deleted in a separate commit. No Firestore collection is deleted or edited.
+The first qualified commit `6e9cd1b` was pushed before deleting anything. This second commit removes the thirteen retired page files and only the obsolete MenuItems path in `scripts/test-pwa-customer-ux.ts`. All 129 original assertion calls and the other ten guarded-page entries are unchanged. Eight focused retirement controls passed; all twenty active Menu Management/Inventory source files and four routes/links remain intact. TypeScript and the production-configured build passed again after deletion. No Firestore collection is deleted or edited.
+
+Deleted pages:
+
+- `frontend/pages/admin/Categories.tsx`
+- `frontend/pages/admin/MenuItems.tsx`
+- `frontend/pages/admin/InventoryItems.tsx`
+- `frontend/pages/admin/StoreInventory.tsx`
+- `frontend/pages/admin/Recipes.tsx`
+- `frontend/pages/admin/Seed.tsx`
+- `frontend/pages/admin/MenuImport.tsx`
+- `frontend/pages/admin/DataManagement.tsx`
+- `frontend/pages/admin/Phase7AValidation.tsx`
+- `frontend/pages/admin/Phase7FDryRunImport.tsx`
+- `frontend/pages/admin/Phase7HStockCosting.tsx`
+- `frontend/pages/admin/Phase7IBomAliasCorrection.tsx`
+- `frontend/pages/admin/Phase7JUdayParkPilot.tsx`
+
+The final build's generated asset bytes differ from the pre-deletion build; no identical-runtime claim is made. The six-case Cash smoke passed before retirement. An additional post-deletion browser rerun was submitted, but the Mac stopped responding before any PID/output was received and the remote call timed out. That rerun is NOT TESTED, and its start/cleanup is unconfirmed. Inspect the existing runner evidence/process state before retrying. The exact already-verified deletion/fixture delta was published through the GitHub connector; the disconnected Mac's local branch still needs synchronization with this final remote commit. No production action was queued.
 
 ## Source and deployment boundary
 

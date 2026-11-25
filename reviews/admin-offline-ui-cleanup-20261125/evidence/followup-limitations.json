@@ -1,0 +1,14 @@
+{
+  "fullReleaseQA": "PARTIAL",
+  "sixCaseOfflineCashSmoke": "PASS before retired-file deletion",
+  "postDeletionTypecheck": "PASS",
+  "postDeletionProductionBuild": "PASS",
+  "postDeletionRetirementChecks": "8 PASS",
+  "compiledFileIdentity": "DIFFERENT; 83 emitted files in each build. No runtime byte-equivalence claimed.",
+  "additionalPostDeletionBrowserRerun": "NOT TESTED",
+  "remoteError": "Timeout - no response from device",
+  "followupStartAndCleanup": "UNCONFIRMED; no PID or process output returned; not resubmitted",
+  "requiredFollowup": "Inspect qualification/offline-cash-smoke/after-retirement and existing processes after Mac reconnects; synchronize local branch without discarding user changes.",
+  "deployment": "NOT EXECUTED",
+  "productionChanges": 0
+}

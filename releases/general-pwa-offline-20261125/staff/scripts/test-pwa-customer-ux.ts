@@ -32,7 +32,6 @@ const protectedStaffActions = [
   'frontend/pages/inventory/PurchaseEntry.tsx',
   'frontend/pages/reports/DayClose.tsx',
   'frontend/pages/admin/LocationManagement.tsx',
-  'frontend/pages/admin/MenuItems.tsx',
   'frontend/pages/admin/POSReadiness.tsx',
 ];
 
