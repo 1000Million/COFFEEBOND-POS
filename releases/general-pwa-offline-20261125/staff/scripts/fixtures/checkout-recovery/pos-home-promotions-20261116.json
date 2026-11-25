@@ -1,0 +1,1433 @@
+{
+  "scope": "Exact source identities reviewed on 2026-11-16. These reversible test-only promotions reconstruct the historical Bundle10 comparison; they do not execute the current financial checkout. Current candidate recovery behavior is qualified separately against the emulator and browser. Original historical recovery and Bundle10 extraction fixtures remain unchanged.",
+  "promotions": [
+    {
+      "scope": "Verified production source evolution since the historical recovery fixture: server financial V3, GST mapping, table service, scoped draft/reconnect/PWA guards, and POS presentation. No production bytes are changed.",
+      "baselineSha256": "b5d33b65ced3cf43bc7108b4a3e04c8076ceb586392402343ff5d9d7395230f0",
+      "candidateSha256": "da59b799321fccda3818b872519a498cd7d2b3fc6a77ed3ce8a05e07f5c147f6",
+      "edits": [
+        {
+          "before": "",
+          "after": "import { gstSourceStore, storeGstTreatment } from '../../lib/storeGstTreatment';\nimport {OnlineOrderSoundControl} from '../../lib/OnlineOrderAlerts';\nimport TableSelector, {TableDraftSwitch} from '../../components/tables/TableSelector';\nimport TableOrderPanel from '../../components/tables/TableOrderPanel';\nimport InlineItemEntry from '../../components/tables/InlineItemEntry';\nimport BillItemEntry from '../../components/tables/BillItemEntry';\nimport {useTableOrder} from '../../lib/tables/useTableOrder';\nimport {TABLE_STORE,isTableStore} from '../../lib/tables/api';\nimport {assertCounterContext,draftKey,readLocalDraft,writeLocalDraft,draftStatus} from '../../lib/tables/drafts';\n",
+          "beforeOffset": 0,
+          "afterOffset": 0
+        },
+        {
+          "before": "",
+          "after": "import { assertRecoveredFinancialResult } from '../../lib/pos/posFinancialResult';\n",
+          "beforeOffset": 72,
+          "afterOffset": 757
+        },
+        {
+          "before": "",
+          "after": "import PopularItems from '../../components/pos/PopularItems';\nimport { usePosPopularity } from '../../lib/pos/usePosPopularity';\nimport { customerMobile } from '../../lib/pos/customerMobile';\n",
+          "beforeOffset": 306,
+          "afterOffset": 1074
+        },
+        {
+          "before": "import { collection, query, getDocs, getDocsFromServer, where, doc, getDoc, getDocFromServer, Timestamp } from 'firebase/firestore';\n",
+          "after": "import { collection, query, getDocs, getDocsFromServer, where, doc, getDoc, getDocFromServer, onSnapshot, Timestamp } from 'firebase/firestore';\n",
+          "beforeOffset": 2058,
+          "afterOffset": 3018
+        },
+        {
+          "before": "import { Link } from 'react-router-dom';\n",
+          "after": "import { Link, useSearchParams } from 'react-router-dom';\n",
+          "beforeOffset": 2248,
+          "afterOffset": 3220
+        },
+        {
+          "before": "",
+          "after": "import {useUpdateBlocker,usePosUpdateBoundary} from '../../lib/useUpdateBlocker';\n",
+          "beforeOffset": 4157,
+          "afterOffset": 5146
+        },
+        {
+          "before": "  return {\n",
+          "after": "  const result = {\n",
+          "beforeOffset": 12646,
+          "afterOffset": 13717
+        },
+        {
+          "before": "",
+          "after": "  const savedRecord = order as Order & Record<string, unknown>;\n  if (savedRecord.financialAuthorizationVersion === 3) {\n    const authorizationId = String(savedRecord.addOnAuthorizationId || '');\n    if (!authorizationId || savedRecord.createdByUserId !== auth.currentUser?.uid) throw new Error('This checkout must be recovered by its original signed-in staff account.');\n    const authorization = await getDoc(doc(db, 'posAddOnAuthorizations', authorizationId));\n    const plan = authorization.data()?.financials;\n    if (!authorization.exists() || plan?.version !== 3) throw new Error('The saved checkout financial authorization requires review.');\n    assertRecoveredFinancialResult(plan, savedRecord,\n      result.savedItems as unknown as Array<Record<string, unknown>>,\n      result.savedPayments as unknown as Array<Record<string, unknown>>);\n  }\n  return result;\n",
+          "beforeOffset": 12907,
+          "afterOffset": 13986
+        },
+        {
+          "before": "",
+          "after": "  const [tableParams,setTableParams] = useSearchParams();\n  const tableQueryRef = useRef(tableParams.toString());\n  tableQueryRef.current = tableParams.toString();\n  const localTableNavigation = useRef<string|null>(null);\n  const clearTableRoute = () => {\n    localTableNavigation.current = tableQueryRef.current;\n    setTableParams({});\n  };\n  const tableRouteRequested = Boolean(tableParams.get('tableSession') || tableParams.get('table'));\n  const tableTargetStore = tableParams.get('tableStore') || (tableRouteRequested ? TABLE_STORE : '');\n",
+          "beforeOffset": 17873,
+          "afterOffset": 19823
+        },
+        {
+          "before": "  const [topSellerItemIds, setTopSellerItemIds] = useState<string[]>([]);\n  const [isUsingTopSellerData, setIsUsingTopSellerData] = useState(false);\n",
+          "after": "  const popularity = usePosPopularity(selectedStoreId, JSON.stringify([staffProfile?.uid, staffProfile?.role, assignedStoreIdentifiers(staffProfile)]));\n",
+          "beforeOffset": 21812,
+          "afterOffset": 24307
+        },
+        {
+          "before": "",
+          "after": "\n  const [revalidationRequired,setRevalidationRequired]=useState(false);\n  const [catalogueReady,setCatalogueReady]=useState(false);\n  const table = useTableOrder(staffProfile?.uid || '', selectedStoreId, orderType, isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current), revalidationRequired);\n  const tableOrderMode = table.active || tableRouteRequested;\n  // Optional browsing belongs to one store/service/table. A history/deep-link\n  // change must reveal its bill immediately, even before the effect runs.\n  const fullMenuContext = `${selectedStoreId}:${orderType}:${tableParams.get('tableSession') || ''}:${tableParams.get('table') || ''}`;\n  const [openMenuContext,setOpenMenuContext]=useState<string|null>(null);\n  const fullMenuOpen = table.enabled && openMenuContext === fullMenuContext;\n  const fullMenuRef=useRef<HTMLDivElement>(null);\n  const menuReturnFocus=useRef<HTMLElement|null>(null);\n  const openFullMenu=()=>{menuReturnFocus.current=document.activeElement as HTMLElement;setOpenMenuContext(fullMenuContext);};\n  const closeFullMenu=()=>{setOpenMenuContext(null);requestAnimationFrame(()=>menuReturnFocus.current?.isConnected&&menuReturnFocus.current.focus());};\n  useEffect(()=>{setOpenMenuContext(null);},[table.enabled,fullMenuContext]);\n  useEffect(()=>{if(fullMenuOpen)fullMenuRef.current?.querySelector<HTMLInputElement>('input')?.focus();},[fullMenuOpen]);\n  const changeOrderType=(type:OrderType)=>{\n    if(type===orderType)return;\n    const change=()=>{clearTableRoute();setOrderType(type);setPendingAddOnItem(null);if(type!=='DINE_IN')setTableNumberError(null);};\n    if(table.active)table.requestLeave(change);else change();\n  };\n\n  const counterDraftKey = draftKey(staffProfile?.uid || '', selectedStoreId, null);\n  const [counterDraftLoaded,setCounterDraftLoaded] = useState('');\n  const [counterStorageWarning,setCounterStorageWarning] = useState(false);\n  usePosUpdateBoundary();\n  useUpdateBlocker(!!cart.length||!!customerName||!!customerPhone||!!tableNumber||isSaving||razorpayPaymentLocked||recoveryBusy||hasBoundCheckoutAttempt(checkoutAttemptRef.current)||revalidationRequired);\n  useEffect(() => {\n    if(!staffProfile?.uid||!selectedStoreId||!catalogueReady||counterDraftLoaded===counterDraftKey)return;\n    const saved=readLocalDraft<any>(counterDraftKey,null);\n    setCounterStorageWarning(draftStatus(counterDraftKey)!=='saved');\n    const restored:CartItem[]=[];let unavailable=false;\n    for(const ref of saved?.cart||[]){\n      const item=menuItems.find(i=>i.id===ref.menuItemId&&i.isActive&&i.availableStoreIds?.includes(selectedStoreId));\n      if(!item){unavailable=true;continue}\n      try{\n        const addOns=canonicalAddOnSelections(item.addOnGroupIds,item.addOnOptionIdsByGroup,addOnGroups,ref.addOns,getItemTaxRate(item,resolveStoreTaxConfig(stores,selectedStoreId,appGstConfig)));\n        const refs=(values:any[])=>JSON.stringify(values.map(a=>[a.groupId,a.optionId,a.quantity]).sort());\n        if(refs(addOns)!==refs(ref.addOns))throw Error('Saved option unavailable');\n        const extra=addOnTotal(addOns);\n        restored.push({id:ref.id,menuItemId:item.id,menuItemCode:item.code,name:item.name,price:item.price,taxRate:item.taxRate,prepStation:normalizePrepStation(item.prepStation),quantity:ref.quantity,sourceSystem:posSource,itemType:(item as any).itemType,finishedGoodCode:(item as any).finishedGoodCode,bom:(item as any).bom,addOns,baseUnitPrice:item.price,addOnTotal:extra,unitPriceWithAddOns:item.price+extra});\n      }catch{unavailable=true}\n    }\n    if(unavailable){setCheckoutError({message:'Some saved item references are no longer available. Draft recovery is locked; ask a manager to review the current menu.'});setRevalidationRequired(true);return}\n    setCart(restored);setCustomerName('');setCustomerPhone('');setTableNumber('');\n    if(!tableRouteRequested&&saved?.orderType)setOrderType(saved.orderType);\n    setCounterDraftLoaded(counterDraftKey);\n  },[counterDraftKey,staffProfile?.uid,selectedStoreId,catalogueReady,menuItems,addOnGroups,counterDraftLoaded]);\n  useEffect(()=>{\n    if(counterDraftLoaded!==counterDraftKey||!staffProfile?.uid||!selectedStoreId||tableOrderMode)return;\n    // Contacts and labels remain in component memory; persist references only.\n    if(draftStatus(counterDraftKey)==='corrupt'&&!cart.length)return;\n    setCounterStorageWarning(!writeLocalDraft(counterDraftKey,{cart,orderType}));\n  },[counterDraftLoaded,counterDraftKey,cart,orderType,tableOrderMode]);\n  useEffect(()=>{\n    let generation=0;\n    const offline=()=>{generation++;setRevalidationRequired(true)};\n    const online=async()=>{\n      const current=++generation;setRevalidationRequired(true);\n      try{\n        if(!staffProfile?.uid||!selectedStoreId)return;\n        const profile=await getDocFromServer(doc(db,'users',staffProfile.uid));\n        const data=profile.data();\n        if(!data||data.isActive!==true||!['ADMIN','STORE_MANAGER','CASHIER'].includes(data.role)||!(data.role==='ADMIN'||assignedStoreIdentifiers(data).includes(selectedStoreId)))throw Error('Access must be verified');\n        const ready=await fetchMenuData();\n        if(!ready)throw Error('Menu must be verified');\n        if(current===generation){setRevalidationRequired(false);setCheckoutError(null)}\n      }catch{if(current===generation)setCheckoutError({message:'Reconnect checks are incomplete. Verify your account, store and current menu before submitting. Nothing was sent automatically.'})}\n    };\n    window.addEventListener('offline',offline);window.addEventListener('online',online);\n    return()=>{generation++;window.removeEventListener('offline',offline);window.removeEventListener('online',online)};\n  },[staffProfile?.uid,selectedStoreId]);\n",
+          "beforeOffset": 22417,
+          "afterOffset": 24916
+        },
+        {
+          "before": "",
+          "after": "    // Explicit store/service changes may render before the router clears the\n    // old query. Do not treat that retiring link as a new navigation request.\n    if (localTableNavigation.current !== null) {\n      if (localTableNavigation.current === tableParams.toString()) return;\n      localTableNavigation.current = null;\n    }\n    if (!tableTargetStore || !isTableStore(tableTargetStore)\n      || !stores.some(store => store.id === tableTargetStore)) return;\n    const changeStore = tableTargetStore !== selectedStoreId;\n    const changeService = tableRouteRequested && orderType !== 'DINE_IN';\n    if (!changeStore && !changeService) return;\n    const originalSession = tableParams.get('tableSession');\n    const returningToOriginal = !!table.pending && !!originalSession && !tableParams.get('table')\n      && (table.pending.storeId ?? TABLE_STORE) === tableTargetStore\n      && table.pending.sessionId === originalSession;\n    if ((table.pending && !returningToOriginal) || table.busy || isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n      setCheckoutError({message:'Reconcile the current operation before opening a table at another store. Its original reference is retained.'});\n      return;\n    }\n    if (changeStore) setSelectedStoreId(tableTargetStore);\n    if (tableRouteRequested) setOrderType('DINE_IN');\n  }, [tableTargetStore,tableRouteRequested,tableParams,stores,selectedStoreId,orderType,table.pending,table.busy,isSaving,razorpayPaymentLocked]);\n\n  useEffect(() => {\n",
+          "beforeOffset": 22773,
+          "afterOffset": 31028
+        },
+        {
+          "before": "    else if (typeof window !== 'undefined') window.localStorage.removeItem(POS_RAZORPAY_SESSION_STORAGE_KEY);\n",
+          "after": "    else if (typeof window !== 'undefined') { try { window.localStorage.removeItem(POS_RAZORPAY_SESSION_STORAGE_KEY); } catch { /* optional local storage */ } }\n",
+          "beforeOffset": 23183,
+          "afterOffset": 32970
+        },
+        {
+          "before": "    if (!loading) {\n      const timer = window.setTimeout(() => searchInputRef.current?.focus(), 100);\n",
+          "after": "    if (!loading && window.matchMedia('(min-width: 1280px)').matches) {\n      const timer = window.setTimeout(() => table.enabled ? document.querySelector<HTMLInputElement>('.pos-bill-region [role=combobox]:not(:disabled)')?.focus() : searchInputRef.current?.focus(), 100);\n",
+          "beforeOffset": 24950,
+          "afterOffset": 34788
+        },
+        {
+          "before": "  }, [loading, selectedStoreId]);\n",
+          "after": "  }, [loading, selectedStoreId, table.enabled]);\n",
+          "beforeOffset": 25106,
+          "afterOffset": 35115
+        },
+        {
+          "before": "",
+          "after": "           tableProductId: d.id,\n",
+          "beforeOffset": 26549,
+          "afterOffset": 36573
+        },
+        {
+          "before": "",
+          "after": "      setCatalogueReady(true);return true;\n",
+          "beforeOffset": 28119,
+          "afterOffset": 38176
+        },
+        {
+          "before": "      console.error(e);\n",
+          "after": "      console.error(e);setCatalogueReady(false);return false;\n",
+          "beforeOffset": 28142,
+          "afterOffset": 38242
+        },
+        {
+          "before": "        setSelectedStoreId(allowedStores[0].id);\n",
+          "after": "        setSelectedStoreId(isTableStore(tableTargetStore) && allowedStores.some(store => store.id === tableTargetStore) ? tableTargetStore : allowedStores[0].id);\n",
+          "beforeOffset": 28687,
+          "afterOffset": 38825
+        },
+        {
+          "before": "",
+          "after": "        setCustomerName(''); setCustomerPhone(''); resetComplimentaryOtp();\n",
+          "beforeOffset": 30721,
+          "afterOffset": 40973
+        },
+        {
+          "before": "",
+          "after": "      setCustomerName(''); setCustomerPhone(''); resetComplimentaryOtp();\n",
+          "beforeOffset": 30953,
+          "afterOffset": 41281
+        },
+        {
+          "before": "",
+          "after": "\n  useEffect(() => {\n    if (!selectedStoreId) return;\n    const sourceId = stores.find(store => store.id === selectedStoreId)?.legalAndGstSourceStoreId;\n    const subscriptions = [...new Set([selectedStoreId, sourceId].filter(Boolean))].map(id => onSnapshot(doc(db, 'stores', id!), snapshot => {\n      if (snapshot.exists()) setStores(current => current.map(store => store.id === snapshot.id ? { ...store, ...snapshot.data() } as Store : store));\n    }, () => setCheckoutError({ message: 'Unable to refresh store GST settings. Verify connectivity before checkout.' })));\n    return () => subscriptions.forEach(unsubscribe => unsubscribe());\n  }, [selectedStoreId, stores.find(store => store.id === selectedStoreId)?.legalAndGstSourceStoreId]);\n",
+          "beforeOffset": 31006,
+          "afterOffset": 41408
+        },
+        {
+          "before": "      isUsingTopSellerData ? topSellerItemIds : [],\n",
+          "after": "      [],\n",
+          "beforeOffset": 32241,
+          "afterOffset": 43388
+        },
+        {
+          "before": "  }, [availableMenuItems, fastItems, isUsingTopSellerData, topSellerItemIds]);\n",
+          "after": "  }, [availableMenuItems, fastItems]);\n",
+          "beforeOffset": 32326,
+          "afterOffset": 43431
+        },
+        {
+          "before": "  useEffect(() => {\n    let active = true;\n\n    const loadTopSellers = async () => {\n      if (!selectedStoreId || availableMenuItems.length === 0) {\n        if (active) {\n          setTopSellerItemIds([]);\n          setIsUsingTopSellerData(false);\n        }\n        return;\n      }\n\n      try {\n        const sevenDaysAgo = new Date();\n        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);\n\n        const ordersSnap = await getDocs(query(\n          collection(db, 'orders'),\n          where('storeId', '==', selectedStoreId),\n          where('createdAt', '>=', Timestamp.fromDate(sevenDaysAgo)),\n        ));\n\n        const completedOrders = ordersSnap.docs\n          .map(orderDoc => ({ id: orderDoc.id, ...orderDoc.data() } as Order))\n          .filter(order => order.status !== 'VOIDED' && order.status !== 'CANCELLED');\n\n        if (completedOrders.length === 0) {\n          if (active) {\n            setTopSellerItemIds([]);\n            setIsUsingTopSellerData(false);\n          }\n          return;\n        }\n\n        const salesByItemId = new Map<string, number>();\n\n        await Promise.all(completedOrders.map(async order => {\n          if (!order.id) return;\n          const itemSnap = await getDocs(collection(db, 'orders', order.id, 'items'));\n          itemSnap.docs.forEach(itemDoc => {\n            const item = itemDoc.data() as OrderItem;\n            const itemId = String(item.menuItemId || item.finishedGoodCode || item.itemCode || '').trim();\n            if (!itemId) return;\n            const quantity = Number(item.quantity) || 0;\n            salesByItemId.set(itemId, (salesByItemId.get(itemId) || 0) + quantity);\n          });\n        }));\n\n        const rankedItemIds = [...availableMenuItems]\n          .filter(item => (salesByItemId.get(item.id) || 0) > 0)\n          .sort((a, b) => {\n            const salesDelta = (salesByItemId.get(b.id) || 0) - (salesByItemId.get(a.id) || 0);\n            if (salesDelta !== 0) return salesDelta;\n\n            const orderA = typeof (a as any).sortOrder === 'number' ? (a as any).sortOrder : 999;\n            const orderB = typeof (b as any).sortOrder === 'number' ? (b as any).sortOrder : 999;\n            if (orderA !== orderB) return orderA - orderB;\n\n            return (a.name || '').localeCompare(b.name || '');\n          })\n          .slice(0, 4)\n          .map(item => item.id);\n\n        if (!active) return;\n\n        setTopSellerItemIds(rankedItemIds);\n        setIsUsingTopSellerData(rankedItemIds.length > 0);\n      } catch (error) {\n        console.warn('Unable to load top sellers for POS, using fallback picks instead.', error);\n        if (active) {\n          setTopSellerItemIds([]);\n          setIsUsingTopSellerData(false);\n        }\n      }\n    };\n\n    void loadTopSellers();\n\n    return () => {\n      active = false;\n    };\n  }, [availableMenuItems, selectedStoreId]);\n",
+          "after": "",
+          "beforeOffset": 32406,
+          "afterOffset": 43471
+        },
+        {
+          "before": "      getItemTaxRate(item, selectedStoreTaxConfig.rate),\n",
+          "after": "      getItemTaxRate(item, selectedStoreTaxConfig),\n",
+          "beforeOffset": 38766,
+          "afterOffset": 46976
+        },
+        {
+          "before": "",
+          "after": "\n    if(tableOrderMode){\n      if(!table.active){setCheckoutError({message:'This table link requires authorised Dine In access to its original store.'});return;}\n      table.addItem(item,canonicalAddOns);return;\n    }\n",
+          "beforeOffset": 38886,
+          "afterOffset": 47091
+        },
+        {
+          "before": "    if (razorpayPaymentLocked) return;\n",
+          "after": "    if (razorpayPaymentLocked || isSaving || (tableOrderMode && !table.canEdit)) return;\n",
+          "beforeOffset": 40218,
+          "afterOffset": 48641
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 42616,
+          "afterOffset": 51089
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 44012,
+          "afterOffset": 52656
+        },
+        {
+          "before": "      selectedStoreTaxConfig.rate,\n",
+          "after": "      selectedStoreTaxConfig,\n",
+          "beforeOffset": 51923,
+          "afterOffset": 60738
+        },
+        {
+          "before": "  }, [cart, discountPercentStr, selectedStoreTaxConfig.rate]);\n",
+          "after": "  }, [cart, discountPercentStr, selectedStoreTaxConfig]);\n",
+          "beforeOffset": 51965,
+          "afterOffset": 60775
+        },
+        {
+          "before": "",
+          "after": "  useEffect(() => {\n    if (!isComplimentarySelected) return;\n    const normalized = customerMobile(customerPhone).normalized;\n    if (normalized && customerPhone !== normalized.slice(3)) handleComplimentaryPhoneChange(normalized.slice(3));\n  }, [isComplimentarySelected]);\n",
+          "beforeOffset": 52116,
+          "afterOffset": 60921
+        },
+        {
+          "before": "  const cartIsMissingGstConfig = cart.length > 0 && !cartHasItemTaxRate && selectedStoreTaxConfig.rate <= 0;\n",
+          "after": "  const cartIsMissingGstConfig = cart.length > 0 && selectedStoreTaxConfig.mode !== 'NO_GST' && !cartHasItemTaxRate && selectedStoreTaxConfig.rate <= 0;\n",
+          "beforeOffset": 53788,
+          "afterOffset": 62867
+        },
+        {
+          "before": "    cart.forEach(item => quantities.set(item.menuItemId, (quantities.get(item.menuItemId) || 0) + item.quantity));\n",
+          "after": "    if(tableOrderMode)table.draft.forEach(item=>quantities.set(item.parentProductCode,(quantities.get(item.parentProductCode)||0)+item.quantity));\n    else cart.forEach(item => quantities.set(item.menuItemId, (quantities.get(item.menuItemId) || 0) + item.quantity));\n",
+          "beforeOffset": 54539,
+          "afterOffset": 63662
+        },
+        {
+          "before": "  }, [cart]);\n",
+          "after": "  }, [cart,tableOrderMode,table.draft]);\n",
+          "beforeOffset": 54677,
+          "afterOffset": 63952
+        },
+        {
+          "before": "    ? isUsingTopSellerData\n      ? 'Top sellers from the last 7 days at this store'\n      : 'Fast favourites for quick billing'\n",
+          "after": "    ? 'Fast favourites for quick billing'\n",
+          "beforeOffset": 55363,
+          "afterOffset": 64665
+        },
+        {
+          "before": "",
+          "after": "  const prepareWhatsAppReceipt = async (): Promise<ReceiptSnapshot> => {\n    const sourceOrderId = receiptView?.order.sourceOrderId;\n    if (!sourceOrderId || sourceOrderId.includes('/')) throw new Error('Saved receipt unavailable.');\n    const ref = doc(db, 'orders', sourceOrderId), saved = await getDocFromServer(ref);\n    if (!saved.exists()) throw new Error('Saved receipt unavailable.');\n    const order = { ...saved.data(), id: saved.id } as Order;\n    const store = accessiblePosStores(stores, staffProfile).find(s => s.id === order.storeId);\n    if (!store || order.orderNumber !== receiptView?.order.orderNumber || order.status !== 'COMPLETED') throw new Error('Saved receipt unavailable.');\n    const [items, payments] = await Promise.all([getDocsFromServer(collection(ref, 'items')), getDocsFromServer(collection(ref, 'payments'))]);\n    return buildReceiptSnapshot(order, items.docs.map(d => ({ ...d.data(), id: d.id } as OrderItem)), payments.docs.map(d => ({ ...d.data(), id: d.id } as OrderPayment)), store, true);\n  };\n\n",
+          "beforeOffset": 56740,
+          "afterOffset": 65956
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 57069,
+          "afterOffset": 67322
+        },
+        {
+          "before": "",
+          "after": "    const mobile = customerMobile(customerPhone);\n    if (!isComplimentarySelected && mobile.error) { setCheckoutError({ message: mobile.error }); return; }\n\n",
+          "beforeOffset": 57384,
+          "afterOffset": 67808
+        },
+        {
+          "before": "      customerPhone,\n",
+          "after": "      customerPhone: isComplimentarySelected ? customerPhone : mobile.normalized || '',\n",
+          "beforeOffset": 57599,
+          "afterOffset": 68181
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 58107,
+          "afterOffset": 68756
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 59160,
+          "afterOffset": 69980
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 63253,
+          "afterOffset": 74244
+        },
+        {
+          "before": "",
+          "after": "    if(tableOrderMode){table.setError('Use Send new items and the table payment controls for this running table.');return;}\n",
+          "beforeOffset": 64438,
+          "afterOffset": 75600
+        },
+        {
+          "before": "",
+          "after": "    const mobile = customerMobile(customerPhone);\n    if (!isComplimentaryCheckout && mobile.error) { setCheckoutError({ message: mobile.error }); return; }\n    const normalizedBillMobile = isComplimentaryCheckout ? customerPhone.trim() : mobile.normalized || '';\n",
+          "beforeOffset": 64694,
+          "afterOffset": 75980
+        },
+        {
+          "before": "",
+          "after": "    if (revalidationRequired || counterDraftLoaded!==counterDraftKey) {setCheckoutError({message:'Reconnect checks are incomplete. Nothing has been submitted.'});return;}\n",
+          "beforeOffset": 64747,
+          "afterOffset": 76297
+        },
+        {
+          "before": "          getItemTaxRate(liveItem, selectedStoreTaxConfig.rate),\n",
+          "after": "          getItemTaxRate(liveItem, selectedStoreTaxConfig),\n",
+          "beforeOffset": 67388,
+          "afterOffset": 79109
+        },
+        {
+          "before": "",
+          "after": "          expectedGstRevision: storeGstTreatment(gstSourceStore(selectedStore, stores)).revision,\n",
+          "beforeOffset": 68806,
+          "afterOffset": 80522
+        },
+        {
+          "before": "          customerPhone: customerPhone.trim(),\n",
+          "after": "          customerPhone: normalizedBillMobile,\n",
+          "beforeOffset": 69121,
+          "afterOffset": 80935
+        },
+        {
+          "before": "",
+          "after": "        financialVersion: 3,\n        discountPercent: isComplimentaryCheckout ? 100 : Number(discountPercentStr) || 0,\n        ...(isSplitPayment ? { splitPayments: splitPayments.map(row => ({ method: row.method, amount: normalizePaymentAmount(row.amountStr) })) } : {}),\n",
+          "beforeOffset": 70351,
+          "afterOffset": 82165
+        },
+        {
+          "before": "      const posAddOnAuthorizationRef = doc(\n        db,\n        'posAddOnAuthorizations',\n        posAddOnAuthorization.authorizationId,\n      );\n\n",
+          "after": "",
+          "beforeOffset": 71552,
+          "afterOffset": 83638
+        },
+        {
+          "before": "        selectedStoreTaxConfig.rate,\n",
+          "after": "        selectedStoreTaxConfig,\n",
+          "beforeOffset": 72000,
+          "afterOffset": 83939
+        },
+        {
+          "before": "      const trueSubtotal = effectiveTotals.subtotal;\n      const trueDiscount = effectiveTotals.discountAmount;\n      const trueDiscountPercent = effectiveTotals.discountPercent;\n      const trueTaxableAmount = effectiveTotals.taxableAmount;\n      const trueTaxTotal = effectiveTotals.taxTotal;\n      const trueGrandTotal = effectiveTotals.grandTotal;\n      const trueDiscountRatio = trueSubtotal > 0 ? trueDiscount / trueSubtotal : 0;\n      const userMaxDiscount = getMaxDiscountPercent(staffProfile.role);\n\n      if (!isComplimentaryCheckout && trueDiscountPercent > userMaxDiscount + 0.0001) {\n        throw new Error(`Discount ${trueDiscountPercent.toFixed(2)}% exceeds the ${userMaxDiscount}% limit for your role.`);\n",
+          "after": "      const financials = posAddOnAuthorization.financials;\n      if (!financials || financials.version !== 3) throw new Error('A current server financial authorization is required.');\n      for (const field of ['subtotal', 'discountPercent', 'discountAmount', 'taxableAmount', 'taxTotal', 'grandTotal'] as const) {\n        if (effectiveTotals[field] !== financials[field]) throw new Error('The menu or tax configuration changed. Review this bill before checkout.');\n",
+          "beforeOffset": 72178,
+          "afterOffset": 84112
+        },
+        {
+          "before": "\n      const paymentRows: ReceiptPaymentSnapshot[] = isComplimentaryCheckout\n        ? []\n        : isSplitPayment\n        ? normalizedSplitPayments(splitPayments, trueGrandTotal)\n        : [{\n          method: selectedPaymentMethod as PaymentMethod,\n          amount: selectedPaymentMethod === 'CREDIT' ? 0 : trueGrandTotal,\n        }];\n      const allocatedPaymentAmount = isSplitPayment\n        ? paymentTotal(paymentRows)\n        : trueGrandTotal;\n\n      if (isSplitPayment) {\n        validateSplitPayments(paymentRows, trueGrandTotal, allocatedPaymentAmount);\n      }\n",
+          "after": "      const trueSubtotal = financials.subtotal;\n      const trueDiscount = financials.discountAmount;\n      const trueDiscountPercent = financials.discountPercent;\n      const trueTaxableAmount = financials.taxableAmount;\n      const trueTaxTotal = financials.taxTotal;\n      const trueGrandTotal = financials.grandTotal;\n      const paymentRows: ReceiptPaymentSnapshot[] = financials.paymentIds.map(id => ({\n        method: financials.payments[id].method as PaymentMethod,\n        amount: financials.payments[id].amount,\n      }));\n",
+          "beforeOffset": 72908,
+          "afterOffset": 84586
+        },
+        {
+          "before": "        customerPhone: customerPhone.trim(),\n",
+          "after": "        customerPhone: normalizedBillMobile,\n",
+          "beforeOffset": 73708,
+          "afterOffset": 85346
+        },
+        {
+          "before": "      // Detailed Checkout Logging\n      if (import.meta.env.DEV) console.log(`[CHECKOUT START] User: ${auth.currentUser.uid}, Role: ${staffProfile.role}, Store: ${selectedStoreId}`);\n\n      // Check customer\n      let customerId: string | null = null;\n      let customerNameFinal = customerName.trim() || null;\n      let existingCustomerDocs: any[] = [];\n      const phoneToSearch = customerPhone.trim();\n\n      if (phoneToSearch) {\n        try {\n          if (import.meta.env.DEV) console.log('[CHECKOUT] Fetching customer by phone');\n          const q = query(collection(db, 'customers'), where('phone', '==', phoneToSearch));\n          const custSnap = await getDocs(q);\n          if (!custSnap.empty) {\n            existingCustomerDocs = custSnap.docs;\n            if (import.meta.env.DEV) console.log(`[CHECKOUT] Found existing customer: ${existingCustomerDocs[0].id}`);\n          }\n        } catch (e: any) {\n          console.error(`[CHECKOUT ERROR] Customers getDocs failed:`, e);\n          throw e; // fail early for logging\n        }\n      }\n\n      const custRef = existingCustomerDocs.length > 0\n        ? doc(db, 'customers', existingCustomerDocs[0].id)\n        : phoneToSearch ? doc(collection(db, 'customers')) : null;\n\n      // 10. Generate order number & save transaction\n      const dateKey = new Date().toISOString().slice(0,10).replace(/-/g,''); // YYYYMMDD\n      const counterId = `${selectedStore.code}_${dateKey}`;\n      const counterRef = doc(db, 'counters', counterId);\n      const complimentaryAuthorizationRef = isComplimentaryCheckout\n        ? doc(db, 'complimentaryAuthorizations', complimentaryVerification!.authorizationId)\n        : null;\n\n      if (import.meta.env.DEV) console.log(`[CHECKOUT] Preflight complete. target counter: ${counterId}, order: ${newOrderRef.id}`);\n\n",
+          "after": "      assertCounterContext(tableOrderMode);\n",
+          "beforeOffset": 75869,
+          "afterOffset": 87507
+        },
+        {
+          "before": "        newOrderRef, orderLineRefs, custRef, counterRef,\n        complimentaryAuthorizationRef, posAddOnAuthorizationRef, checkoutAttempt, requestPayloadHash,\n        selectedStore, dateKey, customerId, customerNameFinal,\n        phoneToSearch, trueGrandTotal, trueSubtotal, trueTaxTotal,\n        trueTaxableAmount, trueDiscountPercent, trueDiscount, isComplimentaryCheckout,\n        isSplitPayment, isSetupTestSale, complimentaryReason, complimentaryVerification,\n        posAddOnAuthorization, tableNumber, orderType, paymentRows,\n        selectedPaymentMethod, validatedCart, staffProfile, traceCheckoutWrite,\n        getStaffUid: () => auth.currentUser!.uid,\n      }, {\n        canReadMissingOrder: () => canReadMissingCheckoutOrder(staffProfile.role),\n        validateComplimentaryAuthorization: (complimentaryAuthorizationData) => {\n          const expiresAt = complimentaryAuthorizationData.expiresAt;\n          const expectedPhoneE164 = `+91${customerPhone.trim()}`;\n          if (\n            complimentaryAuthorizationData.status !== 'VERIFIED'\n            || complimentaryAuthorizationData.used !== false\n            || complimentaryAuthorizationData.staffUid !== auth.currentUser!.uid\n            || complimentaryAuthorizationData.storeId !== selectedStore.id\n            || complimentaryAuthorizationData.customerPhoneE164 !== expectedPhoneE164\n            || complimentaryAuthorizationData.provider !== complimentaryVerification!.provider\n            || !(expiresAt instanceof Timestamp)\n            || expiresAt.toMillis() <= Date.now()\n          ) {\n            throw new Error('Complimentary phone verification is expired, used, or does not match this sale. Send a new OTP.');\n          }\n        },\n        validateAddOnAuthorization: (posAddOnAuthorizationData) => {\n          const posAddOnExpiresAt = posAddOnAuthorizationData.expiresAt;\n          if (\n            posAddOnAuthorizationData.provider !== 'SERVER_CANONICAL_ADD_ONS'\n            || posAddOnAuthorizationData.used !== false\n            || posAddOnAuthorizationData.staffUid !== auth.currentUser!.uid\n            || posAddOnAuthorizationData.storeId !== selectedStore.id\n            || posAddOnAuthorizationData.orderId !== newOrderRef.id\n            || !(posAddOnExpiresAt instanceof Timestamp)\n            || posAddOnExpiresAt.toMillis() <= Date.now()\n          ) {\n            throw new Error('The POS add-on authorization is expired, used, or does not match this sale.');\n          }\n        },\n        prepareInventory: async (transaction, orderNumber) => {\n          const expandedInventoryLines = expandCompositeInventoryLines(\n            validatedCart.map(({ cartItem, liveItem, canonicalAddOns, components }, index) => {\n              const liveItemData = liveItem as unknown as Record<string, unknown>;\n              return {\n                lineKey: orderLineRefs[index].id,\n                quantity: cartItem.quantity,\n                finishedGood: {\n                  ...liveItemData,\n                  code: liveItem.code,\n                  name: liveItem.name,\n                  itemType: liveItemData.itemType || cartItem.itemType || 'DIRECT_STOCK',\n                  bom: Array.isArray(liveItemData.bom)\n                    ? liveItemData.bom\n                    : (Array.isArray(cartItem.bom) ? cartItem.bom : []),\n                  finishedGoodCode: liveItemData.finishedGoodCode || cartItem.finishedGoodCode || liveItem.code,\n                } as any,\n                addOns: canonicalAddOns,\n                components,\n              };\n            }),\n            selectedStore.id,\n          );\n          const deductionPlan = await planInventoryDeductionForSale({\n            transaction,\n            store: selectedStore,\n            orderId: newOrderRef.id,\n            orderNumber,\n            orderType,\n            businessDate: dateKey,\n            source: 'POS',\n            staffProfile: {\n              uid: auth.currentUser!.uid,\n              name: staffProfile.name,\n            },\n            lines: expandedInventoryLines,\n          });\n\n          if (deductionPlan.blockers.length > 0) {\n            throw new CheckoutBlockerError(deductionPlan.blockers);\n          }\n\n          if (import.meta.env.DEV && deductionPlan.warnings.length > 0) {\n            console.warn('[CHECKOUT INVENTORY WARNINGS]', deductionPlan.warnings);\n          }\n          return { expandedInventoryLines, deductionPlan };\n        },\n        prepareLine: (index, expandedInventoryLines, deductionPlan) => {\n          const { cartItem: item, liveItem, canonicalAddOns } = validatedCart[index];\n          const lineRef = orderLineRefs[index];\n          const lineAddOnTotal = addOnTotal(canonicalAddOns);\n          const lineUnitPrice = liveItem.price + lineAddOnTotal;\n          const lineSub = lineUnitPrice * item.quantity;\n          const lineDiscount = isComplimentaryCheckout ? lineSub : lineSub * trueDiscountRatio;\n          const lineTaxable = Math.max(0, lineSub - lineDiscount);\n          const appliedTaxRate = getItemTaxRate(liveItem, selectedStoreTaxConfig.rate);\n          const baseTaxable = Math.max(0, liveItem.price * item.quantity * (1 - trueDiscountRatio));\n          const lineTax = isComplimentaryCheckout\n            ? 0\n            : baseTaxable * (appliedTaxRate / 100) + addOnTaxForLine(canonicalAddOns, item.quantity, trueDiscountRatio);\n          const linePrepStation = normalizePrepStation(liveItem.prepStation);\n          const parentInventory = summarizeParentInventory({\n            parentLineKey: lineRef.id,\n            expandedLines: expandedInventoryLines,\n            perLineCogs: deductionPlan.perLineCogs,\n            perLineConsumptionStatus: deductionPlan.perLineConsumptionStatus,\n          });\n          return { lineAddOnTotal, lineUnitPrice, lineSub, lineDiscount, lineTaxable, appliedTaxRate, lineTax, linePrepStation, parentInventory };\n        },\n        paymentStatus: () => {\n          const paymentStatus: Order['paymentStatus'] = isComplimentaryCheckout\n            ? 'NOT_REQUIRED'\n            : isSplitPayment\n            ? splitPaymentStatus(paymentRows, trueGrandTotal)\n            : (selectedPaymentMethod === 'CREDIT' && trueGrandTotal > 0) ? 'UNPAID' : 'PAID';\n          return paymentStatus;\n        },\n        receiptLegalDetails: () => receiptLegalDetailsFromStore(selectedStore),\n",
+          "after": "        newOrderRef, checkoutAttempt, requestPayloadHash,\n        customerNameFinal: customerName.trim() || null,\n        phoneToSearch: normalizedBillMobile,\n        trueGrandTotal, trueSubtotal, trueTaxTotal,\n        trueTaxableAmount, trueDiscountPercent, trueDiscount,\n        isComplimentaryCheckout, complimentaryReason, complimentaryVerification,\n        posAddOnAuthorization, tableNumber, orderType,\n",
+          "beforeOffset": 77732,
+          "afterOffset": 87607
+        },
+        {
+          "before": "",
+          "after": "      if(event.defaultPrevented || event.repeat || target?.closest('[role=dialog],[role=alertdialog]'))return;\n",
+          "beforeOffset": 87022,
+          "afterOffset": 90966
+        },
+        {
+          "before": "        searchInputRef.current?.focus();\n",
+          "after": "        if(table.enabled&&!fullMenuOpen)document.querySelector<HTMLInputElement>('.pos-bill-region [role=combobox]:not(:disabled)')?.focus();else searchInputRef.current?.focus();\n",
+          "beforeOffset": 87757,
+          "afterOffset": 91812
+        },
+        {
+          "before": "",
+          "after": "    tableOrderMode, table.canEdit, table.sessionId, table.draft.length, table.enabled, fullMenuOpen,\n",
+          "beforeOffset": 88661,
+          "afterOffset": 92854
+        },
+        {
+          "before": "    <div className=\"relative flex h-[100dvh] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0\">\n      <div className=\"shrink-0 max-w-full overflow-x-hidden border-b border-[#eadfd4] bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2\">\n          <div className=\"flex min-w-0 flex-col gap-1.5 md:flex-row md:flex-wrap md:items-center md:gap-2\">\n            <div className=\"flex w-full min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-1.5 md:w-auto md:max-w-full\">\n",
+          "after": "    <div data-menu-open={fullMenuOpen} className={`${table.enabled ? 'pos-table-workspace ' : ''}relative flex h-[100dvh] w-full min-w-0 max-w-full flex-none flex-col overflow-hidden bg-[#f5efe6] pb-[env(safe-area-inset-bottom)] lg:h-[calc(100dvh-92px)] lg:pb-0`}>\n      <div className=\"pos-control-bar shrink-0 max-w-full relative z-40 overflow-visible border-b border-[#eadfd4] bg-white/95 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2\">\n          <div className=\"pos-control-row flex min-w-0 flex-col gap-1.5 md:flex-row md:flex-wrap md:items-center md:gap-2\">\n            <div className=\"pos-store-control flex w-full min-w-0 items-center gap-2 rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] px-3 py-1.5 md:w-auto md:max-w-full\">\n",
+          "beforeOffset": 89502,
+          "afterOffset": 93796
+        },
+        {
+          "before": "                onChange={handleStoreChange}\n",
+          "after": "                onChange={e=>{const value=e.target.value;if(table.active)table.requestLeave(()=>{clearTableRoute();setSelectedStoreId(value);setPendingAddOnItem(null);setEditingAddOnCartItem(null);});else{clearTableRoute();handleStoreChange(e)}}}\n",
+          "beforeOffset": 90239,
+          "afterOffset": 94674
+        },
+        {
+          "before": "            <div className=\"grid w-full min-w-0 grid-cols-3 items-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1 md:flex md:w-auto\">\n",
+          "after": "            {table.enabled && <label className=\"pos-order-control\"><span className=\"sr-only\">Order type</span><select aria-label=\"Order type\" value={orderType} disabled={isSaving||razorpayPaymentLocked||!!table.pending} onChange={e=>changeOrderType(e.target.value as OrderType)}>{(['DINE_IN','TAKEAWAY','DELIVERY'] as OrderType[]).map(type=><option key={type} value={type}>{ORDER_TYPE_LABELS[type]}</option>)}</select></label>}\n            {table.enabled && <TableSelector table={table} blocked={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/> }\n            <div className={`pos-order-tabs ${table.enabled?'hidden':'grid'} w-full min-w-0 grid-cols-3 items-center rounded-2xl border border-[#eadfd4] bg-[#fbf8f3] p-1 md:flex md:w-auto`}>\n",
+          "beforeOffset": 90794,
+          "afterOffset": 95431
+        },
+        {
+          "before": "                    setOrderType(type);\n                    if (type !== 'DINE_IN') setTableNumberError(null);\n",
+          "after": "                    if(type===orderType)return;\n                    const change=()=>{clearTableRoute();setOrderType(type);setPendingAddOnItem(null);if(type!=='DINE_IN')setTableNumberError(null)};\n                    if(table.active)table.requestLeave(change);else change();\n",
+          "beforeOffset": 91142,
+          "afterOffset": 96414
+        },
+        {
+          "before": "            <div className=\"flex w-full min-w-0 flex-wrap gap-2 md:w-auto\">\n",
+          "after": "            <div className=\"pos-secondary-links flex w-full min-w-0 flex-wrap gap-2 md:w-auto\">\n",
+          "beforeOffset": 92222,
+          "afterOffset": 97658
+        },
+        {
+          "before": "",
+          "after": "            <OnlineOrderSoundControl storeId={selectedStoreId} />\n",
+          "beforeOffset": 93229,
+          "afterOffset": 98685
+        },
+        {
+          "before": "      <div className=\"grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(0,1fr)_420px]\">\n",
+          "after": "      <div className=\"pos-main-grid grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(0,1fr)_420px]\">\n",
+          "beforeOffset": 93615,
+          "afterOffset": 99137
+        },
+        {
+          "before": "      <div className=\"flex min-h-0 min-w-0 overflow-hidden border-b border-[#eadfd4] xl:border-b-0 xl:border-r\">\n",
+          "after": "      <div ref={fullMenuRef} role={table.enabled&&fullMenuOpen?'dialog':undefined} aria-modal={table.enabled&&fullMenuOpen?true:undefined} aria-label={table.enabled&&fullMenuOpen?'Full authorised menu':undefined} className=\"pos-menu-region flex min-h-0 min-w-0 overflow-hidden border-b border-[#eadfd4] xl:border-b-0 xl:border-r\" onKeyDown={e=>{if(!table.enabled||!fullMenuOpen)return;if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeFullMenu();}if(e.key==='Tab'){const fields=Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href]')).filter(x=>x.getClientRects().length);const first=fields[0],last=fields.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}>\n        {table.enabled&&<div className=\"pos-full-menu-heading\"><h2>Full menu</h2><p>All items available to your store</p><button type=\"button\" aria-label=\"Close full menu\" onClick={closeFullMenu}><X size={22}/></button></div>}\n",
+          "beforeOffset": 93746,
+          "afterOffset": 99282
+        },
+        {
+          "before": "        <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-2 custom-scrollbar sm:px-4 sm:pt-3 lg:px-5 ${cart.length > 0 ? 'pb-24' : 'pb-3'} xl:pb-6`}>\n          <div className={`space-y-2.5 ${cart.length > 0 ? 'pb-32' : 'pb-3'} xl:space-y-3 xl:pb-6`}>\n",
+          "after": "        <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-2 custom-scrollbar sm:px-4 sm:pt-3 lg:px-5 ${!table.enabled ? 'pb-28' : 'pb-3'} xl:pb-6`}>\n          <div className=\"space-y-2.5 pb-3 xl:space-y-3 xl:pb-6\">\n",
+          "beforeOffset": 96889,
+          "afterOffset": 103417
+        },
+        {
+          "before": "",
+          "after": "                    onMouseDown={event => event.preventDefault()}\n",
+          "beforeOffset": 100447,
+          "afterOffset": 106939
+        },
+        {
+          "before": "",
+          "after": "            <PopularItems data={popularity.data} loading={popularity.loading}\n              quantityByItemId={cartQuantityByItemId}\n              items={filteredMenuItems} onAddItem={item => { dismissMobileKeyboard(); if(table.enabled)closeFullMenu(); addToCart(item); }}/>\n",
+          "beforeOffset": 103935,
+          "afterOffset": 110493
+        },
+        {
+          "before": "              onAddItem={item => { dismissMobileKeyboard(); addToCart(item); }}\n",
+          "after": "              onAddItem={item => { dismissMobileKeyboard(); if(table.enabled)closeFullMenu(); addToCart(item); }}\n",
+          "beforeOffset": 105266,
+          "afterOffset": 112098
+        },
+        {
+          "before": "      <div className={`fixed inset-0 z-[100] flex h-[100dvh] w-full max-w-full shrink-0 transform flex-col overflow-hidden border-l border-[#eadfd4] bg-[#fcfaf7] shadow-2xl transition-transform duration-300 xl:static xl:z-20 xl:h-full xl:w-[420px] xl:translate-y-0 xl:shadow-none ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full xl:translate-y-0'}`}>\n",
+          "after": "      <div id=\"pos-current-sale\" className={`pos-bill-region fixed inset-0 z-[100] flex h-[100dvh] w-full max-w-full shrink-0 transform flex-col overflow-hidden border-l border-[#eadfd4] bg-[#fcfaf7] shadow-2xl transition-transform duration-300 xl:static xl:z-20 xl:h-full xl:w-[420px] xl:translate-y-0 xl:shadow-none ${isMobileCartOpen ? 'translate-y-0' : 'translate-y-full xl:translate-y-0'}`}>\n",
+          "beforeOffset": 105446,
+          "afterOffset": 112312
+        },
+        {
+          "before": "          className=\"flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3 custom-scrollbar sm:px-4 lg:px-4\"\n",
+          "after": "          className=\"pos-bill-scroll flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3 custom-scrollbar sm:px-4 lg:px-4\"\n",
+          "beforeOffset": 105818,
+          "afterOffset": 112722
+        },
+        {
+          "before": "",
+          "after": "          {tableOrderMode ? <>{!table.active&&<p role=\"alert\">This table link requires authorised Uday Park Dine In access.</p>}<TableOrderPanel key={table.sessionId || table.selected?.tableId || 'unselected'} table={table} search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} describeLine={line=>{\n            const item=availableMenuItems.find(item=>(item as any).tableProductId===line.parentProductId&&item.code===line.parentProductCode);if(!item)return null;\n            try{const addOns=canonicalAddOnSelections(item.addOnGroupIds,item.addOnOptionIdsByGroup,addOnGroups,line.selectedAddOns as AddOnSelection[],getItemTaxRate(item,selectedStoreTaxConfig));return {name:item.name,options:addOns.map(a=>a.quantity+' × '+a.optionName).join(', '),totals:calculateTotals([{price:item.price,quantity:line.quantity,taxRate:getItemTaxRate(item,selectedStoreTaxConfig),addOns}],'0',selectedStoreTaxConfig)};}catch{return null;}\n          }}/></> : <>\n",
+          "beforeOffset": 106049,
+          "afterOffset": 112969
+        },
+        {
+          "before": "                      cartItemCount > 0 ? `${cartItemCount} ${cartItemCount === 1 ? 'item' : 'items'}` : null,\n",
+          "after": "                      `${cartItemCount} ${cartItemCount === 1 ? 'item' : 'items'}`,\n",
+          "beforeOffset": 106600,
+          "afterOffset": 114528
+        },
+        {
+          "before": "",
+          "after": "                <p className=\"mt-1 flex flex-wrap items-baseline gap-x-2 text-[#3e2723]\">\n                  <span className=\"text-[11px] font-semibold text-neutral-500\">Payable</span>\n                  <span className=\"break-all font-mono text-xl font-black\">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>\n                </p>\n",
+          "beforeOffset": 106854,
+          "afterOffset": 114755
+        },
+        {
+          "before": "",
+          "after": "                  type=\"button\"\n                  aria-label=\"Close current sale\"\n",
+          "beforeOffset": 107333,
+          "afterOffset": 115566
+        },
+        {
+          "before": "",
+          "after": "          {table.enabled?<BillItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} disabled={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/>:<InlineItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} disabled={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/>}\n          {counterStorageWarning&&<p role=\"status\">The draft could not be saved or restored from browser storage. Keep this page open; customer details are not cached.</p>}\n          {revalidationRequired&&<p role=\"status\">Reconnect checks pending · orders and table actions are locked. Local draft editing remains available.</p>}\n",
+          "beforeOffset": 110102,
+          "afterOffset": 118417
+        },
+        {
+          "before": "",
+          "after": "            contactLocked={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}\n",
+          "beforeOffset": 110614,
+          "afterOffset": 119726
+        },
+        {
+          "before": "            onPhoneChange={value => isComplimentarySelected ? handleComplimentaryPhoneChange(value) : setCustomerPhone(value)}\n",
+          "after": "            onPhoneChange={value => { if (isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)) return; isComplimentarySelected ? handleComplimentaryPhoneChange(value) : setCustomerPhone(value); }}\n",
+          "beforeOffset": 111697,
+          "afterOffset": 120926
+        },
+        {
+          "before": "",
+          "after": "          </>}\n",
+          "beforeOffset": 136020,
+          "afterOffset": 145356
+        },
+        {
+          "before": "",
+          "after": "      <TableDraftSwitch table={table}/>\n",
+          "beforeOffset": 136061,
+          "afterOffset": 145412
+        },
+        {
+          "before": "        <AddOnSelector\n",
+          "after": "        <div className=\"pos-add-on-overlay\"><AddOnSelector\n",
+          "beforeOffset": 136091,
+          "afterOffset": 145482
+        },
+        {
+          "before": "          taxRate={getItemTaxRate(pendingAddOnItem, selectedStoreTaxConfig.rate)}\n",
+          "after": "          taxRate={getItemTaxRate(pendingAddOnItem, selectedStoreTaxConfig)}\n",
+          "beforeOffset": 136218,
+          "afterOffset": 145645
+        },
+        {
+          "before": "        />\n",
+          "after": "        /></div>\n",
+          "beforeOffset": 136881,
+          "afterOffset": 146303
+        },
+        {
+          "before": "      {!isMobileCartOpen && cart.length > 0 && (\n",
+          "after": "      <p role=\"status\" aria-live=\"polite\" aria-atomic=\"true\" className=\"sr-only\">\n        {tableOrderMode\n          ? `Current table draft: ${table.draft.reduce((sum, item) => sum + item.quantity, 0)} unsent items.`\n          : `Current Sale: ${cartItemCount} ${cartItemCount === 1 ? 'item' : 'items'}. Payable ₹${displayedCartTotals.grandTotal.toFixed(2)}.`}\n      </p>\n      {!isMobileCartOpen && !table.enabled && (\n",
+          "beforeOffset": 144655,
+          "afterOffset": 154083
+        },
+        {
+          "before": "           <button onClick={() => setIsMobileCartOpen(true)} className=\"flex w-full items-center justify-between gap-3 rounded-2xl bg-[#3e2723] px-4 py-3.5 font-black text-white shadow-sm transition-colors hover:bg-[#2d1c19] sm:px-5\">\n",
+          "after": "           <button type=\"button\" aria-controls=\"pos-current-sale\" onClick={() => setIsMobileCartOpen(true)} className=\"flex w-full items-center justify-between gap-3 rounded-2xl bg-[#3e2723] px-4 py-3.5 font-black text-white shadow-sm transition-colors hover:bg-[#2d1c19] sm:px-5\">\n",
+          "beforeOffset": 144914,
+          "afterOffset": 154712
+        },
+        {
+          "before": "                <span className=\"truncate text-sm\">View Order</span>\n                <span className=\"rounded-xl bg-white/20 px-2.5 py-1 text-xs\">{cartItemCount} {cartItemCount === 1 ? 'item' : 'items'}</span>\n",
+          "after": "                <span className=\"truncate text-sm\">{tableOrderMode ? table.context?.tableNo || 'View table' : 'Current Sale'}</span>\n                <span className=\"rounded-xl bg-white/20 px-2.5 py-1 text-xs\">{tableOrderMode ? table.draft.reduce((n,l)=>n+l.quantity,0)+' unsent' : cartItemCount+' items'}</span>\n",
+          "beforeOffset": 145214,
+          "afterOffset": 155059
+        },
+        {
+          "before": "\t              <span className=\"min-w-0 truncate text-base sm:text-lg\">₹{displayedCartTotals.grandTotal.toFixed(2)}</span>\n",
+          "after": "\t              <span className=\"min-w-0 truncate text-base sm:text-lg\">{tableOrderMode && !table.session ? (table.sessionId ? 'Check table' : 'Not opened') : '₹'+(tableOrderMode ? table.session.outstanding : displayedCartTotals.grandTotal).toFixed(2)}</span>\n",
+          "beforeOffset": 145446,
+          "afterOffset": 155394
+        },
+        {
+          "before": "        <ReceiptModal\n",
+          "after": "        <ReceiptModal key={receiptView.order.sourceOrderId || receiptView.order.orderNumber}\n",
+          "beforeOffset": 145639,
+          "afterOffset": 155723
+        },
+        {
+          "before": "          showGstin={Boolean(receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin)}\n          showState={Boolean(receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.stateName)}\n",
+          "after": "          showGstin={Boolean(receiptView.order.gstTreatmentSnapshot?.mode !== 'NO_GST' && receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.gstin)}\n          showState={Boolean(receiptView.order.gstTreatmentSnapshot?.mode !== 'NO_GST' && receiptView.order.receiptLegalDetails?.gstRegistered && receiptView.order.receiptLegalDetails.stateName)}\n          prepareWhatsAppReceipt={receiptView.order.sourceOrderId ? prepareWhatsAppReceipt : undefined}\n",
+          "beforeOffset": 145777,
+          "afterOffset": 155932
+        }
+      ]
+    },
+    {
+      "scope": "Reviewed local normal-browser recovery correction: authoritative status/retirement, exact basket/account/store reference checks, recovery hydration and safe diagnostics. Only the reviewed delta is reversed for historical test extraction.",
+      "baselineSha256": "da59b799321fccda3818b872519a498cd7d2b3fc6a77ed3ce8a05e07f5c147f6",
+      "candidateSha256": "f4658972b715204cac6726b4c9cdfa0954b9c8f8840905ee267299bd34f8181b",
+      "edits": [
+        {
+          "before": "import { persistPosOrder } from '../../data/orders/posOrderRepository';\n",
+          "after": "import { persistPosOrder, requestPendingCheckoutRecovery } from '../../data/orders/posOrderRepository';\n",
+          "beforeOffset": 685,
+          "afterOffset": 685
+        },
+        {
+          "before": "import { hasBoundCheckoutAttempt, reconcilePendingCheckout, type PendingCheckoutResolution } from '../../lib/pos/pendingCheckoutRecovery';\n",
+          "after": "import { hasBoundCheckoutAttempt, resolvePendingCheckoutStatus, checkoutDiagnostic, checkoutServerMessage, type PendingCheckoutResolution, type PendingCheckoutReview } from '../../lib/pos/pendingCheckoutRecovery';\n",
+          "beforeOffset": 1360,
+          "afterOffset": 1392
+        },
+        {
+          "before": "",
+          "after": "  supportReference?: string;\n",
+          "beforeOffset": 5988,
+          "afterOffset": 6095
+        },
+        {
+          "before": "",
+          "after": "  reviewedBasket?: { uid: string; storeId: string; draftKey: string; reference: string };\n",
+          "beforeOffset": 6413,
+          "afterOffset": 6549
+        },
+        {
+          "before": "",
+          "after": "    reviewedBasket: attempt.reviewedBasket && typeof attempt.reviewedBasket.uid === 'string'\n      && typeof attempt.reviewedBasket.storeId === 'string' && typeof attempt.reviewedBasket.draftKey === 'string'\n      && typeof attempt.reviewedBasket.reference === 'string' && attempt.reviewedBasket.reference.length <= 100000\n      ? { uid: attempt.reviewedBasket.uid, storeId: attempt.reviewedBasket.storeId,\n        draftKey: attempt.reviewedBasket.draftKey, reference: attempt.reviewedBasket.reference } : undefined,\n",
+          "beforeOffset": 9355,
+          "afterOffset": 9581
+        },
+        {
+          "before": "",
+          "after": "}\n\nfunction sameCheckoutAttempt(left: CheckoutAttempt | null | undefined, right: CheckoutAttempt | null | undefined): boolean {\n  return Boolean(left && right && left.orderId === right.orderId && left.idempotencyKey === right.idempotencyKey\n    && (left.payloadHash || '') === (right.payloadHash || '')\n    && stableJson(left.previousPayloadHashes || []) === stableJson(right.previousPayloadHashes || [])\n    && stableJson(left.reviewedBasket || null) === stableJson(right.reviewedBasket || null));\n",
+          "beforeOffset": 9584,
+          "afterOffset": 10327
+        },
+        {
+          "before": "",
+          "after": "  const supportReference = checkoutDiagnostic(error);\n",
+          "beforeOffset": 17890,
+          "afterOffset": 19132
+        },
+        {
+          "before": "  const details = error instanceof Error ? error.message : String(error || 'Unknown checkout error');\n",
+          "after": "  const serverMessage = checkoutServerMessage(error);\n  if (serverMessage) return { message: serverMessage, supportReference };\n  const serverError = Boolean((error as { code?: unknown })?.code);\n  const details = serverError ? supportReference || 'The server could not confirm this checkout.'\n    : error instanceof Error ? error.message : 'Unknown checkout error';\n",
+          "beforeOffset": 18208,
+          "afterOffset": 19504
+        },
+        {
+          "before": "",
+          "after": "      supportReference,\n",
+          "beforeOffset": 18703,
+          "afterOffset": 20264
+        },
+        {
+          "before": "",
+          "after": "      supportReference,\n",
+          "beforeOffset": 18830,
+          "afterOffset": 20415
+        },
+        {
+          "before": "",
+          "after": "      supportReference,\n",
+          "beforeOffset": 18966,
+          "afterOffset": 20575
+        },
+        {
+          "before": "",
+          "after": "      supportReference,\n",
+          "beforeOffset": 19222,
+          "afterOffset": 20855
+        },
+        {
+          "before": "    message: 'Checkout could not be completed. Please check the cart and try again.',\n",
+          "after": "    message: 'Checkout could not be confirmed. Keep this checkout reference and check the previous checkout before collecting payment again.',\n",
+          "beforeOffset": 19245,
+          "afterOffset": 20902
+        },
+        {
+          "before": "",
+          "after": "    supportReference,\n",
+          "beforeOffset": 19344,
+          "afterOffset": 21058
+        },
+        {
+          "before": "",
+          "after": "  const recoveryInFlightRef = useRef(false);\n",
+          "beforeOffset": 21745,
+          "afterOffset": 23481
+        },
+        {
+          "before": "",
+          "after": "  // Persist references only; the full transient fingerprint detects edits while awaiting the server.\n  const basketReference = stableJson({ schemaVersion: 2, orderType, cart: cart.map(item => ({ id: item.id,\n    menuItemId: item.menuItemId, quantity: item.quantity,\n    addOns: (item.addOns || []).map(option => ({ groupId: option.groupId, optionId: option.optionId, quantity: option.quantity })) })) });\n  const checkoutContextRef = useRef({ uid: '', storeId: '', draftKey: '', ready: false, saving: false, paymentPending: false, reference: '', fingerprint: '' });\n  checkoutContextRef.current = { uid: staffProfile?.uid || '', storeId: selectedStoreId, draftKey: counterDraftKey,\n    ready: counterDraftLoaded === counterDraftKey && !tableOrderMode, saving: isSaving, paymentPending: Boolean(razorpaySession),\n    reference: basketReference,\n    fingerprint: stableJson({ cart, orderType, tableNumber, customerName, customerPhone, complimentaryReason,\n      discountPercentStr, paymentMethod, isSplitPayment, splitPayments, tableOrderMode, razorpaySession }) };\n\n",
+          "beforeOffset": 26839,
+          "afterOffset": 28620
+        },
+        {
+          "before": "        setSelectedStoreId(isTableStore(tableTargetStore) && allowedStores.some(store => store.id === tableTargetStore) ? tableTargetStore : allowedStores[0].id);\n",
+          "after": "        const recoveryStore = checkoutAttemptRef.current?.reviewedBasket;\n        const defaultStoreId = recoveryStore?.uid === staffProfile.uid\n          && allowedStores.some(store => store.id === recoveryStore.storeId) ? recoveryStore.storeId : allowedStores[0].id;\n        setSelectedStoreId(isTableStore(tableTargetStore) && allowedStores.some(store => store.id === tableTargetStore) ? tableTargetStore : defaultStoreId);\n",
+          "beforeOffset": 38825,
+          "afterOffset": 41672
+        },
+        {
+          "before": "",
+          "after": "  const applyDismissedCheckout = (\n    attempt: CheckoutAttempt,\n    resolution: Extract<PendingCheckoutResolution, { status: 'DISMISSED' }>,\n    checkedContext: typeof checkoutContextRef.current,\n  ): boolean => {\n    const context = checkoutContextRef.current;\n    const stored = loadCheckoutAttempt();\n    if (auth.currentUser?.uid !== checkedContext.uid || context.uid !== checkedContext.uid\n      || context.storeId !== checkedContext.storeId || !context.ready || context.saving || context.paymentPending\n      || context.fingerprint !== checkedContext.fingerprint\n      || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)\n      || !sameCheckoutAttempt(stored, attempt) || resolution.orderId !== attempt.orderId\n      || resolution.storeId !== context.storeId) {\n      setCheckoutError({ message: 'The previous reference was retired, but your account, basket, or checkout context changed. Your basket and local reference are kept. Check again in the original context.' });\n      return false;\n    }\n    const binding = attempt.reviewedBasket;\n    const matchingBasket = binding?.uid === context.uid && binding.storeId === context.storeId\n      && binding.draftKey === context.draftKey && binding.reference === context.reference;\n    if (!matchingBasket) {\n      setCheckoutError({ message: 'The server retired the previous reference. This basket is kept and billing remains blocked until you review it as a separate new sale, or clear it.' });\n      return false;\n    }\n    if (matchingBasket) {\n      try {\n        const persistedDraft = window.localStorage.getItem(context.draftKey);\n        if (persistedDraft && stableJson(JSON.parse(persistedDraft)) !== binding.reference) {\n          setCheckoutError({ message: 'The server retired the reference, but this basket changed in another window. Your local reference and basket are kept. Review them before checking again.' });\n          return false;\n        }\n      } catch {\n        setCheckoutError({ message: 'The server retired the reference, but the saved basket could not be checked. Your basket and local reference are kept.' });\n        return false;\n      }\n      // Write only this counter draft. Held bills, offline journals and other scoped drafts are untouched.\n      if (!writeLocalDraft(context.draftKey, { cart: [], orderType: 'DINE_IN' })) {\n        setCheckoutError({ message: 'The server retired the reference, but this browser could not save the cleared basket. Keep the local reference and check again.' });\n        return false;\n      }\n    }\n    try {\n      window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);\n    } catch {\n      setCheckoutError({ message: 'The server retired the reference, but this browser could not clear its matching marker. Check again; do not resubmit the checkout.' });\n      return false;\n    }\n    checkoutAttemptRef.current = null;\n    clearCart(true);\n    return true;\n  };\n\n",
+          "beforeOffset": 54518,
+          "afterOffset": 57629
+        },
+        {
+          "before": "",
+          "after": "    if (recoveryInFlightRef.current) return { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n    const checkedContext = { ...checkoutContextRef.current };\n    if (!checkedContext.ready || !checkedContext.uid || auth.currentUser?.uid !== checkedContext.uid\n      || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) return { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n",
+          "beforeOffset": 54623,
+          "afterOffset": 60637
+        },
+        {
+          "before": "    const checkedUid = auth.currentUser?.uid;\n",
+          "after": "    recoveryInFlightRef.current = true;\n    const endCriticalOperation = beginCriticalOperation();\n",
+          "beforeOffset": 54679,
+          "afterOffset": 61071
+        },
+        {
+          "before": "    const resolution = await reconcilePendingCheckout(attempt, async orderId => {\n      const snapshot = await getDocFromServer(doc(db, 'orders', orderId));\n      return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;\n    });\n    if (generation === recoveryGenerationRef.current && auth.currentUser?.uid === checkedUid\n      && checkoutAttemptRef.current?.orderId === attempt.orderId\n      && checkoutAttemptRef.current?.payloadHash === attempt.payloadHash) {\n",
+          "after": "    try {\n      const result = await requestPendingCheckoutRecovery(attempt, checkedContext.storeId);\n      const resolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n      const context = checkoutContextRef.current;\n      if (generation !== recoveryGenerationRef.current || auth.currentUser?.uid !== checkedContext.uid\n        || context.uid !== checkedContext.uid || context.storeId !== checkedContext.storeId\n        || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) return { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n",
+          "beforeOffset": 54807,
+          "afterOffset": 61252
+        },
+        {
+          "before": "",
+          "after": "      if (resolution.status === 'DISMISSED') applyDismissedCheckout(attempt, resolution, checkedContext);\n      return resolution;\n    } catch (error) {\n      const resolution: PendingCheckoutResolution = { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n      if (generation === recoveryGenerationRef.current && auth.currentUser?.uid === checkedContext.uid\n        && checkoutContextRef.current.storeId === checkedContext.storeId\n        && sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) {\n        setPendingRecovery({ attempt, resolution });\n        setCheckoutError({ message: 'The previous checkout could not be verified. Your basket and reference are kept. Reconnect and check again, or ask an Admin.', supportReference: checkoutDiagnostic(error) });\n      }\n      return resolution;\n    } finally {\n      recoveryInFlightRef.current = false;\n      if (generation === recoveryGenerationRef.current) setRecoveryBusy(false);\n      endCriticalOperation();\n",
+          "beforeOffset": 55368,
+          "afterOffset": 61907
+        },
+        {
+          "before": "    if (generation === recoveryGenerationRef.current) setRecoveryBusy(false);\n    return generation === recoveryGenerationRef.current && auth.currentUser?.uid === checkedUid\n      ? resolution : { status: 'UNCERTAIN', reason: 'READ_FAILED' };\n",
+          "after": "",
+          "beforeOffset": 55374,
+          "afterOffset": 62880
+        },
+        {
+          "before": "",
+          "after": "\n  const retirePendingCheckout = async (review: PendingCheckoutReview) => {\n    if (staffProfile?.role !== 'ADMIN' || !pendingRecovery || pendingRecovery.resolution?.status !== 'NOT_SAVED'\n      || recoveryInFlightRef.current || recoveryBusy || isSaving || razorpaySession || !requireOnlineAction()) return;\n    const checkedContext = { ...checkoutContextRef.current };\n    if (!checkedContext.ready || !checkedContext.uid || auth.currentUser?.uid !== checkedContext.uid) return;\n    const attempt: CheckoutAttempt = { ...pendingRecovery.attempt, reviewedBasket: {\n      uid: checkedContext.uid, storeId: checkedContext.storeId, draftKey: checkedContext.draftKey, reference: checkedContext.reference,\n    } };\n    if (!sameCheckoutAttempt(checkoutAttemptRef.current, pendingRecovery.attempt)\n      || !sameCheckoutAttempt(loadCheckoutAttempt(), pendingRecovery.attempt)) return;\n    // Save the reviewed basket binding before the request so lost acknowledgements recover safely.\n    try { window.localStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt)); }\n    catch { setCheckoutError({ message: 'This browser could not preserve the recovery reference. Nothing was submitted; keep the basket and ask an Admin.' }); return; }\n    checkoutAttemptRef.current = attempt;\n    const generation = ++recoveryGenerationRef.current;\n    recoveryInFlightRef.current = true;\n    const endCriticalOperation = beginCriticalOperation();\n    setRecoveryBusy(true);\n    setPendingRecovery({ attempt, resolution: null });\n    setCheckoutError(null);\n    try {\n      const result = await requestPendingCheckoutRecovery(attempt, checkedContext.storeId, review);\n      const resolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n      if (generation !== recoveryGenerationRef.current || auth.currentUser?.uid !== checkedContext.uid\n        || checkoutContextRef.current.uid !== checkedContext.uid || checkoutContextRef.current.storeId !== checkedContext.storeId\n        || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) return;\n      setPendingRecovery({ attempt, resolution });\n      if (resolution.status === 'DISMISSED') applyDismissedCheckout(attempt, resolution, checkedContext);\n      else setCheckoutError({ message: 'The server did not retire this reference. Your basket is kept. Check the original sale and payment outcome before continuing.' });\n    } catch (error) {\n      if (auth.currentUser?.uid === checkedContext.uid && checkoutContextRef.current.storeId === checkedContext.storeId\n        && sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) {\n        setPendingRecovery({ attempt, resolution: { status: 'UNCERTAIN', reason: 'READ_FAILED' } });\n        setCheckoutError({ message: 'Retirement could not be confirmed. Your basket and reference are kept. Check previous checkout to recover the server outcome; do not charge again.', supportReference: checkoutDiagnostic(error) });\n      }\n    } finally {\n      recoveryInFlightRef.current = false;\n      setRecoveryBusy(false);\n      endCriticalOperation();\n    }\n  };\n\n  useEffect(() => {\n    const attempt = checkoutAttemptRef.current;\n    if (hasBoundCheckoutAttempt(attempt) && catalogueReady && checkoutContextRef.current.ready\n      && auth.currentUser?.uid === staffProfile?.uid && !isSaving && !recoveryInFlightRef.current) {\n      void checkPendingCheckout(attempt!);\n    }\n  }, [staffProfile?.uid, selectedStoreId, counterDraftLoaded, catalogueReady]);\n",
+          "beforeOffset": 55622,
+          "afterOffset": 62885
+        },
+        {
+          "before": "",
+          "after": "    const checkedContext = pendingRecovery.resolution?.status === 'DISMISSED' ? { ...checkoutContextRef.current } : null;\n",
+          "beforeOffset": 57256,
+          "afterOffset": 68001
+        },
+        {
+          "before": "    if (resolution.status !== 'COMMITTED'\n",
+          "after": "    if (!['COMMITTED', 'DISMISSED'].includes(resolution.status)\n",
+          "beforeOffset": 57316,
+          "afterOffset": 68183
+        },
+        {
+          "before": "",
+          "after": "    if (resolution.status === 'DISMISSED') {\n      if (!checkedContext) return;\n      if (!sameCheckoutAttempt(loadCheckoutAttempt(), attempt)\n        || checkoutContextRef.current.storeId !== checkedContext.storeId\n        || checkoutContextRef.current.fingerprint !== checkedContext.fingerprint) return;\n      if (!window.confirm('The previous reference was retired. Keep this basket only if you reviewed it as a separate NEW sale. Do not collect payment again for any already-paid bill.')) return;\n      if (auth.currentUser?.uid !== checkedUid || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)\n        || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)\n        || checkoutContextRef.current.storeId !== checkedContext.storeId\n        || checkoutContextRef.current.fingerprint !== checkedContext.fingerprint) return;\n      try { window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY); }\n      catch { setCheckoutError({ message: 'This browser could not clear the retired reference. Keep the basket and check again.' }); return; }\n      checkoutAttemptRef.current = null;\n      setPendingRecovery(null);\n      setCheckoutError(null);\n      return;\n    }\n",
+          "beforeOffset": 57551,
+          "afterOffset": 68440
+        },
+        {
+          "before": "",
+          "after": "    if (skipConfirm !== true && pendingRecovery?.resolution?.status === 'DISMISSED') {\n      const context = checkoutContextRef.current;\n      const attempt = checkoutAttemptRef.current;\n      if (isSaving || recoveryBusy || recoveryInFlightRef.current || context.saving || context.paymentPending\n        || !context.ready || auth.currentUser?.uid !== context.uid\n        || pendingRecovery.resolution.storeId !== context.storeId\n        || !sameCheckoutAttempt(attempt, pendingRecovery.attempt)\n        || !sameCheckoutAttempt(loadCheckoutAttempt(), pendingRecovery.attempt)) return;\n      if (!window.confirm('The previous reference is retired. Clear the current retained basket? No saved sale, held bill, or payment record will be changed.')) return;\n      if (auth.currentUser?.uid !== context.uid || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return;\n      if (!writeLocalDraft(context.draftKey, { cart: [], orderType: 'DINE_IN' })) {\n        setCheckoutError({ message: 'This browser could not save the cleared basket. The local reference is kept; check again.' }); return;\n      }\n      try { window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY); }\n      catch { setCheckoutError({ message: 'The retired reference could not be cleared locally. Keep it and check again.' }); return; }\n      clearCart(true);\n      return;\n    }\n",
+          "beforeOffset": 59462,
+          "afterOffset": 71529
+        },
+        {
+          "before": "    if (isSaving || recoveryBusy) return;\n",
+          "after": "    if (isSaving || recoveryBusy || recoveryInFlightRef.current) return;\n    if (pendingRecovery?.resolution?.status === 'DISMISSED') {\n      setCheckoutError({ message: 'Review this retained basket as a separate new sale, or clear it, before billing. Do not collect payment again for an already-paid bill.' });\n      return;\n    }\n",
+          "beforeOffset": 75724,
+          "afterOffset": 89144
+        },
+        {
+          "before": "          if (!isCheckoutPermissionError(recoveryError)) console.error(recoveryError);\n",
+          "after": "          if (!isCheckoutPermissionError(recoveryError)) console.warn('[CHECKOUT RECOVERY FAILED]', checkoutDiagnostic(recoveryError) || 'RECOVERY_UNCONFIRMED');\n",
+          "beforeOffset": 90128,
+          "afterOffset": 103838
+        },
+        {
+          "before": "      if (isExpectedCheckoutValidationError(err)) console.warn(err instanceof Error ? err.message : err);\n      else console.error(err);\n      if (String(err?.code || '').includes('permission') || String(err?.message || '').toLowerCase().includes('permission')) {\n        console.error('[CHECKOUT PERMISSION TRACE]', {\n          code: err?.code || null,\n          message: err?.message || String(err),\n          attemptedWrites: checkoutWriteTrace,\n        });\n      }\n",
+          "after": "      console.warn('[CHECKOUT FAILED]', checkoutDiagnostic(err) || 'CHECKOUT_UNCONFIRMED');\n",
+          "beforeOffset": 90233,
+          "afterOffset": 104018
+        },
+        {
+          "before": "          {pendingRecovery && <PendingCheckoutRecoveryPanel\n",
+          "after": "          {pendingRecovery && <PendingCheckoutRecoveryPanel key={pendingRecovery.attempt.orderId}\n",
+          "beforeOffset": 121174,
+          "afterOffset": 134582
+        },
+        {
+          "before": "",
+          "after": "            reviewContext={checkoutContextRef.current.fingerprint}\n",
+          "beforeOffset": 121499,
+          "afterOffset": 134945
+        },
+        {
+          "before": "",
+          "after": "            onRetire={review => { void retirePendingCheckout(review); }}\n",
+          "beforeOffset": 121821,
+          "afterOffset": 135334
+        },
+        {
+          "before": "",
+          "after": "                  {checkoutError.supportReference && <p className=\"mt-2 break-all font-mono text-xs\">{checkoutError.supportReference}</p>}\n",
+          "beforeOffset": 122299,
+          "afterOffset": 135885
+        }
+      ]
+    },
+    {
+      "scope": "Reviewed full-app hydration correction in the same POSHome file: explicit accessible-store navigation verifies exact pending reference through RECOVERY_STATUS, then checks account/store/attempt/fingerprint/draft identity and persisted-draft CAS before preserving the current scoped draft and switching store. No commit or retirement operation is added.",
+      "baselineSha256": "f4658972b715204cac6726b4c9cdfa0954b9c8f8840905ee267299bd34f8181b",
+      "candidateSha256": "f91079016f72333c88a165a7f0daf82bc4f3e178bffd6dc3c96d6977beb298ad",
+      "edits": [
+        {
+          "before": "",
+          "after": "  const recoverCheckoutStore = async (targetStoreId: string) => {\n    const attempt = checkoutAttemptRef.current;\n    const context = { ...checkoutContextRef.current };\n    if (!attempt || !hasBoundCheckoutAttempt(attempt) || !context.ready || context.saving || context.paymentPending\n      || recoveryInFlightRef.current || recoveryBusy || !context.uid || auth.currentUser?.uid !== context.uid\n      || targetStoreId === context.storeId || !stores.some(store => store.id === targetStoreId)\n      || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt) || !requireOnlineAction()) return;\n    const generation = ++recoveryGenerationRef.current;\n    recoveryInFlightRef.current = true;\n    setRecoveryBusy(true);\n    const endCriticalOperation = beginCriticalOperation();\n    try {\n      const savedDraft = window.localStorage.getItem(context.draftKey);\n      // Navigation is allowed only when the server binds this exact pending reference\n      // to the requested accessible store. This does not retire or retry a checkout.\n      const result = await requestPendingCheckoutRecovery(attempt, targetStoreId);\n      const resolution = await resolvePendingCheckoutStatus(attempt, result, targetStoreId);\n      const current = checkoutContextRef.current;\n      if (generation !== recoveryGenerationRef.current || auth.currentUser?.uid !== context.uid\n        || current.uid !== context.uid || current.storeId !== context.storeId || current.draftKey !== context.draftKey\n        || !current.ready || current.fingerprint !== context.fingerprint || current.saving || current.paymentPending\n        || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)\n        || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return;\n      if (resolution.status === 'UNCERTAIN') {\n        setCheckoutError({ message: 'The server could not verify this store for the previous checkout. Your basket and reference are kept. Ask an Admin to review the original store and payment outcome.' });\n        return;\n      }\n      // Persist the current scoped draft before loading the original store's draft.\n      // The global pending reference, held bills and offline journals stay intact.\n      if (window.localStorage.getItem(context.draftKey) !== savedDraft) {\n        setCheckoutError({ message: 'This basket changed in another window. The store, saved drafts and previous checkout reference are kept. Review the basket before checking again.' });\n        return;\n      }\n      if (!writeLocalDraft(context.draftKey, { cart, orderType })) {\n        setCheckoutError({ message: 'This browser could not preserve the current basket. The store and previous checkout reference are kept.' });\n        return;\n      }\n      setPendingRecovery(null);\n      setCheckoutError(null);\n      setSelectedStoreId(targetStoreId);\n    } catch (error) {\n      if (generation === recoveryGenerationRef.current && auth.currentUser?.uid === context.uid\n        && sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) {\n        setCheckoutError({ message: 'The original checkout store could not be verified. Your basket and reference are kept. Reconnect and check again.', supportReference: checkoutDiagnostic(error) });\n      }\n    } finally {\n      recoveryInFlightRef.current = false;\n      if (generation === recoveryGenerationRef.current) setRecoveryBusy(false);\n      endCriticalOperation();\n    }\n  };\n\n",
+          "beforeOffset": 43418,
+          "afterOffset": 43418
+        },
+        {
+          "before": "      void checkPendingCheckout(checkoutAttemptRef.current!);\n",
+          "after": "      if (e.target.value !== selectedStoreId) void recoverCheckoutStore(e.target.value);\n      else void checkPendingCheckout(checkoutAttemptRef.current!);\n",
+          "beforeOffset": 43556,
+          "afterOffset": 46935
+        }
+      ]
+    },
+    {
+      "scope": "Reviewed cross-staff ownership correction after critical actual-app QA: immutable original staff/store/reference/basket ownership, server authorization binding, owner-only retirement, exact original draft-before-marker cleanup, retained legacy/unknown markers and coordinated marker CAS. This exact reversible test-only delta preserves the original three promotions and historical extraction pins; financial behavior is qualified separately against actual Firebase SDK/emulators and the browser.",
+      "baselineSha256": "f91079016f72333c88a165a7f0daf82bc4f3e178bffd6dc3c96d6977beb298ad",
+      "candidateSha256": "c48691297617b37d857a8a5011da8ace0646126f8435f0b0c51346c50455ab57",
+      "edits": [
+        {
+          "before": "import { hasBoundCheckoutAttempt, resolvePendingCheckoutStatus, checkoutDiagnostic, checkoutServerMessage, type PendingCheckoutResolution, type PendingCheckoutReview } from '../../lib/pos/pendingCheckoutRecovery';\n",
+          "after": "import { hasBoundCheckoutAttempt, resolvePendingCheckoutStatus, checkoutDiagnostic, checkoutServerMessage, type PendingCheckoutResolution, type PendingCheckoutReview, type PendingCheckoutOwnership, type CheckoutRecoveryBinding, hasCheckoutOwnership, bindingMatchesCheckout, sameCheckoutRecoveryBinding, checkoutBasketIdentity } from '../../lib/pos/pendingCheckoutRecovery';\n",
+          "beforeOffset": 1392,
+          "afterOffset": 1392
+        },
+        {
+          "before": "  reviewedBasket?: { uid: string; storeId: string; draftKey: string; reference: string };\n",
+          "after": "  ownership?: PendingCheckoutOwnership;\n  recoveryBinding?: CheckoutRecoveryBinding;\n",
+          "beforeOffset": 6549,
+          "afterOffset": 6709
+        },
+        {
+          "before": "const CHECKOUT_ATTEMPT_TTL_MS = 2 * 60 * 60 * 1000;\n",
+          "after": "",
+          "beforeOffset": 7356,
+          "afterOffset": 7511
+        },
+        {
+          "before": "  const attempt = value as Partial<CheckoutAttempt>;\n  if (!attempt.idempotencyKey || !attempt.orderId || !Number.isFinite(Number(attempt.createdAt))) return null;\n  // A bound attempt can have an unknown commit/payment outcome; age cannot resolve it.\n  if (!hasBoundCheckoutAttempt(attempt as CheckoutAttempt) && Date.now() - Number(attempt.createdAt) > CHECKOUT_ATTEMPT_TTL_MS) return null;\n  return {\n    idempotencyKey: sanitizeFirestoreId(attempt.idempotencyKey, 120),\n    orderId: sanitizeFirestoreId(attempt.orderId, 180),\n    createdAt: Number(attempt.createdAt),\n    payloadHash: attempt.payloadHash ? String(attempt.payloadHash) : undefined,\n    reviewedBasket: attempt.reviewedBasket && typeof attempt.reviewedBasket.uid === 'string'\n      && typeof attempt.reviewedBasket.storeId === 'string' && typeof attempt.reviewedBasket.draftKey === 'string'\n      && typeof attempt.reviewedBasket.reference === 'string' && attempt.reviewedBasket.reference.length <= 100000\n      ? { uid: attempt.reviewedBasket.uid, storeId: attempt.reviewedBasket.storeId,\n        draftKey: attempt.reviewedBasket.draftKey, reference: attempt.reviewedBasket.reference } : undefined,\n    previousPayloadHashes: Array.isArray(attempt.previousPayloadHashes)\n      ? attempt.previousPayloadHashes.filter(hash => typeof hash === 'string' && hash.length > 0 && hash.length <= 100).slice(0, 10)\n      : undefined,\n  };\n",
+          "after": "  const attempt = value as CheckoutAttempt;\n  // Never age out, sanitize, or adopt a financial recovery marker, including a legacy unbound marker.\n  if (typeof attempt.idempotencyKey !== 'string' || !/^[A-Za-z0-9_-]{1,120}$/.test(attempt.idempotencyKey)\n    || typeof attempt.orderId !== 'string' || !/^POS_[A-Za-z0-9_-]{1,176}$/.test(attempt.orderId)\n    || !Number.isFinite(attempt.createdAt)) return null;\n  return attempt;\n",
+          "beforeOffset": 8929,
+          "afterOffset": 9032
+        },
+        {
+          "before": "  return Boolean(left && right && left.orderId === right.orderId && left.idempotencyKey === right.idempotencyKey\n    && (left.payloadHash || '') === (right.payloadHash || '')\n    && stableJson(left.previousPayloadHashes || []) === stableJson(right.previousPayloadHashes || [])\n    && stableJson(left.reviewedBasket || null) === stableJson(right.reviewedBasket || null));\n",
+          "after": "  return Boolean(left && right && stableJson(left) === stableJson(right));\n}\nconst hasPendingCheckoutGuard = (attempt: CheckoutAttempt | null | undefined) => Boolean(attempt);\nconst unreadableCheckoutAttempt = (): CheckoutAttempt => ({ orderId: 'UNVERIFIED_LOCAL_CHECKOUT', idempotencyKey: 'UNVERIFIED_LOCAL_CHECKOUT', createdAt: 0 });\nfunction loadCheckoutAttempt(): CheckoutAttempt | null {\n  if (typeof window === 'undefined') return null;\n  try {\n    const raw = window.localStorage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);\n    if (raw === null) return null;\n    return validStoredCheckoutAttempt(JSON.parse(raw)) || unreadableCheckoutAttempt();\n  } catch { return unreadableCheckoutAttempt(); }\n",
+          "beforeOffset": 10455,
+          "afterOffset": 9587
+        },
+        {
+          "before": "function loadCheckoutAttempt(): CheckoutAttempt | null {\n  return validStoredCheckoutAttempt(readLocalStorageJson<CheckoutAttempt | null>(CHECKOUT_ATTEMPT_STORAGE_KEY, null));\n",
+          "after": "/** All marker mutations use the same origin lock and compare the complete persisted identity. */\nasync function withCheckoutMarkerLock<T>(mutation: () => T): Promise<T> {\n  if (typeof navigator === 'undefined' || !navigator.locks?.request) throw new Error('Checkout recovery requires browser coordination. Keep the basket and reference.');\n  return navigator.locks.request(CHECKOUT_ATTEMPT_STORAGE_KEY, { mode: 'exclusive' }, mutation);\n",
+          "beforeOffset": 10829,
+          "afterOffset": 10288
+        },
+        {
+          "before": "\nfunction writeCheckoutAttempt(attempt: CheckoutAttempt) {\n  writeLocalStorageJson(CHECKOUT_ATTEMPT_STORAGE_KEY, attempt);\n}\n\nfunction clearCheckoutAttempt() {\n  if (typeof window === 'undefined') return;\n  try {\n    window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);\n  } catch (error) {\n    console.warn(`Unable to clear ${CHECKOUT_ATTEMPT_STORAGE_KEY} from localStorage`, error);\n  }\n",
+          "after": "async function writeCheckoutAttempt(attempt: CheckoutAttempt, expected: CheckoutAttempt | null): Promise<void> {\n  await withCheckoutMarkerLock(() => {\n    const stored = loadCheckoutAttempt();\n    if (expected ? !sameCheckoutAttempt(stored, expected) : stored !== null) throw new Error('The checkout reference changed in another window. Keep the basket and check the previous checkout.');\n    if (!hasCheckoutOwnership(attempt) || auth.currentUser?.uid !== attempt.ownership!.staffUid\n      || (expected && stableJson(expected.ownership) !== stableJson(attempt.ownership))) throw new Error('The original checkout ownership could not be verified.');\n    const draft = window.localStorage.getItem(attempt.ownership!.draftKey);\n    if (!draft || stableJson(JSON.parse(draft)) !== attempt.ownership!.reference) throw new Error('The original basket changed in another window. Keep its checkout guard.');\n    window.localStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));\n  });\n",
+          "beforeOffset": 11007,
+          "afterOffset": 10728
+        },
+        {
+          "before": "  const table = useTableOrder(staffProfile?.uid || '', selectedStoreId, orderType, isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current), revalidationRequired);\n",
+          "after": "  const table = useTableOrder(staffProfile?.uid || '', selectedStoreId, orderType, isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current), revalidationRequired);\n",
+          "beforeOffset": 26830,
+          "afterOffset": 27148
+        },
+        {
+          "before": "",
+          "after": "  const [counterDraftConflict,setCounterDraftConflict] = useState(false);\n",
+          "beforeOffset": 28620,
+          "afterOffset": 28938
+        },
+        {
+          "before": "",
+          "after": "  const ownsCheckoutContext = (attempt: CheckoutAttempt, context = checkoutContextRef.current) => hasCheckoutOwnership(attempt)\n    && attempt.ownership!.staffUid === context.uid && attempt.ownership!.storeId === context.storeId\n    && attempt.ownership!.draftKey === context.draftKey && attempt.ownership!.reference === context.reference\n    && attempt.ownership!.orderId === attempt.orderId && auth.currentUser?.uid === context.uid;\n  const verifiedCheckoutContext = (attempt: CheckoutAttempt, resolution?: PendingCheckoutResolution | null, context = checkoutContextRef.current) =>\n    ownsCheckoutContext(attempt, context) && bindingMatchesCheckout(attempt)\n    && (!resolution || ('staffUid' in resolution && resolution.staffUid === attempt.ownership!.staffUid\n      && sameCheckoutRecoveryBinding(resolution.recoveryBinding, attempt.recoveryBinding)));\n  const chargeRecoveryBlocked = counterDraftConflict || Boolean(checkoutAttemptRef.current && (!ownsCheckoutContext(checkoutAttemptRef.current)\n    || !bindingMatchesCheckout(checkoutAttemptRef.current) || checkoutAttemptRef.current.payloadHash\n    || staffProfile?.role !== 'ADMIN' || !checkoutAttemptRef.current.previousPayloadHashes?.length));\n\n",
+          "beforeOffset": 29686,
+          "afterOffset": 30078
+        },
+        {
+          "before": "  useUpdateBlocker(!!cart.length||!!customerName||!!customerPhone||!!tableNumber||isSaving||razorpayPaymentLocked||recoveryBusy||hasBoundCheckoutAttempt(checkoutAttemptRef.current)||revalidationRequired);\n",
+          "after": "  useUpdateBlocker(!!cart.length||!!customerName||!!customerPhone||!!tableNumber||isSaving||razorpayPaymentLocked||recoveryBusy||hasPendingCheckoutGuard(checkoutAttemptRef.current)||revalidationRequired);\n",
+          "beforeOffset": 29712,
+          "afterOffset": 31310
+        },
+        {
+          "before": "    if(counterDraftLoaded!==counterDraftKey||!staffProfile?.uid||!selectedStoreId||tableOrderMode)return;\n",
+          "after": "    if(counterDraftConflict||counterDraftLoaded!==counterDraftKey||!staffProfile?.uid||!selectedStoreId||tableOrderMode)return;\n",
+          "beforeOffset": 31866,
+          "afterOffset": 33464
+        },
+        {
+          "before": "  },[counterDraftLoaded,counterDraftKey,cart,orderType,tableOrderMode]);\n",
+          "after": "  },[counterDraftLoaded,counterDraftKey,cart,orderType,tableOrderMode,counterDraftConflict]);\n",
+          "beforeOffset": 32204,
+          "afterOffset": 33824
+        },
+        {
+          "before": "    if ((table.pending && !returningToOriginal) || table.busy || isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n",
+          "after": "    if ((table.pending && !returningToOriginal) || table.busy || isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)) {\n",
+          "beforeOffset": 34803,
+          "afterOffset": 36444
+        },
+        {
+          "before": "    checkoutAttemptRef.current = loadCheckoutAttempt();\n  }, []);\n",
+          "after": "    const refresh = (event?: StorageEvent) => {\n      if (event && event.key !== CHECKOUT_ATTEMPT_STORAGE_KEY && event.key !== counterDraftKey) return;\n      const stored = loadCheckoutAttempt();\n      checkoutAttemptRef.current = stored;\n      setPendingRecovery(stored ? { attempt: stored, resolution: { status: 'UNCERTAIN', reason: 'READ_FAILED' } } : null);\n      if (event?.key === counterDraftKey) { setCounterDraftConflict(true); setRevalidationRequired(true); }\n    };\n    refresh();\n    window.addEventListener('storage', refresh);\n    return () => window.removeEventListener('storage', refresh);\n  }, [counterDraftKey]);\n",
+          "beforeOffset": 35407,
+          "afterOffset": 37048
+        },
+        {
+          "before": "        const recoveryStore = checkoutAttemptRef.current?.reviewedBasket;\n        const defaultStoreId = recoveryStore?.uid === staffProfile.uid\n",
+          "after": "        const recoveryStore = checkoutAttemptRef.current?.ownership;\n        const defaultStoreId = recoveryStore?.staffUid === staffProfile.uid\n",
+          "beforeOffset": 41672,
+          "afterOffset": 43878
+        },
+        {
+          "before": "    if (!attempt || !hasBoundCheckoutAttempt(attempt) || !context.ready || context.saving || context.paymentPending\n",
+          "after": "    if (!attempt || !hasPendingCheckoutGuard(attempt) || !context.ready || context.saving || context.paymentPending\n",
+          "beforeOffset": 43587,
+          "afterOffset": 45793
+        },
+        {
+          "before": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n",
+          "after": "    if (hasPendingCheckoutGuard(checkoutAttemptRef.current)) {\n",
+          "beforeOffset": 46872,
+          "afterOffset": 49078
+        },
+        {
+          "before": "  const applyDismissedCheckout = (\n",
+          "after": "  const completeSavedCheckout = async (\n    attempt: CheckoutAttempt,\n    resolution: PendingCheckoutResolution,\n    checkedContext: typeof checkoutContextRef.current,\n  ): Promise<boolean> => {\n    if (!['COMMITTED', 'DISMISSED'].includes(resolution.status)) return false;\n    try {\n      return await withCheckoutMarkerLock(() => {\n        const context = checkoutContextRef.current;\n        if (counterDraftConflict || !verifiedCheckoutContext(attempt, resolution, context) || !context.ready || context.paymentPending\n          || context.uid !== checkedContext.uid || context.storeId !== checkedContext.storeId || context.draftKey !== checkedContext.draftKey\n          || context.reference !== checkedContext.reference || context.fingerprint !== checkedContext.fingerprint\n          || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt) || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return false;\n        const rawDraft = window.localStorage.getItem(attempt.ownership!.draftKey);\n        if (!rawDraft || stableJson(JSON.parse(rawDraft)) !== attempt.ownership!.reference) return false;\n        // The immutable original owner's exact persisted basket is cleared before its guard.\n        if (!writeLocalDraft(attempt.ownership!.draftKey, { cart: [], orderType: 'DINE_IN' })) return false;\n        if (!sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return false;\n        window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);\n        checkoutAttemptRef.current = null;\n        clearCart(true);\n        return true;\n      });\n    } catch { return false; }\n  };\n\n  const finishCommittedCheckout = async (attempt: CheckoutAttempt, context: typeof checkoutContextRef.current) => {\n    try {\n      const result = await requestPendingCheckoutRecovery(attempt, attempt.ownership?.storeId || context.storeId);\n      const resolution = await resolvePendingCheckoutStatus(attempt, result, context.storeId);\n      if (resolution.status === 'COMMITTED' && await completeSavedCheckout(attempt, resolution, context)) return true;\n    } catch { /* The saved receipt can be shown while its unresolved local guard is retained. */ }\n    setCheckoutError({ message: 'The sale is saved. Its original basket and checkout guard are retained because this account, basket, or acknowledgement could not be reconciled. Check previous checkout; do not charge again.' });\n    return false;\n  };\n\n  const applyDismissedCheckout = async (\n",
+          "beforeOffset": 61102,
+          "afterOffset": 63308
+        },
+        {
+          "before": "  ): boolean => {\n    const context = checkoutContextRef.current;\n    const stored = loadCheckoutAttempt();\n    if (auth.currentUser?.uid !== checkedContext.uid || context.uid !== checkedContext.uid\n      || context.storeId !== checkedContext.storeId || !context.ready || context.saving || context.paymentPending\n      || context.fingerprint !== checkedContext.fingerprint\n      || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)\n      || !sameCheckoutAttempt(stored, attempt) || resolution.orderId !== attempt.orderId\n      || resolution.storeId !== context.storeId) {\n      setCheckoutError({ message: 'The previous reference was retired, but your account, basket, or checkout context changed. Your basket and local reference are kept. Check again in the original context.' });\n      return false;\n    }\n    const binding = attempt.reviewedBasket;\n    const matchingBasket = binding?.uid === context.uid && binding.storeId === context.storeId\n      && binding.draftKey === context.draftKey && binding.reference === context.reference;\n    if (!matchingBasket) {\n      setCheckoutError({ message: 'The server retired the previous reference. This basket is kept and billing remains blocked until you review it as a separate new sale, or clear it.' });\n      return false;\n    }\n    if (matchingBasket) {\n      try {\n        const persistedDraft = window.localStorage.getItem(context.draftKey);\n        if (persistedDraft && stableJson(JSON.parse(persistedDraft)) !== binding.reference) {\n          setCheckoutError({ message: 'The server retired the reference, but this basket changed in another window. Your local reference and basket are kept. Review them before checking again.' });\n          return false;\n        }\n      } catch {\n        setCheckoutError({ message: 'The server retired the reference, but the saved basket could not be checked. Your basket and local reference are kept.' });\n        return false;\n      }\n      // Write only this counter draft. Held bills, offline journals and other scoped drafts are untouched.\n      if (!writeLocalDraft(context.draftKey, { cart: [], orderType: 'DINE_IN' })) {\n        setCheckoutError({ message: 'The server retired the reference, but this browser could not save the cleared basket. Keep the local reference and check again.' });\n        return false;\n      }\n    }\n    try {\n      window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);\n    } catch {\n      setCheckoutError({ message: 'The server retired the reference, but this browser could not clear its matching marker. Check again; do not resubmit the checkout.' });\n      return false;\n    }\n    checkoutAttemptRef.current = null;\n    clearCart(true);\n    return true;\n",
+          "after": "  ): Promise<boolean> => {\n    const cleared = await completeSavedCheckout(attempt, resolution, checkedContext);\n    if (!cleared) setCheckoutError({ message: 'The retired reference does not match this original account and basket, or another window changed it. The checkout guard and basket remain protected.' });\n    return cleared;\n",
+          "beforeOffset": 61299,
+          "afterOffset": 65914
+        },
+        {
+          "before": "      const resolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n",
+          "after": "      const serverResolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n      const resolution: PendingCheckoutResolution = ownsCheckoutContext(attempt, checkedContext) ? serverResolution : { status: 'UNCERTAIN', reason: 'ORDER_MISMATCH' };\n",
+          "beforeOffset": 64827,
+          "afterOffset": 67076
+        },
+        {
+          "before": "      if (resolution.status === 'DISMISSED') applyDismissedCheckout(attempt, resolution, checkedContext);\n",
+          "after": "      if (resolution.status === 'DISMISSED') await applyDismissedCheckout(attempt, resolution, checkedContext);\n",
+          "beforeOffset": 65380,
+          "afterOffset": 67804
+        },
+        {
+          "before": "    const attempt: CheckoutAttempt = { ...pendingRecovery.attempt, reviewedBasket: {\n      uid: checkedContext.uid, storeId: checkedContext.storeId, draftKey: checkedContext.draftKey, reference: checkedContext.reference,\n    } };\n    if (!sameCheckoutAttempt(checkoutAttemptRef.current, pendingRecovery.attempt)\n      || !sameCheckoutAttempt(loadCheckoutAttempt(), pendingRecovery.attempt)) return;\n    // Save the reviewed basket binding before the request so lost acknowledgements recover safely.\n    try { window.localStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt)); }\n    catch { setCheckoutError({ message: 'This browser could not preserve the recovery reference. Nothing was submitted; keep the basket and ask an Admin.' }); return; }\n    checkoutAttemptRef.current = attempt;\n",
+          "after": "    const attempt = pendingRecovery.attempt;\n    if (!verifiedCheckoutContext(attempt, pendingRecovery.resolution, checkedContext)\n      || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt) || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return;\n",
+          "beforeOffset": 66838,
+          "afterOffset": 69268
+        },
+        {
+          "before": "      const resolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n",
+          "after": "      const serverResolution = await resolvePendingCheckoutStatus(attempt, result, checkedContext.storeId);\n      const resolution: PendingCheckoutResolution = ownsCheckoutContext(attempt, checkedContext) ? serverResolution : { status: 'UNCERTAIN', reason: 'ORDER_MISMATCH' };\n",
+          "beforeOffset": 68019,
+          "afterOffset": 69906
+        },
+        {
+          "before": "      if (resolution.status === 'DISMISSED') applyDismissedCheckout(attempt, resolution, checkedContext);\n",
+          "after": "      if (resolution.status === 'DISMISSED') await applyDismissedCheckout(attempt, resolution, checkedContext);\n",
+          "beforeOffset": 68483,
+          "afterOffset": 70545
+        },
+        {
+          "before": "    if (hasBoundCheckoutAttempt(attempt) && catalogueReady && checkoutContextRef.current.ready\n",
+          "after": "    if (hasPendingCheckoutGuard(attempt) && catalogueReady && checkoutContextRef.current.ready\n",
+          "beforeOffset": 69515,
+          "afterOffset": 71583
+        },
+        {
+          "before": "    const checkedUid = auth.currentUser?.uid;\n    const checkedContext = pendingRecovery.resolution?.status === 'DISMISSED' ? { ...checkoutContextRef.current } : null;\n",
+          "after": "    const checkedContext = { ...checkoutContextRef.current };\n    if (!verifiedCheckoutContext(attempt, pendingRecovery.resolution, checkedContext)) return;\n",
+          "beforeOffset": 71428,
+          "afterOffset": 73496
+        },
+        {
+          "before": "    if (!['COMMITTED', 'DISMISSED'].includes(resolution.status)\n      || auth.currentUser?.uid !== checkedUid\n      || checkoutAttemptRef.current?.orderId !== attempt.orderId\n      || checkoutAttemptRef.current?.payloadHash !== attempt.payloadHash) return;\n    if (resolution.status === 'DISMISSED') {\n      if (!checkedContext) return;\n      if (!sameCheckoutAttempt(loadCheckoutAttempt(), attempt)\n        || checkoutContextRef.current.storeId !== checkedContext.storeId\n        || checkoutContextRef.current.fingerprint !== checkedContext.fingerprint) return;\n      if (!window.confirm('The previous reference was retired. Keep this basket only if you reviewed it as a separate NEW sale. Do not collect payment again for any already-paid bill.')) return;\n      if (auth.currentUser?.uid !== checkedUid || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)\n        || !sameCheckoutAttempt(checkoutAttemptRef.current, attempt)\n        || checkoutContextRef.current.storeId !== checkedContext.storeId\n        || checkoutContextRef.current.fingerprint !== checkedContext.fingerprint) return;\n      try { window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY); }\n      catch { setCheckoutError({ message: 'This browser could not clear the retired reference. Keep the basket and check again.' }); return; }\n      checkoutAttemptRef.current = null;\n      setPendingRecovery(null);\n      setCheckoutError(null);\n      return;\n    }\n    if (!window.confirm('The earlier bill is already saved. Continue only if this basket is a separate NEW sale. Do not collect payment again for the earlier bill.')) return;\n    const resolvedKey = 'coffeeBondPos:resolvedCheckoutAttempts:v1';\n    const history = readLocalStorageJson<CheckoutAttempt[]>(resolvedKey, []);\n    writeLocalStorageJson(resolvedKey, [attempt, ...(Array.isArray(history) ? history : [])].slice(0, 10));\n    const next = createCheckoutAttempt();\n    checkoutAttemptRef.current = next;\n    writeCheckoutAttempt(next);\n    setPendingRecovery(null);\n    setCheckoutError(null);\n    setReceiptView(null);\n",
+          "after": "    if (resolution.status !== 'COMMITTED') return;\n    if (!window.confirm('Finish the saved original checkout and clear its original basket? Do not collect payment again for this bill.')) return;\n    if (!await completeSavedCheckout(attempt, resolution, checkedContext)) setCheckoutError({ message: 'The original account, basket, or reference changed. Your checkout guard is kept; check the original checkout again.' });\n",
+          "beforeOffset": 71656,
+          "afterOffset": 73713
+        },
+        {
+          "before": "    const checkedUid = auth.currentUser?.uid;\n",
+          "after": "    const checkedContext = { ...checkoutContextRef.current };\n    if (!verifiedCheckoutContext(attempt, pendingRecovery.resolution, checkedContext)) return;\n",
+          "beforeOffset": 73927,
+          "afterOffset": 74344
+        },
+        {
+          "before": "    if (resolution.status !== 'NOT_SAVED' || auth.currentUser?.uid !== checkedUid\n      || checkoutAttemptRef.current?.orderId !== attempt.orderId\n      || checkoutAttemptRef.current?.payloadHash !== attempt.payloadHash) return;\n    if (!window.confirm('ADMIN CHECK REQUIRED: Continue only after checking the earlier tender and confirming no payment was collected and no Razorpay request is outstanding. This keeps the SAME sale reference for the edited basket. If payment is uncertain, cancel and review it.')) return;\n    const next: CheckoutAttempt = {\n      ...attempt,\n      previousPayloadHashes: [...new Set([...(attempt.previousPayloadHashes || []), attempt.payloadHash].filter((hash): hash is string => Boolean(hash)))].slice(-10),\n      payloadHash: undefined,\n",
+          "after": "    if (resolution.status !== 'NOT_SAVED' || !verifiedCheckoutContext(attempt, resolution, checkedContext)) return;\n    if (!window.confirm('ADMIN CHECK REQUIRED: Confirm no payment was collected and no payment request is outstanding. Retry the unchanged original basket with the SAME sale reference. Cancel if any outcome is uncertain.')) return;\n    const { payloadHash: previousHash, ...retainedAttempt } = attempt;\n    const next: CheckoutAttempt = { ...retainedAttempt,\n      previousPayloadHashes: [...new Set([...(attempt.previousPayloadHashes || []), previousHash].filter((hash): hash is string => Boolean(hash)))].slice(-10),\n",
+          "beforeOffset": 74033,
+          "afterOffset": 74561
+        },
+        {
+          "before": "    checkoutAttemptRef.current = next;\n    writeCheckoutAttempt(next);\n    setPendingRecovery(null);\n    setCheckoutError(null);\n",
+          "after": "    try {\n      if (!ownsCheckoutContext(attempt, checkedContext) || checkoutContextRef.current.fingerprint !== checkedContext.fingerprint) return;\n      await writeCheckoutAttempt(next, attempt);\n      if (!sameCheckoutAttempt(checkoutAttemptRef.current, attempt)) return;\n      checkoutAttemptRef.current = next;\n      setPendingRecovery(null);\n      setCheckoutError(null);\n    } catch { setCheckoutError({ message: 'The original reference changed or could not be protected. Nothing was submitted; check the previous checkout.' }); }\n",
+          "beforeOffset": 74811,
+          "afterOffset": 75203
+        },
+        {
+          "before": "    if (skipConfirm !== true && pendingRecovery?.resolution?.status === 'DISMISSED') {\n      const context = checkoutContextRef.current;\n      const attempt = checkoutAttemptRef.current;\n      if (isSaving || recoveryBusy || recoveryInFlightRef.current || context.saving || context.paymentPending\n        || !context.ready || auth.currentUser?.uid !== context.uid\n        || pendingRecovery.resolution.storeId !== context.storeId\n        || !sameCheckoutAttempt(attempt, pendingRecovery.attempt)\n        || !sameCheckoutAttempt(loadCheckoutAttempt(), pendingRecovery.attempt)) return;\n      if (!window.confirm('The previous reference is retired. Clear the current retained basket? No saved sale, held bill, or payment record will be changed.')) return;\n      if (auth.currentUser?.uid !== context.uid || !sameCheckoutAttempt(loadCheckoutAttempt(), attempt)) return;\n      if (!writeLocalDraft(context.draftKey, { cart: [], orderType: 'DINE_IN' })) {\n        setCheckoutError({ message: 'This browser could not save the cleared basket. The local reference is kept; check again.' }); return;\n      }\n      try { window.localStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY); }\n      catch { setCheckoutError({ message: 'The retired reference could not be cleared locally. Keep it and check again.' }); return; }\n      clearCart(true);\n      return;\n    }\n    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current) && skipConfirm !== true) {\n      void checkPendingCheckout(checkoutAttemptRef.current!);\n",
+          "after": "    // Generic cart actions never retire financial markers, including legacy/pre-authorization markers.\n    const stored = loadCheckoutAttempt();\n    if (checkoutAttemptRef.current || stored) {\n      checkoutAttemptRef.current = stored || checkoutAttemptRef.current;\n      if (checkoutAttemptRef.current) void checkPendingCheckout(checkoutAttemptRef.current);\n",
+          "beforeOffset": 75002,
+          "afterOffset": 75802
+        },
+        {
+          "before": "      clearCheckoutAttempt();\n",
+          "after": "",
+          "beforeOffset": 77287,
+          "afterOffset": 76945
+        },
+        {
+          "before": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n",
+          "after": "    if (hasPendingCheckoutGuard(checkoutAttemptRef.current)) {\n",
+          "beforeOffset": 84070,
+          "afterOffset": 83698
+        },
+        {
+          "before": "    if (hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n",
+          "after": "    if (hasPendingCheckoutGuard(checkoutAttemptRef.current)) {\n",
+          "beforeOffset": 85504,
+          "afterOffset": 85132
+        },
+        {
+          "before": "    const attempt: CheckoutAttempt = {\n      idempotencyKey,\n      orderId: session.orderId,\n      createdAt: checkoutAttemptRef.current?.createdAt || Date.now(),\n      payloadHash: session.checkoutPayloadHash,\n    };\n",
+          "after": "    const previous = loadCheckoutAttempt();\n    if (!previous || !ownsCheckoutContext(previous) || previous.orderId !== session.orderId || previous.idempotencyKey !== idempotencyKey) throw new Error('The captured checkout must remain protected in its original staff and basket context.');\n    const attempt: CheckoutAttempt = { ...previous, payloadHash: session.checkoutPayloadHash };\n    await writeCheckoutAttempt(attempt, previous);\n",
+          "beforeOffset": 88961,
+          "afterOffset": 88589
+        },
+        {
+          "before": "    writeCheckoutAttempt(attempt);\n",
+          "after": "",
+          "beforeOffset": 89221,
+          "afterOffset": 89067
+        },
+        {
+          "before": "    clearCart(true);\n",
+          "after": "    if (bindingMatchesCheckout(attempt)) await finishCommittedCheckout(attempt, { ...checkoutContextRef.current, paymentPending: false });\n",
+          "beforeOffset": 90058,
+          "afterOffset": 89869
+        },
+        {
+          "before": "    checkoutAttemptRef.current = null;\n    clearCheckoutAttempt();\n",
+          "after": "    // Closing a provider panel cannot retire a browser-wide checkout guard.\n    if (checkoutAttemptRef.current) void checkPendingCheckout(checkoutAttemptRef.current);\n",
+          "beforeOffset": 91948,
+          "afterOffset": 91877
+        },
+        {
+          "before": "    if (pendingRecovery?.resolution?.status === 'DISMISSED') {\n      setCheckoutError({ message: 'Review this retained basket as a separate new sale, or clear it, before billing. Do not collect payment again for an already-paid bill.' });\n      return;\n    }\n",
+          "after": "    if (counterDraftConflict) { setCheckoutError({ message: 'This basket changed in another window. Reload to restore the protected saved basket before billing.' }); return; }\n",
+          "beforeOffset": 92690,
+          "afterOffset": 92720
+        },
+        {
+          "before": "",
+          "after": "    }\n    let retryAttempt: CheckoutAttempt | null = null;\n    const storedAttempt = loadCheckoutAttempt();\n    if (storedAttempt) {\n      checkoutAttemptRef.current = storedAttempt;\n      const outcome = await checkPendingCheckout(storedAttempt);\n      if (outcome.status !== 'NOT_SAVED' || !verifiedCheckoutContext(storedAttempt, outcome)\n        || staffProfile.role !== 'ADMIN' || storedAttempt.payloadHash || !storedAttempt.previousPayloadHashes?.length) {\n        setCheckoutError({ message: 'The previous checkout remains protected. Recover its original sale or have the original Admin review the unchanged basket before retrying its original reference.' });\n        return;\n      }\n      retryAttempt = storedAttempt;\n",
+          "beforeOffset": 93760,
+          "afterOffset": 93707
+        },
+        {
+          "before": "",
+          "after": "    const checkoutOriginContext = { ...checkoutContextRef.current };\n",
+          "beforeOffset": 94944,
+          "afterOffset": 95617
+        },
+        {
+          "before": "",
+          "after": "      context: typeof checkoutContextRef.current;\n",
+          "beforeOffset": 95265,
+          "afterOffset": 96007
+        },
+        {
+          "before": "      let checkoutAttempt = validStoredCheckoutAttempt(checkoutAttemptRef.current) || loadCheckoutAttempt() || createCheckoutAttempt();\n",
+          "after": "      const freshAttempt = createCheckoutAttempt();\n      let checkoutAttempt: CheckoutAttempt = retryAttempt || { ...freshAttempt, ownership: {\n        version: 1, staffUid: checkoutOriginContext.uid, storeId: checkoutOriginContext.storeId,\n        orderId: freshAttempt.orderId, draftKey: checkoutOriginContext.draftKey, reference: checkoutOriginContext.reference,\n      } };\n      if (!ownsCheckoutContext(checkoutAttempt, checkoutOriginContext)\n        || checkoutContextRef.current.fingerprint !== checkoutOriginContext.fingerprint) throw new Error('The original checkout context changed. Nothing was submitted.');\n      await writeCheckoutAttempt(checkoutAttempt, retryAttempt);\n",
+          "beforeOffset": 96435,
+          "afterOffset": 97227
+        },
+        {
+          "before": "      writeCheckoutAttempt(checkoutAttempt);\n",
+          "after": "",
+          "beforeOffset": 96623,
+          "afterOffset": 97964
+        },
+        {
+          "before": "        checkoutAttempt = {\n          ...checkoutAttempt,\n          payloadHash: session.checkoutPayloadHash,\n        };\n",
+          "after": "        const nextAttempt = { ...checkoutAttempt, payloadHash: session.checkoutPayloadHash };\n        await writeCheckoutAttempt(nextAttempt, checkoutAttempt);\n        checkoutAttempt = nextAttempt;\n",
+          "beforeOffset": 98600,
+          "afterOffset": 99896
+        },
+        {
+          "before": "        writeCheckoutAttempt(checkoutAttempt);\n",
+          "after": "",
+          "beforeOffset": 98775,
+          "afterOffset": 100149
+        },
+        {
+          "before": "",
+          "after": "      const serverBinding = (posAddOnAuthorization as typeof posAddOnAuthorization & { recoveryBinding?: CheckoutRecoveryBinding }).recoveryBinding;\n      const bindingAttempt = { ...checkoutAttempt, recoveryBinding: serverBinding };\n      if (!bindingMatchesCheckout(bindingAttempt) || serverBinding.authorizationId !== posAddOnAuthorization.authorizationId\n        || checkoutBasketIdentity(Object.values(posAddOnAuthorization.canonicalItems).map(row => ({ menuItemId: row.parentProductId, quantity: row.quantity, addOns: row.addOns }))) !== serverBinding.basketIdentity\n        || !ownsCheckoutContext(checkoutAttempt) || checkoutContextRef.current.fingerprint !== checkoutOriginContext.fingerprint) {\n        throw new Error('The server checkout ownership or basket binding could not be verified. Keep the original reference.');\n      }\n      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serverBinding.basketIdentity));\n      const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');\n      if (fingerprint !== serverBinding.basketFingerprint || (checkoutAttempt.recoveryBinding\n        && (checkoutAttempt.recoveryBinding.basketIdentity !== serverBinding.basketIdentity\n          || checkoutAttempt.recoveryBinding.basketFingerprint !== serverBinding.basketFingerprint\n          || checkoutAttempt.recoveryBinding.sourceVersionHash !== serverBinding.sourceVersionHash))) {\n        throw new Error('The original checkout basket or authorized source changed. Its reference remains protected.');\n      }\n      const boundAttempt = { ...checkoutAttempt, recoveryBinding: checkoutAttempt.recoveryBinding || serverBinding };\n      await writeCheckoutAttempt(boundAttempt, checkoutAttempt);\n      checkoutAttempt = boundAttempt;\n      checkoutAttemptRef.current = checkoutAttempt;\n",
+          "beforeOffset": 99970,
+          "afterOffset": 101297
+        },
+        {
+          "before": "      checkoutAttempt = { ...checkoutAttempt, payloadHash: requestPayloadHash };\n",
+          "after": "      const payloadAttempt = { ...checkoutAttempt, payloadHash: requestPayloadHash };\n      await writeCheckoutAttempt(payloadAttempt, checkoutAttempt);\n      checkoutAttempt = payloadAttempt;\n",
+          "beforeOffset": 103380,
+          "afterOffset": 106569
+        },
+        {
+          "before": "      writeCheckoutAttempt(checkoutAttempt);\n",
+          "after": "",
+          "beforeOffset": 103513,
+          "afterOffset": 106814
+        },
+        {
+          "before": "",
+          "after": "        context: checkoutOriginContext,\n",
+          "beforeOffset": 103728,
+          "afterOffset": 106984
+        },
+        {
+          "before": "        clearCart(true);\n",
+          "after": "        await finishCommittedCheckout(checkoutAttempt, checkoutOriginContext);\n",
+          "beforeOffset": 104640,
+          "afterOffset": 107936
+        },
+        {
+          "before": "      clearCart(true); // pass true to skip confirmation on submit\n",
+          "after": "      await finishCommittedCheckout(checkoutAttempt, checkoutOriginContext);\n",
+          "beforeOffset": 106157,
+          "afterOffset": 109507
+        },
+        {
+          "before": "      if (String(err?.message || '').startsWith('Checkout retry conflict:') && hasBoundCheckoutAttempt(checkoutAttemptRef.current)) {\n",
+          "after": "      if (String(err?.message || '').startsWith('Checkout retry conflict:') && hasPendingCheckoutGuard(checkoutAttemptRef.current)) {\n",
+          "beforeOffset": 106249,
+          "afterOffset": 109609
+        },
+        {
+          "before": "            clearCart(true);\n",
+          "after": "            await finishCommittedCheckout(checkoutRecoveryContext.attempt, checkoutRecoveryContext.context);\n",
+          "beforeOffset": 107216,
+          "afterOffset": 110576
+        },
+        {
+          "before": "            {table.enabled && <TableSelector table={table} blocked={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/> }\n",
+          "after": "            {table.enabled && <TableSelector table={table} blocked={isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)}/> }\n",
+          "beforeOffset": 112740,
+          "afterOffset": 116180
+        },
+        {
+          "before": "          {table.enabled?<BillItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} disabled={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/>:<InlineItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} disabled={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}/>}\n",
+          "after": "          {table.enabled?<BillItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} disabled={isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)}/>:<InlineItemEntry search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} disabled={isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)}/>}\n",
+          "beforeOffset": 135298,
+          "afterOffset": 138738
+        },
+        {
+          "before": "            contactLocked={isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)}\n",
+          "after": "            contactLocked={isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)}\n",
+          "beforeOffset": 136607,
+          "afterOffset": 140047
+        },
+        {
+          "before": "            onPhoneChange={value => { if (isSaving || razorpayPaymentLocked || hasBoundCheckoutAttempt(checkoutAttemptRef.current)) return; isComplimentarySelected ? handleComplimentaryPhoneChange(value) : setCustomerPhone(value); }}\n",
+          "after": "            onPhoneChange={value => { if (isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current)) return; isComplimentarySelected ? handleComplimentaryPhoneChange(value) : setCustomerPhone(value); }}\n",
+          "beforeOffset": 137807,
+          "afterOffset": 141247
+        },
+        {
+          "before": "            canReviewAbsent={staffProfile?.role === 'ADMIN'}\n",
+          "after": "            canReviewAbsent={staffProfile?.role === 'ADMIN' && verifiedCheckoutContext(pendingRecovery.attempt, pendingRecovery.resolution)}\n            canFinishSaved={verifiedCheckoutContext(pendingRecovery.attempt, pendingRecovery.resolution)}\n",
+          "beforeOffset": 138357,
+          "afterOffset": 141797
+        },
+        {
+          "before": "              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary || razorpayPaymentLocked}\n",
+          "after": "              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary || razorpayPaymentLocked || chargeRecoveryBlocked}\n",
+          "beforeOffset": 161211,
+          "afterOffset": 164837
+        }
+      ]
+    },
+    {
+      "scope": "Reviewed mixed-version manual-checkout correction after passing actual mixed QA: original staff/store/order/nonce and canonical basket context, explicit authorizer acknowledgment, and server-persisted context plus exact authorization binding before fresh commit. This exact reversible test-only delta preserves the four existing promotions and original historical extraction pins. Actual financial behavior is qualified separately by the linked Firebase emulator/browser matrix.",
+      "baselineSha256": "c48691297617b37d857a8a5011da8ace0646126f8435f0b0c51346c50455ab57",
+      "candidateSha256": "eeec4b76ca32285ac65448f119e8b1a602c069183905986c6ed900e2b2698256",
+      "edits": [
+        {
+          "before": "",
+          "after": "        checkoutContext: {\n          version: 1, staffUid: checkoutOriginContext.uid, storeId: selectedStore.id,\n          originalOrderId: checkoutAttempt.orderId, idempotencyKey: checkoutAttempt.idempotencyKey,\n          basketIdentity: checkoutBasketIdentity(browserValidatedCart.map(({ cartItem, liveItem, canonicalAddOns }) => ({ menuItemId: liveItem.id, quantity: cartItem.quantity, addOns: canonicalAddOns })))!,\n        },\n",
+          "beforeOffset": 100704,
+          "afterOffset": 100704
+        }
+      ]
+    },
+    {
+      "scope": "Reviewed automatic offline Cash UX Staff integration. The deployed online server binding and original reference recovery are preserved. This test-only reversible delta retains all historical source pins. Current browser checkout protection was verified separately.",
+      "baselineSha256": "eeec4b76ca32285ac65448f119e8b1a602c069183905986c6ed900e2b2698256",
+      "candidateSha256": "a292fa4c515b23053f407e999e32a47f630a7f64bf81bc77dcf0175f98d80717",
+      "edits": [
+        {
+          "before": "import {TABLE_STORE,isTableStore} from '../../lib/tables/api';\n",
+          "after": "import {TABLE_STORE,SECTOR51_TABLE_STORE,isTableStore} from '../../lib/tables/api';\n",
+          "beforeOffset": 508,
+          "afterOffset": 508
+        },
+        {
+          "before": "",
+          "after": "import { usePosOnline } from '../../lib/pos/usePosOnline';\nimport { CHECKOUT_ATTEMPT_STORAGE_KEY, withCheckoutMarkerLock } from '../../lib/pos/checkoutLock';\nimport { cashCaptureForBasket, cashCaptureForTable, saveCash, totals as offlineCashTotals, type Entry as OfflineCashEntry } from '../../lib/offline/journal';\nimport { usePosOfflineCash } from '../../lib/offline/usePosOfflineCash';\nimport PosOfflineStatus from '../../components/pos/PosOfflineStatus';\nimport PosOfflineCashPayment from '../../components/pos/PosOfflineCashPayment';\n",
+          "beforeOffset": 5605,
+          "afterOffset": 5626
+        },
+        {
+          "before": "",
+          "after": "type PosMenuItem = MenuItem & { tableProductId: string };\n",
+          "beforeOffset": 6338,
+          "afterOffset": 6898
+        },
+        {
+          "before": "const CHECKOUT_ATTEMPT_STORAGE_KEY = 'coffeeBondPos:pendingCheckoutAttempt:v1';\n",
+          "after": "",
+          "beforeOffset": 7347,
+          "afterOffset": 7965
+        },
+        {
+          "before": "",
+          "after": "const POS_REVALIDATION_MESSAGE = 'Reconnect checks are incomplete. Verify your account, store and current menu before submitting. Nothing was sent automatically.';\n",
+          "beforeOffset": 7511,
+          "afterOffset": 8049
+        },
+        {
+          "before": "/** All marker mutations use the same origin lock and compare the complete persisted identity. */\nasync function withCheckoutMarkerLock<T>(mutation: () => T): Promise<T> {\n  if (typeof navigator === 'undefined' || !navigator.locks?.request) throw new Error('Checkout recovery requires browser coordination. Keep the basket and reference.');\n  return navigator.locks.request(CHECKOUT_ATTEMPT_STORAGE_KEY, { mode: 'exclusive' }, mutation);\n}\n",
+          "after": "",
+          "beforeOffset": 10288,
+          "afterOffset": 10990
+        },
+        {
+          "before": "  await withCheckoutMarkerLock(() => {\n",
+          "after": "  await withCheckoutMarkerLock(async () => {\n",
+          "beforeOffset": 10841,
+          "afterOffset": 11103
+        },
+        {
+          "before": "",
+          "after": "    if (!expected && attempt.ownership!.storeId === SECTOR51_TABLE_STORE) {\n      const lineIds = (JSON.parse(draft).cart as { id: string }[]).map(line => line.id);\n      const existing = await cashCaptureForBasket(attempt.ownership!.storeId, lineIds);\n      if (existing) throw Object.assign(new Error('Cash was already saved for this basket. Check the original bill in the Cash journal before collecting again.'), { code: 'client/cash-already-saved' });\n      if (auth.currentUser?.uid !== attempt.ownership!.staffUid || window.localStorage.getItem(attempt.ownership!.draftKey) !== draft) {\n        throw new Error('The original checkout context changed. Nothing was submitted.');\n      }\n    }\n",
+          "beforeOffset": 11628,
+          "afterOffset": 11896
+        },
+        {
+          "before": "",
+          "after": "  if (error instanceof Error && (error as Error & {code?:string}).code === 'client/cash-already-saved') {\n    return { message: error.message };\n  }\n",
+          "beforeOffset": 19450,
+          "afterOffset": 20415
+        },
+        {
+          "before": "  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);\n",
+          "after": "  const [menuItems, setMenuItems] = useState<PosMenuItem[]>([]);\n",
+          "beforeOffset": 22697,
+          "afterOffset": 23811
+        },
+        {
+          "before": "",
+          "after": "  const [revalidationAttempt,setRevalidationAttempt]=useState(0);\n",
+          "beforeOffset": 27088,
+          "afterOffset": 28205
+        },
+        {
+          "before": "  const table = useTableOrder(staffProfile?.uid || '', selectedStoreId, orderType, isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current), revalidationRequired);\n",
+          "after": "  const posOnline = usePosOnline();\n  const offlineCash = usePosOfflineCash({ store: stores.find(store => store.id === selectedStoreId), staffProfile, online: posOnline });\n  const localTableCapture = offlineCash.entries.find(entry => entry.payload.table?.id === tableParams.get('tableSession'));\n  const table = useTableOrder(staffProfile?.uid || '', selectedStoreId, orderType, isSaving || razorpayPaymentLocked || hasPendingCheckoutGuard(checkoutAttemptRef.current), revalidationRequired || !posOnline, posOnline, Boolean(localTableCapture));\n",
+          "beforeOffset": 27148,
+          "afterOffset": 28331
+        },
+        {
+          "before": "",
+          "after": "  const offlineSaving = useRef(false);\n  const [offlineReceipt, setOfflineReceipt] = useState<OfflineCashEntry | null>(null);\n  const [offlineNotice, setOfflineNotice] = useState('');\n  const offlineReconnectPending = useRef(!posOnline);\n  const offlineContext = useRef({ posOnline, table });\n  offlineContext.current = { posOnline, table };\n\n  useEffect(() => {\n    if (posOnline && localTableCapture?.status === 'SYNCED') void table.load();\n  }, [posOnline, localTableCapture?.id, localTableCapture?.status, table.load]);\n\n  useEffect(() => {\n    setOfflineReceipt(null);\n    setOfflineNotice('');\n  }, [selectedStoreId, staffProfile?.uid]);\n",
+          "beforeOffset": 27406,
+          "afterOffset": 28939
+        },
+        {
+          "before": "    let generation=0;\n    const offline=()=>{generation++;setRevalidationRequired(true)};\n    const online=async()=>{\n      const current=++generation;setRevalidationRequired(true);\n",
+          "after": "    if (!posOnline) {\n      offlineReconnectPending.current = true;\n      setRevalidationRequired(true);\n      return;\n    }\n    if (!offlineReconnectPending.current || !staffProfile?.uid || !selectedStoreId) return;\n    let active = true;\n    let retry: number | undefined;\n    const revalidate = async()=>{\n",
+          "beforeOffset": 33936,
+          "afterOffset": 36113
+        },
+        {
+          "before": "        if(!staffProfile?.uid||!selectedStoreId)return;\n",
+          "after": "",
+          "beforeOffset": 34129,
+          "afterOffset": 36433
+        },
+        {
+          "before": "",
+          "after": "        if (!active) return;\n",
+          "beforeOffset": 34265,
+          "afterOffset": 36513
+        },
+        {
+          "before": "        const ready=await fetchMenuData();\n",
+          "after": "        const ready=await fetchMenuData(false, () => active);\n",
+          "beforeOffset": 34519,
+          "afterOffset": 36796
+        },
+        {
+          "before": "        if(current===generation){setRevalidationRequired(false);setCheckoutError(null)}\n      }catch{if(current===generation)setCheckoutError({message:'Reconnect checks are incomplete. Verify your account, store and current menu before submitting. Nothing was sent automatically.'})}\n",
+          "after": "        if(active){\n          offlineReconnectPending.current=false;\n          setRevalidationRequired(false);\n          setCheckoutError(previous => previous?.message === POS_REVALIDATION_MESSAGE ? null : previous);\n        }\n      }catch(error){\n        if(!active)return;\n        setCheckoutError({message:POS_REVALIDATION_MESSAGE});\n        const code=String((error as { code?: string })?.code || '').split('/').at(-1);\n        if(code==='unavailable'||code==='deadline-exceeded')retry=window.setTimeout(revalidate,5000);\n      }\n",
+          "beforeOffset": 34618,
+          "afterOffset": 36914
+        },
+        {
+          "before": "    window.addEventListener('offline',offline);window.addEventListener('online',online);\n    return()=>{generation++;window.removeEventListener('offline',offline);window.removeEventListener('online',online)};\n  },[staffProfile?.uid,selectedStoreId]);\n",
+          "after": "    void revalidate();\n    return()=>{active=false;window.clearTimeout(retry)};\n  },[posOnline,staffProfile?.uid,selectedStoreId,revalidationAttempt]);\n",
+          "beforeOffset": 34909,
+          "afterOffset": 37455
+        },
+        {
+          "before": "  const fetchMenuData = async () => {\n    setLoading(true);\n",
+          "after": "  const fetchMenuData = async (initial = true, isCurrent = () => true) => {\n    if (initial) setLoading(true);\n",
+          "beforeOffset": 40929,
+          "afterOffset": 43376
+        },
+        {
+          "before": "",
+          "after": "      if (!isCurrent()) return false;\n",
+          "beforeOffset": 41068,
+          "afterOffset": 43566
+        },
+        {
+          "before": "      const mappedItems: (MenuItem & { itemType: string, bom: any[], finishedGoodCode: string })[] = [];\n",
+          "after": "      const mappedItems: (PosMenuItem & { itemType: string, bom: any[], finishedGoodCode: string })[] = [];\n",
+          "beforeOffset": 41177,
+          "afterOffset": 43713
+        },
+        {
+          "before": "      console.error(e);setCatalogueReady(false);return false;\n",
+          "after": "      if (!initial) throw e;\n      console.error(e);setCatalogueReady(false);\n      return false;\n",
+          "beforeOffset": 43295,
+          "afterOffset": 45834
+        },
+        {
+          "before": "      setLoading(false);\n",
+          "after": "      if (initial) setLoading(false);\n",
+          "beforeOffset": 43373,
+          "afterOffset": 45948
+        },
+        {
+          "before": "",
+          "after": "\n  const pendingOfflineSettlement = Boolean(checkoutAttemptRef.current || razorpaySession || table.pending || table.session?.paymentAttempt);\n  const offlineSnapshot = offlineCash.snapshot;\n  const canCoordinateOfflineCash = typeof navigator.locks?.request === 'function';\n  const canReceiveOfflineCash = offlineCash.cashAvailable && !pendingOfflineSettlement\n    && !recoveryBusy && !table.pendingLocalCash\n    && canCoordinateOfflineCash;\n  const counterCashItems = useMemo(() => {\n    const quantities = new Map<string, number>();\n    for (const line of cart) {\n      const productId = menuItems.find(item => item.id === line.menuItemId)?.tableProductId || '';\n      quantities.set(productId, (quantities.get(productId) || 0) + line.quantity);\n    }\n    return Array.from(quantities, ([productId, quantity]) => ({ productId, quantity }));\n  }, [cart, menuItems]);\n  const cashTable = table.active && table.session?.status === 'OCCUPIED' && table.session.saved?.order?.paymentStatus === 'UNPAID'\n    ? offlineSnapshot?.tables.find(item => item.id === table.sessionId && item.tableId === table.session.tableId\n      && item.orderId === table.session.orderId && item.version === table.session.version)\n    : undefined;\n  const cashUnavailable = (message: string) => <p role=\"status\" className=\"mt-2 text-xs font-semibold text-amber-900\">{message}</p>;\n  const offlinePendingMessage = 'Check the previous checkout before receiving Cash. Its reference and payment status are protected.';\n\n  const receiveOfflineCash = async (cashReceived: number, discount: number, forTable?: NonNullable<typeof cashTable>) => {\n    if (offlineSaving.current || isSaving || !offlineSnapshot || !canReceiveOfflineCash || posOnline) return;\n    const original = { ...checkoutContextRef.current };\n    const lineIds = cart.map(line => line.id);\n    offlineSaving.current = true;\n    setIsSaving(true);\n    setOfflineNotice('');\n    const end = beginCriticalOperation();\n    try {\n      const entry = await withCheckoutMarkerLock(async () => {\n        const current = checkoutContextRef.current;\n        if (auth.currentUser?.uid !== original.uid || current.uid !== original.uid\n          || current.storeId !== original.storeId || offlineSnapshot.storeId !== original.storeId\n          || current.fingerprint !== original.fingerprint || offlineContext.current.posOnline) {\n          throw Error('The connection or bill changed. Review the current bill before receiving Cash.');\n        }\n        if (loadCheckoutAttempt() || localStorage.getItem(POS_RAZORPAY_SESSION_STORAGE_KEY)\n          || localStorage.getItem('coffee-bond-table-command:' + original.uid)) throw Error(offlinePendingMessage);\n        if (forTable) {\n          const existing = await cashCaptureForTable(original.storeId, forTable.id);\n          if (existing) throw Error('Cash was already saved for this table. Check ' + existing + ' in the Cash journal.');\n          const activeTable = offlineContext.current.table;\n          const savedDraft = localStorage.getItem(draftKey(original.uid, original.storeId, forTable.id));\n          const storedItems = savedDraft === null ? [] : JSON.parse(savedDraft).items;\n          if (activeTable.sessionId !== forTable.id || activeTable.session?.version !== forTable.version\n            || activeTable.pending || activeTable.busy || activeTable.locked || activeTable.draft.length\n            || !Array.isArray(storedItems) || storedItems.length) {\n            throw Error('The original table or its unsent items changed. Keep the table open for review.');\n          }\n          return saveCash(offlineSnapshot, [], discount, cashReceived, forTable);\n        }\n        const storedDraft = localStorage.getItem(original.draftKey);\n        if (!original.ready || !storedDraft || stableJson(JSON.parse(storedDraft)) !== original.reference) {\n          throw Error('The saved basket changed in another window. Keep the basket and check before collecting Cash.');\n        }\n        const existing = await cashCaptureForBasket(original.storeId, lineIds);\n        if (existing) throw Error('Cash was already saved for this basket. Check the original bill in the Cash journal.');\n        if (localStorage.getItem(original.draftKey) !== storedDraft) throw Error('The saved basket changed in another window.');\n        const saved = await saveCash(offlineSnapshot, counterCashItems, discount, cashReceived, undefined, lineIds);\n        // The signed entry is durable even if the matching draft cannot be cleared.\n        try {\n          if (checkoutContextRef.current.fingerprint === original.fingerprint\n            && checkoutContextRef.current.draftKey === original.draftKey\n            && localStorage.getItem(original.draftKey) === storedDraft) {\n            if (writeLocalDraft(original.draftKey, { cart: [], orderType: 'TAKEAWAY' })) {\n              clearCart(true);\n              setOrderType('TAKEAWAY');\n            } else {\n              setCounterStorageWarning(true);\n              setCounterDraftConflict(true);\n            }\n          }\n        } catch {\n          setCounterStorageWarning(true);\n          setCounterDraftConflict(true);\n        }\n        return saved;\n      });\n      setOfflineReceipt(entry);\n      setOfflineNotice('Cash saved on this device · pending sync.');\n      setIsMobileCartOpen(false);\n      void offlineCash.refresh();\n    } catch (error) {\n      setOfflineNotice(error instanceof Error ? error.message : 'The Cash bill could not be verified. Review the journal before receiving Cash again.');\n    } finally {\n      offlineSaving.current = false;\n      setIsSaving(false);\n      end();\n    }\n  };\n\n  const renderOfflineCashPayment = (discount: number, forTable?: NonNullable<typeof cashTable>) => {\n    if (pendingOfflineSettlement) return cashUnavailable(offlinePendingMessage);\n    if (table.pendingLocalCash) return null;\n    if (!canReceiveOfflineCash || !offlineSnapshot) return cashUnavailable('Offline billing is unavailable for this session. Your draft stays open.');\n    if (tableOrderMode && (!forTable || table.draft.length || table.locked || table.busy)) {\n      return cashUnavailable('Offline Cash requires an unchanged, approved open table with no unsent items.');\n    }\n    if (!tableOrderMode) {\n      if (!cart.length) return null;\n      if (orderType !== 'TAKEAWAY') return cashUnavailable('Offline counter Cash is available for takeaway. A running table keeps its own bill.');\n      if (counterDraftConflict || counterDraftLoaded !== counterDraftKey || counterStorageWarning) return cashUnavailable('The saved basket must be verified before receiving Cash.');\n      if (isComplimentarySelected || isSplitPayment || cart.length > 30 || cart.some(line => line.addOns?.length)) {\n        return cashUnavailable('This bill requires online checkout. Its items and payment selection are kept.');\n      }\n    }\n    try {\n      const { grandTotal } = offlineCashTotals(offlineSnapshot, forTable ? [] : counterCashItems, discount, forTable);\n      if (!Number.isFinite(grandTotal) || grandTotal <= 0) return cashUnavailable('This bill requires online checkout.');\n      if (!forTable && Math.round(grandTotal * 100) !== Math.round(cartTotals.grandTotal * 100)) {\n        return cashUnavailable('The basket total differs from the approved offline menu. Reconnect to review this bill.');\n      }\n      return <>\n        <PosOfflineCashPayment key={forTable ? forTable.id + ':' + forTable.version + ':' + discount : basketReference + ':' + discount}\n          total={grandTotal} busy={isSaving} onSave={cash => void receiveOfflineCash(cash, discount, forTable)} />\n        {offlineNotice && <p role=\"status\" className=\"text-xs font-semibold text-amber-900\">{offlineNotice}</p>}\n      </>;\n    } catch {\n      return cashUnavailable('Review the items or discount. This bill must use the approved offline menu and limit.');\n    }\n  };\n",
+          "beforeOffset": 77904,
+          "afterOffset": 80492
+        },
+        {
+          "before": "    if (isSaving || recoveryBusy || recoveryInFlightRef.current) return;\n",
+          "after": "    if (isSaving || offlineSaving.current || recoveryBusy || recoveryInFlightRef.current) return;\n",
+          "beforeOffset": 92647,
+          "afterOffset": 103099
+        },
+        {
+          "before": "    if (!requireOnlineAction()) {\n",
+          "after": "    if (!posOnline || !requireOnlineAction()) {\n",
+          "beforeOffset": 93598,
+          "afterOffset": 104075
+        },
+        {
+          "before": "      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isTyping && cart.length > 0 && !isSaving) {\n",
+          "after": "      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isTyping && cart.length > 0 && !isSaving && posOnline) {\n",
+          "beforeOffset": 113077,
+          "afterOffset": 123568
+        },
+        {
+          "before": "",
+          "after": "    posOnline,\n",
+          "beforeOffset": 113805,
+          "afterOffset": 124309
+        },
+        {
+          "before": "",
+          "after": "  const connectionStatus = <PosOfflineStatus key={staffProfile?.uid + ':' + selectedStoreId}\n    online={posOnline} cashAvailable={offlineCash.sessionReady && canCoordinateOfflineCash}\n    pendingCheckout={pendingOfflineSettlement} entries={offlineCash.entries} syncing={offlineCash.syncing}\n    onSync={() => void offlineCash.sync()}\n    canReconcile={staffProfile?.role === 'ADMIN' || staffProfile?.role === 'STORE_MANAGER'}\n    onReconcile={(entry, reason) => void offlineCash.reconcile(entry, reason)}\n    prepare={offlineCash.canPrepare && canCoordinateOfflineCash ? { busy: offlineCash.preparing, onPrepare: () => void offlineCash.prepare() } : undefined}\n    notice={offlineNotice || offlineCash.notice}\n    receipt={offlineReceipt?.payload.uid === staffProfile?.uid && offlineReceipt.payload.storeId === selectedStoreId ? offlineReceipt : null}\n    onCloseReceipt={() => setOfflineReceipt(null)} />;\n",
+          "beforeOffset": 114536,
+          "afterOffset": 125055
+        },
+        {
+          "before": "",
+          "after": "                disabled={isSaving}\n",
+          "beforeOffset": 115426,
+          "afterOffset": 126853
+        },
+        {
+          "before": "",
+          "after": "            {!table.enabled && connectionStatus}\n",
+          "beforeOffset": 116182,
+          "afterOffset": 127645
+        },
+        {
+          "before": "",
+          "after": "                  disabled={isSaving}\n",
+          "beforeOffset": 117131,
+          "afterOffset": 128643
+        },
+        {
+          "before": "",
+          "after": "          {table.enabled && <div className=\"mt-1.5\">{connectionStatus}</div>}\n",
+          "beforeOffset": 119520,
+          "afterOffset": 131070
+        },
+        {
+          "before": "          {tableOrderMode ? <>{!table.active&&<p role=\"alert\">This table link requires authorised Uday Park Dine In access.</p>}<TableOrderPanel key={table.sessionId || table.selected?.tableId || 'unselected'} table={table} search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} describeLine={line=>{\n",
+          "after": "          {tableOrderMode ? <>{!table.active&&<p role=\"alert\">This table link requires authorised Uday Park Dine In access.</p>}<TableOrderPanel key={table.sessionId || table.selected?.tableId || 'unselected'} table={table} offlinePayment={posOnline ? undefined : discount => renderOfflineCashPayment(discount, cashTable)} search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} describeLine={line=>{\n",
+          "beforeOffset": 133721,
+          "afterOffset": 145349
+        },
+        {
+          "before": "          {revalidationRequired&&<p role=\"status\">Reconnect checks pending · orders and table actions are locked. Local draft editing remains available.</p>}\n",
+          "after": "          {revalidationRequired&&posOnline&&<p role=\"status\">Reconnect checks pending · orders and table actions are locked. Local draft editing remains available.\n            {checkoutError?.message===POS_REVALIDATION_MESSAGE&&<button type=\"button\" className=\"ml-2 underline\"\n              onClick={()=>setRevalidationAttempt(attempt=>attempt+1)}>Retry connection checks</button>}\n          </p>}\n",
+          "beforeOffset": 139808,
+          "afterOffset": 151535
+        },
+        {
+          "before": "          <PaymentPanel\n",
+          "after": "          {posOnline ? <PaymentPanel\n",
+          "beforeOffset": 152483,
+          "afterOffset": 164450
+        },
+        {
+          "before": "              disabled={cart.length === 0 || isSaving || !canSubmitComplimentary || razorpayPaymentLocked || chargeRecoveryBlocked}\n",
+          "after": "              disabled={cart.length === 0 || isSaving || revalidationRequired || !canSubmitComplimentary || razorpayPaymentLocked || chargeRecoveryBlocked}\n",
+          "beforeOffset": 165268,
+          "afterOffset": 177248
+        },
+        {
+          "before": "          />\n",
+          "after": "          /> : renderOfflineCashPayment(Number(discountPercentStr) || 0)}\n",
+          "beforeOffset": 166623,
+          "afterOffset": 178627
+        }
+      ]
+    }
+  ]
+}

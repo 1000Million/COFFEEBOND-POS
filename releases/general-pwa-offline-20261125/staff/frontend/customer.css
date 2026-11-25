@@ -1,0 +1,3155 @@
+/*
+ * Coffee Bond customer ordering app — design tokens.
+ *
+ * Imported ONLY by frontend/customer-main.tsx, so nothing here can reach the staff
+ * POS bundle. Staff styling in frontend/index.css is untouched.
+ *
+ * Palette is taken from the Coffee Bond brand site, not invented:
+ *   #2B2118 espresso   #FAF6EF cream   #C4572A terracotta   #E8B44C gold
+ *
+ * Accent is Coffee Bond gold. Gold is a mid-tone, so white text on it fails contrast;
+ * every gold surface therefore carries espresso text (~8:1), which is both accessible
+ * and on-brand. Terracotta is reserved for small emphasis on light surfaces where gold
+ * would be too low-contrast for text.
+ */
+
+:root {
+  /* Surfaces */
+  --cb-bg: #fbf7f1;
+  --cb-surface: #ffffff;
+  --cb-surface-muted: #f5ede5;
+  --cb-espresso: #2b2118;
+  --cb-espresso-soft: #3b241c;
+
+  /* Accent */
+  --cb-gold: #e8b44c;
+  --cb-gold-strong: #d9a233;
+  --cb-gold-soft: #fbeccb;
+  --cb-terracotta: #c4572a;
+
+  /* Text — on-light and on-accent pairings */
+  --cb-text: #271a16;
+  --cb-text-muted: #71645d;
+  --cb-text-on-gold: #2b2118;
+  --cb-text-on-espresso: #fbf7f1;
+
+  /* Lines */
+  --cb-border: #e7ddd3;
+  --cb-border-soft: #f0e6dc;
+
+  /* Semantic */
+  --cb-success: #1f7a4d;
+  --cb-success-soft: #e7f4ec;
+  --cb-warning: #9a6a12;
+  --cb-warning-soft: #fdf3dd;
+  --cb-danger: #b3261e;
+  --cb-danger-soft: #fbeae9;
+
+  /* Shape */
+  --cb-radius-sm: 14px;
+  --cb-radius: 20px;
+  --cb-radius-lg: 28px;
+  --cb-shadow-card: 0 6px 18px rgba(43, 33, 24, 0.06);
+  --cb-shadow-raised: 0 10px 26px rgba(43, 33, 24, 0.16);
+
+  /* Safe areas + persistent bottom navigation height */
+  --cb-safe-top: env(safe-area-inset-top, 0px);
+  --cb-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --cb-safe-left: env(safe-area-inset-left, 0px);
+  --cb-safe-right: env(safe-area-inset-right, 0px);
+  --cb-bottom-nav-h: 72px;
+  /* Horizontal page padding, so a full-bleed row can cancel it exactly. */
+  --cb-page-gutter: 16px;
+  /* Where the sticky category filter parks: below the compact header. */
+  --cb-rail-top: calc(var(--cb-safe-top) + 68px);
+  /* Content padding that clears the bottom bar and the home indicator. */
+  --cb-content-bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom) + 12px);
+}
+
+@media (min-width: 1024px) {
+  :root { --cb-page-gutter: 24px; }
+}
+
+/*
+ * Semantic customer classes.
+ *
+ * These exist instead of Tailwind arbitrary-value utilities such as
+ * bg-[color:var(--cb-gold)]. Tailwind's JIT scans all of frontend/**, so any arbitrary
+ * utility written in a customer component is generated into the SHARED stylesheet and
+ * therefore leaks into the staff build. Plain classes declared here are only ever
+ * emitted into customer.css, which nothing but customer-main.tsx imports.
+ */
+
+/* The product card is a grid cell, not a panel. The photograph supplies the edge; a
+   white box with a shadow around it, 84 times on a cream page, was container doing work
+   the picture already does. */
+.cb-customer-card {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.cb-customer-accent-button {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-accent-button:disabled {
+  background: var(--cb-surface-muted);
+  color: var(--cb-text-muted);
+  box-shadow: none;
+}
+
+.cb-customer-basket-button {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: var(--cb-shadow-raised);
+}
+
+.cb-customer-basket-badge {
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+}
+
+/* The category filter sticks below the compact header. Declared here rather than as a
+   Tailwind arbitrary utility (top-[var(--cb-rail-top)]) because arbitrary utilities are
+   emitted into the shared stylesheet and would leak the customer variable into the
+   staff build.
+
+   PHONE (default): a horizontal chip row above the grid. A phone cannot spare a
+   permanent 56 px column — at 320 px that left product cards 106 px wide. The row
+   bleeds to the page gutters so a chip scrolls off the true screen edge instead of
+   stopping short, which is what makes "there is more this way" legible.
+
+   This is the ONLY horizontally scrollable element in the customer app. It contains its
+   own overscroll, so swiping past the last chip can never chain to the page or trigger
+   the browser's back gesture, and the page itself still never moves sideways. */
+.cb-customer-rail {
+  position: sticky;
+  top: var(--cb-rail-top);
+  z-index: 20;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  /* stretch (not width:100%) so the negative margins actually widen the box to the
+     screen edges instead of just shifting a parent-width box left. */
+  width: auto;
+  align-self: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  /* Without this the snapport ignores the padding and the first chip parks flush
+     against the screen edge with its gutter scrolled away. */
+  scroll-padding-inline: var(--cb-page-gutter);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: var(--cb-bg);
+  margin-inline: calc(-1 * var(--cb-page-gutter));
+  padding-inline: var(--cb-page-gutter);
+  padding-block: 4px;
+}
+
+/* A scrollbar track inside a 44 px chip row would eat the touch target. */
+.cb-customer-rail::-webkit-scrollbar { display: none; }
+
+.cb-customer-rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  padding: 0 12px;
+  /* Tightening the padding took the shortest label ("All") to 42 px wide. The floor is
+     a square 44, so it is stated rather than left to depend on the label. */
+  min-width: 44px;
+  font-size: 13px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Unselected categories are labels on the page, not objects on it. Nine white pills
+   with a ring each, above a grid of photographs, read as a second toolbar competing
+   with the products — which is the one thing this row must not do. The tap target is
+   unchanged at 44 px; only the paint is gone. */
+.cb-customer-rail-tab {
+  color: var(--cb-text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-weight: 600;
+}
+
+/* Exactly one filled object in the row, so "which filter am I on" is answered at a
+   glance. No shadow: the fill is the signal. Selection is also announced via
+   aria-pressed, so it never rests on colour alone. */
+.cb-customer-rail-tab-active {
+  color: var(--cb-text-on-gold);
+  background: var(--cb-gold);
+  box-shadow: none;
+  font-weight: 800;
+}
+
+/* >= 640 px: the vertical rail, where a 64 px column is affordable. The tab shape
+   echoes the reference's curved active tab — rounded on the menu-facing edge only, so
+   it reads as attached to the content. */
+@media (min-width: 640px) {
+  .cb-customer-rail {
+    flex-direction: column;
+    gap: 4px;
+    width: 64px;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    scroll-padding-inline: 0;
+    overflow: visible;
+    background: transparent;
+    margin-inline: 0;
+    padding-inline: 0;
+    padding-block: 0;
+  }
+
+  .cb-customer-rail-item {
+    width: 100%;
+    padding: 8px 2px;
+    /* 11 px with tight tracking keeps the longest authoritative label
+       ("Baked by Bond") inside the 64 px rail. */
+    font-size: 11px;
+    letter-spacing: -0.01em;
+    text-align: center;
+    white-space: normal;
+    border-radius: 0;
+    border-top-left-radius: var(--cb-radius-sm);
+    border-bottom-left-radius: var(--cb-radius-sm);
+  }
+
+  .cb-customer-rail-tab {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* The rail tab is a 64 px block, not a small chip, so the accent is softened to
+     match its area. Same colour family, same espresso text, less shouting. */
+  .cb-customer-rail-tab-active {
+    background: var(--cb-gold-soft);
+    color: var(--cb-espresso);
+    border-top-right-radius: var(--cb-radius-sm);
+    border-bottom-right-radius: var(--cb-radius-sm);
+  }
+
+  /* Two lines max in the rail; the chip row is single-line and needs no clamp. */
+  .cb-customer-rail-label {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+.cb-customer-chip {
+  background: var(--cb-surface);
+  color: var(--cb-espresso);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+.cb-customer-chip-active {
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-bottom-nav {
+  background: color-mix(in srgb, var(--cb-surface) 95%, transparent);
+  border-top: 1px solid var(--cb-border);
+  padding-bottom: var(--cb-safe-bottom);
+  padding-left: var(--cb-safe-left);
+  padding-right: var(--cb-safe-right);
+  backdrop-filter: blur(8px);
+}
+
+.cb-customer-nav-item { color: var(--cb-text-muted); }
+.cb-customer-nav-item-active { color: var(--cb-espresso); }
+
+.cb-customer-stepper {
+  background: var(--cb-gold-soft);
+  box-shadow: inset 0 0 0 1px var(--cb-gold-strong);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-title { color: var(--cb-text); }
+.cb-customer-muted { color: var(--cb-text-muted); }
+.cb-customer-meta { color: var(--cb-terracotta); }
+.cb-customer-price { color: var(--cb-text); }
+.cb-customer-surface { background: var(--cb-bg); }
+.cb-customer-skeleton { background: var(--cb-surface-muted); }
+
+.cb-customer-status-green { background: var(--cb-success-soft); color: var(--cb-success); }
+.cb-customer-status-amber { background: var(--cb-warning-soft); color: var(--cb-warning); }
+.cb-customer-status-red { background: var(--cb-danger-soft); color: var(--cb-danger); }
+
+/* --- My Usual (Stage 2) ---------------------------------------------------
+   Semantic classes only — no Tailwind arbitrary CSS-variable utilities, which
+   would be emitted into the shared stylesheet and leak into the staff build. */
+.cb-customer-usual {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-usual-empty {
+  background: var(--cb-gold-soft);
+  border-radius: var(--cb-radius);
+  box-shadow: inset 0 0 0 1px var(--cb-gold-strong);
+}
+
+.cb-customer-usual-eyebrow {
+  color: var(--cb-terracotta);
+  letter-spacing: 0.08em;
+}
+
+.cb-customer-usual-thumb {
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+  box-shadow: 0 0 0 2px var(--cb-surface);
+}
+
+.cb-customer-usual-note {
+  background: var(--cb-warning-soft);
+  color: var(--cb-warning);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-usual-blocker {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+  border-radius: var(--cb-radius-sm);
+}
+
+/* Per-line "unavailable at this store" label. Stated in words as well as colour,
+   so a blocked line reads as blocked without relying on hue alone. */
+.cb-customer-usual-unavailable {
+  color: var(--cb-danger);
+}
+
+.cb-customer-sheet {
+  background: var(--cb-bg);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  padding-bottom: max(1rem, var(--cb-safe-bottom));
+}
+
+.cb-customer-sheet-scrim { background: rgba(43, 33, 24, 0.5); }
+
+.cb-customer-totals-row { color: var(--cb-text-muted); }
+.cb-customer-totals-strong { color: var(--cb-text); }
+
+/* Secondary icon buttons beside the primary action. */
+.cb-customer-icon-button {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-icon-button-danger {
+  background: var(--cb-surface-muted);
+  color: var(--cb-danger);
+}
+
+/* Unavailable products stay legible rather than being colour-dimmed only. */
+/* Dimming the whole card also dimmed the words that explain why it is unavailable.
+   The picture carries the state; the text keeps full contrast. */
+.cb-customer-unavailable .cb-customer-product-media { opacity: 0.45; }
+
+.cb-customer-product-fallback-mark {
+  display: block;
+  width: min(44%, 64px);
+  height: min(44%, 64px);
+  object-fit: contain;
+  opacity: 0.42;
+}
+
+/* Reserves space so the fixed bottom navigation never covers page content.
+   The bar is lg:hidden, so the reservation is dropped at the same breakpoint. */
+.cb-customer-page-bottom { padding-bottom: var(--cb-content-bottom); }
+
+@media (min-width: 1024px) {
+  .cb-customer-page-bottom { padding-bottom: 2rem; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Touch behaviour.
+ *
+ * Everything here is about how the app FEELS under a thumb; none of it changes what
+ * any control does.
+ * ------------------------------------------------------------------------- */
+
+.cb-app {
+  /* Rotating a phone must not resize the type. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* The grey flash lands ~300 ms late and on the wrong shape (it paints the element
+     box, not the rounded control). Replaced by the :active state below, which is
+     immediate and follows the border radius. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Removes the double-tap-to-zoom wait, so a tap registers immediately. Pinch zoom is
+   untouched — that is an accessibility affordance, not a gesture to suppress. */
+.cb-app button,
+.cb-app a,
+.cb-app [role="button"],
+.cb-app [role="radio"],
+.cb-app label {
+  touch-action: manipulation;
+}
+
+/* The replacement for the tap highlight: a real press state on the controls a customer
+   actually taps. Transform only, so it composites and cannot reflow the page. */
+.cb-customer-accent-button,
+.cb-customer-basket-button,
+.cb-customer-rail-item,
+.cb-customer-payment-card,
+.cb-customer-store-card,
+.cb-customer-icon-button,
+.cb-customer-basket-edit,
+.cb-customer-basket-remove {
+  transition: transform 120ms ease-out;
+}
+
+.cb-customer-accent-button:active:not(:disabled),
+.cb-customer-basket-button:active,
+.cb-customer-rail-item:active,
+.cb-customer-payment-card:active:not(:disabled),
+.cb-customer-store-card:active,
+.cb-customer-icon-button:active,
+.cb-customer-basket-edit:active,
+.cb-customer-basket-remove:active {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-accent-button,
+  .cb-customer-basket-button,
+  .cb-customer-rail-item,
+  .cb-customer-payment-card,
+  .cb-customer-store-card,
+  .cb-customer-icon-button,
+  .cb-customer-basket-edit,
+  .cb-customer-basket-remove {
+    transition: none;
+  }
+
+  /* Still give feedback, just not by moving anything. */
+  .cb-customer-accent-button:active:not(:disabled),
+  .cb-customer-basket-button:active,
+  .cb-customer-rail-item:active,
+  .cb-customer-payment-card:active:not(:disabled),
+  .cb-customer-store-card:active,
+  .cb-customer-icon-button:active,
+  .cb-customer-basket-edit:active,
+  .cb-customer-basket-remove:active {
+    transform: none;
+    filter: brightness(0.95);
+  }
+}
+
+/* In-page jumps (search focus, back to menu) glide instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
+/* Visible focus for keyboard users across every customer control. */
+.cb-focusable:focus-visible,
+.cb-app button:focus-visible,
+.cb-app a:focus-visible,
+.cb-app input:focus-visible,
+.cb-app select:focus-visible {
+  outline: 3px solid var(--cb-gold-strong);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+/* Curved transition between a coloured band and the surface below it. */
+.cb-curve-top {
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+}
+
+/* Two-line clamp for product names — never hides a price or an action. */
+.cb-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Basket bump on a successful add. Honours reduced-motion. */
+@keyframes cb-bump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+
+.cb-bump {
+  animation: cb-bump 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-bump {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * THE BOND owner preview.
+ *
+ * Customer-origin only. The preview selector is also gated in TypeScript by both
+ * the Vite mode and the preview Firebase project id, so these presentation styles
+ * can safely remain inert in a production customer build.
+ * ------------------------------------------------------------------------- */
+
+.cb-bond-page {
+  min-height: 100dvh;
+  min-width: 0;
+  overflow-x: hidden;
+  color: var(--cb-text);
+  background:
+    radial-gradient(circle at 90% 12%, rgba(232, 180, 76, 0.14), transparent 24rem),
+    linear-gradient(180deg, #f7f0e6 0%, #fbf8f3 42%, #f5ede3 100%);
+  padding-bottom: max(2rem, var(--cb-safe-bottom));
+  padding-left: var(--cb-safe-left);
+  padding-right: var(--cb-safe-right);
+}
+
+.cb-bond-shell {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  padding: 16px 16px 56px;
+}
+
+.cb-bond-back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  color: #5c4033;
+  font-size: 13px;
+  font-weight: 760;
+  text-decoration: none;
+}
+
+.cb-bond-demo {
+  display: grid;
+  gap: 10px;
+  margin: 6px 0 14px;
+  padding: 12px;
+  border: 1px solid rgba(82, 57, 42, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 253, 249, 0.84);
+  box-shadow: 0 8px 24px rgba(43, 33, 24, 0.05);
+  backdrop-filter: blur(10px);
+}
+
+.cb-bond-demo-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #5a4438;
+}
+
+.cb-bond-demo-heading span {
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cb-bond-demo-heading small {
+  color: #87776e;
+  font-size: 10px;
+  font-weight: 650;
+  text-align: right;
+}
+
+.cb-bond-demo-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.cb-bond-demo-options button {
+  min-height: 40px;
+  min-width: 0;
+  padding-inline: 10px;
+  border: 1px solid #e2d6cb;
+  border-radius: 12px;
+  color: #654d40;
+  background: #fffdf9;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.cb-bond-demo-options button.is-active {
+  border-color: #34231b;
+  color: #fffaf2;
+  background: #34231b;
+  box-shadow: 0 5px 14px rgba(43, 31, 24, 0.18);
+}
+
+.cb-bond-experience { display: grid; gap: 16px; }
+
+.cb-bond-hero {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  overflow: hidden;
+  padding: 25px 22px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 30px;
+  color: #fff9ef;
+  background:
+    radial-gradient(circle at 92% 15%, rgba(212, 161, 83, 0.33), transparent 15rem),
+    linear-gradient(145deg, #211711, #39261c 62%, #24170f);
+  box-shadow: 0 24px 50px rgba(49, 31, 21, 0.2);
+}
+
+.cb-bond-hero::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  right: -72px;
+  bottom: -112px;
+  width: 250px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(232, 180, 76, 0.21);
+  border-radius: 50%;
+  box-shadow: 0 0 0 34px rgba(232, 180, 76, 0.04), 0 0 0 70px rgba(232, 180, 76, 0.025);
+}
+
+.cb-bond-hero.is-club {
+  background:
+    radial-gradient(circle at 88% 10%, rgba(232, 180, 76, 0.48), transparent 15rem),
+    linear-gradient(145deg, #1c140f, #3a281c 58%, #21150e);
+}
+
+.cb-bond-hero-topline,
+.cb-bond-progress-meta,
+.cb-bond-section-heading,
+.cb-bond-club-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cb-bond-kicker {
+  margin: 0;
+  color: #a87332;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.cb-bond-hero .cb-bond-kicker { color: #d9b679; }
+
+.cb-bond-hero h1 {
+  margin: 5px 0 0;
+  font-size: clamp(19px, 6vw, 26px);
+  font-weight: 720;
+  letter-spacing: 0.16em;
+}
+
+.cb-bond-member-chip {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: #eadcc9;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.cb-bond-balance { margin-top: 36px; }
+
+.cb-bond-balance strong {
+  display: block;
+  font-size: clamp(56px, 17vw, 92px);
+  font-weight: 640;
+  letter-spacing: -0.065em;
+  line-height: 0.86;
+}
+
+.cb-bond-balance span {
+  display: block;
+  margin-top: 13px;
+  color: #d7c6b2;
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: 0.22em;
+}
+
+.cb-bond-progress-block {
+  margin-top: 36px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.cb-bond-progress-meta { align-items: baseline; }
+
+.cb-bond-progress-meta span {
+  color: #d8cbbd;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cb-bond-progress-meta strong {
+  font-size: 18px;
+  font-weight: 740;
+}
+
+.cb-bond-progress {
+  height: 6px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.cb-bond-progress span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b77d37, #f0c675);
+  box-shadow: 0 0 18px rgba(240, 198, 117, 0.4);
+}
+
+.cb-bond-progress-block > p {
+  margin: 11px 0 0;
+  color: #e3d6c8;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.cb-bond-club-active {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 36px;
+  padding: 16px;
+  border: 1px solid rgba(235, 194, 114, 0.38);
+  border-radius: 18px;
+  color: #f1c97a;
+  background: rgba(235, 194, 114, 0.08);
+}
+
+.cb-bond-club-active span {
+  color: #f8ead1;
+  font-size: 12px;
+  font-weight: 780;
+  letter-spacing: 0.12em;
+}
+
+.cb-bond-club-active strong {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.cb-bond-layout,
+.cb-bond-main-column,
+.cb-bond-side-column { display: grid; gap: 16px; min-width: 0; }
+
+.cb-bond-panel,
+.cb-bond-month {
+  min-width: 0;
+  padding: 21px;
+  border: 1px solid rgba(82, 57, 42, 0.1);
+  border-radius: 24px;
+  background: rgba(255, 253, 249, 0.9);
+  box-shadow: 0 12px 34px rgba(43, 33, 24, 0.06);
+}
+
+.cb-bond-section-heading { align-items: flex-end; }
+
+.cb-bond-section-heading h2,
+.cb-bond-passport h2,
+.cb-bond-next h2,
+.cb-bond-club-panel h2 {
+  margin: 6px 0 0;
+  color: #2a1d17;
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.cb-bond-section-heading > span {
+  color: #8b796e;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cb-bond-journey ol {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-bond-journey li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 48px;
+  color: #9b8e86;
+}
+
+.cb-bond-journey li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 34px;
+  bottom: -14px;
+  width: 1px;
+  background: #e7ddd3;
+}
+
+.cb-bond-journey-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid #ded1c6;
+  border-radius: 50%;
+  background: #fffdf9;
+}
+
+.cb-bond-journey li.is-complete { color: #574238; }
+.cb-bond-journey li.is-complete .cb-bond-journey-mark {
+  border-color: #9c6a30;
+  color: #fffaf1;
+  background: #9c6a30;
+}
+
+.cb-bond-journey li.is-current { color: #251913; }
+.cb-bond-journey li.is-current .cb-bond-journey-mark {
+  border: 2px solid #a66e2e;
+  box-shadow: 0 0 0 4px #f5e4c5;
+}
+.cb-bond-journey li.is-current .cb-bond-journey-mark span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a66e2e;
+}
+
+.cb-bond-journey li strong { font-size: 13px; font-weight: 720; }
+.cb-bond-journey li small { display: block; margin-top: 2px; color: #a66e2e; font-size: 10px; font-weight: 680; }
+.cb-bond-journey li > span:last-child { font-size: 10px; font-weight: 720; }
+
+.cb-bond-next {
+  position: relative;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid #dfbf80;
+  border-radius: 24px;
+  color: #34241b;
+  background: linear-gradient(145deg, #f8e7c5, #f1d49b);
+  box-shadow: 0 14px 34px rgba(116, 77, 35, 0.12);
+}
+
+.cb-bond-next-icon {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(74, 48, 27, 0.14);
+  border-radius: 50%;
+  color: #70461f;
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.cb-bond-next h2 { max-width: calc(100% - 44px); font-size: 23px; }
+.cb-bond-next > strong { display: block; margin-top: 9px; color: #744c25; font-size: 12px; font-weight: 760; }
+
+.cb-bond-month-grid { display: grid; gap: 10px; margin-top: 17px; }
+
+.cb-bond-month-grid article {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eee3d8;
+  border-radius: 18px;
+  color: #895b2c;
+  background: #faf5ee;
+}
+
+.cb-bond-month-grid article p {
+  margin: 10px 0 0;
+  color: #806b5f;
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cb-bond-month-grid article strong { display: block; margin-top: 4px; color: #2e2019; font-size: 15px; }
+.cb-bond-month-grid article > span { display: block; margin-top: 2px; color: #85766e; font-size: 11px; font-weight: 620; }
+
+.cb-bond-mini-progress { height: 4px; margin-top: 13px; overflow: hidden; border-radius: 9px; background: #e8ddd1; }
+.cb-bond-mini-progress i { display: block; height: 100%; border-radius: inherit; background: #a87332; }
+
+.cb-bond-passport ul,
+.cb-bond-club-panel ul {
+  margin: 17px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-bond-passport li {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #eee4db;
+  color: #554239;
+  font-size: 12px;
+  font-weight: 680;
+}
+.cb-bond-passport li svg { color: #a66e2e; }
+
+.cb-bond-club-panel {
+  padding: 22px;
+  border: 1px solid rgba(232, 180, 76, 0.2);
+  border-radius: 24px;
+  color: #f7ebdc;
+  background: #2a1d17;
+  box-shadow: 0 18px 38px rgba(43, 31, 24, 0.16);
+}
+
+.cb-bond-club-title { justify-content: flex-start; color: #e2b963; }
+.cb-bond-club-panel .cb-bond-kicker { color: #c99c4f; }
+.cb-bond-club-panel h2 { color: #fff8ed; font-size: 19px; letter-spacing: 0.05em; }
+.cb-bond-club-panel li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  margin-top: 10px;
+  color: #dccfc1;
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.45;
+}
+.cb-bond-club-panel li svg { margin-top: 1px; color: #d5a853; }
+
+.cb-bond-state-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 34px 24px;
+  border: 1px solid #eadfd2;
+  border-radius: 24px;
+  background: #fffdf9;
+  box-shadow: var(--cb-shadow-card);
+  text-align: center;
+}
+.cb-bond-state-card h2,
+.cb-bond-state-card p { margin: 0; }
+.cb-bond-state-card h2 { font-size: 18px; }
+.cb-bond-state-card p { max-width: 31rem; color: #74665e; font-size: 13px; line-height: 1.6; }
+.cb-bond-state-card.is-error { color: var(--cb-danger); background: var(--cb-danger-soft); }
+
+.cb-bond-order-card {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #e3d7ca;
+  border-radius: 18px;
+  color: #2d2019;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(232, 180, 76, 0.17), transparent 10rem),
+    #fffdf9;
+  box-shadow: 0 6px 18px rgba(43, 33, 24, 0.055);
+}
+
+.cb-bond-order-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cb-bond-order-card-topline > p {
+  margin: 0;
+  color: #8c5c2b;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.2em;
+}
+
+.cb-bond-order-card-link {
+  display: inline-flex;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 4px;
+  color: #5c4033;
+  font-size: 11px;
+  font-weight: 780;
+  text-decoration: none;
+}
+
+.cb-bond-order-card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 5px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.cb-bond-order-card-metrics strong { font-size: 16px; font-weight: 780; }
+
+.cb-bond-order-card-progress { margin-top: 10px; }
+.cb-bond-order-card-progress > div {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ede3d8;
+}
+.cb-bond-order-card-progress > div span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #9d682d, #d7aa56);
+}
+.cb-bond-order-card-progress p,
+.cb-bond-order-card-paused {
+  margin: 7px 0 0;
+  color: #76675f;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+@media (min-width: 640px) {
+  .cb-bond-shell { padding: 20px 24px 72px; }
+  .cb-bond-demo { grid-template-columns: auto minmax(0, 1fr); align-items: center; padding: 10px 12px 10px 16px; }
+  .cb-bond-demo-heading { display: grid; gap: 1px; justify-content: start; }
+  .cb-bond-demo-heading small { text-align: left; }
+  .cb-bond-demo-options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cb-bond-hero { padding: 34px 36px 30px; }
+  .cb-bond-month-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 880px) {
+  .cb-bond-shell { padding-top: 24px; }
+  .cb-bond-layout { grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr); align-items: start; }
+  .cb-bond-hero { min-height: 390px; }
+  .cb-bond-balance { margin-top: 52px; }
+  .cb-bond-progress-block,
+  .cb-bond-club-active { width: min(62%, 540px); margin-top: 48px; }
+  .cb-bond-side-column { align-content: start; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cb-bond-progress span,
+  .cb-bond-mini-progress i { transition: width 320ms ease-out; }
+  .cb-bond-demo-options button { transition: background 140ms ease-out, color 140ms ease-out, transform 140ms ease-out; }
+  .cb-bond-demo-options button:active { transform: scale(0.98); }
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage 3 — product customization sheet.
+ *
+ * Customer-only: this file is imported solely by frontend/customer-main.tsx, so
+ * none of it can reach the staff POS bundle. The staff add-on selector
+ * (components/add-ons/AddOnSelector) is untouched and keeps its own styling.
+ *
+ * One scroll direction only: the hero is fixed-height, the panel scrolls
+ * vertically, and nothing is wider than the sheet.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-customize {
+  background: var(--cb-bg);
+  max-height: 100dvh;
+  height: 100dvh;
+  border-radius: 0;
+}
+
+@media (min-width: 640px) {
+  .cb-customer-customize {
+    height: auto;
+    max-height: 92dvh;
+    border-radius: var(--cb-radius-lg, 28px);
+  }
+}
+
+/* Hero: ~36% of the viewport on phones, inside the sm/desktop panel elsewhere. */
+.cb-customer-customize-hero {
+  height: 36dvh;
+  min-height: 200px;
+  max-height: 340px;
+  background: var(--cb-surface-muted);
+}
+
+@media (min-width: 640px) {
+  .cb-customer-customize-hero {
+    height: 34dvh;
+    max-height: 300px;
+  }
+}
+
+/* Short viewports — phone landscape, split-screen, a small window. The 200 px
+   min-height was written for portrait; at 740x360 it took 55.6% of the screen and left
+   a 56 px window to choose milk and size in. On a short screen the choices matter more
+   than the photograph, so the hero yields. */
+@media (max-height: 560px) {
+  /* Declared after the min-width block on purpose: equal specificity, so at
+     740x360 — which matches both — this one wins on source order. */
+  .cb-customer-customize-hero {
+    height: 26dvh;
+    min-height: 84px;
+    max-height: 132px;
+  }
+}
+
+/* Only enough scrim to keep the back control legible over a light image. */
+.cb-customer-customize-scrim {
+  background: linear-gradient(to bottom, rgba(43, 33, 24, 0.34), rgba(43, 33, 24, 0));
+}
+
+.cb-customer-customize-close {
+  background: var(--cb-surface);
+  color: var(--cb-espresso);
+  box-shadow: 0 2px 10px rgba(43, 33, 24, 0.22);
+}
+
+/* The curved cream panel that overlaps the hero. */
+.cb-customer-customize-panel {
+  background: var(--cb-bg);
+  border-top-left-radius: 28px;
+  border-top-right-radius: 28px;
+  box-shadow: 0 -8px 24px rgba(43, 33, 24, 0.08);
+}
+
+.cb-customer-customize-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.cb-customer-customize-options {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-sm, 16px);
+}
+
+.cb-customer-customize-option + .cb-customer-customize-option {
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+.cb-customer-customize-option.is-selected {
+  background: var(--cb-gold-soft);
+}
+
+.cb-customer-customize-option.is-unavailable {
+  background: var(--cb-surface-muted);
+}
+
+/* Selection indicator: shape + tick + text, never colour alone. */
+.cb-customer-customize-tick {
+  border: 2px solid var(--cb-border);
+  border-radius: 6px;
+  background: var(--cb-surface);
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--cb-text-on-gold);
+  line-height: 1;
+}
+
+.cb-customer-customize-tick.is-radio {
+  border-radius: 999px;
+}
+
+.cb-customer-customize-tick.is-on {
+  background: var(--cb-gold);
+  border-color: var(--cb-gold-strong);
+}
+
+.cb-customer-customize-required {
+  color: var(--cb-terracotta);
+}
+
+.cb-customer-customize-problem {
+  color: var(--cb-danger);
+}
+
+.cb-customer-customize-footer {
+  background: var(--cb-surface);
+  border-top: 1px solid var(--cb-border);
+}
+
+/* The stepper reuses the existing .cb-customer-stepper style defined above — the
+   product card and this sheet share one control, so it is not redefined here. */
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-customize,
+  .cb-customer-customize-panel {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage 4a — customer basket surface.
+ *
+ * Customer-only (this file is imported solely by frontend/customer-main.tsx).
+ * The basket is a near-full-height mobile sheet with ONE vertical scroll region;
+ * nothing here is wider than the sheet.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-basket-sheet {
+  background: var(--cb-bg);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  box-shadow: 0 -10px 30px rgba(43, 33, 24, 0.18);
+  height: 92dvh;
+  max-height: 92dvh;
+}
+
+.cb-customer-basket-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* A basket line is a row on the sheet, not a card floating on it. The sheet is
+   already a surface; a white card inside it was a card inside a card, and four of
+   them made a two-item basket scroll. */
+.cb-customer-basket-line {
+  list-style: none;
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+.cb-customer-basket-line:first-child { border-top: 0; }
+
+.cb-customer-basket-thumb {
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+}
+
+.cb-customer-basket-remove {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-customer-basket-edit {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-basket-empty {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: var(--cb-shadow-card);
+}
+
+.cb-customer-basket-empty-badge {
+  background: var(--cb-gold-soft);
+  color: var(--cb-espresso);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-basket-sheet { transition: none; animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage 4b — totals, payment selector, notices and checkout action.
+ *
+ * Customer-only. The totals panel uses the espresso surface from the brand palette
+ * with cream text (~12:1) and a gold payable line, so the amount reads as the
+ * strongest element on the checkout without meaning resting on colour.
+ * ------------------------------------------------------------------------- */
+
+/* Payment methods stack vertically — never a horizontal carousel. */
+.cb-customer-payment-card {
+  background: var(--cb-surface);
+  border-radius: var(--cb-radius);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+.cb-customer-payment-card.is-selected {
+  background: var(--cb-gold-soft);
+  box-shadow: inset 0 0 0 2px var(--cb-gold-strong);
+}
+
+.cb-customer-payment-card:disabled { opacity: 0.55; }
+
+.cb-customer-payment-icon {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+}
+
+.cb-customer-payment-card.is-selected .cb-customer-payment-icon {
+  background: var(--cb-surface);
+}
+
+.cb-customer-payment-tick {
+  box-shadow: inset 0 0 0 2px var(--cb-border);
+  color: var(--cb-text-on-gold);
+}
+
+.cb-customer-payment-tick.is-on {
+  background: var(--cb-gold);
+  box-shadow: inset 0 0 0 2px var(--cb-gold-strong);
+}
+
+/* Notices: icon + words + tone, so nothing depends on hue alone. */
+.cb-customer-checkout-notice { border-radius: var(--cb-radius-sm); }
+.cb-customer-checkout-notice.tone-info { background: var(--cb-surface-muted); color: var(--cb-text); }
+.cb-customer-checkout-notice.tone-warning { background: var(--cb-warning-soft); color: var(--cb-warning); }
+.cb-customer-checkout-notice.tone-error { background: var(--cb-danger-soft); color: var(--cb-danger); }
+.cb-customer-checkout-notice.tone-offline { background: var(--cb-surface-muted); color: var(--cb-text-muted); }
+
+/* The action bar sticks to the bottom of the basket's own scroll region. */
+.cb-customer-action-bar {
+  background: var(--cb-bg);
+  border-top: 1px solid var(--cb-border);
+}
+
+.min-h-13 { min-height: 3.25rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-customer-action-bar { transition: none; animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Customer overlay layer scale.
+ *
+ * Every customer overlay is a POSITION:FIXED SIBLING under the same page root, with
+ * no transform/filter/opacity/isolation ancestor — so paint order is decided purely
+ * by these values. They are named rather than written inline so a new overlay cannot
+ * silently land beneath an existing one, which is exactly how the My Usual dialog
+ * (70) ended up behind the Stage 4a basket (75).
+ *
+ *   page content        auto
+ *   sheet               50   store selector, toast
+ *   basket              75   the basket surface
+ *   modal               85   dialogs raised FROM the basket (My Usual)
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-layer-basket { z-index: 75; }
+.cb-customer-layer-modal  { z-index: 85; }
+
+/* ---------------------------------------------------------------------------
+ * Stage 5 — account, orders and order tracking.
+ *
+ * Customer-only (this file is imported solely by frontend/customer-main.tsx), so
+ * none of it can reach the staff POS bundle.
+ *
+ * The organising idea is that THE PAGE IS THE SURFACE. The previous pass gave every
+ * section its own white panel, border and radius, so a screen read as five boxes of
+ * equal weight with nothing leading. Here the cream page is the surface: sections sit
+ * directly on it, separated by whitespace and a hairline, and exactly ONE element per
+ * screen — the status hero — is filled. That single filled block is what the eye lands
+ * on, which is the whole point of the screen.
+ *
+ * Rules this section holds itself to:
+ *   - one filled surface per screen, and it is never nested inside another
+ *   - lists are rows with a single hairline between them, never stacks of cards
+ *   - gold is the only accent, and it marks exactly one action per screen
+ *   - hierarchy comes from type size and weight, not from borders
+ * ------------------------------------------------------------------------- */
+
+/* --- Shared type and rhythm ------------------------------------------------ */
+
+/* The one page heading per screen. */
+.cb-customer-screen-title {
+  color: var(--cb-text);
+  font-size: clamp(26px, 7.2vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+}
+
+/* Section markers. Deliberately quiet: they orient, they do not compete with the
+   page title or the hero. */
+.cb-customer-eyebrow {
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cb-customer-lede {
+  color: var(--cb-text-muted);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.cb-customer-standfirst {
+  color: var(--cb-text);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+/* --- Flat rows -------------------------------------------------------------
+ * A list of rows on the page surface with one hairline between them. This is what
+ * replaces a stack of individually bordered cards, in both Account and Orders.
+ */
+
+/* :where() keeps the list reset at zero specificity, so a spacing utility on the
+   element still wins. A plain `.cb-customer-rows { margin: 0 }` silently ate every
+   margin utility applied alongside it. */
+:where(.cb-customer-rows) { list-style: none; margin: 0; padding: 0; }
+.cb-customer-rows > * { border-top: 1px solid var(--cb-border-soft); }
+
+.cb-customer-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 60px;
+  padding: 13px 2px;
+  text-align: left;
+  color: var(--cb-text);
+}
+
+.cb-customer-row-title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.cb-customer-row-sub {
+  color: var(--cb-text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 3px;
+}
+/* Orders that ended badly read as ended — in words and in colour, not colour alone. */
+.cb-customer-row-sub.is-ended { color: var(--cb-danger); }
+
+.cb-customer-row-amount {
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-row-icon { color: var(--cb-espresso); flex: 0 0 auto; }
+.cb-customer-row-chevron { color: #b3a598; flex: 0 0 auto; }
+
+.cb-customer-rule { border: 0; border-top: 1px solid var(--cb-border-soft); }
+
+/* --- The single filled surface --------------------------------------------
+ * Used by the current order on Orders and by the status hero on tracking, so both
+ * screens speak with one voice. Tones set their own foreground values rather than
+ * relying on opacity, because a translucent cream that passes contrast on espresso
+ * fails it on a light warning background.
+ */
+
+.cb-customer-hero {
+  --hero-fg: var(--cb-text-on-espresso);
+  --hero-fg-soft: rgba(251, 247, 241, 0.88);
+  --hero-fg-meta: rgba(251, 247, 241, 0.74);
+  --hero-accent: var(--cb-gold);
+  background: var(--cb-espresso);
+  color: var(--hero-fg);
+  border-radius: var(--cb-radius-lg);
+}
+
+.cb-customer-hero.is-ready {
+  background: #14603a;
+  --hero-fg-meta: rgba(251, 247, 241, 0.84);
+  --hero-accent: #ffe6a8;
+}
+
+.cb-customer-hero.is-attention {
+  background: var(--cb-warning-soft);
+  --hero-fg: #7c5410;
+  --hero-fg-soft: #7c5410;
+  --hero-fg-meta: #8a6216;
+  --hero-accent: #7c5410;
+}
+
+.cb-customer-hero.is-ended {
+  background: var(--cb-surface-muted);
+  --hero-fg: var(--cb-text);
+  --hero-fg-soft: #4a3a33;
+  --hero-fg-meta: var(--cb-text-muted);
+  --hero-accent: var(--cb-text-muted);
+}
+
+.cb-customer-hero-eyebrow {
+  color: var(--hero-accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* The status is the largest thing on its screen, on purpose. */
+.cb-customer-hero-status {
+  color: var(--hero-fg);
+  font-size: clamp(28px, 8vw, 34px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+}
+
+.cb-customer-hero-line { color: var(--hero-fg-soft); font-size: 14.5px; font-weight: 600; line-height: 1.45; }
+.cb-customer-hero-meta { color: var(--hero-fg-meta); font-size: 13px; font-weight: 600; line-height: 1.4; }
+
+.cb-customer-hero-amount {
+  color: var(--hero-accent);
+  font-size: 17px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Order progress --------------------------------------------------------
+ * Three compact steps directly on the page. No panel: the strip is a caption to the
+ * hero above it, not a section competing with it.
+ */
+
+.cb-customer-steps { display: flex; align-items: flex-start; gap: 4px; }
+
+.cb-customer-step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-customer-step-track { display: flex; align-items: center; gap: 6px; width: 100%; }
+
+.cb-customer-step-rail { flex: 1 1 auto; height: 2px; border-radius: 2px; background: var(--cb-border); }
+.cb-customer-step-rail.is-filled { background: var(--cb-gold-strong); }
+.cb-customer-step-rail.is-hidden { background: transparent; }
+
+.cb-customer-step-dot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--cb-border);
+  color: var(--cb-text-on-gold);
+}
+
+.cb-customer-step-dot.is-done { background: var(--cb-gold-strong); }
+/* The current step carries the only ring on the strip, so the eye lands on it. */
+.cb-customer-step-dot.is-active {
+  background: var(--cb-espresso);
+  color: var(--cb-gold);
+  box-shadow: 0 0 0 4px var(--cb-gold-soft);
+}
+
+.cb-customer-step-label { color: var(--cb-text-muted); font-size: 11.5px; font-weight: 700; text-align: center; }
+.cb-customer-step-label.is-active { color: var(--cb-text); font-weight: 800; }
+
+/* --- Order summary ---------------------------------------------------------
+ * Flat. The items and the totals share the page surface; only a hairline separates
+ * them, so there is no card inside a card.
+ */
+
+.cb-customer-summary-item { display: flex; justify-content: space-between; gap: 14px; }
+.cb-customer-summary-name { color: var(--cb-text); font-size: 14.5px; font-weight: 700; line-height: 1.35; }
+.cb-customer-summary-addon { color: var(--cb-text-muted); font-size: 12.5px; font-weight: 600; line-height: 1.4; }
+.cb-customer-summary-amount {
+  color: var(--cb-text);
+  font-size: 14.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-totals { border-top: 1px solid var(--cb-border-soft); }
+.cb-customer-total-row { display: flex; justify-content: space-between; gap: 14px; }
+.cb-customer-total-label { color: var(--cb-text-muted); font-size: 14px; font-weight: 600; }
+.cb-customer-total-value {
+  color: var(--cb-text);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.cb-customer-total-row.is-grand .cb-customer-total-label,
+.cb-customer-total-row.is-grand .cb-customer-total-value { color: var(--cb-text); font-size: 17px; font-weight: 800; }
+
+.cb-customer-meta { color: var(--cb-text-muted); font-size: 12px; font-weight: 600; }
+
+/* --- Payment safety --------------------------------------------------------
+ * The wording inside these blocks tells the customer not to pay twice, so it is the
+ * one message on tracking allowed to be a filled block besides the hero. The accent
+ * edge is what makes it read as an instruction rather than a caption.
+ */
+
+/* White on the cream page with one accent edge. A tinted block was tried first and
+   vanished into the hero whenever the hero carried the same tint — which is exactly
+   when this message matters most. */
+.cb-customer-payment-notice {
+  background: var(--cb-surface);
+  color: var(--cb-text);
+  border-radius: var(--cb-radius-sm);
+  border-left: 4px solid var(--cb-gold-strong);
+}
+
+.cb-customer-payment-notice.tone-warning { border-left-color: var(--cb-warning); }
+
+/* --- Account ---------------------------------------------------------------
+ * A sheet, not a settings menu: a large name, quiet metadata, two rows, a hairline,
+ * and a sign out that is plainly secondary because it is below the line and unfilled.
+ */
+
+.cb-customer-account-sheet {
+  background: var(--cb-surface);
+  border-top-left-radius: var(--cb-radius-lg);
+  border-top-right-radius: var(--cb-radius-lg);
+  box-shadow: var(--cb-shadow-raised);
+  padding: 10px 20px max(20px, var(--cb-safe-bottom));
+}
+
+@media (min-width: 640px) {
+  .cb-customer-account-sheet { border-radius: var(--cb-radius-lg); padding-top: 20px; }
+}
+
+.cb-customer-sheet-grabber {
+  display: block;
+  width: 40px;
+  height: 4px;
+  margin: 0 auto 12px;
+  border-radius: 999px;
+  background: var(--cb-border);
+}
+
+@media (min-width: 640px) {
+  .cb-customer-sheet-grabber { display: none; }
+}
+
+/* Air under the identity, so the name reads as the sheet's header and not as a fourth
+   list item. The phone number's box ended flush against the first row's hairline.
+
+   This is padding on the identity rather than `mt-6` on the row list, because that
+   margin utility could never win: `:where(.cb-customer-rows) { margin: 0 }` lives in
+   this file, which is UNLAYERED, while Tailwind's `.mt-6` sits in `@layer utilities` —
+   and unlayered declarations beat layered ones whatever their specificity. The
+   :where() only equalises specificity; it does nothing across layers. Padding also
+   cannot be collapsed away by a neighbouring margin. */
+.cb-customer-account-identity { padding-bottom: 22px; }
+
+.cb-customer-account-name {
+  color: var(--cb-text);
+  font-size: 27px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+/* Verified state is stated in words, never by colour alone. */
+.cb-customer-account-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cb-success);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.cb-customer-account-phone {
+  color: var(--cb-text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-account-note { color: var(--cb-text-muted); font-size: 12.5px; font-weight: 500; line-height: 1.5; }
+
+.cb-customer-signout { color: var(--cb-danger); }
+.cb-customer-signout .cb-customer-row-icon { color: var(--cb-danger); }
+
+/* Profile fields. Filled rather than outlined, so editing adds no new borders. */
+.cb-customer-field-label {
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cb-customer-field {
+  width: 100%;
+  height: 52px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-surface-muted);
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cb-customer-field:focus { outline: 2px solid var(--cb-gold-strong); outline-offset: 1px; }
+.cb-customer-field.is-readonly { color: var(--cb-text-muted); }
+
+.cb-customer-quiet-button {
+  color: var(--cb-text);
+  background: var(--cb-surface-muted);
+  border-radius: var(--cb-radius-sm);
+}
+
+/* An empty or signed-out Orders screen has nothing more to say, so it says it once,
+   directly under the heading, and stops. Centring the message in the remaining height
+   was tried and rejected: it left the page title stranded alone at the top with a
+   300 px hole beneath it, which reads as a rendering fault rather than as calm.
+   align-items is explicit because the default `stretch` pulled the "Browse menu"
+   button to the full page width and made two lines of text look like a form. */
+.cb-customer-orders-void {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 40px;
+}
+
+.cb-customer-back { color: var(--cb-text-muted); font-size: 14px; font-weight: 700; }
+
+/* ---------------------------------------------------------------------------
+ * Customer menu — the strip above the products.
+ *
+ * The store block and the My Usual prompt used to be two large cards, and together
+ * with search and the category chips they pushed the first product card to y=501 on a
+ * 390x844 phone: 59% of the screen spent before a single thing could be ordered.
+ *
+ * Both are now compact rows on the cream canvas, separated by a hairline, in the same
+ * flat-row language the account sheet already uses. Nothing below the first product
+ * row is affected — this section styles the strip only.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 0;
+  text-align: left;
+  color: var(--cb-text);
+  /* The divider belongs to the row, not to a wrapper, so a row that is replaced by a
+     full card (a saved My Usual) takes its rule away with it. */
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+.cb-customer-menu-row.is-first { border-top: 0; }
+
+.cb-customer-menu-row-title {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.cb-customer-menu-row-meta {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+
+/* Status as coloured text rather than a filled pill: at this size the pill was most of
+   the row's height. The label still states the status in words. */
+.cb-customer-tone-green { color: var(--cb-success); }
+.cb-customer-tone-amber { color: var(--cb-warning); }
+.cb-customer-tone-red { color: var(--cb-danger); }
+
+/* Compact rows sit flush against each other so the hairline reads as one list; a My
+   Usual that renders as a full card still gets air above it. */
+.cb-customer-menu-strip > * + * { margin-top: 0; }
+.cb-customer-menu-strip .cb-customer-usual,
+.cb-customer-menu-strip .cb-customer-usual-empty { margin-top: 12px; }
+
+/* ---------------------------------------------------------------------------
+ * Checkout step.
+ *
+ * The checkout answers five questions — where am I collecting, who is ordering, how am
+ * I paying, anything else, what am I paying — and it should read as a payment sheet
+ * rather than a form. Fields are filled rather than outlined, so answering a question
+ * adds no new border; the order type is a pair of chips instead of a full-width select;
+ * and the note stays a one-line offer until it is wanted.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-choice-row { display: flex; gap: 8px; }
+
+.cb-customer-choice {
+  flex: 1 1 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 800;
+  background: var(--cb-surface);
+  color: var(--cb-text-muted);
+  box-shadow: inset 0 0 0 1px var(--cb-border);
+}
+
+/* Selection is carried by fill AND by aria-checked, never by colour alone. */
+.cb-customer-choice.is-on {
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  box-shadow: none;
+}
+
+.cb-customer-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--cb-radius-sm);
+  background: var(--cb-surface-muted);
+  color: var(--cb-text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  resize: none;
+}
+
+.cb-customer-textarea:focus { outline: 2px solid var(--cb-gold-strong); outline-offset: 1px; }
+
+/* The verified customer's own line. Their identity is already authoritative, so this
+   states it instead of asking for it again. */
+.cb-customer-identity-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cb-success);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-inline-action {
+  color: var(--cb-espresso);
+  background: var(--cb-surface-muted);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+/* The OTP surface sits inside the checkout sheet, which is already a surface. It keeps
+   a hairline to mark where verification begins, but not a second white card. Only the
+   container is styled here — the OTP controls, timer and flow are untouched. */
+.cb-customer-otp-panel {
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--cb-border-soft);
+}
+
+/* The phone field's interactive control must fill the field it sits in. The input
+   carried no height, so inside a 48 px box it rendered as a 20 px strip with 14 px of
+   dead space above and below it: a tap near the top or bottom edge of the field landed
+   on the wrapper and focused nothing. Height lives on the control rather than in a
+   utility so the field and its input cannot drift apart again; min-height keeps the
+   44 px floor even if the wrapper is ever resized. */
+.cb-customer-otp-input {
+  height: 100%;
+  min-height: 44px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Search.
+ *
+ * Activating search used to leave the whole menu standing underneath it — store row,
+ * My Usual, the basket-restored banner, the category chips and ten category headings —
+ * so the first result sat 445 px down a screen that still read as the menu. While
+ * search is open the surface shows the field and the matches, and nothing else. Every
+ * hidden section is only hidden: the same state, the same components, restored on
+ * Cancel. The filter itself is the existing one.
+ * ------------------------------------------------------------------------- */
+
+/* The field and Cancel on one line. This was written as `position: sticky` first so the
+   field would stay pinned while results scroll; it does not work here and the rule was
+   removed rather than left in place looking like it does. The page shell (.cb-app)
+   carries `overflow-x: hidden`, which computes to `overflow: hidden auto` and makes
+   .cb-app the sticky containing block — and .cb-app never scrolls, the document does.
+   Pinning the field would mean changing that shell, which is the menu's, not search's.
+   The field starts at the top of the surface, so it is on screen when the keyboard
+   opens; it scrolls away with the results, exactly as the category rail already does. */
+.cb-customer-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-customer-search-cancel {
+  color: var(--cb-espresso);
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cb-customer-search-clear {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  border-radius: 999px;
+}
+
+/* Both quiet states — nothing typed yet, and nothing found — are two lines on the
+   page. Neither earns a card or an illustration. */
+.cb-customer-search-void { padding: 28px 0 8px; }
+
+/* --- Product card type and action ------------------------------------------
+ * Two text elements and one control. The category label that used to lead the card
+ * is gone: it repeated the section heading the card was already under.
+ */
+
+.cb-customer-product-name {
+  color: var(--cb-text);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  /* Long compound names such as "Cookie (Hazelnut/Chocolate)" must break rather than
+     force a horizontal overflow in a 138 px column. */
+  overflow-wrap: anywhere;
+}
+
+.cb-customer-product-price {
+  color: var(--cb-text);
+  font-size: 14.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-customer-product-unavailable {
+  color: var(--cb-danger);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Quiet until the item is in the basket. Gold marks state — a filled accent on all 84
+   cards at once would mean nothing. */
+.cb-customer-add-button {
+  background: var(--cb-surface-muted);
+  color: var(--cb-espresso);
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+.cb-customer-add-button:disabled { color: var(--cb-text-muted); }
+
+/* Customer install guidance clears the mobile navigation and its home-indicator inset.
+   Desktop has no bottom navigation, so it retains the original edge offset. */
+.cb-customer-pwa-install-banner { bottom: max(0.75rem, var(--cb-safe-bottom)); }
+@media (max-width: 1023px) {
+  .cb-customer-pwa-install-banner {
+    bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom) + 12px);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Contextual basket bar.
+ *
+ * Replaces the permanently raised basket button that used to occupy a navigation slot.
+ * It sits directly above the bottom navigation — never overlapping it — and is absent
+ * entirely while the basket is empty.
+ *
+ * The offset is the navigation's own height plus the safe-area inset, so the bar clears
+ * both the bar and the home indicator on every device.
+ * ------------------------------------------------------------------------ */
+.cb-customer-basket-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom));
+  z-index: 39; /* below the nav (40) so the two can never fight */
+  padding: 0 12px 10px;
+  padding-left: max(12px, var(--cb-safe-left));
+  padding-right: max(12px, var(--cb-safe-right));
+  pointer-events: none;
+}
+.cb-customer-basket-bar-action {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  max-width: 32rem;
+  margin: 0 auto;
+  align-items: center;
+  gap: 10px;
+  border-radius: 999px;
+  background: var(--cb-espresso);
+  color: var(--cb-text-on-espresso);
+  padding: 0 8px 0 16px;
+  font-size: 13.5px;
+  font-weight: 800;
+  box-shadow: var(--cb-shadow-raised);
+  pointer-events: auto;
+}
+.cb-customer-basket-bar-total {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cb-customer-basket-bar-cta {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--cb-gold);
+  color: var(--cb-text-on-gold);
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+/* The page already reserves room for the navigation; a visible basket bar needs its own
+   clearance on top of that so the last product row is never trapped behind it. */
+.cb-customer-page-bottom.has-basket-bar { padding-bottom: calc(var(--cb-content-bottom) + 62px); }
+@media (min-width: 1024px) {
+  .cb-customer-page-bottom.has-basket-bar { padding-bottom: 2rem; }
+}
+
+/* /account renders the shared account panel inline instead of as a modal sheet. */
+.cb-customer-account-page-panel {
+  border-radius: var(--cb-radius-lg);
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  box-shadow: var(--cb-shadow-card);
+  padding: 18px;
+}
+
+/* Posted BOND points on a past order row. Shown only when the server ledger awarded
+   them; the customer app never estimates a balance. */
+.cb-customer-row-points {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--cb-success);
+}
+
+/* ---------------------------------------------------------------------------
+ * Customer home — reference-led composition.
+ *
+ * These classes are customer-bundle-only and intentionally describe presentation,
+ * never menu, loyalty, basket or payment state. The screen continues to supply every
+ * authoritative string/value and every existing callback.
+ * ------------------------------------------------------------------------- */
+
+.cb-customer-header {
+  padding-top: var(--cb-safe-top);
+  border-bottom: 1px solid color-mix(in srgb, var(--cb-border) 70%, transparent);
+  background: color-mix(in srgb, var(--cb-bg) 95%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.cb-customer-brand { color: var(--cb-espresso); text-decoration: none; }
+.cb-customer-brand-mark {
+  display: grid;
+  width: 30px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #b47a21;
+  transform: rotate(-7deg);
+}
+.cb-customer-brand-mark.is-official {
+  width: 38px;
+  height: 38px;
+  transform: none;
+}
+.cb-customer-official-mark {
+  display: block;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+}
+.cb-customer-wordmark {
+  font-family: Georgia, 'Times New Roman', ui-serif, serif;
+  font-size: clamp(24px, 7vw, 29px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+.cb-customer-wordmark em { color: #a96f1e; font-style: normal; }
+
+.cb-customer-header-session-loading,
+.cb-customer-header-points,
+.cb-customer-header-join {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: #5c4033;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cb-customer-header-points { padding-inline: 8px; font-variant-numeric: tabular-nums; }
+.cb-customer-header-points.is-club { gap: 4px; padding-inline: 6px; font-size: 13px; }
+.cb-customer-header-club {
+  color: #7d553f;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.085em;
+  text-transform: uppercase;
+}
+.cb-customer-header-club-separator { color: #ac9a8d; font-weight: 500; }
+.cb-customer-header-join { padding-inline: 10px; background: transparent; }
+
+.cb-customer-avatar-button {
+  color: var(--cb-espresso);
+  background: #fffdf9;
+  box-shadow: inset 0 0 0 1px #dfc17a, 0 3px 10px rgba(61, 39, 23, 0.08);
+}
+.cb-customer-avatar {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #f7e7c5, #efe0c8);
+  color: #5a3928;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+.cb-customer-avatar-points {
+  position: absolute;
+  right: -5px;
+  bottom: -3px;
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding-inline: 4px;
+  border: 2px solid var(--cb-bg);
+  border-radius: 999px;
+  background: #b77c22;
+  color: #2b2118;
+  font-size: 11px;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+  max-width: 38px;
+  overflow: hidden;
+}
+
+.cb-customer-home-main { padding-top: 8px; gap: 24px; }
+.cb-customer-home-flow,
+.cb-customer-home-overview { display: grid; gap: 10px; }
+
+/* Bite 4: a proven live order temporarily leads Home. The component renders nothing
+   when no current order exists, so this selector can never reserve an empty slot. */
+.cb-customer-live-order {
+  min-width: 0;
+  padding: 14px 15px 15px;
+  box-shadow: 0 9px 22px rgba(43, 33, 24, 0.14);
+}
+.cb-customer-live-order-topline {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cb-customer-live-order-track {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: -8px -5px -8px 0;
+  padding: 0 5px;
+  border-radius: 10px;
+  color: var(--hero-accent);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.cb-customer-live-order-track:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--hero-accent) 52%, transparent);
+  outline-offset: 1px;
+}
+.cb-customer-live-order-status {
+  margin-top: 3px;
+  color: var(--hero-fg);
+  font-size: clamp(22px, 6.4vw, 27px);
+  font-weight: 820;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.cb-customer-live-order-message {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 6px;
+  color: var(--hero-fg-soft);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.38;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cb-customer-live-order-summary {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--hero-accent) 32%, transparent);
+  color: var(--hero-fg-soft);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.cb-customer-live-order-summary > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-live-order-reference {
+  flex: 0 0 auto;
+  color: var(--hero-accent);
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+
+/* Bite 3: one quiet escape hatch replaces the category/favourites/menu wall on Home.
+   Each label is its own real target, while the row remains deliberately lighter than
+   the image-led My Usual hero above it. */
+.cb-customer-something-else {
+  display: grid;
+  min-width: 0;
+  min-height: 56px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: stretch;
+  padding: 6px 10px 6px 14px;
+  border: 1px solid #eadfcf;
+  border-radius: 16px;
+  color: var(--cb-text);
+  background: rgba(255, 253, 249, 0.78);
+  box-shadow: 0 3px 10px rgba(43, 33, 24, 0.035);
+}
+.cb-customer-something-else-menu {
+  display: grid;
+  min-width: 0;
+  min-height: 44px;
+  grid-template-rows: auto auto;
+  align-content: center;
+  color: inherit;
+  text-decoration: none;
+}
+.cb-customer-something-else-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  color: var(--cb-text);
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.cb-customer-something-else-label,
+.cb-customer-something-else-action {
+  color: var(--cb-text-muted);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.cb-customer-something-else-action,
+.cb-customer-something-else-dot {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: flex-end;
+  padding: 0 3px 7px;
+}
+.cb-customer-something-else-action {
+  text-decoration: none;
+}
+.cb-customer-something-else-dot {
+  padding-inline: 1px;
+  color: #b6a79c;
+  font-size: 12px;
+}
+.cb-customer-something-else-menu:focus-visible,
+.cb-customer-something-else-action:focus-visible {
+  border-radius: 9px;
+  outline: 3px solid rgba(117, 72, 23, 0.28);
+  outline-offset: 1px;
+}
+
+/* Bite 5: points stay in the header; this quieter relationship strip carries only
+   verified visit/Club status from the existing customer BOND summary. */
+.cb-customer-bond-strip {
+  display: grid;
+  min-width: 0;
+  min-height: 52px;
+  align-content: center;
+  padding: 4px 13px 7px 15px;
+  border: 1px solid #ebdfcf;
+  border-radius: 15px;
+  color: var(--cb-espresso);
+  background: rgba(252, 247, 237, 0.76);
+  box-shadow: 0 2px 7px rgba(43, 33, 24, 0.025);
+  text-decoration: none;
+}
+.cb-customer-bond-strip-row {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cb-customer-bond-strip-row strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 760;
+  letter-spacing: 0.015em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-bond-strip-row svg {
+  flex: 0 0 auto;
+  color: #9b6c2d;
+}
+.cb-customer-bond-strip-progress {
+  display: block;
+  height: 2px;
+  margin-top: -5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8ddcf;
+}
+.cb-customer-bond-strip-progress > span {
+  display: block;
+  width: var(--cb-bond-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8b5e42, #bd8732);
+}
+.cb-customer-bond-strip.is-club .cb-customer-bond-strip-row strong {
+  letter-spacing: 0.075em;
+}
+.cb-customer-bond-strip:focus-visible {
+  outline: 3px solid rgba(117, 72, 23, 0.28);
+  outline-offset: 2px;
+}
+
+/* Bite 7: first-open Home begins with current, orderable signature products. The
+   card owns selection styling only; menu availability and basket behavior stay in
+   CustomerOrder. No price is printed here, so stale catalogue money cannot leak. */
+.cb-customer-signature-hero {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dfd0bd;
+  border-radius: 26px;
+  background: #fffdf8;
+  box-shadow: 0 12px 28px rgba(66, 42, 27, 0.11);
+}
+.cb-customer-signature-photo,
+.cb-customer-signature-art,
+.cb-customer-signature-loading-photo {
+  min-width: 0;
+  aspect-ratio: 16 / 7;
+}
+.cb-customer-signature-photo { background: #f0e3d3; }
+.cb-customer-signature-photo > * { border-radius: 0; }
+.cb-customer-signature-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: rgba(134, 86, 26, 0.7);
+  background:
+    radial-gradient(circle at 35% 45%, rgba(255, 255, 255, 0.8), transparent 38%),
+    linear-gradient(145deg, #f3dba7, #fbf2dd);
+}
+.cb-customer-signature-art svg:first-child {
+  position: absolute;
+  left: 22%;
+  bottom: 8%;
+  transform: rotate(-14deg);
+  opacity: 0.48;
+}
+.cb-customer-signature-art svg:last-child { position: relative; margin-left: 38px; color: #80512d; }
+.cb-customer-signature-loading-photo { background: #eee1d5; }
+.cb-customer-signature-content { padding: 16px 17px 17px; }
+.cb-customer-signature-eyebrow {
+  margin: 0;
+  color: #9c6928;
+  font-size: 11px;
+  font-weight: 840;
+  letter-spacing: 0.2em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+.cb-customer-signature-name {
+  margin: 5px 0 0;
+  color: var(--cb-text);
+  font-family: Georgia, 'Times New Roman', ui-serif, serif;
+  font-size: 27px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.04;
+}
+.cb-customer-signature-copy {
+  margin: 8px 0 0;
+  color: var(--cb-text-muted);
+  font-size: 13px;
+  font-weight: 570;
+  line-height: 1.45;
+}
+.cb-customer-signature-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 13px;
+}
+.cb-customer-signature-option {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  place-items: center;
+  padding: 6px 7px;
+  border: 1px solid #e7dac9;
+  border-radius: 13px;
+  color: #72503f;
+  background: #fbf5ec;
+  font-size: 11px;
+  font-weight: 740;
+  line-height: 1.15;
+  text-align: center;
+}
+.cb-customer-signature-option[aria-pressed='true'] {
+  border-color: #9d6b2f;
+  color: var(--cb-espresso);
+  background: #f5e5c9;
+  box-shadow: inset 0 0 0 1px rgba(157, 107, 47, 0.24);
+}
+.cb-customer-signature-option:focus-visible,
+.cb-customer-signature-primary:focus-visible {
+  outline: 3px solid rgba(117, 72, 23, 0.32);
+  outline-offset: 2px;
+}
+.cb-customer-signature-primary {
+  display: inline-flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 13px;
+  padding: 8px 14px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 7px 16px rgba(63, 39, 27, 0.18);
+  font-size: 13.5px;
+  font-weight: 810;
+  line-height: 1.2;
+  text-align: center;
+}
+.cb-customer-signature-primary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-signature-primary:disabled {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  box-shadow: none;
+}
+.cb-customer-signature-message {
+  margin: 8px 0 0;
+  color: var(--cb-danger);
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.35;
+  text-align: center;
+}
+.cb-customer-signature-hero.is-store-unknown,
+.cb-customer-signature-hero.is-fallback {
+  display: grid;
+  grid-template-columns: 40% minmax(0, 60%);
+  min-height: 166px;
+  border-radius: 21px;
+  box-shadow: 0 6px 17px rgba(43, 33, 24, 0.065);
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-art,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-art {
+  min-height: 100%;
+  aspect-ratio: auto;
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-content,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  padding: 13px 12px;
+}
+.cb-customer-signature-hero.is-store-unknown .cb-customer-signature-name,
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-name { font-size: 20px; }
+.cb-customer-signature-hero.is-fallback .cb-customer-signature-primary {
+  min-height: 44px;
+  margin-top: 10px;
+  padding-inline: 7px;
+  font-size: 11.5px;
+}
+.cb-customer-signature-hero.is-loading .cb-customer-signature-content { padding-block: 14px 17px; }
+
+.cb-customer-store-card {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 13px 0 15px;
+  border: 1px solid #eadfcf;
+  border-radius: 16px;
+  color: var(--cb-text);
+  background: color-mix(in srgb, var(--cb-surface) 94%, #fbefd7);
+  box-shadow: 0 3px 10px rgba(43, 33, 24, 0.04);
+  text-align: left;
+}
+.cb-customer-store-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+.cb-customer-store-title {
+  color: var(--cb-text);
+  font-size: 14.5px;
+  font-weight: 780;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.cb-customer-store-separator { flex: 0 0 auto; color: #ab9a8d; }
+.cb-customer-store-status {
+  min-width: 0;
+  color: var(--cb-text-muted);
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.2;
+}
+.cb-customer-store-chevron { flex: 0 0 auto; color: var(--cb-espresso); }
+
+.cb-customer-usual-hero {
+  display: grid;
+  grid-template-columns: 44% minmax(0, 56%);
+  min-width: 0;
+  min-height: 158px;
+  overflow: hidden;
+  border: 1px solid #e7dccd;
+  border-radius: 21px;
+  background: #fffdf9;
+  box-shadow: 0 6px 17px rgba(43, 33, 24, 0.065);
+}
+.cb-customer-usual-photo,
+.cb-customer-usual-art,
+.cb-customer-usual-loading-photo {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 100%;
+}
+.cb-customer-usual-photo { position: relative; background: #f0e3d3; }
+.cb-customer-usual-photo > * { border-radius: 0; }
+.cb-customer-usual-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: rgba(134, 86, 26, 0.7);
+  background:
+    radial-gradient(circle at 35% 45%, rgba(255, 255, 255, 0.8), transparent 38%),
+    linear-gradient(145deg, #f3dba7, #fbf2dd);
+}
+.cb-customer-usual-art svg:first-child { position: absolute; left: 13px; bottom: 8px; transform: rotate(-14deg); opacity: 0.48; }
+.cb-customer-usual-art svg:last-child { position: relative; margin-left: 28px; color: #80512d; }
+.cb-customer-usual-loading-photo { background: #eee1d5; }
+.cb-customer-usual-count {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: grid;
+  min-width: 28px;
+  height: 28px;
+  place-items: center;
+  padding-inline: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  color: white;
+  background: rgba(43, 33, 24, 0.76);
+  font-size: 11px;
+  font-weight: 800;
+}
+.cb-customer-usual-content {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  flex-direction: column;
+  padding: 11px 10px 9px 12px;
+}
+.cb-customer-usual-photo-controls {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: flex;
+  gap: 5px;
+}
+.cb-customer-usual-photo-controls .cb-customer-usual-icon-button {
+  background: rgba(255, 253, 249, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(231, 220, 205, 0.9), 0 3px 10px rgba(43, 33, 24, 0.1);
+  backdrop-filter: blur(6px);
+}
+.cb-customer-usual-eyebrow {
+  margin: 0;
+  color: #9c6928;
+  font-size: 11px;
+  font-weight: 840;
+  letter-spacing: 0.18em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+.cb-customer-usual-name {
+  display: -webkit-box;
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--cb-text);
+  font-family: Georgia, 'Times New Roman', ui-serif, serif;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cb-customer-usual-copy {
+  display: -webkit-box;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--cb-text-muted);
+  font-size: 11.5px;
+  font-weight: 570;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cb-customer-usual-lines {
+  display: grid;
+  gap: 1px;
+  margin: 4px 0 0;
+  padding: 0;
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 580;
+  line-height: 1.3;
+  list-style: none;
+}
+.cb-customer-usual-lines li { min-width: 0; overflow-wrap: anywhere; }
+.cb-customer-usual-lines li.is-unavailable { color: var(--cb-danger); text-decoration: line-through; }
+.cb-customer-usual-lines small { display: block; color: var(--cb-danger); font-size: 11px; text-decoration: none; }
+.cb-customer-usual-lead-detail {
+  margin-top: 4px;
+  color: var(--cb-text-muted);
+  font-size: 11px;
+  font-weight: 580;
+  line-height: 1.3;
+}
+.cb-customer-usual-lead-modifiers {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+.cb-customer-usual-lead-detail small {
+  display: block;
+  color: var(--cb-danger);
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.cb-customer-usual-more {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+  border-top: 1px solid #eee1d4;
+  color: #7b4c17;
+  background: #fffaf3;
+  font-size: 11px;
+  font-weight: 700;
+}
+.cb-customer-usual-more summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.cb-customer-usual-more summary:focus-visible { outline: 3px solid #8b5e42; outline-offset: -3px; }
+.cb-customer-usual-more .cb-customer-usual-lines {
+  max-height: 180px;
+  margin: 0;
+  padding: 0 12px 12px;
+  overflow-y: auto;
+}
+.cb-customer-usual-price-row { min-height: 20px; margin-top: 2px; }
+.cb-customer-usual-price { margin: 0; color: var(--cb-text); font-size: 15px; font-weight: 760; font-variant-numeric: tabular-nums; }
+.cb-customer-usual-review { margin: 1px 0 0; color: var(--cb-danger); font-size: 11px; font-weight: 750; text-transform: uppercase; }
+.cb-customer-usual-actions { display: flex; min-width: 0; align-items: center; gap: 5px; margin-top: auto; }
+.cb-customer-usual-primary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding-inline: 8px;
+  border-radius: 13px;
+  color: var(--cb-text-on-gold);
+  background: #c58a2a;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+}
+.cb-customer-usual-primary:disabled { color: var(--cb-text-muted); background: var(--cb-surface-muted); }
+.cb-customer-usual-icon-button {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #50362a;
+  background: #f7f0e8;
+  box-shadow: inset 0 0 0 1px #eee1d4;
+}
+.cb-customer-usual-icon-button.is-danger { color: #8e3f35; }
+.cb-customer-usual-message {
+  margin: 7px 0 0;
+  padding: 6px 8px;
+  border-radius: 9px;
+  color: var(--cb-warning);
+  background: var(--cb-warning-soft);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.cb-customer-usual-message.is-error { color: var(--cb-danger); background: var(--cb-danger-soft); }
+
+/* Bite 6: a signed-in member without a saved usual gets a relationship-aware prompt,
+   not the signed-out discovery image or a generic campaign. It stays quieter than a
+   live-order banner while keeping the one useful next action comfortably tappable. */
+.cb-customer-usual-hero.is-empty {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  border-color: #eadcc9;
+  background: #fcf5e9;
+  box-shadow: 0 4px 13px rgba(43, 33, 24, 0.045);
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-content {
+  grid-column: 1;
+  grid-row: 1;
+  padding: 19px 18px 18px;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-name {
+  margin-top: 6px;
+  font-size: 26px;
+  line-height: 1.05;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-copy {
+  display: block;
+  margin-top: 8px;
+  overflow: visible;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-line-clamp: initial;
+}
+.cb-customer-usual-hero.is-empty .cb-customer-usual-primary {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 17px;
+  padding-inline: 14px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 6px 14px rgba(63, 39, 27, 0.14);
+  font-size: 13.5px;
+  font-weight: 810;
+}
+
+/* Bite 2: only a revalidated SAVED usual becomes the dominant Home hero. The
+   signed-out and loading variants keep their compact Bite 1 composition. */
+.cb-customer-usual-hero.is-saved {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  border-color: #dfd0bd;
+  border-radius: 26px;
+  background: #fffdf8;
+  box-shadow: 0 12px 28px rgba(66, 42, 27, 0.11);
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-photo {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-content {
+  grid-column: 1;
+  grid-row: 2;
+  padding: 17px 18px 15px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-photo-controls {
+  top: 10px;
+  right: 10px;
+  bottom: auto;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-count {
+  right: auto;
+  left: 10px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-name {
+  margin-top: 5px;
+  font-size: 27px;
+  line-height: 1.02;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-lead-detail {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-lead-modifiers {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-price-row {
+  min-height: 0;
+  margin-top: 10px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-price {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-actions { margin-top: 15px; }
+.cb-customer-usual-hero.is-saved .cb-customer-usual-primary {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 16px;
+  color: #fff9ef;
+  background: var(--cb-espresso);
+  box-shadow: 0 7px 16px rgba(63, 39, 27, 0.18);
+  font-size: 14px;
+  font-weight: 820;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-primary:disabled {
+  color: var(--cb-text-muted);
+  background: var(--cb-surface-muted);
+  box-shadow: none;
+}
+.cb-customer-usual-secondary-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.cb-customer-usual-secondary {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 2px;
+  color: #754817;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.cb-customer-usual-secondary:disabled { color: var(--cb-text-muted); }
+.cb-customer-usual-secondary:focus-visible {
+  outline: 3px solid rgba(117, 72, 23, 0.32);
+  outline-offset: 2px;
+}
+.cb-customer-usual-hero.is-saved .cb-customer-usual-message { margin-top: 4px; }
+.cb-customer-usual-hero.is-saved .cb-customer-usual-more {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.cb-bond-order-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  min-height: 84px;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  padding: 9px 10px 9px 11px;
+  border: 1px solid #e5d8c8;
+  border-radius: 19px;
+  background:
+    radial-gradient(circle at 96% 20%, rgba(205, 157, 75, 0.18), transparent 7rem),
+    #fffdf8;
+  box-shadow: 0 4px 13px rgba(43, 33, 24, 0.05);
+}
+.cb-bond-order-card:not(.is-signed-out):not(.is-loading) { min-height: 88px; }
+.cb-bond-order-card-balance {
+  position: relative;
+  display: grid;
+  width: 62px;
+  height: 62px;
+  place-content: center;
+  border-radius: 50%;
+  color: var(--cb-espresso);
+  background: #fffdf9;
+  box-shadow: inset 0 0 0 7px #efe1c3;
+  text-align: center;
+}
+.cb-bond-order-card-balance i {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(#c99031 var(--cb-bond-progress), transparent 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+}
+.cb-bond-order-card-balance strong { font-family: Georgia, 'Times New Roman', ui-serif, serif; font-size: 22px; font-weight: 500; line-height: 0.9; }
+.cb-bond-order-card-balance span { margin-top: 3px; font-size: 11px; font-weight: 650; }
+.cb-bond-order-card-copy { position: relative; z-index: 1; min-width: 0; }
+.cb-bond-order-card-title { margin: 0; font-size: 13.5px; font-weight: 820; letter-spacing: 0.06em; }
+.cb-bond-order-card-summary { margin: 3px 0 0; color: var(--cb-text-muted); font-size: 11px; font-weight: 560; line-height: 1.25; }
+.cb-bond-order-card-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 4px;
+  margin-top: -6px;
+  color: #9b651e;
+  font-size: 11.5px;
+  font-weight: 730;
+  text-decoration: none;
+}
+
+.cb-customer-home-search {
+  border: 1px solid #e4d9cc;
+  border-radius: 18px;
+  background: rgba(255, 253, 249, 0.96);
+  box-shadow: 0 4px 12px rgba(43, 33, 24, 0.045);
+}
+.cb-customer-home-search input { font-weight: 520; }
+
+/* Category chips remain one contained horizontal scroller at every width. These
+   later declarations also override the earlier Stage 4 tablet rail treatment. */
+.cb-customer-rail {
+  position: relative;
+  top: auto;
+  z-index: 1;
+  display: flex;
+  width: auto;
+  flex: none;
+  flex-direction: row;
+  align-self: stretch;
+  gap: 8px;
+  margin-inline: calc(-1 * var(--cb-page-gutter));
+  padding: 0 var(--cb-page-gutter);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: transparent;
+}
+.cb-customer-rail-item {
+  width: auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+.cb-customer-rail-tab {
+  border: 1px solid #dfd1c1;
+  border-radius: 999px;
+  color: #51433c;
+  background: rgba(255, 253, 249, 0.72);
+  box-shadow: none;
+  font-weight: 620;
+}
+.cb-customer-rail-tab-active {
+  border: 1px solid #c48728;
+  border-radius: 999px;
+  color: var(--cb-text-on-gold);
+  background: #c88c2c;
+  box-shadow: none;
+  font-weight: 760;
+}
+.cb-customer-rail-label { display: block; overflow: visible; white-space: nowrap; }
+
+.cb-customer-menu-content { display: grid; gap: 8px; }
+.cb-customer-featured-heading {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cb-customer-featured-heading h2,
+.cb-customer-full-menu-heading,
+.cb-customer-menu-section-title {
+  margin: 0;
+  color: var(--cb-text);
+  font-family: Georgia, 'Times New Roman', ui-serif, serif;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+.cb-customer-featured-heading h2 { font-size: 21px; }
+.cb-customer-featured-heading button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 3px;
+  color: #9b651e;
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+.cb-customer-featured-rail { margin-right: calc(-1 * var(--cb-page-gutter)); }
+.cb-customer-featured-track {
+  padding: 1px var(--cb-page-gutter) 5px 1px;
+  overscroll-behavior-x: contain;
+}
+.cb-customer-card.is-featured {
+  position: relative;
+  width: 132px;
+  min-width: 132px;
+  flex: 0 0 132px;
+  overflow: hidden;
+  border: 1px solid #e6dacd;
+  border-radius: 17px;
+  background: #fffdf9;
+  box-shadow: 0 5px 13px rgba(43, 33, 24, 0.055);
+}
+.cb-customer-card.is-featured .cb-customer-product-media { border-radius: 0; }
+.cb-customer-featured-body { min-height: 82px; padding: 7px 8px 8px; }
+.cb-customer-card.is-featured .cb-customer-product-name { min-height: 31px; font-size: 12px; line-height: 1.28; }
+.cb-customer-card.is-featured .cb-customer-product-price { font-size: 12.5px; font-weight: 720; }
+.cb-customer-featured-footer {
+  position: absolute;
+  z-index: 2;
+  top: 47px;
+  right: 8px;
+  left: 8px;
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin: 0;
+}
+.cb-customer-featured-footer.has-stepper {
+  position: absolute;
+  z-index: 2;
+  top: 47px;
+  right: 8px;
+  left: 8px;
+  display: block;
+  min-height: 44px;
+  margin: 0;
+}
+.cb-customer-featured-footer.has-stepper .cb-customer-stepper {
+  background: rgba(251, 236, 203, 0.94);
+  box-shadow: 0 3px 10px rgba(43, 33, 24, 0.14);
+  backdrop-filter: blur(7px);
+}
+.cb-customer-featured-add {
+  color: var(--cb-text-on-gold);
+  background: #c78b2a;
+  box-shadow: 0 3px 8px rgba(132, 82, 21, 0.14);
+}
+.cb-customer-featured-add:disabled { color: var(--cb-text-muted); background: var(--cb-surface-muted); box-shadow: none; }
+.cb-customer-full-menu { margin-top: 28px; scroll-margin-top: calc(var(--cb-safe-top) + 68px); }
+.cb-customer-full-menu-heading { margin-bottom: 14px; font-size: 23px; }
+.cb-customer-menu-section-title { font-size: 19px; }
+
+.cb-customer-bottom-nav {
+  min-height: calc(var(--cb-bottom-nav-h) + var(--cb-safe-bottom));
+  border: 1px solid #e5d9cc;
+  border-bottom: 0;
+  border-top-left-radius: 22px;
+  border-top-right-radius: 22px;
+  background: color-mix(in srgb, #fffdf9 94%, transparent);
+  box-shadow: 0 -8px 24px rgba(43, 33, 24, 0.09);
+  backdrop-filter: blur(14px);
+}
+.cb-customer-bottom-nav-inner { height: var(--cb-bottom-nav-h); }
+.cb-customer-nav-link { padding-top: 5px; font-size: 11px; text-decoration: none; }
+.cb-customer-nav-item { color: #72645c; }
+.cb-customer-nav-item-active { color: #754817; }
+
+@media (max-width: 340px) {
+  :root { --cb-page-gutter: 14px; }
+  .cb-customer-header.is-home-shell .cb-customer-brand { gap: 5px; }
+  .cb-customer-header.is-home-shell .cb-customer-brand-mark,
+  .cb-customer-header.is-home-shell .cb-customer-official-mark { width: 33px; height: 33px; }
+  .cb-customer-header.is-home-shell .cb-customer-wordmark { font-size: 23px; }
+  .cb-customer-header-points.is-club { gap: 3px; padding-inline: 2px; font-size: 12px; }
+  .cb-customer-header-club { font-size: 9px; letter-spacing: 0.07em; }
+  .cb-customer-usual-hero { grid-template-columns: 40% minmax(0, 60%); }
+  .cb-customer-usual-name { font-size: 18px; }
+  .cb-customer-usual-primary { padding-inline: 5px; font-size: 11px; }
+  .cb-customer-usual-primary svg { display: none; }
+  .cb-customer-bond-strip-row strong { font-size: 11.5px; letter-spacing: -0.01em; }
+  .cb-customer-card.is-featured { width: 124px; min-width: 124px; flex-basis: 124px; }
+  .cb-customer-featured-heading h2 { font-size: 19px; }
+  .cb-customer-nav-link { font-size: 11px; }
+}
+
+@media (min-width: 640px) {
+  .cb-customer-home-main { padding-top: 12px; }
+  .cb-customer-home-flow,
+  .cb-customer-home-overview { gap: 12px; }
+  .cb-customer-featured-rail { margin-right: 0; }
+  .cb-customer-featured-track { padding-right: 2px; }
+  .cb-customer-card.is-featured { width: 144px; min-width: 144px; flex-basis: 144px; }
+}

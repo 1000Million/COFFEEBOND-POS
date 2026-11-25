@@ -1,0 +1,66 @@
+.performance-dashboard { display: grid; gap: 1.25rem; min-width: 0; }
+.performance-dashboard h2 { font-size: 1.25rem; font-weight: 800; color: var(--report-heading); }
+.performance-dashboard h3 { font-size: 1rem; font-weight: 800; margin-bottom: .75rem; }
+.performance-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: .875rem; background: var(--card); color: var(--card-foreground); }
+.performance-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.performance-comparisons { display: grid; gap: .75rem; }
+.performance-number { font-size: 1.45rem; line-height: 1.3; font-weight: 800; margin: .6rem 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.performance-unit { font-size: .8rem; font-weight: 500; }
+.performance-caption { font-size: .75rem; line-height: 1.6; color: var(--muted-foreground); margin: .4rem 0; }
+.performance-comparable { font-size: .9rem; margin-top: 1rem; font-weight: 700; }
+.performance-delta { font-size: .85rem; margin-top: .75rem; padding-top: .75rem; border-top: 1px solid var(--border); font-weight: 700; }
+.performance-unavailable { padding: .75rem; margin: .6rem 0; border: 1px solid var(--report-warning-border); border-radius: .5rem; background: var(--report-warning-bg); color: var(--report-warning-fg); font-size: .85rem; line-height: 1.6; }
+.performance-dashboard summary { cursor: pointer; font-size: .8rem; font-weight: 700; margin-top: .75rem; }
+.performance-chart { width: 100%; min-height: 200px; max-height: 360px; overflow: visible; }
+.performance-chart text { fill: var(--muted-foreground); font-size: 12px; }
+.performance-axis { stroke: var(--border); stroke-width: 1; }
+.performance-series-current { stroke: var(--report-link); fill: none; stroke-width: 2.5; }
+.performance-series-comparable { stroke: var(--muted-foreground); fill: none; stroke-width: 2; stroke-dasharray: 7 5; }
+.performance-current-point { fill: var(--report-link); stroke: var(--card); stroke-width: 1; cursor: help; }
+.performance-current-point:focus-visible { outline: 3px solid var(--report-link); outline-offset: 3px; }
+.performance-comparison-point { fill: var(--card); stroke: var(--muted-foreground); stroke-width: 1.5; }
+.performance-chart-readout { min-height: 3.4rem; padding: .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--popover); color: var(--popover-foreground); font-size: .8rem; margin: .75rem 0; }
+.performance-table-scroll { max-width: 100%; overflow: auto; }
+.performance-dashboard table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.performance-dashboard th, .performance-dashboard td { border-bottom: 1px solid var(--border); text-align: left; padding: .55rem; white-space: nowrap; }
+.performance-activity th, .performance-activity td { padding: .2rem; text-align: center; }
+@media screen { .performance-dashboard table.performance-activity { width: max-content; } }
+.performance-activity th:first-child { text-align: left; background: var(--card); position: sticky; left: 0; z-index: 1; }
+.performance-activity button { min-width: 44px; min-height: 44px; border: 1px solid var(--border); border-radius: .25rem; font-size: .75rem; background: var(--muted); color: var(--foreground); }
+.performance-activity button[data-level="1"] { background: var(--report-info-bg); color: var(--report-info-fg); }
+.performance-activity button[data-level="2"] { background: var(--report-positive-bg); color: var(--report-positive-fg); }
+.performance-activity button[data-level="3"] { background: var(--report-action); color: var(--report-action-foreground); font-weight: 800; }
+.performance-peaks { display: grid; gap: .5rem; margin-top: 1rem; font-size: .8rem; }
+.performance-summary-list { display: grid; gap: .75rem; margin-top: 1rem; font-size: .85rem; }
+.performance-summary-list li { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: .5rem; }
+@media (min-width: 1024px) { .performance-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } .performance-comparisons { grid-template-columns: repeat(3, minmax(0, 1fr)); } .performance-peaks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1024px) { .performance-summaries { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) { .performance-number { font-size: 1.15rem; } .performance-chart { min-height: 150px; } .performance-chart text { font-size: 34px; } }
+@media print { .performance-card { break-inside: avoid; } .performance-table-scroll { overflow: visible; } .performance-chart-readout { display: none; } .performance-activity button { min-width: 0; min-height: 0; padding: 2px; background: #fff !important; color: #171717 !important; } .performance-activity th, .performance-activity td { padding: 1px; font-size: 8px; } .performance-activity th:first-child { position: static; } }
+
+.performance-split-legend { display:flex; gap:.75rem; align-items:center; font-size:.8rem; line-height:1.6; margin:.75rem 0; }
+.performance-legend-cell { width:44px; height:44px; flex-shrink:0; position:relative; background:linear-gradient(45deg,var(--report-warning-bg) 49%,var(--border) 49%,var(--border) 51%,var(--report-info-bg) 51%); border:1px solid var(--border); border-radius:.25rem; }
+.performance-legend-cell span:first-child { position:absolute; right:5px; top:2px; color:var(--report-info-fg); }
+.performance-legend-cell span:last-child { position:absolute; left:5px; bottom:2px; color:var(--report-warning-fg); }
+.performance-activity button.performance-split-cell { width:56px; height:56px; padding:0; position:relative; overflow:hidden; background:var(--border); font-size:.7rem; }
+.performance-split-cell .split-drinks,.performance-split-cell .split-food { position:absolute; inset:0; background:var(--muted); color:var(--foreground); }
+.split-drinks { clip-path:polygon(0 0,100% 0,100% 100%); text-align:right; padding:3px 5px; }
+.split-food { clip-path:polygon(0 0,0 100%,100% 100%); text-align:left; padding:34px 5px 0; }
+.performance-split-cell .split-drinks[data-level="1"] { background:color-mix(in srgb,var(--report-info-bg) 80%,var(--card)); color:var(--report-info-fg); }
+.performance-split-cell .split-drinks[data-level="2"] { background:var(--report-info-bg); color:var(--report-info-fg); }
+.performance-split-cell .split-drinks[data-level="3"] { background:var(--report-info-fg); color:var(--report-info-bg); }
+.performance-split-cell .split-food[data-level="1"] { background:color-mix(in srgb,var(--report-warning-bg) 80%,var(--card)); color:var(--report-warning-fg); }
+.performance-split-cell .split-food[data-level="2"] { background:var(--report-warning-bg); color:var(--report-warning-fg); }
+.performance-split-cell .split-food[data-level="3"] { background:var(--report-warning-fg); color:var(--report-warning-bg); }
+.split-unknown { position:absolute; right:1px; bottom:0; border:1px solid var(--border); border-radius:50%; background:var(--popover); color:var(--popover-foreground); width:13px; font-size:10px; }
+.performance-hour-controls { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.5rem; }
+.performance-hour-controls button, .performance-hidden-activity button { min-height:44px; padding:.45rem .7rem; border:1px solid var(--border); border-radius:.5rem; background:var(--card); color:var(--foreground); font-size:.8rem; font-weight:700; }
+.performance-hour-controls button[aria-pressed="true"] { border-color:var(--report-link); background:var(--report-info-bg); color:var(--report-info-fg); }
+.performance-hour-chooser { margin:.75rem 0; padding:.75rem; border:1px solid var(--border); border-radius:.5rem; }
+.performance-hour-chooser legend { padding:0 .3rem; font-size:.85rem; font-weight:700; }
+.performance-hour-chooser > div { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:.25rem .75rem; }
+.performance-hour-chooser label { display:flex; align-items:center; gap:.5rem; min-height:44px; cursor:pointer; font-size:.8rem; }
+.performance-hour-chooser input { width:18px; height:18px; accent-color:var(--report-link); }
+.performance-hidden-activity { display:flex; flex-wrap:wrap; align-items:center; gap:.3rem; font-size:.8rem; color:var(--report-warning-fg); }
+@media print { .performance-hour-controls, .performance-hour-chooser, .performance-hidden-activity button { display:none; } }
+@media print { .performance-split-cell span { background:#fff!important; color:#171717!important; } }

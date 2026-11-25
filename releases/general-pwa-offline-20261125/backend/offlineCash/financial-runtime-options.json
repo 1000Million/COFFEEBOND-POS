@@ -1,0 +1,13 @@
+{
+  "region": "us-central1",
+  "serviceAccount": "pos-financial-writer@coffee-bond-pos.iam.gserviceaccount.com",
+  "cpu": 1,
+  "memory": "256MiB",
+  "timeoutSeconds": 60,
+  "concurrency": 80,
+  "minInstances": 0,
+  "maxInstances": 20,
+  "ingressSettings": "ALLOW_ALL",
+  "secrets": [],
+  "preserveExternalChanges": false
+}

@@ -1,0 +1,184 @@
+import { ComponentType, memo } from 'react';
+import { Minus, Plus, SlidersHorizontal } from 'lucide-react';
+import CustomerProductImage from './CustomerProductImage';
+import DietaryMarker from './DietaryMarker';
+import { DietaryClassification } from '../../lib/customerMenuPresentation';
+
+type Props = {
+  name: string;
+  /** Optional catalogue description. Omitted for the standard compact menu cards. */
+  description?: string;
+  /** Authoritative formatted price. This component never computes money. */
+  priceLabel: string;
+  imageUrl: string | null;
+  /** Icon used for the branded fallback when no image exists or it fails. */
+  fallbackIcon: ComponentType<{ size?: number; className?: string }>;
+  /** Authoritative classification only; null when product data has none. */
+  dietary: DietaryClassification | null;
+  /** Units of this product currently in the cart. */
+  quantity: number;
+  /** Authoritative availability + store ordering policy, decided by the caller. */
+  canOrder: boolean;
+  /** Exact authoritative reason shown when the item cannot be ordered. */
+  unavailableReason?: string;
+  /** Only above-the-fold cards should load eagerly. */
+  priority?: boolean;
+  /** Add / open-customization. The caller decides which flow this triggers. */
+  onAdd: () => void;
+  onIncrement: () => void;
+  onDecrement: () => void;
+  /** True when the product has add-on groups, so Add opens customization. */
+  opensCustomization: boolean;
+  /** Compact horizontal-rail treatment. Ordering callbacks remain identical. */
+  variant?: 'menu' | 'featured';
+};
+
+/**
+ * Image-led product card for the customer menu grid.
+ *
+ * Four things, in this order: picture, name, price, action. Nothing else competes.
+ *
+ * Three things were taken away to get there. The category label went first — it sat
+ * above the name in terracotta caps and repeated the section heading the card was
+ * already filed under, so the first thing the eye met on every card was a word the
+ * customer had just read. The white panel and its shadow went next: 84 floating boxes
+ * on a cream page is a lot of container for very little content, and the photograph is
+ * a better edge than a border. Finally the floating round "+" that overlapped the
+ * card's corner, along with the 56 px of padding reserved underneath it so long names
+ * could not run beneath it, became a plain full-width action row.
+ *
+ * Both action states occupy the same 44 px row, so a card does not change height when
+ * the item enters the basket and the grid never re-flows under the customer's thumb.
+ * Gold is reserved for the stepper — it marks "this is in your basket", which is the
+ * one thing on the card worth a colour.
+ *
+ * Presentation only. Pricing, GST, availability, add-on resolution and every cart
+ * mutation stay with the screen — this card renders what it is given and calls back.
+ */
+function CustomerProductCard({
+  name,
+  description,
+  priceLabel,
+  imageUrl,
+  fallbackIcon,
+  dietary,
+  quantity,
+  canOrder,
+  unavailableReason,
+  priority = false,
+  onAdd,
+  onIncrement,
+  onDecrement,
+  opensCustomization,
+  variant = 'menu',
+}: Props) {
+  const showStepper = quantity > 0;
+  const featured = variant === 'featured';
+
+  return (
+    <article className={`cb-customer-card flex flex-col ${featured ? 'is-featured ' : ''}${canOrder ? '' : 'cb-customer-unavailable'}`}>
+      <CustomerProductImage
+        src={imageUrl}
+        alt={name}
+        icon={fallbackIcon}
+        iconClassName="text-[#b99b7d]"
+        /* UI-6: 4:3, matching the intrinsic 400x300 product assets. A 1:1 box cropped
+           a quarter off the sides of every photograph — survivable for a centred cup,
+           destructive for a wide plate. The box is still fixed, so nothing shifts. */
+        className="cb-customer-product-media aspect-[4/3] w-full"
+        priority={priority}
+      />
+
+      <div className={`flex flex-1 flex-col ${featured ? 'cb-customer-featured-body' : 'px-0.5 pt-2.5'}`}>
+        {/* The marker rides inside the heading rather than beside it, so a two-line
+            name wraps under itself instead of into a narrower column. */}
+        <h3 className="cb-clamp-2 cb-customer-product-name">
+          {dietary && (
+            <span className="mr-1 inline-block align-[1px]"><DietaryMarker value={dietary} compact /></span>
+          )}
+          {name}
+        </h3>
+
+        {description && (
+          <p className="mt-1 text-xs font-semibold leading-snug text-[#71645d]">{description}</p>
+        )}
+
+        {/* Availability is stated in words, never by dimming alone. */}
+        {!canOrder && unavailableReason && (
+          <p className="cb-customer-product-unavailable mt-1">{unavailableReason}</p>
+        )}
+
+        <p className="cb-customer-product-price mt-1.5">{priceLabel}</p>
+
+        <div className={featured ? `cb-customer-featured-footer${showStepper ? ' has-stepper' : ''}` : 'mt-auto flex pt-2'}>
+          {showStepper ? (
+            /* 44 px per control, the touch-target floor. Full width because at 320 px
+               the card is 138 px and 2x44 plus a count column will not fit inside a
+               right-anchored island. */
+            <div className="cb-customer-stepper flex h-11 w-full items-center justify-between rounded-full">
+              <button
+                type="button"
+                onClick={onDecrement}
+                data-requires-online="true"
+                aria-label={`Decrease ${name}`}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+              >
+                <Minus size={16} aria-hidden="true" />
+              </button>
+              <span
+                className="min-w-4 text-center text-sm font-black tabular-nums"
+                aria-live="polite"
+                aria-label={`${name} quantity ${quantity}`}
+              >
+                {quantity}
+              </span>
+              <button
+                type="button"
+                onClick={onIncrement}
+                data-requires-online="true"
+                aria-label={`Increase ${name}`}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+              >
+                <Plus size={16} aria-hidden="true" />
+              </button>
+            </div>
+          ) : featured ? (
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={!canOrder}
+              data-requires-online="true"
+              aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
+              className="cb-customer-featured-add flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+            >
+              {opensCustomization
+                ? <SlidersHorizontal size={17} aria-hidden="true" />
+                : <Plus size={19} aria-hidden="true" />}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={!canOrder}
+              data-requires-online="true"
+              /* WCAG 2.5.3 Label in Name: the accessible name must contain the visible
+                 label, so both are driven by the same flag. A card that opens the
+                 customisation sheet must not read "Add" either — it adds nothing on its
+                 own, and voice control ("tap Add") would target the wrong control. */
+              aria-label={opensCustomization ? `Choose options for ${name}` : `Add ${name}`}
+              className="cb-customer-add-button flex h-11 w-full items-center justify-center gap-1"
+            >
+              {/* The plus belongs to a direct add only. Beside "Choose options" it
+                  promised an immediate add that this control does not perform. */}
+              {!opensCustomization && <Plus size={16} aria-hidden="true" />}
+              {opensCustomization ? 'Choose options' : 'Add'}
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+/** Memoised: the grid renders up to 80 cards and re-renders on every search keystroke. */
+export default memo(CustomerProductCard);

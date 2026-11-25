@@ -1,0 +1,205 @@
+{
+  "scope": "General store readiness, credential-scoped held bills and receipts, coordinated holds, line-price/GST checks, source marker protection and unchanged original financial writers.",
+  "baselineSha256": "6469e7b4d0f43f69c9dfb991aff52c54e63c31da328556304ae63ab714a33743",
+  "candidateSha256": "42ebd25317b6ccbc065be087e2424043b002fa165378683c2ccebc126c3a6b0d",
+  "edits": [
+    {
+      "before": "import {TABLE_STORE,SECTOR51_TABLE_STORE,isTableStore} from '../../lib/tables/api';\n",
+      "after": "import {TABLE_STORE,validPosStoreId} from '../../lib/tables/api';\n",
+      "beforeOffset": 508,
+      "afterOffset": 508
+    },
+    {
+      "before": "    if (!expected && attempt.ownership!.storeId === SECTOR51_TABLE_STORE) {\n",
+      "after": "    if (!expected) {\n",
+      "beforeOffset": 12256,
+      "afterOffset": 12238
+    },
+    {
+      "before": "  const [heldBills, setHeldBills] = useState<HeldBill[]>([]);\n",
+      "after": "  const [allHeldBills, setHeldBills] = useState<HeldBill[]>([]);\n",
+      "beforeOffset": 29339,
+      "afterOffset": 29266
+    },
+    {
+      "before": "",
+      "after": "  const heldBills = allHeldBills.filter(b=>b.storeId===selectedStoreId && (b.heldByUid===uid || (posOnline && !b.heldByUid)));\n",
+      "beforeOffset": 30396,
+      "afterOffset": 30326
+    },
+    {
+      "before": "",
+      "after": "          const retained=storeRead.key===storeAccessKey && !storeRead.failed ? stores : [];\n          if(retained.length && retained.some(s=>s.id===selectedStoreRef.current)){\n            setStoreRead({key:storeAccessKey,locations:retained,verified:false,failed:false});\n            return;\n          }\n",
+      "beforeOffset": 41310,
+      "afterOffset": 41367
+    },
+    {
+      "before": "          &&isTableStore(storeId)&&allowed(storeId)){\n",
+      "after": "          &&validPosStoreId(storeId)&&allowed(storeId)){\n",
+      "beforeOffset": 44204,
+      "afterOffset": 44564
+    },
+    {
+      "before": "        if(isTableStore(tableTargetStore)&&allowed(tableTargetStore))return {storeId:tableTargetStore};\n",
+      "after": "        if(validPosStoreId(tableTargetStore)&&allowed(tableTargetStore))return {storeId:tableTargetStore};\n",
+      "beforeOffset": 44646,
+      "afterOffset": 45009
+    },
+    {
+      "before": "        if(!posOnline && stores.length===1 && stores[0].id===SECTOR51_TABLE_STORE){selectStartupStore(stores[0].id);return;}\n",
+      "after": "        if(!posOnline && stores.length===1 && validPosStoreId(stores[0].id)){selectStartupStore(stores[0].id);return;}\n",
+      "beforeOffset": 46431,
+      "afterOffset": 46797
+    },
+    {
+      "before": "    if (!selectedStoreAuthorized || !tableTargetStore || !isTableStore(tableTargetStore)\n",
+      "after": "    if (!selectedStoreAuthorized || !tableTargetStore || !validPosStoreId(tableTargetStore)\n",
+      "beforeOffset": 48226,
+      "afterOffset": 48586
+    },
+    {
+      "before": "",
+      "after": "  const lastReceiptKey=LAST_RECEIPT_STORAGE_KEY+':'+JSON.stringify([uid,selectedStoreId]);\n  useEffect(()=>{\n    let active=true;\n    const scoped=uid && selectedStoreId ? readLocalStorageJson<ReceiptSnapshot|null>(lastReceiptKey,null):null;\n    setLastReceipt(scoped);\n    // Old saved receipts did not carry a trusted staff/store scope. Recover them\n    // only after checking their original order, without exposing another till's receipt.\n    const prior=!scoped && posOnline && uid && selectedStoreAuthorized\n      ?readLocalStorageJson<ReceiptSnapshot|null>(LAST_RECEIPT_STORAGE_KEY,null):null;\n    const orderId=prior?.order.sourceOrderId;\n    if(prior && orderId && !orderId.includes('/'))void getDocFromServer(doc(db,'orders',orderId)).then(original=>{\n      if(!active || auth.currentUser?.uid!==uid || !original.exists())return;\n      const data=original.data();\n      if(data.storeId===selectedStoreId && data.createdByUserId===uid && data.orderNumber===prior.order.orderNumber){\n        writeLocalStorageJson(lastReceiptKey,prior);setLastReceipt(prior);\n      }\n    }).catch(()=>{});\n    return()=>{active=false;};\n  },[uid,selectedStoreId,selectedStoreAuthorized,lastReceiptKey,posOnline]);\n",
+      "beforeOffset": 50156,
+      "afterOffset": 50519
+    },
+    {
+      "before": "    setLastReceipt(readLocalStorageJson<ReceiptSnapshot | null>(LAST_RECEIPT_STORAGE_KEY, null));\n",
+      "after": "    const updateHeld=(event:StorageEvent)=>{if(event.key===HELD_BILLS_STORAGE_KEY||event.key===null)setHeldBills(loadStoredHeldBills());};\n    window.addEventListener('storage',updateHeld);\n",
+      "beforeOffset": 50176,
+      "afterOffset": 51743
+    },
+    {
+      "before": "",
+      "after": "    return ()=>window.removeEventListener('storage',updateHeld);\n",
+      "beforeOffset": 50369,
+      "afterOffset": 52028
+    },
+    {
+      "before": "",
+      "after": "  const offlineCounterLinesMatch=Boolean(offlineSnapshot && cart.every(line=>{\n    const product=menuItems.find(item=>item.id===line.menuItemId)?.tableProductId;\n    const approved=offlineSnapshot.menu.find(item=>item.id===product)?.canonical;\n    return approved && !line.addOns?.length && !approved.addOns?.length\n      && Number(line.price)===Number(approved.baseUnitPrice) && Number(line.taxRate)===Number(approved.taxRate);\n  }));\n",
+      "beforeOffset": 90269,
+      "afterOffset": 91993
+    },
+    {
+      "before": "",
+      "after": "        if(!offlineCounterLinesMatch)throw Error('An item price, option or GST differs from the signed menu. Keep the basket for online review.');\n",
+      "beforeOffset": 93633,
+      "afterOffset": 95793
+    },
+    {
+      "before": "      setOfflineNotice('Cash saved on this device · pending sync.');\n      void printSavedEntry(entry).then(result=>setOfflineNotice('Cash saved on this device · '+result.message));\n",
+      "after": "      setOfflineNotice('Saved offline — pending sync.');\n      void printSavedEntry(entry).then(result=>setOfflineNotice('Saved offline — pending sync. '+result.message));\n",
+      "beforeOffset": 95189,
+      "afterOffset": 97496
+    },
+    {
+      "before": "      if (isComplimentarySelected || isSplitPayment || cart.length > 30 || cart.some(line => line.addOns?.length)) {\n",
+      "after": "      if (isComplimentarySelected || isSplitPayment || cart.length > 30 || !offlineCounterLinesMatch) {\n",
+      "beforeOffset": 96733,
+      "afterOffset": 99030
+    },
+    {
+      "before": "  const persistHeldBills = (nextHeldBills: HeldBill[]) => {\n",
+      "after": "  const coordinateHeldChange = (change:()=>void,held?:HeldBill) => {\n    const original=checkoutContextRef.current;\n    void withCheckoutMarkerLock(()=>{\n      const current=checkoutContextRef.current;\n      if(auth.currentUser?.uid!==original.uid || current.uid!==original.uid || current.storeId!==original.storeId\n        || current.fingerprint!==original.fingerprint || !current.ready || current.saving || current.paymentPending || loadCheckoutAttempt()\n        || localStorage.getItem(POS_RAZORPAY_SESSION_STORAGE_KEY) || localStorage.getItem('coffee-bond-table-command:'+original.uid))\n        throw Error('The bill or a previous checkout changed. Review the original bill before changing a hold.');\n      const local=localStorage.getItem(original.draftKey);\n      if(!local || stableJson(JSON.parse(local))!==original.reference)\n        throw Error('The saved basket changed in another window. Reopen the original basket.');\n      if(held && !loadStoredHeldBills().some(b=>stableJson(b)===stableJson(held)))\n        throw Error('This held bill changed in another window. Reopen the list.');\n      change();\n    }).catch(error=>setCheckoutError({message:error instanceof Error?error.message:'The held bill could not be checked.'}));\n  };\n\n  const persistHeldBills = (mutate:(saved:HeldBill[])=>HeldBill[]) => {\n",
+      "beforeOffset": 102402,
+      "afterOffset": 104686
+    },
+    {
+      "before": "",
+      "after": "      const stored=JSON.parse(localStorage.getItem(HELD_BILLS_STORAGE_KEY)||'[]');\n      if(!Array.isArray(stored))throw Error('Unreadable held bills.');\n      const nextHeldBills=mutate(stored);\n",
+      "beforeOffset": 102472,
+      "afterOffset": 106012
+    },
+    {
+      "before": "      id: createSafeClientId('held-bill'),\n",
+      "after": "      id: 'held:'+JSON.stringify([uid,selectedStoreId,...cart.map(line=>line.id).sort()]), heldByUid:uid,\n",
+      "beforeOffset": 104875,
+      "afterOffset": 108611
+    },
+    {
+      "before": "    if (!persistHeldBills([heldBill, ...heldBills])) return;\n",
+      "after": "    if (!persistHeldBills(saved=>[heldBill,...saved.filter(other=>other.id!==heldBill.id)])) return;\n    if(!writeLocalDraft(counterDraftKey,{cart:[],orderType})){\n      setCheckoutError({message:'The held bill was saved. The original draft could not be cleared. Review it before collecting Cash.'});\n      setCounterStorageWarning(true);return;\n    }\n",
+      "beforeOffset": 105288,
+      "afterOffset": 109087
+    },
+    {
+      "before": "",
+      "after": "    if(auth.currentUser?.uid!==uid || !heldBills.some(b=>b.id===bill.id)|| !loadStoredHeldBills().some(b=>b.id===bill.id && stableJson(b)===stableJson(bill)))return;\n",
+      "beforeOffset": 105632,
+      "afterOffset": 109722
+    },
+    {
+      "before": "    persistHeldBills(withoutHeldBill(heldBills, bill.id));\n",
+      "after": "    persistHeldBills(saved=>withoutHeldBill(saved, bill.id));\n",
+      "beforeOffset": 107773,
+      "afterOffset": 112029
+    },
+    {
+      "before": "",
+      "after": "    if(auth.currentUser?.uid!==uid || !heldBills.some(b=>b.id===bill.id))return;\n",
+      "beforeOffset": 107916,
+      "afterOffset": 112175
+    },
+    {
+      "before": "    persistHeldBills(withoutHeldBill(heldBills, bill.id));\n",
+      "after": "    persistHeldBills(saved=>withoutHeldBill(saved, bill.id));\n",
+      "beforeOffset": 108326,
+      "afterOffset": 112666
+    },
+    {
+      "before": "    writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);\n",
+      "after": "    writeLocalStorageJson(lastReceiptKey, receipt);\n",
+      "beforeOffset": 111164,
+      "afterOffset": 115507
+    },
+    {
+      "before": "        writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);\n",
+      "after": "        writeLocalStorageJson(lastReceiptKey, receipt);\n",
+      "beforeOffset": 129729,
+      "afterOffset": 134062
+    },
+    {
+      "before": "      writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);\n",
+      "after": "      writeLocalStorageJson(lastReceiptKey, receipt);\n",
+      "beforeOffset": 131310,
+      "afterOffset": 135633
+    },
+    {
+      "before": "            writeLocalStorageJson(LAST_RECEIPT_STORAGE_KEY, receipt);\n",
+      "after": "            writeLocalStorageJson(lastReceiptKey, receipt);\n",
+      "beforeOffset": 132357,
+      "afterOffset": 136670
+    },
+    {
+      "before": "    online={posOnline} cashAvailable={offlineCash.sessionReady && canCoordinateOfflineCash} tableReady={offlineCash.tableReady} excludedChoices={offlineCash.snapshot?.excluded?.length}\n",
+      "after": "    online={posOnline} cashAvailable={offlineCash.sessionReady && canCoordinateOfflineCash} tableReady={offlineCash.tableReady} lastSuccessfulSync={offlineCash.lastSuccessfulSync} excludedChoices={offlineCash.snapshot?.excluded?.length}\n",
+      "beforeOffset": 136454,
+      "afterOffset": 140757
+    },
+    {
+      "before": "",
+      "after": "            {!posOnline && !table.enabled && orderType==='DINE_IN' && <span role=\"status\" className=\"text-xs\">Table service is unavailable offline for this store.</span>}\n",
+      "beforeOffset": 141927,
+      "afterOffset": 146282
+    },
+    {
+      "before": "          {tableOrderMode ? <>{!table.active&&<p role=\"alert\">This table link requires authorised Uday Park Dine In access.</p>}<TableOrderPanel key={table.sessionId || table.selected?.tableId || 'unselected'} table={table} offlinePayment={posOnline ? undefined : discount => renderOfflineCashPayment(discount, cashTable)} search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} describeLine={line=>{\n",
+      "after": "          {tableOrderMode ? <>{!table.active&&<p role=\"alert\">This table requires authorized Dine In service and a saved or confirmed table configuration for this store.</p>}<TableOrderPanel key={table.sessionId || table.selected?.tableId || 'unselected'} table={table} offlinePayment={posOnline ? undefined : discount => renderOfflineCashPayment(discount, cashTable)} search={q=>searchPosMenuItems(availableMenuItems,q,posMenuCategories)} onAdd={addToCart} onViewMenu={openFullMenu} describeLine={line=>{\n",
+      "beforeOffset": 159582,
+      "afterOffset": 164108
+    },
+    {
+      "before": "                      onClick={holdCurrentBill}\n",
+      "after": "                      onClick={()=>coordinateHeldChange(holdCurrentBill)}\n",
+      "beforeOffset": 162963,
+      "afterOffset": 167535
+    },
+    {
+      "before": "                        <HeldBillsPanel heldBills={heldBills} recallHeldBill={recallHeldBill} deleteHeldBill={deleteHeldBill} />\n",
+      "after": "                        <HeldBillsPanel heldBills={heldBills} recallHeldBill={bill=>coordinateHeldChange(()=>recallHeldBill(bill),bill)} deleteHeldBill={bill=>coordinateHeldChange(()=>deleteHeldBill(bill),bill)} />\n",
+      "beforeOffset": 164369,
+      "afterOffset": 168967
+    }
+  ]
+}

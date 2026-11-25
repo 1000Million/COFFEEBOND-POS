@@ -1,0 +1,1266 @@
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import {
+  X,
+  Save,
+  Loader2,
+  Plus,
+  Trash2,
+  AlertCircle,
+  Upload,
+  ImageOff,
+} from "lucide-react";
+import {
+  FinishedGood,
+  BOMComponent,
+  RawIngredient,
+  PrepItem,
+  BOMComponentType,
+} from "../../../types/menu-management";
+import {
+  collection,
+  doc,
+  setDoc,
+  updateDoc,
+  getDocs,
+  serverTimestamp,
+  query,
+  where,
+} from "firebase/firestore";
+import { getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
+import { useAuth } from "../../../contexts/AuthContext";
+import { db, storage } from "../../../lib/firebase";
+import { validateBOM } from "../../../lib/bomValidation";
+import {
+  buildNextProductImageStoragePath,
+  buildProductImagePatch,
+  buildProductImageUploadMetadata,
+  getCurrentProductImage,
+  prepareProductImageForUpload,
+  validateProductImageFile,
+} from "../../../lib/productImages";
+import {
+  buildPosMenuPlacementPatch,
+  classifyPosMenuItemWithCategories,
+  posMenuCategorySelection,
+  type PosMenuCategoryDefinition,
+} from "../../../lib/posMenuNavigation";
+
+interface Props {
+  isOpen: boolean;
+  onClose: () => void;
+  item: FinishedGood | null;
+  posMenuCategories: PosMenuCategoryDefinition[];
+}
+
+const DEFAULT_ITEM: Partial<FinishedGood> = {
+  code: "",
+  name: "",
+  displayName: "",
+  description: "",
+  imageUrl: "",
+  imageStoragePath: null,
+  posCategoryCode: "",
+  posCategoryName: "",
+  salePrice: 0,
+  productionMode: "MADE_TO_ORDER",
+  itemType: "MADE_TO_ORDER",
+  prepStation: "BARISTA",
+  taxRate: 0,
+  bom: [],
+  bomVersion: 1,
+  recipeCost: 0,
+  grossMargin: 0,
+  cogsPercent: 0,
+  sortOrder: 0,
+  availableStoreIds: [],
+  isSellable: true,
+  isAvailable: true,
+  isActive: true,
+};
+
+type PlacementDraft = {
+  posCategoryCode: string;
+  posSubcategoryCode: string;
+  sortOrder: number | null;
+};
+
+function placementDraftFromItem(
+  source: Partial<FinishedGood>,
+  categories: PosMenuCategoryDefinition[],
+): PlacementDraft {
+  const classification = classifyPosMenuItemWithCategories(source, categories);
+  const exactCategory = categories.find(
+    (category) => category.code === source.posCategoryCode,
+  );
+
+  return {
+    posCategoryCode: classification.isClassified
+      ? classification.category.code
+      : exactCategory?.code || "",
+    posSubcategoryCode: classification.isClassified
+      ? classification.subcategory?.code || ""
+      : "",
+    sortOrder: source.sortOrder ?? null,
+  };
+}
+
+export default function FinishedGoodModal({ isOpen, onClose, item, posMenuCategories }: Props) {
+  const { staffProfile } = useAuth();
+  const [formData, setFormData] = useState<Partial<FinishedGood>>(DEFAULT_ITEM);
+  const [placementDraft, setPlacementDraft] = useState<PlacementDraft>(
+    placementDraftFromItem(DEFAULT_ITEM, posMenuCategories),
+  );
+  const [placementSaving, setPlacementSaving] = useState(false);
+  const [placementError, setPlacementError] = useState("");
+  const [placementMessage, setPlacementMessage] = useState("");
+  const [bom, setBom] = useState<BOMComponent[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageProgress, setImageProgress] = useState(0);
+  const [imageUploadMessage, setImageUploadMessage] = useState("");
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const [rawIngredients, setRawIngredients] = useState<RawIngredient[]>([]);
+  const [prepItems, setPrepItems] = useState<PrepItem[]>([]);
+  const [finishedGoods, setFinishedGoods] = useState<FinishedGood[]>([]);
+  const [loadingLookups, setLoadingLookups] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setLoadingLookups(true);
+      Promise.all([
+        getDocs(
+          query(
+            collection(db, "rawIngredients"),
+            where("isActive", "==", true),
+          ),
+        ),
+        getDocs(
+          query(collection(db, "prepItems"), where("isActive", "==", true)),
+        ),
+        getDocs(
+          query(collection(db, "finishedGoods"), where("isActive", "==", true)),
+        ),
+      ])
+        .then(([rawSnap, prepSnap, fgSnap]) => {
+          setRawIngredients(
+            rawSnap.docs.map(
+              (d) => ({ ...d.data(), id: d.id }) as RawIngredient,
+            ),
+          );
+          setPrepItems(
+            prepSnap.docs.map((d) => ({ ...d.data(), id: d.id }) as PrepItem),
+          );
+          setFinishedGoods(
+            fgSnap.docs.map((d) => ({ ...d.data(), id: d.id }) as FinishedGood),
+          );
+        })
+        .catch((err) => {
+          console.error("Failed to load component list", err);
+          setError("Failed to load components for BOM.");
+        })
+        .finally(() => {
+          setLoadingLookups(false);
+        });
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (item) {
+      setFormData(item);
+      setPlacementDraft(placementDraftFromItem(item, posMenuCategories));
+      setBom(item.bom || []);
+    } else {
+      setFormData(DEFAULT_ITEM);
+      setPlacementDraft(placementDraftFromItem(DEFAULT_ITEM, posMenuCategories));
+      setBom([]);
+    }
+    setError("");
+    setImageUploading(false);
+    setImageProgress(0);
+    setImageUploadMessage("");
+    setPlacementSaving(false);
+    setPlacementError("");
+    setPlacementMessage("");
+  }, [item, isOpen, posMenuCategories]);
+
+  const buildFinalCode = (source: Partial<FinishedGood>) => {
+    const base = source.code ? source.code : source.name || "";
+    return base
+      .toUpperCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^A-Z0-9_]/g, "");
+  };
+
+  const handleImageUpload = async (file: File) => {
+    setError("");
+    setImageUploadMessage("");
+
+    if (!staffProfile || staffProfile.role !== "ADMIN" || staffProfile.isActive === false) {
+      setError("Only an active Admin can upload product images.");
+      return;
+    }
+
+    const validation = validateProductImageFile(file);
+    if (!validation.ok) {
+      setError(validation.message || "Invalid image file.");
+      return;
+    }
+
+    const finalCode = buildFinalCode(formData);
+    if (!finalCode) {
+      setError("Enter a name or code before uploading an image.");
+      return;
+    }
+
+    setImageUploading(true);
+    setImageProgress(0);
+    setImageUploadMessage("Preparing WebP image...");
+
+    try {
+      const webpBlob = await prepareProductImageForUpload(file);
+      const currentImage = getCurrentProductImage(formData);
+      const path = buildNextProductImageStoragePath(finalCode, currentImage.imageStoragePath, new Date());
+      const targetRef = storageRef(storage, path);
+      const task = uploadBytesResumable(
+        targetRef,
+        webpBlob,
+        buildProductImageUploadMetadata(finalCode, formData.name || finalCode, "admin-menu-management"),
+      );
+      setImageUploadMessage("Uploading WebP image...");
+
+      await new Promise<void>((resolve, reject) => {
+        task.on(
+          "state_changed",
+          (snapshot) => {
+            const progress = snapshot.totalBytes
+              ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
+              : 0;
+            setImageProgress(progress);
+          },
+          reject,
+          () => resolve(),
+        );
+      });
+
+      const downloadUrl = await getDownloadURL(task.snapshot.ref);
+      const imagePatch = buildProductImagePatch({
+        product: item || {
+          code: finalCode,
+          name: formData.name || finalCode,
+          imageUrl: null,
+          imageStoragePath: null,
+        },
+        action: currentImage.imageUrl ? "REPLACE" : "UPLOAD",
+        newImageUrl: downloadUrl,
+        newStoragePath: path,
+        actorUid: staffProfile?.uid || "",
+        actorEmail: staffProfile?.email || null,
+        timestamp: serverTimestamp(),
+      });
+      setFormData((prev) => ({ ...prev, ...imagePatch }));
+      setImageUploadMessage("Image uploaded and ready to save.");
+    } catch (uploadError) {
+      console.error("Finished good image upload failed", uploadError);
+      setError(uploadError instanceof Error ? uploadError.message : "Image upload failed.");
+      setImageUploadMessage("");
+    } finally {
+      setImageUploading(false);
+    }
+  };
+
+  const handleImageClear = () => {
+    const finalCode = buildFinalCode(formData);
+    const imagePatch = buildProductImagePatch({
+      product: item || {
+        code: finalCode,
+        name: formData.name || finalCode,
+        imageUrl: formData.imageUrl,
+        imageStoragePath: formData.imageStoragePath,
+      },
+      action: "REMOVE",
+      newImageUrl: null,
+      newStoragePath: null,
+      actorUid: staffProfile?.uid || "",
+      actorEmail: staffProfile?.email || null,
+      timestamp: serverTimestamp(),
+    });
+    setFormData((prev) => ({ ...prev, ...imagePatch }));
+    setImageUploadMessage("Image will be removed when this item is saved.");
+  };
+
+  const availableComponents = useMemo(() => {
+    const raw: {
+      type: BOMComponentType;
+      code: string;
+      name: string;
+      uom: string;
+      cost: number;
+    }[] = rawIngredients.map((r) => ({
+      type: r.category.toUpperCase().includes("PACKAGING")
+        ? "PACKAGING"
+        : "RAW_INGREDIENT",
+      code: r.code,
+      name: r.name,
+      uom: r.usageUOM,
+      cost: r.costPerUsageUnit || 0,
+    }));
+    const prep: {
+      type: BOMComponentType;
+      code: string;
+      name: string;
+      uom: string;
+      cost: number;
+    }[] = prepItems.map((p) => ({
+      type: "PREP_ITEM",
+      code: p.code,
+      name: p.name,
+      uom: p.outputUOM,
+      cost: p.costPerUnit || 0,
+    }));
+    const fg: {
+      type: BOMComponentType;
+      code: string;
+      name: string;
+      uom: string;
+      cost: number;
+    }[] = finishedGoods
+      .filter(
+        (f) =>
+          f.itemType === "DIRECT_STOCK" &&
+          (!formData.code || f.code !== formData.code),
+      )
+      .map((f) => ({
+        type: "FINISHED_GOOD",
+        code: f.code,
+        name: f.name,
+        uom: "pcs",
+        cost: f.recipeCost || 0,
+      }));
+
+    const all = [...raw, ...prep, ...fg].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+
+    if (formData.productionMode === "MADE_TO_ORDER") {
+      return all.filter(
+        (c) =>
+          c.type === "RAW_INGREDIENT" ||
+          c.type === "PREP_ITEM" ||
+          c.type === "PACKAGING",
+      );
+    }
+
+    return all;
+  }, [
+    rawIngredients,
+    prepItems,
+    finishedGoods,
+    formData.code,
+    formData.productionMode,
+  ]);
+
+  const selectedPlacementCategory = useMemo(
+    () => posMenuCategories.find(
+      (category) => category.code === placementDraft.posCategoryCode,
+    ) || null,
+    [placementDraft.posCategoryCode, posMenuCategories],
+  );
+  const currentPlacementClassification = useMemo(
+    () => item ? classifyPosMenuItemWithCategories(item, posMenuCategories) : null,
+    [item, posMenuCategories],
+  );
+
+  const handlePlacementCategoryChange = (categoryCode: string) => {
+    const selection = posMenuCategorySelection(categoryCode, posMenuCategories);
+    setPlacementError("");
+    setPlacementMessage("");
+    setPlacementDraft((previous) => ({
+      posCategoryCode: selection?.posCategoryCode || "",
+      posSubcategoryCode: "",
+      sortOrder: previous.sortOrder,
+    }));
+  };
+
+  const handlePlacementSave = async () => {
+    setPlacementError("");
+    setPlacementMessage("");
+
+    if (!item) {
+      setPlacementError("Create the Finished Good before saving its POS placement separately.");
+      return;
+    }
+    if (!staffProfile || staffProfile.role !== "ADMIN" || staffProfile.isActive === false) {
+      setPlacementError("Only an active Admin can update POS menu placement.");
+      return;
+    }
+
+    const result = buildPosMenuPlacementPatch(placementDraft, posMenuCategories);
+    if (result.ok === false) {
+      setPlacementError(result.error);
+      return;
+    }
+
+    setPlacementSaving(true);
+    try {
+      await updateDoc(doc(db, "finishedGoods", item.id || item.code), result.patch);
+      setFormData((previous) => ({ ...previous, ...result.patch }));
+      setPlacementDraft({
+        posCategoryCode: result.patch.posCategoryCode,
+        posSubcategoryCode: result.patch.posSubcategoryCode || "",
+        sortOrder: result.patch.sortOrder,
+      });
+      setPlacementMessage("POS menu placement saved.");
+    } catch (saveError) {
+      console.error("POS menu placement update failed", saveError);
+      setPlacementError("POS menu placement could not be saved. Please try again.");
+    } finally {
+      setPlacementSaving(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const handleChange = (
+    e: React.ChangeEvent<
+      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+    >,
+  ) => {
+    const { name, value, type } = e.target as HTMLInputElement;
+    let finalValue: any = value;
+    if (type === "number") {
+      finalValue = value === "" ? 0 : parseFloat(value);
+    } else if (type === "checkbox") {
+      finalValue = (e.target as HTMLInputElement).checked;
+    }
+
+    setFormData((prev) => {
+      const updated = { ...prev, [name]: finalValue };
+      if (name === "productionMode") {
+        if (value === "BOUGHT_AND_SOLD") updated.itemType = "DIRECT_STOCK";
+        else if (value === "NO_STOCK") updated.itemType = "NO_STOCK";
+        else updated.itemType = "MADE_TO_ORDER"; // MADE_TO_ORDER or ASSEMBLED_TO_ORDER
+      }
+      return updated;
+    });
+  };
+
+  const handleAddBomLine = () => {
+    setBom((prev) => [
+      ...prev,
+      {
+        componentType: "RAW_INGREDIENT",
+        componentCode: "",
+        componentName: "",
+        quantity: 0,
+        uom: "",
+        costPerUnit: 0,
+        lineCost: 0,
+      },
+    ]);
+  };
+
+  const handleRemoveBomLine = (index: number) => {
+    setBom((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleBomChange = (
+    index: number,
+    field: keyof BOMComponent,
+    value: any,
+  ) => {
+    setBom((prev) => {
+      const updated = [...prev];
+      const line = { ...updated[index], [field]: value };
+
+      if (field === "componentCode") {
+        const comp = availableComponents.find((c) => c.code === value);
+        if (comp) {
+          line.componentType = comp.type;
+          line.componentCode = comp.code;
+          line.componentName = comp.name;
+          line.uom = comp.uom;
+          line.costPerUnit = comp.cost;
+        } else {
+          line.componentName = "";
+          line.uom = "";
+          line.costPerUnit = 0;
+        }
+      }
+
+      line.lineCost = (line.quantity || 0) * (line.costPerUnit || 0);
+      updated[index] = line;
+      return updated;
+    });
+  };
+
+  const checkCircularParams = (
+    targetCode: string,
+    components: BOMComponent[],
+  ): boolean => {
+    for (const line of components) {
+      if (line.componentType === "FINISHED_GOOD") {
+        if (line.componentCode === targetCode) return true;
+        const subFg = finishedGoods.find((f) => f.code === line.componentCode);
+        if (subFg && subFg.bom) {
+          if (checkCircularParams(targetCode, subFg.bom)) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const recipeCost = bom.reduce((sum, line) => sum + (line.lineCost || 0), 0);
+  const salePrice = Number(formData.salePrice) || 0;
+  const grossMargin = salePrice - recipeCost;
+  const cogsPercent = salePrice > 0 ? (recipeCost / salePrice) * 100 : 0;
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    if (!formData.name) {
+      setError("Name is required.");
+      return;
+    }
+
+    const finalCode = buildFinalCode(formData);
+
+    if (!finalCode) {
+      setError("Code is required.");
+      return;
+    }
+
+    const newItemPlacement = !item
+      ? buildPosMenuPlacementPatch(placementDraft, posMenuCategories)
+      : null;
+    if (newItemPlacement && newItemPlacement.ok === false) {
+      setError(newItemPlacement.error);
+      return;
+    }
+
+    if (salePrice < 0) {
+      setError("Sale Price cannot be negative.");
+      return;
+    }
+
+    if ((formData.taxRate || 0) < 0) {
+      setError("Tax Rate cannot be negative.");
+      return;
+    }
+
+    if (!formData.itemType) {
+      setError("Item Type is required.");
+      return;
+    }
+
+    if (!formData.prepStation) {
+      setError("Prep Station is required.");
+      return;
+    }
+
+    if (
+      formData.productionMode === "MADE_TO_ORDER" ||
+      formData.productionMode === "ASSEMBLED_TO_ORDER"
+    ) {
+      if (bom.length === 0) {
+        if (
+          !window.confirm(
+            `${formData.productionMode.replace(/_/g, " ")} item typically requires a BOM. Do you want to proceed without one?`,
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
+    let bomDataToSave = [...bom];
+    if (
+      formData.productionMode === "BOUGHT_AND_SOLD" ||
+      formData.productionMode === "NO_STOCK"
+    ) {
+      bomDataToSave = [];
+    } else if (bomDataToSave.length > 0) {
+      const bomErrors = validateBOM(bomDataToSave, finalCode);
+      if (bomErrors.length > 0) {
+        setError(bomErrors[0]);
+        return;
+      }
+
+      if (checkCircularParams(finalCode, bomDataToSave)) {
+        setError("Circular dependency detected in BOM.");
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    try {
+      const payload: Record<string, any> = {
+        name: formData.name,
+        code: finalCode,
+        displayName: formData.displayName || formData.name,
+        description: formData.description || "",
+        imageUrl: formData.imageUrl || "",
+        imageStoragePath: formData.imageStoragePath || null,
+        imageSource: formData.imageSource || null,
+        imageUpdatedAt: formData.imageUpdatedAt || null,
+        imageUpdatedBy: formData.imageUpdatedBy || null,
+        previousImageUrl: formData.previousImageUrl || null,
+        previousImageStoragePath: formData.previousImageStoragePath || null,
+        salePrice: salePrice,
+        productionMode: formData.productionMode || "MADE_TO_ORDER",
+        itemType: formData.itemType || "MADE_TO_ORDER",
+        prepStation: formData.prepStation,
+        taxRate: formData.taxRate || 0,
+        bom: bomDataToSave,
+        bomVersion: (item?.bomVersion || 0) + 1,
+        recipeCost,
+        grossMargin,
+        cogsPercent,
+        availableStoreIds: formData.availableStoreIds || [],
+        isSellable: formData.isSellable ?? true,
+        isAvailable: formData.isAvailable ?? true,
+        isActive: formData.isActive ?? true,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (!item) {
+        Object.assign(payload, newItemPlacement?.ok ? newItemPlacement.patch : {});
+        payload.createdAt = serverTimestamp();
+      }
+
+      // Remove undefined fields
+      Object.keys(payload).forEach(
+        (key) => payload[key] === undefined && delete payload[key],
+      );
+
+      await setDoc(doc(db, "finishedGoods", finalCode), payload, {
+        merge: true,
+      });
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+        <div className="p-6 border-b border-neutral-100 flex justify-between items-center bg-neutral-50/50">
+          <h2 className="text-xl font-bold text-neutral-800">
+            {item ? "Edit Finished Good" : "New Finished Good"}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-2 text-neutral-400 hover:bg-neutral-100 rounded-full transition-colors"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 overflow-y-auto custom-scrollbar flex-1 bg-white">
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-xl text-sm font-medium border border-red-100 flex gap-3 items-start">
+              <AlertCircle size={18} className="shrink-0 mt-0.5" />
+              <p>{error}</p>
+            </div>
+          )}
+
+          <form id="fg-form" onSubmit={handleSave} className="space-y-8">
+            <section>
+              <h3 className="text-lg font-black text-neutral-800 mb-4">
+                Basic Details
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleChange}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                    required
+                    placeholder="e.g. Hot Milk Coffee"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Code{" "}
+                    <span className="text-neutral-400 font-normal">
+                      (Auto-generated if empty)
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    name="code"
+                    value={formData.code}
+                    onChange={handleChange}
+                    disabled={!!item}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033] disabled:opacity-50"
+                    placeholder="e.g. HOT_MILK_COFFEE"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    name="displayName"
+                    value={formData.displayName}
+                    onChange={handleChange}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                    placeholder="e.g. Hot Latte"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Description
+                  </label>
+                  <textarea
+                    name="description"
+                    value={formData.description}
+                    onChange={handleChange}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033] resize-none h-24"
+                    placeholder="Optional description..."
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 sm:p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-black text-neutral-800">
+                    POS Menu Placement
+                  </h3>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    This action updates only category, subcategory, and POS sort metadata.
+                  </p>
+                </div>
+                {currentPlacementClassification && !currentPlacementClassification.isClassified && !placementMessage && (
+                  <span className="inline-flex rounded-md bg-amber-100 px-2.5 py-1 text-xs font-black uppercase text-amber-800">
+                    Needs Classification
+                  </span>
+                )}
+              </div>
+
+              {currentPlacementClassification && !currentPlacementClassification.isClassified && !placementMessage && (
+                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-bold">Current placement is not in the approved taxonomy.</p>
+                  <p className="mt-1 text-xs">
+                    {currentPlacementClassification.reason}. Current values: {item?.posCategoryCode || "not set"}
+                    {item?.posSubcategoryCode ? ` / ${item.posSubcategoryCode}` : ""}.
+                  </p>
+                </div>
+              )}
+
+              {placementError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                  {placementError}
+                </div>
+              )}
+              {placementMessage && (
+                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
+                  {placementMessage}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-neutral-700">
+                    POS Category <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={placementDraft.posCategoryCode}
+                    onChange={(event) => handlePlacementCategoryChange(event.target.value)}
+                    className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                  >
+                    <option value="">Choose category</option>
+                    {posMenuCategories.map((category) => (
+                      <option key={category.code} value={category.code}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedPlacementCategory && selectedPlacementCategory.subcategories.length > 0 && (
+                  <div>
+                    <label className="mb-2 block text-sm font-bold text-neutral-700">
+                      POS Subcategory <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={placementDraft.posSubcategoryCode}
+                      onChange={(event) => {
+                        setPlacementError("");
+                        setPlacementMessage("");
+                        setPlacementDraft((previous) => ({
+                          ...previous,
+                          posSubcategoryCode: event.target.value,
+                        }));
+                      }}
+                      className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                    >
+                      <option value="">Choose subcategory</option>
+                      {selectedPlacementCategory.subcategories.map((subcategory) => (
+                        <option key={subcategory.code} value={subcategory.code}>
+                          {subcategory.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-neutral-700">
+                    POS Sort Order <span className="font-normal text-neutral-400">(Optional)</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={placementDraft.sortOrder ?? ""}
+                    onChange={(event) => {
+                      setPlacementError("");
+                      setPlacementMessage("");
+                      setPlacementDraft((previous) => ({
+                        ...previous,
+                        sortOrder: event.target.value === "" ? null : Number(event.target.value),
+                      }));
+                    }}
+                    className="min-h-12 w-full rounded-xl border border-neutral-200 bg-white p-3 focus:border-[#5c4033] focus:ring-2 focus:ring-[#5c4033]"
+                    placeholder="Default"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                {item ? (
+                  <button
+                    type="button"
+                    onClick={() => void handlePlacementSave()}
+                    disabled={placementSaving}
+                    className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#5c4033] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#3e2723] disabled:opacity-50"
+                  >
+                    {placementSaving ? <Loader2 size={17} className="animate-spin" /> : <Save size={17} />}
+                    Save POS Placement
+                  </button>
+                ) : (
+                  <p className="text-xs font-semibold text-neutral-500">
+                    Placement will be saved when the Finished Good is created.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-black text-neutral-800 mb-4">
+                Item Image
+              </h3>
+              <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)] items-start">
+                <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 p-4 flex flex-col gap-3">
+                  <div className="aspect-square rounded-xl bg-white border border-neutral-200 overflow-hidden flex items-center justify-center">
+                    {formData.imageUrl ? (
+                      <img
+                        src={formData.imageUrl}
+                        alt={formData.name || formData.displayName || "Finished good"}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-neutral-400 text-sm font-medium px-4 text-center">
+                        <ImageOff size={28} />
+                        No image uploaded yet
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={imageUploading}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[#5c4033] text-white font-bold text-sm disabled:opacity-50"
+                    >
+                      <Upload size={16} />
+                      Upload image
+                    </button>
+                    {formData.imageUrl && (
+                      <button
+                        type="button"
+                        onClick={handleImageClear}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-neutral-200 text-neutral-700 bg-white font-bold text-sm"
+                      >
+                        Clear image
+                      </button>
+                    )}
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void handleImageUpload(file);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <p className="text-sm text-neutral-600">
+                    Upload a photo for this sellable item. The saved image URL is reused by the customer ordering app and menu previews.
+                  </p>
+                  <div className="rounded-2xl border border-neutral-200 bg-white p-4 text-sm text-neutral-700 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold text-neutral-900">Current image URL</span>
+                      {imageUploading && (
+                        <span className="text-xs font-bold text-[#5c4033]">
+                          Uploading {imageProgress}%
+                        </span>
+                      )}
+                    </div>
+                    <div className="break-all text-neutral-500">
+                      {formData.imageUrl || "No image saved yet."}
+                    </div>
+                    {imageUploadMessage && (
+                      <div className="text-xs font-semibold text-emerald-700">
+                        {imageUploadMessage}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-black text-neutral-800 mb-4">
+                Properties & Pricing
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Production Mode <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    name="productionMode"
+                    value={
+                      formData.productionMode ||
+                      (formData.itemType === "DIRECT_STOCK"
+                        ? "BOUGHT_AND_SOLD"
+                        : formData.itemType)
+                    }
+                    onChange={handleChange}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                    required
+                  >
+                    <option value="MADE_TO_ORDER">Made to Order</option>
+                    <option value="ASSEMBLED_TO_ORDER">
+                      Assembled to Order
+                    </option>
+                    <option value="BOUGHT_AND_SOLD">Bought & Sold</option>
+                    <option value="NO_STOCK">No Stock</option>
+                  </select>
+                  <div className="mt-2 text-xs text-neutral-500">
+                    {formData.productionMode === "MADE_TO_ORDER" &&
+                      "Prepared directly from raw or prep components at order time. Example: Latte, Cloud Black."}
+                    {formData.productionMode === "ASSEMBLED_TO_ORDER" &&
+                      "Assembled from bought/prepped components at order time. Example: Pizza, Pasta, Zaffle, Salad."}
+                    {formData.productionMode === "BOUGHT_AND_SOLD" &&
+                      "Purchased as finished stock and sold directly. Example: Protein bar, ice cream, retail products."}
+                    {formData.productionMode === "NO_STOCK" &&
+                      "No inventory deduction required."}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Prep Station <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    name="prepStation"
+                    value={formData.prepStation}
+                    onChange={handleChange}
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                    required
+                  >
+                    <option value="BARISTA">Barista</option>
+                    <option value="KITCHEN">Kitchen</option>
+                    <option value="BOTH">Both</option>
+                    <option value="NONE">None</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Sale Price ($) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    name="salePrice"
+                    value={formData.salePrice}
+                    onChange={handleChange}
+                    min="0"
+                    step="0.01"
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-neutral-700 mb-2">
+                    Tax Rate (%)
+                  </label>
+                  <input
+                    type="number"
+                    name="taxRate"
+                    value={formData.taxRate}
+                    onChange={handleChange}
+                    min="0"
+                    step="0.01"
+                    className="w-full p-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {formData.itemType !== "NO_STOCK" && (
+              <section>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-black text-neutral-800">
+                    {formData.productionMode === "ASSEMBLED_TO_ORDER"
+                      ? "Assembly BOM"
+                      : formData.productionMode === "BOUGHT_AND_SOLD"
+                        ? "Direct Stock (No BOM Required)"
+                        : "Recipe BOM"}
+                  </h3>
+                  {formData.productionMode !== "BOUGHT_AND_SOLD" && (
+                    <button
+                      type="button"
+                      onClick={handleAddBomLine}
+                      className="px-3 py-1.5 bg-[#5c4033]/10 text-[#5c4033] font-bold rounded-lg flex items-center gap-1.5 hover:bg-[#5c4033]/20 transition-colors text-sm"
+                    >
+                      <Plus size={16} /> Add Component
+                    </button>
+                  )}
+                </div>
+
+                {loadingLookups ? (
+                  <div className="p-8 text-center text-neutral-400">
+                    Loading components...
+                  </div>
+                ) : formData.productionMode === "BOUGHT_AND_SOLD" ? (
+                  <div className="bg-neutral-50 border border-neutral-200 rounded-2xl overflow-hidden p-8 text-center text-neutral-500 font-medium">
+                    Store Stock tracks physical inventory for this item. Selling
+                    1 unit will decrement its stock by 1.
+                  </div>
+                ) : (
+                  <div className="bg-neutral-50 border border-neutral-200 rounded-2xl overflow-hidden">
+                    {bom.length === 0 ? (
+                      <div className="p-8 text-center text-neutral-400 font-medium">
+                        {formData.itemType === "DIRECT_STOCK"
+                          ? "No BOM defined (1 unit deduction will apply)"
+                          : "No components added to BOM yet."}
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto w-full">
+                        <table className="w-full text-left border-collapse min-w-[600px]">
+                          <thead>
+                            <tr className="bg-neutral-100 border-b border-neutral-200">
+                              <th className="p-3 font-bold text-xs text-neutral-500 uppercase tracking-wider">
+                                Component
+                              </th>
+                              <th className="p-3 font-bold text-xs text-neutral-500 uppercase tracking-wider w-32">
+                                Quantity
+                              </th>
+                              <th className="p-3 font-bold text-xs text-neutral-500 uppercase tracking-wider w-24">
+                                UOM
+                              </th>
+                              <th className="p-3 font-bold text-xs text-neutral-500 uppercase tracking-wider text-right w-32">
+                                Line Cost
+                              </th>
+                              <th className="p-3 font-bold text-xs text-neutral-500 uppercase tracking-wider w-16"></th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100">
+                            {bom.map((line, idx) => (
+                              <tr key={idx} className="bg-white">
+                                <td className="p-3">
+                                  <select
+                                    value={line.componentCode}
+                                    onChange={(e) =>
+                                      handleBomChange(
+                                        idx,
+                                        "componentCode",
+                                        e.target.value,
+                                      )
+                                    }
+                                    className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                                    required
+                                  >
+                                    <option value="">
+                                      Select a component...
+                                    </option>
+                                    {availableComponents.map((c) => (
+                                      <option key={c.code} value={c.code}>
+                                        {c.name} ({c.type.replace("_", " ")})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="p-3">
+                                  <input
+                                    type="number"
+                                    min="0.001"
+                                    step="0.001"
+                                    value={line.quantity || ""}
+                                    onChange={(e) =>
+                                      handleBomChange(
+                                        idx,
+                                        "quantity",
+                                        parseFloat(e.target.value) || 0,
+                                      )
+                                    }
+                                    className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg focus:ring-2 focus:ring-[#5c4033] focus:border-[#5c4033]"
+                                    required
+                                  />
+                                </td>
+                                <td className="p-3 text-sm font-medium text-neutral-600">
+                                  {line.uom || "-"}
+                                </td>
+                                <td className="p-3 text-sm font-bold text-neutral-800 text-right">
+                                  ${line.lineCost?.toFixed(4) || "0.0000"}
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveBomLine(idx)}
+                                    className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            <section className="bg-neutral-50 p-6 rounded-2xl border border-neutral-200">
+              <h3 className="text-lg font-black text-neutral-800 mb-4">
+                Costing & Profitability
+              </h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                <div>
+                  <label className="block text-xs font-bold text-neutral-500 uppercase mb-1">
+                    Recipe Cost
+                  </label>
+                  <div className="text-xl font-bold text-neutral-800">
+                    ${recipeCost.toFixed(4)}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-neutral-500 uppercase mb-1">
+                    Sale Price
+                  </label>
+                  <div className="text-xl font-bold text-neutral-800">
+                    ${salePrice.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-neutral-500 uppercase mb-1">
+                    Gross Margin
+                  </label>
+                  <div
+                    className={`text-xl font-bold ${grossMargin > 0 ? "text-emerald-600" : "text-red-500"}`}
+                  >
+                    ${grossMargin.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-neutral-500 uppercase mb-1">
+                    COGS %
+                  </label>
+                  <div
+                    className={`text-xl font-bold ${cogsPercent > 35 ? "text-amber-600" : "text-emerald-600"}`}
+                  >
+                    {cogsPercent.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="flex flex-wrap gap-8 pt-4">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="isSellable"
+                  checked={formData.isSellable}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-[#5c4033] rounded focus:ring-[#5c4033]"
+                />
+                <span className="font-bold text-sm text-neutral-700">
+                  Sellable
+                </span>
+              </label>
+
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="isAvailable"
+                  checked={formData.isAvailable}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-[#5c4033] rounded focus:ring-[#5c4033]"
+                />
+                <span className="font-bold text-sm text-neutral-700">
+                  Available
+                </span>
+              </label>
+
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="isActive"
+                  checked={formData.isActive}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-[#5c4033] rounded focus:ring-[#5c4033]"
+                />
+                <span className="font-bold text-sm text-neutral-700">
+                  Active
+                </span>
+              </label>
+            </section>
+          </form>
+        </div>
+
+        <div className="p-6 border-t border-neutral-100 bg-neutral-50/50 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-6 py-2.5 font-bold text-neutral-600 bg-white border border-neutral-200 rounded-xl hover:bg-neutral-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            form="fg-form"
+            disabled={submitting}
+            className="px-6 py-2.5 font-bold text-white bg-[#5c4033] rounded-xl hover:bg-[#3e2723] transition-colors flex items-center gap-2 disabled:opacity-50"
+          >
+            {submitting ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <Save size={18} />
+            )}
+            {item ? "Save Changes" : "Create Finished Good"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

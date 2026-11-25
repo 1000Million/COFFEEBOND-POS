@@ -1,0 +1,401 @@
+#!/usr/bin/env node
+import process from 'node:process';
+import { applicationDefault, getApp, getApps, initializeApp } from 'firebase-admin/app';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+
+const PROJECT_ID = 'coffee-bond-pos';
+const DEFAULT_STORE_CODE = 'GOLDEN_I';
+const DEFAULT_SOURCE_STORE_CODE = 'NOIDA_29';
+const PREVIEW_ONLY_STORE_CODES = new Set(['TASTING_ROOM_29']);
+const APPLY = process.argv.includes('--apply');
+const DRY_RUN = !APPLY;
+
+function readArgValue(name, fallback) {
+  const prefix = `${name}=`;
+  const match = process.argv.find((arg) => arg.startsWith(prefix));
+  return match ? match.slice(prefix.length).trim() : fallback;
+}
+
+const TARGET_STORE_CODE = readArgValue('--store', DEFAULT_STORE_CODE);
+const SOURCE_STORE_CODE = readArgValue('--source-store', DEFAULT_SOURCE_STORE_CODE);
+
+function fail(message) {
+  console.error(message);
+  process.exitCode = 1;
+  process.exit(1);
+}
+
+function initializeAdmin() {
+  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    fail('GOOGLE_APPLICATION_CREDENTIALS is required. This script is dry-run by default but still needs read access to inspect Firestore.');
+  }
+
+  const app = getApps().length > 0
+    ? getApp()
+    : initializeApp({
+      credential: applicationDefault(),
+      projectId: PROJECT_ID,
+    });
+
+  return getFirestore(app);
+}
+
+async function getStoreByIdOrCode(firestore, idOrCode) {
+  const direct = await firestore.collection('stores').doc(idOrCode).get();
+  if (direct.exists) {
+    return { id: direct.id, ref: direct.ref, data: direct.data() || {} };
+  }
+
+  const byCode = await firestore.collection('stores')
+    .where('code', '==', idOrCode)
+    .limit(1)
+    .get();
+
+  if (byCode.empty) return null;
+  const doc = byCode.docs[0];
+  return { id: doc.id, ref: doc.ref, data: doc.data() || {} };
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const parsed = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function storeIdsFor(item) {
+  return Array.isArray(item.availableStoreIds) ? item.availableStoreIds.filter(Boolean) : [];
+}
+
+function isAssignedToStore(item, storeId) {
+  return storeIdsFor(item).includes(storeId);
+}
+
+function isGoldenISalesFirstOrderingStore(store) {
+  return store.id === 'GOLDEN_I'
+    && String(store.data.code || store.data.storeCode || '') === 'GOLDEN_I';
+}
+
+function isActiveSellableAvailable(item, storeId) {
+  return item.isActive !== false
+    && item.isSellable !== false
+    && item.isAvailable !== false
+    && isAssignedToStore(item, storeId);
+}
+
+function isPubliclyDisplayable(item, storeId) {
+  return isActiveSellableAvailable(item, storeId)
+    && item.onlineOrderingEnabled !== false
+    && item.customerOrderingEnabled !== false
+    && toNumber(item.salePrice) > 0
+    && ['BARISTA', 'KITCHEN', 'BOTH', 'NONE'].includes(item.prepStation);
+}
+
+function sanitizedDisplayItem(store, item) {
+  const imageUrl = ['imageUrl', 'image', 'photoUrl', 'photo', 'thumbnailUrl', 'thumbnail']
+    .map((key) => item[key])
+    .find((value) => typeof value === 'string' && value.trim().length > 0);
+
+  const display = {
+    id: item.code,
+    code: item.code,
+    name: item.name,
+    posCategoryCode: item.posCategoryCode || 'MISC',
+    posCategoryName: item.posCategoryName || 'Other',
+    salePrice: toNumber(item.salePrice),
+    prepStation: item.prepStation,
+    itemType: item.itemType || 'MADE_TO_ORDER',
+    sortOrder: toNumber(item.sortOrder),
+    availableStoreIds: [store.id],
+    isSellable: item.isSellable !== false,
+    isAvailable: item.isAvailable !== false,
+    isActive: item.isActive !== false,
+  };
+
+  if (item.displayName) display.displayName = item.displayName;
+  if (item.description) display.description = item.description;
+  if (item.productionMode) display.productionMode = item.productionMode;
+  if (toNumber(item.taxRate) > 0) display.taxRate = toNumber(item.taxRate);
+  if (imageUrl) display.imageUrl = imageUrl.trim();
+  if (Array.isArray(item.addOnGroupIds)) {
+    display.addOnGroupIds = [...new Set(item.addOnGroupIds
+      .filter((value) => typeof value === 'string' && value.trim())
+      .map((value) => value.trim()))];
+    const sourceAllowlist = item.addOnOptionIdsByGroup;
+    display.addOnOptionIdsByGroup = Object.fromEntries(
+      display.addOnGroupIds.map((groupId) => [
+        groupId,
+        [...new Set(
+          (sourceAllowlist && typeof sourceAllowlist === 'object' && Array.isArray(sourceAllowlist[groupId])
+            ? sourceAllowlist[groupId]
+            : [])
+            .filter((value) => typeof value === 'string' && value.trim())
+            .map((value) => value.trim()),
+        )],
+      ]),
+    );
+  }
+
+  return display;
+}
+
+function sanitizedAddOnGroup(groupId, group) {
+  const compositeChoice = group.purpose === 'COMPOSITE_CHOICE';
+  return {
+    id: groupId,
+    name: String(group.name || ''),
+    isActive: group.isActive !== false,
+    isRequired: group.isRequired === true,
+    minimumSelections: Math.max(0, toNumber(group.minimumSelections)),
+    maximumSelections: group.maximumSelections === null || group.maximumSelections === undefined
+      ? null
+      : Math.max(0, toNumber(group.maximumSelections)),
+    selectionMode: group.selectionMode === 'SINGLE'
+      ? 'SINGLE'
+      : group.selectionMode === 'EXACT_DISTINCT'
+        ? 'EXACT_DISTINCT'
+        : 'MULTIPLE',
+    ...(compositeChoice ? { purpose: 'COMPOSITE_CHOICE' } : {}),
+    options: (Array.isArray(group.options) ? group.options : [])
+      .filter((option) => option && option.isActive !== false)
+      .map((option) => {
+        const component = option.finishedGoodComponent;
+        const finishedGoodId = String(component?.finishedGoodId || '').trim();
+        const finishedGoodCode = String(component?.finishedGoodCode || '').trim();
+        const quantity = toNumber(component?.quantity);
+        return {
+          id: String(option.id || option.code || ''),
+          code: String(option.code || option.id || ''),
+          name: String(option.name || ''),
+          price: Math.max(0, toNumber(option.price)),
+          attribute: option.attribute === 'EGG' ? 'EGG' : 'VEG',
+          isActive: true,
+          sortOrder: toNumber(option.sortOrder),
+          ...(compositeChoice && finishedGoodId && finishedGoodCode && quantity > 0 ? {
+            finishedGoodComponent: { finishedGoodId, finishedGoodCode, quantity },
+          } : {}),
+        };
+      }),
+  };
+}
+
+function sourceAvailabilityFor(sourceSnapshot, itemCode) {
+  const item = sourceSnapshot?.items?.[itemCode];
+  if (!item) {
+    return {
+      itemCode,
+      fgCode: itemCode,
+      available: true,
+      publicStatus: 'AVAILABLE',
+      publicMessage: 'Available',
+    };
+  }
+
+  return {
+    itemCode,
+    fgCode: itemCode,
+    available: item.available === true,
+    publicStatus: item.available === true ? 'AVAILABLE' : (item.publicStatus || 'CURRENTLY_UNAVAILABLE'),
+    publicMessage: item.available === true ? 'Available' : (item.publicMessage || 'Currently unavailable'),
+  };
+}
+
+function unavailableItem(itemCode, status = 'CURRENTLY_UNAVAILABLE', message = 'Currently unavailable') {
+  return {
+    itemCode,
+    fgCode: itemCode,
+    available: false,
+    publicStatus: status,
+    publicMessage: message,
+  };
+}
+
+function buildSnapshot({ targetStore, sourceSnapshot, currentSnapshot, finishedGoods, addOnGroups }) {
+  const visibleItems = finishedGoods
+    .filter((item) => isActiveSellableAvailable(item.data, targetStore.id))
+    .sort((a, b) => {
+      const orderA = toNumber(a.data.sortOrder) || 999;
+      const orderB = toNumber(b.data.sortOrder) || 999;
+      if (orderA !== orderB) return orderA - orderB;
+      return String(a.data.displayName || a.data.name || a.id).localeCompare(String(b.data.displayName || b.data.name || b.id));
+    });
+
+  const items = {};
+  const menuItems = {};
+  const salesFirstOrdering = isGoldenISalesFirstOrderingStore(targetStore);
+  const currentPublicCatalog = new Set(Object.keys(currentSnapshot?.menuItems || {}));
+  const publishableItems = salesFirstOrdering && currentPublicCatalog.size > 0
+    ? visibleItems.filter((item) => currentPublicCatalog.has(item.data.code || item.id))
+    : visibleItems;
+
+  for (const item of publishableItems) {
+    const itemCode = item.data.code || item.id;
+    let availability;
+    if (['isActive', 'customerOrderingEnabled', 'onlineOrderingEnabled', 'publicOrderingEnabled', 'acceptingOrders', 'isAcceptingOrders'].some(flag => targetStore.data[flag] === false)) {
+      availability = unavailableItem(itemCode, 'STORE_DISABLED', 'Online ordering unavailable for this store');
+    } else if (!isPubliclyDisplayable(item.data, targetStore.id)) {
+      availability = unavailableItem(itemCode);
+    } else {
+      // Publish this store's manual availability, not another store's BOM status.
+      availability = {
+        itemCode,
+        fgCode: itemCode,
+        available: true,
+        publicStatus: 'AVAILABLE',
+        publicMessage: 'Available',
+      };
+    }
+    items[itemCode] = availability;
+    menuItems[itemCode] = sanitizedDisplayItem(targetStore, item.data);
+  }
+
+  const availabilityValues = Object.values(items);
+  const referencedAddOnGroupIds = new Set(
+    Object.values(menuItems).flatMap((item) => item.addOnGroupIds || []),
+  );
+  const publicAddOnGroups = Object.fromEntries(
+    addOnGroups
+      .filter((group) => referencedAddOnGroupIds.has(group.id) && group.data.isActive !== false)
+      .map((group) => [group.id, sanitizedAddOnGroup(group.id, group.data)]),
+  );
+
+  return {
+    storeId: targetStore.id,
+    storeCode: targetStore.data.code || targetStore.id,
+    storeName: targetStore.data.name || targetStore.id,
+    items,
+    menuItems,
+    addOnGroups: publicAddOnGroups,
+    itemCount: availabilityValues.length,
+    availableCount: availabilityValues.filter((item) => item.available).length,
+    unavailableCount: availabilityValues.filter((item) => !item.available).length,
+  };
+}
+
+function snapshotCount(snapshot, key) {
+  const value = snapshot?.[key];
+  return value && typeof value === 'object' ? Object.keys(value).length : 0;
+}
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]),
+  );
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+
+function diffSnapshot(current, next) {
+  const currentItemCount = snapshotCount(current, 'menuItems');
+  const nextItemCount = snapshotCount(next, 'menuItems');
+  const currentAddOnGroupCount = snapshotCount(current, 'addOnGroups');
+  const nextAddOnGroupCount = snapshotCount(next, 'addOnGroups');
+  const currentAvailable = toNumber(current?.availableCount);
+  const currentUnavailable = toNumber(current?.unavailableCount);
+
+  return {
+    needsWrite: !current
+      || currentItemCount !== nextItemCount
+      || currentAddOnGroupCount !== nextAddOnGroupCount
+      || canonicalJson(current?.items || {}) !== canonicalJson(next.items || {})
+      || canonicalJson(current?.menuItems || {}) !== canonicalJson(next.menuItems || {})
+      || canonicalJson(current?.addOnGroups || {}) !== canonicalJson(next.addOnGroups || {})
+      || currentAvailable !== next.availableCount
+      || currentUnavailable !== next.unavailableCount
+      || current?.storeId !== next.storeId
+      || current?.storeCode !== next.storeCode,
+    currentItemCount,
+    nextItemCount,
+    currentAddOnGroupCount,
+    nextAddOnGroupCount,
+    currentAvailable,
+    nextAvailable: next.availableCount,
+    currentUnavailable,
+    nextUnavailable: next.unavailableCount,
+  };
+}
+
+async function main() {
+  if (PREVIEW_ONLY_STORE_CODES.has(TARGET_STORE_CODE)) {
+    fail(`${TARGET_STORE_CODE} is preview-only. This production refresh script cannot publish it.`);
+  }
+  const firestore = initializeAdmin();
+  const [targetStore, sourceStore] = await Promise.all([
+    getStoreByIdOrCode(firestore, TARGET_STORE_CODE),
+    getStoreByIdOrCode(firestore, SOURCE_STORE_CODE),
+  ]);
+
+  if (!targetStore) fail(`Target store not found: ${TARGET_STORE_CODE}`);
+  if (!sourceStore) fail(`Source store not found: ${SOURCE_STORE_CODE}`);
+
+  const [finishedSnap, addOnGroupSnap, targetAvailabilitySnap, sourceAvailabilitySnap, targetOverrideSnap] = await Promise.all([
+    firestore.collection('finishedGoods').get(),
+    firestore.collection('addOnGroups').get(),
+    firestore.collection('publicMenuAvailability').doc(targetStore.data.code || targetStore.id).get(),
+    firestore.collection('publicMenuAvailability').doc(sourceStore.data.code || sourceStore.id).get(),
+    firestore.collection('storeItemConfig').where('storeId', '==', targetStore.id).limit(1).get(),
+  ]);
+
+  if (!targetOverrideSnap.empty) {
+    fail(`Target store ${targetStore.data.code || targetStore.id} has Global Items overrides. Use the override-aware Global Items or POS Readiness rebuild path; this legacy script will not overwrite derived effective values.`);
+  }
+
+  const finishedGoods = finishedSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
+  const addOnGroups = addOnGroupSnap.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
+  const sourceSnapshot = sourceAvailabilitySnap.exists ? sourceAvailabilitySnap.data() || {} : null;
+  const currentSnapshot = targetAvailabilitySnap.exists ? targetAvailabilitySnap.data() || {} : null;
+  const nextSnapshot = buildSnapshot({
+    targetStore,
+    sourceSnapshot,
+    currentSnapshot,
+    finishedGoods,
+    addOnGroups,
+  });
+  const diff = diffSnapshot(currentSnapshot, nextSnapshot);
+  const targetPath = `publicMenuAvailability/${targetStore.data.code || targetStore.id}`;
+
+  console.log(`Project: ${PROJECT_ID}`);
+  console.log(`Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE RUN'}`);
+  console.log(`Target store: ${targetStore.data.name || targetStore.id} (${targetStore.data.code || targetStore.id}, doc ${targetStore.id})`);
+  console.log(`Source availability template: ${sourceStore.data.name || sourceStore.id} (${sourceStore.data.code || sourceStore.id})`);
+  console.log(`Target onlineOrderingEnabled: ${targetStore.data.onlineOrderingEnabled !== false}`);
+  console.log(`Target document: ${targetPath}`);
+  console.log('');
+  console.log(`Existing public menu items: ${diff.currentItemCount}`);
+  console.log(`Projected public menu items: ${diff.nextItemCount}`);
+  console.log(`Existing/projected public add-on groups: ${diff.currentAddOnGroupCount}/${diff.nextAddOnGroupCount}`);
+  console.log(`Existing available/unavailable: ${diff.currentAvailable}/${diff.currentUnavailable}`);
+  console.log(`Projected available/unavailable: ${diff.nextAvailable}/${diff.nextUnavailable}`);
+  console.log(`Record affected: ${diff.needsWrite ? targetPath : 'none'}`);
+  console.log('Sanitized fields only: itemCode, fgCode, available, publicStatus, publicMessage, public display menu fields.');
+  console.log('Internal data excluded: recipes, BOM, costs, inventory quantities, staff data, storeStock, stockMovements.');
+  console.log('');
+
+  if (!diff.needsWrite) {
+    console.log('No write is needed. Public menu availability is already aligned.');
+    return;
+  }
+
+  if (DRY_RUN) {
+    console.log(`Dry run complete. To write this single sanitized snapshot, run with --apply.`);
+    return;
+  }
+
+  await firestore.collection('publicMenuAvailability').doc(targetStore.data.code || targetStore.id).set({
+    ...nextSnapshot,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: 'admin-script',
+    updatedByName: 'Public menu refresh script',
+  });
+
+  console.log(`Wrote ${targetPath}. Public items: ${nextSnapshot.itemCount}, available: ${nextSnapshot.availableCount}, unavailable: ${nextSnapshot.unavailableCount}.`);
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.stack || error.message : String(error);
+  console.error(message);
+  process.exitCode = 1;
+});

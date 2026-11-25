@@ -1,0 +1,138 @@
+/* Reporting-only use of the existing :root / .dark design tokens.
+   No class is added to html/body; legacy report markup keeps its business code. */
+.reporting-theme {
+  color-scheme: light;
+  --report-canvas: #f9f5f0;
+  --report-heading: #3e2723;
+  --report-link: #5c4033;
+  --report-action: #3e2723;
+  --report-action-foreground: #ffffff;
+  --report-positive-bg: #eaf6ee;
+  --report-positive-fg: #14532d;
+  --report-positive-border: #86cda1;
+  --report-warning-bg: #fff7e6;
+  --report-warning-fg: #78350f;
+  --report-warning-border: #d6a946;
+  --report-negative-bg: #fff1f2;
+  --report-negative-fg: #881337;
+  --report-negative-border: #e78b9e;
+  --report-info-bg: #eff6ff;
+  --report-info-fg: #1e3a8a;
+  --report-info-border: #93b4e6;
+  width: 100%;
+  min-width: 0;
+  background: var(--report-canvas);
+  color: var(--foreground);
+  border-radius: 1rem;
+  padding: 0.75rem;
+}
+.reporting-theme:not(.dark) { --muted-foreground: #646464; }
+.reporting-theme.dark {
+  color-scheme: dark;
+  --report-canvas: var(--background);
+  --report-heading: var(--foreground);
+  --report-link: var(--primary);
+  --report-action: var(--primary);
+  --report-action-foreground: var(--primary-foreground);
+  --report-positive-bg: #102c21;
+  --report-positive-fg: #a7f3d0;
+  --report-positive-border: #3d8563;
+  --report-warning-bg: #382812;
+  --report-warning-fg: #fde68a;
+  --report-warning-border: #b58b36;
+  --report-negative-bg: #3c1823;
+  --report-negative-fg: #fecdd3;
+  --report-negative-border: #b75d76;
+  --report-info-bg: #182b45;
+  --report-info-fg: #bfdbfe;
+  --report-info-border: #648ac0;
+}
+.reporting-appearance {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+.reporting-appearance-label { color: var(--muted-foreground); font-size: 0.75rem; margin-right: 0.375rem; }
+.reporting-appearance button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--card-foreground);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+.reporting-appearance button[aria-pressed="true"] {
+  background: var(--report-action);
+  color: var(--report-action-foreground);
+  border-color: var(--report-action);
+}
+/* Map the existing reporting palette to semantic tokens within this boundary. */
+.reporting-theme :is([class~="bg-white"], [class~="bg-[#fffdf9]"], [class~="bg-[#fcf9f5]"]) { background-color: var(--card); }
+.reporting-theme :is([class~="bg-neutral-50"], [class~="bg-neutral-100"], [class~="bg-[#faf7f3]"], [class~="bg-[#f3ece5]"], [class~="bg-[#f5eee7]"]) { background-color: var(--muted); }
+.reporting-theme :is([class~="bg-[#3e2723]"], [class~="bg-[#5c4033]"]) { background-color: var(--report-action); color: var(--report-action-foreground); }
+.reporting-theme :is([class~="text-[#321f1b]"], [class~="text-[#3e2723]"]) { color: var(--report-heading); }
+.reporting-theme [class~="text-[#5c4033]"] { color: var(--report-link); }
+.reporting-theme :is([class~="text-neutral-700"], [class~="text-neutral-800"], [class~="text-neutral-900"]) { color: var(--foreground); }
+.reporting-theme :is([class~="text-neutral-400"], [class~="text-neutral-500"], [class~="text-neutral-600"]) { color: var(--muted-foreground); }
+.reporting-theme :is([class~="border-neutral-100"], [class~="border-neutral-200"], [class~="border-neutral-300"], [class~="border-[#e5d9cd]"]) { border-color: var(--border); }
+.reporting-theme :is([class~="border-[#3e2723]"], [class~="border-[#5c4033]"]) { border-color: var(--report-action); }
+.reporting-theme [class~="divide-neutral-100"] > :not(:last-child) { border-color: var(--border); }
+.reporting-theme table { color: var(--foreground); }
+.reporting-theme :is(input, select, textarea, option) { background-color: var(--popover); color: var(--popover-foreground); border-color: var(--input); }
+.reporting-theme :is([class~="opacity-60"], [class~="opacity-80"]) { opacity: 1; }
+.reporting-theme input::placeholder, .reporting-theme textarea::placeholder { color: var(--muted-foreground); opacity: 1; }
+.reporting-theme :is([role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"]) { background-color: var(--popover); color: var(--popover-foreground); border-color: var(--border); }
+.reporting-theme :is(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--report-link); outline-offset: 3px; }
+.reporting-theme :is([class~="hover:bg-[#fffdf9]"], [class~="hover:bg-neutral-200"]):hover { background-color: var(--accent); color: var(--accent-foreground); }
+.reporting-theme [class~="hover:bg-[#2d1c19]"]:hover { background-color: var(--report-action); }
+.reporting-theme :is([class~="bg-emerald-50"], [class~="bg-green-50"]) { background-color: var(--report-positive-bg); }
+.reporting-theme :is([class~="text-emerald-700"], [class~="text-emerald-800"], [class~="text-emerald-900"]) { color: var(--report-positive-fg); }
+.reporting-theme :is([class~="border-emerald-100"], [class~="border-emerald-200"]) { border-color: var(--report-positive-border); }
+.reporting-theme [class~="bg-amber-50"] { background-color: var(--report-warning-bg); }
+.reporting-theme :is([class~="text-amber-600"], [class~="text-amber-700"], [class~="text-amber-800"], [class~="text-amber-900"]) { color: var(--report-warning-fg); }
+.reporting-theme :is([class~="border-amber-100"], [class~="border-amber-200"]) { border-color: var(--report-warning-border); }
+.reporting-theme :is([class~="bg-rose-50"], [class~="bg-red-50"]) { background-color: var(--report-negative-bg); }
+.reporting-theme :is([class~="text-rose-800"], [class~="text-red-700"], [class~="text-red-800"], [class~="text-red-900"]) { color: var(--report-negative-fg); }
+.reporting-theme :is([class~="border-rose-200"], [class~="border-red-200"]) { border-color: var(--report-negative-border); }
+.reporting-theme [class~="bg-blue-50"] { background-color: var(--report-info-bg); }
+.reporting-theme [class~="text-blue-800"] { color: var(--report-info-fg); }
+.reporting-theme [class~="border-blue-200"] { border-color: var(--report-info-border); }
+@media print {
+  .reporting-theme, .reporting-theme.dark {
+    color-scheme: light;
+    --background: #ffffff;
+    --foreground: #171717;
+    --card: #ffffff;
+    --card-foreground: #171717;
+    --popover: #ffffff;
+    --popover-foreground: #171717;
+    --primary: #3e2723;
+    --primary-foreground: #ffffff;
+    --muted: #f5f5f5;
+    --muted-foreground: #525252;
+    --accent: #f5f5f5;
+    --accent-foreground: #171717;
+    --border: #d4d4d4;
+    --input: #d4d4d4;
+    --report-canvas: #ffffff;
+    --report-heading: #3e2723;
+    --report-link: #5c4033;
+    --report-action: #3e2723;
+    --report-action-foreground: #ffffff;
+    --report-positive-bg: #eaf6ee; --report-positive-fg: #14532d;
+    --report-warning-bg: #fff7e6; --report-warning-fg: #78350f;
+    --report-negative-bg: #fff1f2; --report-negative-fg: #881337;
+    --report-info-bg: #eff6ff; --report-info-fg: #1e3a8a;
+    padding: 0;
+  }
+  .reporting-appearance { display: none; }
+}

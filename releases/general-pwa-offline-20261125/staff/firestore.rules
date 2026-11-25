@@ -1,0 +1,1602 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isActiveUserProfile() {
+      return hasUserProfile() && userData().isActive == true;
+    }
+
+    function hasRole(role) {
+      let profile = isSignedIn() ? userData() : {};
+      return isSignedIn() && profile.get('isActive', false) == true && profile.get('role', '') == role;
+    }
+    
+    function isAdmin() {
+      return hasRole('ADMIN');
+    }
+    
+    function isStoreManager() {
+      return hasRole('STORE_MANAGER');
+    }
+
+    function isCashier() {
+      return hasRole('CASHIER');
+    }
+
+    function isBarista() {
+      return hasRole('BARISTA');
+    }
+
+    function isKitchen() {
+      return hasRole('KITCHEN');
+    }
+    
+    function isActiveStaff() {
+      let profile = isSignedIn() ? userData() : {};
+      return isSignedIn() && profile.get('isActive', false) == true
+        && profile.get('role', '') in ['ADMIN', 'STORE_MANAGER', 'CASHIER', 'BARISTA', 'KITCHEN', 'TRAINEE'];
+    }
+
+    function isFranchiseProfile(data) {
+      return data.keys().hasAny(['role']) && data.role == 'FRANCHISE_VIEWER';
+    }
+
+    function isCheckoutStaff() {
+      // Same active-profile/role contract; evaluate the profile once per call.
+      let profile = isSignedIn() ? userData() : {};
+      return isSignedIn() && profile.get('isActive', false) == true
+        && profile.role in ['ADMIN', 'STORE_MANAGER', 'CASHIER'];
+    }
+
+    function isCheckoutStaffForStore(storeId) {
+      let profile = isSignedIn() ? userData() : {};
+      return isSignedIn() && profile.get('isActive', false) == true
+        && profile.get('role', '') in ['ADMIN', 'STORE_MANAGER', 'CASHIER']
+        && (profile.role == 'ADMIN'
+          || (profile.get('storeIds', []) is list && storeId in profile.get('storeIds', []))
+          || (profile.get('assignedStoreIds', []) is list && storeId in profile.get('assignedStoreIds', [])));
+    }
+
+    function hasStoreAccess(storeId) {
+      let profile = isSignedIn() ? userData() : {};
+      let stores = profile.get('storeIds', []);
+      let assigned = profile.get('assignedStoreIds', []);
+      return isSignedIn() && profile.get('isActive', false) == true
+        && (profile.get('role', '') == 'ADMIN'
+          || (stores is list && storeId in stores)
+          || (assigned is list && storeId in assigned));
+    }
+
+    function isSaleCreatedStoreStock(stockId) {
+      return request.resource.data.keys().hasOnly([
+        'storeId',
+        'storeCode',
+        'storeName',
+        'stockItemType',
+        'stockItemCode',
+        'stockItemName',
+        'uom',
+        'openingStock',
+        'currentStock',
+        'minimumStock',
+        'costPerUnit',
+        'createdAt',
+        'updatedAt'
+      ])
+      && request.resource.data.storeId is string
+      && exists(/databases/$(database)/documents/stores/$(request.resource.data.storeId))
+      && hasStoreAccess(request.resource.data.storeId)
+      && request.resource.data.storeCode == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.code
+      && request.resource.data.storeName == get(/databases/$(database)/documents/stores/$(request.resource.data.storeId)).data.name
+      && request.resource.data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM', 'FINISHED_GOOD', 'PACKAGING', 'BOUGHT_COMPONENT']
+      && request.resource.data.stockItemCode is string
+      && request.resource.data.stockItemCode.size() > 0
+      && stockId == request.resource.data.storeId + '_' + request.resource.data.stockItemType + '_' + request.resource.data.stockItemCode
+      && request.resource.data.stockItemName is string
+      && request.resource.data.stockItemName.size() > 0
+      && request.resource.data.uom is string
+      && request.resource.data.uom.size() > 0
+      && request.resource.data.openingStock == 0
+      && request.resource.data.minimumStock == 0
+      && request.resource.data.costPerUnit is number
+      && request.resource.data.currentStock is number
+      && request.resource.data.currentStock <= 0;
+    }
+
+    function isValidInventoryConsumptionStatus(status) {
+      return status in ['APPLIED', 'PENDING_BOM', 'NOT_REQUIRED'];
+    }
+
+    function hasValidInventoryConsumptionStatus(data) {
+      return !data.keys().hasAny(['inventoryConsumptionStatus'])
+        || isValidInventoryConsumptionStatus(data.inventoryConsumptionStatus);
+    }
+
+    function isValidPaymentMethod(method) {
+      return method in ['CASH', 'UPI', 'CARD', 'SWIGGY', 'ZOMATO', 'CREDIT', 'COMPLIMENTARY', 'PAY_AT_COUNTER', 'ONLINE'];
+    }
+
+    function isValidPaymentReversalStatus(status) {
+      return status in ['NOT_REQUIRED', 'REFUNDED', 'REVERSED', 'REFUND_PENDING', 'MANUAL_REFUND_REQUIRED'];
+    }
+
+    function isValidIndianMobile(phone) {
+      return phone is string && phone.matches('^[6-9][0-9]{9}$');
+    }
+
+    function complimentaryAuthorizationPath(authorizationId) {
+      return /databases/$(database)/documents/complimentaryAuthorizations/$(authorizationId);
+    }
+
+    function posAddOnAuthorizationPath(authorizationId) {
+      return /databases/$(database)/documents/posAddOnAuthorizations/$(authorizationId);
+    }
+
+    function hasValidComplimentaryAuthorization(data, orderId) {
+      return data.complimentaryAuthorizationId is string
+        && data.complimentaryAuthorizationId.size() > 0
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.status == 'VERIFIED'
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.storeId == data.storeId
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.customerPhoneE164 == '+91' + data.customerPhone
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.staffUid == request.auth.uid
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.provider == data.complimentaryOtpProvider
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.expiresAt is timestamp
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.expiresAt > request.time
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.used == true
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.usedAt is timestamp
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.usedByOrderId == orderId
+        && getAfter(complimentaryAuthorizationPath(data.complimentaryAuthorizationId)).data.usedByOrderNumber == data.orderNumber;
+    }
+
+    function isValidComplimentaryOrderCreate(data, orderId) {
+      return data.commercialStatus == 'COMPLIMENTARY'
+        && data.paymentMethod == 'COMPLIMENTARY'
+        && data.paymentStatus == 'NOT_REQUIRED'
+        && data.subtotal is number
+        && data.subtotal > 0
+        && data.menuValue == data.subtotal
+        && data.discountPercent == 100
+        && data.discountAmount == data.subtotal
+        && data.discountTotal == data.subtotal
+        && data.discount == data.subtotal
+        && data.complimentaryDiscount == data.subtotal
+        && data.taxableAmount == 0
+        && data.taxTotal == 0
+        && data.gstTotal == 0
+        && data.grandTotal == 0
+        && data.customerName is string
+        && data.customerName.size() > 0
+        && isValidIndianMobile(data.customerPhone)
+        && data.complimentaryReason is string
+        && data.complimentaryReason.size() > 0
+        && data.complimentaryOtpVerified == true
+        && data.complimentaryVerifiedPhone == data.customerPhone
+        && data.complimentaryOtpProvider is string
+        && data.complimentaryOtpProvider.size() > 0
+        && data.complimentaryAuthorisedByUid == request.auth.uid
+        && data.complimentaryAuthorisedByName is string
+        && data.complimentaryAuthorisedByName.size() > 0
+        && data.complimentaryAuthorisedAt is timestamp
+        && !data.keys().hasAny(['otp', 'otpCode', 'oneTimePassword', 'verificationCode'])
+        && hasValidComplimentaryAuthorization(data, orderId);
+    }
+
+    function isValidSaleOrderCreate(data) {
+      return (!data.keys().hasAny(['commercialStatus']) || data.commercialStatus == 'SALE')
+        && data.paymentStatus in ['PAID', 'UNPAID', 'PARTIAL']
+        && isValidPaymentMethod(data.paymentMethod)
+        && data.paymentMethod != 'COMPLIMENTARY';
+    }
+
+    function isStoredComplimentaryOrder(data) {
+      return data.get('commercialStatus', '') == 'COMPLIMENTARY'
+        || data.get('paymentMethod', '') == 'COMPLIMENTARY';
+    }
+
+    function isValidKotStatus(status) {
+      return status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'RETURNED', 'WASTAGE_RECORDED', 'REMAKE_REQUESTED', 'CANCELLED'];
+    }
+
+    function orderAfter(orderId) {
+      return getAfter(/databases/$(database)/documents/orders/$(orderId)).data;
+    }
+
+    function orderItemAfter(orderId, itemId) {
+      return getAfter(/databases/$(database)/documents/orders/$(orderId)/items/$(itemId)).data;
+    }
+
+    function hasValidPosAddOnAuthorization(data, orderId, authorization) {
+      return data.addOnAuthorizationId is string
+        && data.addOnAuthorizationId.size() > 0
+        && authorization.provider == 'SERVER_CANONICAL_ADD_ONS'
+        && authorization.staffUid == request.auth.uid
+        && authorization.storeId == data.storeId
+        && authorization.orderId == orderId
+        && authorization.orderNumber == data.orderNumber
+        && authorization.canonicalAddOnTotal == data.addOnTotal
+        && authorization.expiresAt is timestamp
+        && authorization.expiresAt > request.time
+        && authorization.used == true
+        && authorization.usedAt is timestamp
+        && ((!data.keys().hasAny(['source']) || data.source != 'CUSTOMER_WEB')
+          || (data.keys().hasAll(['onlineOrderId'])
+            && data.onlineOrderId is string
+            && authorization.keys().hasAll(['sourceOnlineOrderId'])
+            && authorization.sourceOnlineOrderId == data.onlineOrderId));
+    }
+
+    function orderTotalsUnchanged() {
+      return request.resource.data.subtotal == resource.data.subtotal
+        && request.resource.data.taxTotal == resource.data.taxTotal
+        && request.resource.data.gstTotal == resource.data.gstTotal
+        && request.resource.data.taxableAmount == resource.data.taxableAmount
+        && request.resource.data.discountPercent == resource.data.discountPercent
+        && request.resource.data.discountAmount == resource.data.discountAmount
+        && request.resource.data.discountTotal == resource.data.discountTotal
+        && request.resource.data.discount == resource.data.discount
+        && request.resource.data.grandTotal == resource.data.grandTotal
+        && request.resource.data.cogsTotal == resource.data.cogsTotal;
+    }
+
+    function orderIdentityUnchanged() {
+      return request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.storeCode == resource.data.storeCode
+        && request.resource.data.storeName == resource.data.storeName
+        && request.resource.data.createdByUserId == resource.data.createdByUserId
+        && request.resource.data.createdByName == resource.data.createdByName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.orderNumber == resource.data.orderNumber;
+    }
+
+    function sameMoney(actual, expected) {
+      return actual is number && expected is number && actual >= 0
+        && math.abs(actual - expected) < 0.000001;
+    }
+    function isFrozenOnlineAuthorization(authorization, order) {
+      return authorization.keys().hasAll(['sourceOnlineOrderId'])
+        && order.get('source', '') == 'CUSTOMER_WEB'
+        && order.get('onlineOrderId', '') == authorization.sourceOnlineOrderId;
+    }
+    function authorizedPaymentAfter(orderId, paymentId, expected) {
+      let payment = getAfter(/databases/$(database)/documents/orders/$(orderId)/payments/$(paymentId)).data;
+      return payment.method == expected.method && sameMoney(payment.amount, expected.amount)
+        && payment.paymentIndex == expected.paymentIndex;
+    }
+    function authorizedPaymentGroup0(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[0], payments[ids[0]]) && (count == 1 || (authorizedPaymentAfter(orderId, ids[1], payments[ids[1]]) && (count == 2 || (authorizedPaymentAfter(orderId, ids[2], payments[ids[2]]) && (count == 3 || (authorizedPaymentAfter(orderId, ids[3], payments[ids[3]]) && (count == 4 || (authorizedPaymentAfter(orderId, ids[4], payments[ids[4]]) && (count == 5 || (authorizedPaymentGroup5(orderId, ids, payments, count)))))))))));
+    }
+    function authorizedPaymentGroup5(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[5], payments[ids[5]]) && (count == 6 || (authorizedPaymentAfter(orderId, ids[6], payments[ids[6]]) && (count == 7 || (authorizedPaymentAfter(orderId, ids[7], payments[ids[7]]) && (count == 8 || (authorizedPaymentAfter(orderId, ids[8], payments[ids[8]]) && (count == 9 || (authorizedPaymentAfter(orderId, ids[9], payments[ids[9]]) && (count == 10 || (authorizedPaymentGroup10(orderId, ids, payments, count)))))))))));
+    }
+    function authorizedPaymentGroup10(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[10], payments[ids[10]]) && (count == 11 || (authorizedPaymentAfter(orderId, ids[11], payments[ids[11]]) && (count == 12 || (authorizedPaymentAfter(orderId, ids[12], payments[ids[12]]) && (count == 13 || (authorizedPaymentAfter(orderId, ids[13], payments[ids[13]]) && (count == 14 || (authorizedPaymentAfter(orderId, ids[14], payments[ids[14]]) && (count == 15 || (authorizedPaymentGroup15(orderId, ids, payments, count)))))))))));
+    }
+    function authorizedPaymentGroup15(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[15], payments[ids[15]]) && (count == 16 || (authorizedPaymentAfter(orderId, ids[16], payments[ids[16]]) && (count == 17 || (authorizedPaymentAfter(orderId, ids[17], payments[ids[17]]) && (count == 18 || (authorizedPaymentAfter(orderId, ids[18], payments[ids[18]]) && (count == 19 || (authorizedPaymentAfter(orderId, ids[19], payments[ids[19]]) && (count == 20 || (authorizedPaymentGroup20(orderId, ids, payments, count)))))))))));
+    }
+    function authorizedPaymentGroup20(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[20], payments[ids[20]]) && (count == 21 || (authorizedPaymentAfter(orderId, ids[21], payments[ids[21]]) && (count == 22 || (authorizedPaymentAfter(orderId, ids[22], payments[ids[22]]) && (count == 23 || (authorizedPaymentAfter(orderId, ids[23], payments[ids[23]]) && (count == 24 || (authorizedPaymentAfter(orderId, ids[24], payments[ids[24]]) && (count == 25 || (authorizedPaymentGroup25(orderId, ids, payments, count)))))))))));
+    }
+    function authorizedPaymentGroup25(orderId, ids, payments, count) {
+      return authorizedPaymentAfter(orderId, ids[25], payments[ids[25]]) && (count == 26 || (authorizedPaymentAfter(orderId, ids[26], payments[ids[26]]) && (count == 27 || (authorizedPaymentAfter(orderId, ids[27], payments[ids[27]]) && (count == 28 || (authorizedPaymentAfter(orderId, ids[28], payments[ids[28]]) && (count == 29 || (authorizedPaymentAfter(orderId, ids[29], payments[ids[29]]) && (count == 30 || (true))))))))));
+    }
+    function hasAuthorizedPayments(orderId, f) {
+      let ids = f.paymentIds;
+      let count = ids.size();
+      return ids is list && count <= 30 && (count == 0 || authorizedPaymentGroup0(orderId, ids, f.payments, count));
+    }
+    // Temporary dual-version bridge. Original authorizations have no financial plan.
+    // All bases below come from the server-only immutable canonicalItems map.
+    function bridgeMoney(actual, expected) {
+      // Expected values are arithmetic over immutable server-canonical numbers.
+      return actual is number && actual >= 0 && math.abs(actual - expected) < 0.000001;
+    }
+    function basisAdd(a, b) { return {'subtotal': a.subtotal + b.subtotal, 'tax': a.tax + b.tax}; }
+    function legacyAddOnTaxAt(addOns, i) {
+      return i < addOns.size() ? addOns[i].totalPrice * addOns[i].taxRate / 100.0 : 0;
+    }
+    function legacyAddOnTaxGroup0(a) { return legacyAddOnTaxAt(a, 0) + legacyAddOnTaxAt(a, 1) + legacyAddOnTaxAt(a, 2) + legacyAddOnTaxAt(a, 3) + legacyAddOnTaxAt(a, 4); }
+    function legacyAddOnTaxGroup1(a) { return legacyAddOnTaxAt(a, 5) + legacyAddOnTaxAt(a, 6) + legacyAddOnTaxAt(a, 7) + legacyAddOnTaxAt(a, 8) + legacyAddOnTaxAt(a, 9); }
+    function legacyAddOnTaxGroup2(a) { return legacyAddOnTaxAt(a, 10) + legacyAddOnTaxAt(a, 11) + legacyAddOnTaxAt(a, 12) + legacyAddOnTaxAt(a, 13) + legacyAddOnTaxAt(a, 14); }
+    function legacyAddOnTaxGroup3(a) { return legacyAddOnTaxAt(a, 15) + legacyAddOnTaxAt(a, 16) + legacyAddOnTaxAt(a, 17) + legacyAddOnTaxAt(a, 18) + legacyAddOnTaxAt(a, 19); }
+    function legacyAddOnTaxGroup4(a) { return legacyAddOnTaxAt(a, 20) + legacyAddOnTaxAt(a, 21) + legacyAddOnTaxAt(a, 22) + legacyAddOnTaxAt(a, 23) + legacyAddOnTaxAt(a, 24); }
+    function legacyAddOnTaxGroup5(a) { return legacyAddOnTaxAt(a, 25) + legacyAddOnTaxAt(a, 26) + legacyAddOnTaxAt(a, 27) + legacyAddOnTaxAt(a, 28) + legacyAddOnTaxAt(a, 29); }
+    function legacyAddOnTaxGroup6(a) { return legacyAddOnTaxAt(a, 30) + legacyAddOnTaxAt(a, 31) + legacyAddOnTaxAt(a, 32) + legacyAddOnTaxAt(a, 33) + legacyAddOnTaxAt(a, 34); }
+    function legacyAddOnTaxGroup7(a) { return legacyAddOnTaxAt(a, 35) + legacyAddOnTaxAt(a, 36) + legacyAddOnTaxAt(a, 37) + legacyAddOnTaxAt(a, 38) + legacyAddOnTaxAt(a, 39); }
+    function legacyLineBasis(line) {
+      let a = line.addOns;
+      let addOnTax = a.size() == 0 ? 0 : a.size() == 1 ? a[0].totalPrice * a[0].taxRate / 100.0 : (a.size() > 0 ? legacyAddOnTaxGroup0(a) : 0) + (a.size() > 5 ? legacyAddOnTaxGroup1(a) : 0) + (a.size() > 10 ? legacyAddOnTaxGroup2(a) : 0) + (a.size() > 15 ? legacyAddOnTaxGroup3(a) : 0) + (a.size() > 20 ? legacyAddOnTaxGroup4(a) : 0) + (a.size() > 25 ? legacyAddOnTaxGroup5(a) : 0) + (a.size() > 30 ? legacyAddOnTaxGroup6(a) : 0) + (a.size() > 35 ? legacyAddOnTaxGroup7(a) : 0);
+      return {'subtotal': (line.baseUnitPrice + line.addOnTotal) * line.quantity,
+        'tax': (line.baseUnitPrice * line.taxRate / 100.0 + addOnTax) * line.quantity};
+    }
+    function legacyRawSubtotal0(items, count) {
+      return count >= 5 ? items[0].baseUnitPrice * items[0].quantity + items[1].baseUnitPrice * items[1].quantity + items[2].baseUnitPrice * items[2].quantity + items[3].baseUnitPrice * items[3].quantity + items[4].baseUnitPrice * items[4].quantity
+        : (count > 0 ? items[0].baseUnitPrice * items[0].quantity : 0) + (count > 1 ? items[1].baseUnitPrice * items[1].quantity : 0) + (count > 2 ? items[2].baseUnitPrice * items[2].quantity : 0) + (count > 3 ? items[3].baseUnitPrice * items[3].quantity : 0) + (count > 4 ? items[4].baseUnitPrice * items[4].quantity : 0);
+    }
+    function legacyRawTax0(items, count) { return count >= 5 ? legacyLineTax(items[0]) + legacyLineTax(items[1]) + legacyLineTax(items[2]) + legacyLineTax(items[3]) + legacyLineTax(items[4]) : (count > 0 ? legacyLineTax(items[0]) : 0) + (count > 1 ? legacyLineTax(items[1]) : 0) + (count > 2 ? legacyLineTax(items[2]) : 0) + (count > 3 ? legacyLineTax(items[3]) : 0) + (count > 4 ? legacyLineTax(items[4]) : 0); }
+    function legacyRawSubtotal1(items, count) {
+      return count >= 10 ? items[5].baseUnitPrice * items[5].quantity + items[6].baseUnitPrice * items[6].quantity + items[7].baseUnitPrice * items[7].quantity + items[8].baseUnitPrice * items[8].quantity + items[9].baseUnitPrice * items[9].quantity
+        : (count > 5 ? items[5].baseUnitPrice * items[5].quantity : 0) + (count > 6 ? items[6].baseUnitPrice * items[6].quantity : 0) + (count > 7 ? items[7].baseUnitPrice * items[7].quantity : 0) + (count > 8 ? items[8].baseUnitPrice * items[8].quantity : 0) + (count > 9 ? items[9].baseUnitPrice * items[9].quantity : 0);
+    }
+    function legacyRawTax1(items, count) { return count >= 10 ? legacyLineTax(items[5]) + legacyLineTax(items[6]) + legacyLineTax(items[7]) + legacyLineTax(items[8]) + legacyLineTax(items[9]) : (count > 5 ? legacyLineTax(items[5]) : 0) + (count > 6 ? legacyLineTax(items[6]) : 0) + (count > 7 ? legacyLineTax(items[7]) : 0) + (count > 8 ? legacyLineTax(items[8]) : 0) + (count > 9 ? legacyLineTax(items[9]) : 0); }
+    function legacyRawSubtotal2(items, count) {
+      return count >= 15 ? items[10].baseUnitPrice * items[10].quantity + items[11].baseUnitPrice * items[11].quantity + items[12].baseUnitPrice * items[12].quantity + items[13].baseUnitPrice * items[13].quantity + items[14].baseUnitPrice * items[14].quantity
+        : (count > 10 ? items[10].baseUnitPrice * items[10].quantity : 0) + (count > 11 ? items[11].baseUnitPrice * items[11].quantity : 0) + (count > 12 ? items[12].baseUnitPrice * items[12].quantity : 0) + (count > 13 ? items[13].baseUnitPrice * items[13].quantity : 0) + (count > 14 ? items[14].baseUnitPrice * items[14].quantity : 0);
+    }
+    function legacyRawTax2(items, count) { return count >= 15 ? legacyLineTax(items[10]) + legacyLineTax(items[11]) + legacyLineTax(items[12]) + legacyLineTax(items[13]) + legacyLineTax(items[14]) : (count > 10 ? legacyLineTax(items[10]) : 0) + (count > 11 ? legacyLineTax(items[11]) : 0) + (count > 12 ? legacyLineTax(items[12]) : 0) + (count > 13 ? legacyLineTax(items[13]) : 0) + (count > 14 ? legacyLineTax(items[14]) : 0); }
+    function legacyRawSubtotal3(items, count) {
+      return count >= 20 ? items[15].baseUnitPrice * items[15].quantity + items[16].baseUnitPrice * items[16].quantity + items[17].baseUnitPrice * items[17].quantity + items[18].baseUnitPrice * items[18].quantity + items[19].baseUnitPrice * items[19].quantity
+        : (count > 15 ? items[15].baseUnitPrice * items[15].quantity : 0) + (count > 16 ? items[16].baseUnitPrice * items[16].quantity : 0) + (count > 17 ? items[17].baseUnitPrice * items[17].quantity : 0) + (count > 18 ? items[18].baseUnitPrice * items[18].quantity : 0) + (count > 19 ? items[19].baseUnitPrice * items[19].quantity : 0);
+    }
+    function legacyRawTax3(items, count) { return count >= 20 ? legacyLineTax(items[15]) + legacyLineTax(items[16]) + legacyLineTax(items[17]) + legacyLineTax(items[18]) + legacyLineTax(items[19]) : (count > 15 ? legacyLineTax(items[15]) : 0) + (count > 16 ? legacyLineTax(items[16]) : 0) + (count > 17 ? legacyLineTax(items[17]) : 0) + (count > 18 ? legacyLineTax(items[18]) : 0) + (count > 19 ? legacyLineTax(items[19]) : 0); }
+    function legacyRawSubtotal4(items, count) {
+      return count >= 25 ? items[20].baseUnitPrice * items[20].quantity + items[21].baseUnitPrice * items[21].quantity + items[22].baseUnitPrice * items[22].quantity + items[23].baseUnitPrice * items[23].quantity + items[24].baseUnitPrice * items[24].quantity
+        : (count > 20 ? items[20].baseUnitPrice * items[20].quantity : 0) + (count > 21 ? items[21].baseUnitPrice * items[21].quantity : 0) + (count > 22 ? items[22].baseUnitPrice * items[22].quantity : 0) + (count > 23 ? items[23].baseUnitPrice * items[23].quantity : 0) + (count > 24 ? items[24].baseUnitPrice * items[24].quantity : 0);
+    }
+    function legacyRawTax4(items, count) { return count >= 25 ? legacyLineTax(items[20]) + legacyLineTax(items[21]) + legacyLineTax(items[22]) + legacyLineTax(items[23]) + legacyLineTax(items[24]) : (count > 20 ? legacyLineTax(items[20]) : 0) + (count > 21 ? legacyLineTax(items[21]) : 0) + (count > 22 ? legacyLineTax(items[22]) : 0) + (count > 23 ? legacyLineTax(items[23]) : 0) + (count > 24 ? legacyLineTax(items[24]) : 0); }
+    function legacyRawSubtotal5(items, count) {
+      return count >= 30 ? items[25].baseUnitPrice * items[25].quantity + items[26].baseUnitPrice * items[26].quantity + items[27].baseUnitPrice * items[27].quantity + items[28].baseUnitPrice * items[28].quantity + items[29].baseUnitPrice * items[29].quantity
+        : (count > 25 ? items[25].baseUnitPrice * items[25].quantity : 0) + (count > 26 ? items[26].baseUnitPrice * items[26].quantity : 0) + (count > 27 ? items[27].baseUnitPrice * items[27].quantity : 0) + (count > 28 ? items[28].baseUnitPrice * items[28].quantity : 0) + (count > 29 ? items[29].baseUnitPrice * items[29].quantity : 0);
+    }
+    function legacyRawTax5(items, count) { return count >= 30 ? legacyLineTax(items[25]) + legacyLineTax(items[26]) + legacyLineTax(items[27]) + legacyLineTax(items[28]) + legacyLineTax(items[29]) : (count > 25 ? legacyLineTax(items[25]) : 0) + (count > 26 ? legacyLineTax(items[26]) : 0) + (count > 27 ? legacyLineTax(items[27]) : 0) + (count > 28 ? legacyLineTax(items[28]) : 0) + (count > 29 ? legacyLineTax(items[29]) : 0); }
+    function legacyLineTax(line) {
+      let a = line.addOns;
+      return a.size() == 0 ? line.baseUnitPrice * line.taxRate * line.quantity / 100.0
+        : a.size() == 1 ? (line.baseUnitPrice * line.taxRate + a[0].totalPrice * a[0].taxRate) * line.quantity / 100.0
+        : legacyLineBasis(line).tax;
+    }
+    function legacyCanonicalSubtotal(authorization) {
+      let items = authorization.canonicalItems.values();
+      let count = items.size();
+      // Immutable server total is already weighted by parent quantity.
+      return authorization.canonicalAddOnTotal + (count > 0 ? legacyRawSubtotal0(items, count) : 0) + (count > 5 ? legacyRawSubtotal1(items, count) : 0) + (count > 10 ? legacyRawSubtotal2(items, count) : 0) + (count > 15 ? legacyRawSubtotal3(items, count) : 0) + (count > 20 ? legacyRawSubtotal4(items, count) : 0) + (count > 25 ? legacyRawSubtotal5(items, count) : 0);
+    }
+    function legacyCanonicalTax(authorization) {
+      let items = authorization.canonicalItems.values();
+      let count = items.size();
+      return (count > 0 ? legacyRawTax0(items, count) : 0) + (count > 5 ? legacyRawTax1(items, count) : 0) + (count > 10 ? legacyRawTax2(items, count) : 0) + (count > 15 ? legacyRawTax3(items, count) : 0) + (count > 20 ? legacyRawTax4(items, count) : 0) + (count > 25 ? legacyRawTax5(items, count) : 0);
+    }
+    function legacySubtotal(authorization) {
+      return authorization.keys().hasAll(['financialBasis']) ? authorization.financialBasis.subtotal : legacyCanonicalSubtotal(authorization);
+    }
+    function legacyTax(authorization) {
+      return authorization.keys().hasAll(['financialBasis']) ? authorization.financialBasis.tax : legacyCanonicalTax(authorization);
+    }
+    function legacyPaymentId(orderId, index, method) {
+      return orderId + '_PAY_' + (index < 9 ? '0' : '') + string(index + 1) + '_' + method;
+    }
+    function legacyRows(order) {
+      return order.get('isSplitPayment', false) ? order.paymentBreakdown
+        : (isStoredComplimentaryOrder(order) ? [] : [{'method': order.paymentMethod, 'amount': order.paymentMethod == 'CREDIT' ? 0 : order.grandTotal}]);
+    }
+    function legacyTenderAt(orderId, rows, i) {
+      return i >= rows.size() || (rows[i].amount is number && rows[i].amount >= 0
+        && rows[i].method in ['CASH','UPI','CARD','SWIGGY','ZOMATO','CREDIT']
+        && authorizedPaymentAfter(orderId, legacyPaymentId(orderId, i, rows[i].method), {'method': rows[i].method, 'amount': rows[i].amount, 'paymentIndex': i}));
+    }
+    function legacyTenderAmountAt(rows, i, creditOnly) {
+      return i < rows.size() && (!creditOnly || rows[i].method == 'CREDIT') ? rows[i].amount : 0;
+    }
+    function legacyTenders0(orderId, rows) { return legacyTenderAt(orderId, rows, 0) && legacyTenderAt(orderId, rows, 1) && legacyTenderAt(orderId, rows, 2) && legacyTenderAt(orderId, rows, 3) && legacyTenderAt(orderId, rows, 4); }
+    function legacyTenderSum0(rows, creditOnly) { return legacyTenderAmountAt(rows, 0, creditOnly) + legacyTenderAmountAt(rows, 1, creditOnly) + legacyTenderAmountAt(rows, 2, creditOnly) + legacyTenderAmountAt(rows, 3, creditOnly) + legacyTenderAmountAt(rows, 4, creditOnly); }
+    function legacyTenders1(orderId, rows) { return legacyTenderAt(orderId, rows, 5) && legacyTenderAt(orderId, rows, 6) && legacyTenderAt(orderId, rows, 7) && legacyTenderAt(orderId, rows, 8) && legacyTenderAt(orderId, rows, 9); }
+    function legacyTenderSum1(rows, creditOnly) { return legacyTenderAmountAt(rows, 5, creditOnly) + legacyTenderAmountAt(rows, 6, creditOnly) + legacyTenderAmountAt(rows, 7, creditOnly) + legacyTenderAmountAt(rows, 8, creditOnly) + legacyTenderAmountAt(rows, 9, creditOnly); }
+    function legacyTenders2(orderId, rows) { return legacyTenderAt(orderId, rows, 10) && legacyTenderAt(orderId, rows, 11) && legacyTenderAt(orderId, rows, 12) && legacyTenderAt(orderId, rows, 13) && legacyTenderAt(orderId, rows, 14); }
+    function legacyTenderSum2(rows, creditOnly) { return legacyTenderAmountAt(rows, 10, creditOnly) + legacyTenderAmountAt(rows, 11, creditOnly) + legacyTenderAmountAt(rows, 12, creditOnly) + legacyTenderAmountAt(rows, 13, creditOnly) + legacyTenderAmountAt(rows, 14, creditOnly); }
+    function legacyTenders3(orderId, rows) { return legacyTenderAt(orderId, rows, 15) && legacyTenderAt(orderId, rows, 16) && legacyTenderAt(orderId, rows, 17) && legacyTenderAt(orderId, rows, 18) && legacyTenderAt(orderId, rows, 19); }
+    function legacyTenderSum3(rows, creditOnly) { return legacyTenderAmountAt(rows, 15, creditOnly) + legacyTenderAmountAt(rows, 16, creditOnly) + legacyTenderAmountAt(rows, 17, creditOnly) + legacyTenderAmountAt(rows, 18, creditOnly) + legacyTenderAmountAt(rows, 19, creditOnly); }
+    function legacyTenders4(orderId, rows) { return legacyTenderAt(orderId, rows, 20) && legacyTenderAt(orderId, rows, 21) && legacyTenderAt(orderId, rows, 22) && legacyTenderAt(orderId, rows, 23) && legacyTenderAt(orderId, rows, 24); }
+    function legacyTenderSum4(rows, creditOnly) { return legacyTenderAmountAt(rows, 20, creditOnly) + legacyTenderAmountAt(rows, 21, creditOnly) + legacyTenderAmountAt(rows, 22, creditOnly) + legacyTenderAmountAt(rows, 23, creditOnly) + legacyTenderAmountAt(rows, 24, creditOnly); }
+    function legacyTenders5(orderId, rows) { return legacyTenderAt(orderId, rows, 25) && legacyTenderAt(orderId, rows, 26) && legacyTenderAt(orderId, rows, 27) && legacyTenderAt(orderId, rows, 28) && legacyTenderAt(orderId, rows, 29); }
+    function legacyTenderSum5(rows, creditOnly) { return legacyTenderAmountAt(rows, 25, creditOnly) + legacyTenderAmountAt(rows, 26, creditOnly) + legacyTenderAmountAt(rows, 27, creditOnly) + legacyTenderAmountAt(rows, 28, creditOnly) + legacyTenderAmountAt(rows, 29, creditOnly); }
+    function legacyLargeSplitPayments(orderId, order) {
+      let rows = legacyRows(order);
+      let total = (rows.size() > 0 ? legacyTenderSum0(rows, false) : 0) + (rows.size() > 5 ? legacyTenderSum1(rows, false) : 0) + (rows.size() > 10 ? legacyTenderSum2(rows, false) : 0) + (rows.size() > 15 ? legacyTenderSum3(rows, false) : 0) + (rows.size() > 20 ? legacyTenderSum4(rows, false) : 0) + (rows.size() > 25 ? legacyTenderSum5(rows, false) : 0);
+      let credit = (rows.size() > 0 ? legacyTenderSum0(rows, true) : 0) + (rows.size() > 5 ? legacyTenderSum1(rows, true) : 0) + (rows.size() > 10 ? legacyTenderSum2(rows, true) : 0) + (rows.size() > 15 ? legacyTenderSum3(rows, true) : 0) + (rows.size() > 20 ? legacyTenderSum4(rows, true) : 0) + (rows.size() > 25 ? legacyTenderSum5(rows, true) : 0);
+      let status = isStoredComplimentaryOrder(order) ? 'NOT_REQUIRED' : order.get('isSplitPayment', false)
+        ? (credit <= 0.01 ? 'PAID' : credit >= order.grandTotal - 0.01 ? 'UNPAID' : 'PARTIAL')
+        : (order.paymentMethod == 'CREDIT' && order.grandTotal > 0 ? 'UNPAID' : 'PAID');
+      return rows is list && rows.size() <= 30
+        && (isStoredComplimentaryOrder(order) || (rows.size() > 0 && order.paymentMethod == rows[0].method))
+        && (!order.get('isSplitPayment', false) || math.abs(total - order.grandTotal) <= 0.01)
+        && order.paymentStatus == status
+        && (rows.size() <= 0 || legacyTenders0(orderId, rows)) && (rows.size() <= 5 || legacyTenders1(orderId, rows)) && (rows.size() <= 10 || legacyTenders2(orderId, rows)) && (rows.size() <= 15 || legacyTenders3(orderId, rows)) && (rows.size() <= 20 || legacyTenders4(orderId, rows)) && (rows.size() <= 25 || legacyTenders5(orderId, rows));
+    }
+    function legacySmallSplitPayments(orderId, order) {
+      let rows = order.paymentBreakdown;
+      let total = rows[0].amount + (rows.size() == 2 ? rows[1].amount : 0);
+      let credit = (rows[0].method == 'CREDIT' ? rows[0].amount : 0) + (rows.size() == 2 && rows[1].method == 'CREDIT' ? rows[1].amount : 0);
+      return rows.size() > 0 && rows.size() <= 2 && order.paymentMethod == rows[0].method
+        && math.abs(total - order.grandTotal) <= 0.01
+        && order.paymentStatus == (credit <= 0.01 ? 'PAID' : credit >= order.grandTotal - 0.01 ? 'UNPAID' : 'PARTIAL')
+        && authorizedPaymentAfter(orderId, legacyPaymentId(orderId, 0, rows[0].method), {'method':rows[0].method,'amount':rows[0].amount,'paymentIndex':0})
+        && (rows.size() == 1 || authorizedPaymentAfter(orderId, legacyPaymentId(orderId, 1, rows[1].method), {'method':rows[1].method,'amount':rows[1].amount,'paymentIndex':1}));
+    }
+    function legacySplitPayments(orderId, order) {
+      return order.paymentBreakdown.size() <= 2 ? legacySmallSplitPayments(orderId, order) : legacyLargeSplitPayments(orderId, order);
+    }
+    function legacyPayments(orderId, order) {
+      return order.get('isSplitPayment', false) ? legacySplitPayments(orderId, order)
+        : isStoredComplimentaryOrder(order) ? order.paymentStatus == 'NOT_REQUIRED'
+        : order.paymentStatus == (order.paymentMethod == 'CREDIT' && order.grandTotal > 0 ? 'UNPAID' : 'PAID')
+          && authorizedPaymentAfter(orderId, legacyPaymentId(orderId, 0, order.paymentMethod), {'method':order.paymentMethod, 'amount':order.paymentMethod == 'CREDIT' ? 0 : order.grandTotal, 'paymentIndex':0});
+    }
+    function legacyOrderFinancials(orderId, order, authorization, profile) {
+      // The same atomic commit must consume its authorization, which validates this subtotal.
+      let subtotal = order.subtotal;
+      let percent = order.discountPercent;
+      let complimentary = isStoredComplimentaryOrder(order);
+      let discount = complimentary ? subtotal : subtotal * (percent / 100.0);
+      let ratio = subtotal > 0 ? (discount * 1.0) / subtotal : 0;
+      let tax = order.taxTotal;
+      return authorization.canonicalItems.size() > 0 && authorization.canonicalItems.size() <= 30
+        && percent is number && percent >= 0
+        && (complimentary ? percent == 100 : percent <= (profile.role == 'ADMIN' ? 100 : profile.role == 'STORE_MANAGER' ? 20 : 10))
+        && subtotal is number && subtotal >= 0
+        && bridgeMoney(order.discountAmount, discount) && order.discountTotal == order.discountAmount && order.discount == order.discountAmount
+        && bridgeMoney(order.taxableAmount, subtotal - discount)
+        && tax is number && tax >= 0 && order.gstTotal == tax
+        && bridgeMoney(order.grandTotal, subtotal - discount + tax)
+        && legacyPayments(orderId, order);
+    }
+    function legacyConsumedNativeFinancials(orderId, order, authorization) {
+      let firstId = legacyPaymentId(orderId, 0, order.paymentMethod);
+      // This consumption is mandatory for order creation. A non-complimentary
+      // first tender must be created in this atomic commit, never inherited.
+      return bridgeMoney(order.subtotal, legacySubtotal(authorization))
+        && (isStoredComplimentaryOrder(order) ? order.taxTotal == 0
+          : !exists(/databases/$(database)/documents/orders/$(orderId)/payments/$(firstId)));
+    }
+    // Direct mixed-rate sum over immutable server canonical items. The
+    // outer canonicalAddOnTotal == 0 guard proves all add-on tax is zero.
+    // Complete chunks avoid per-line branches; each GST rate is retained.
+    function legacyBaseTax0(items, count) {
+      return count >= 5 ? items[0].baseUnitPrice * items[0].quantity * items[0].taxRate + items[1].baseUnitPrice * items[1].quantity * items[1].taxRate + items[2].baseUnitPrice * items[2].quantity * items[2].taxRate + items[3].baseUnitPrice * items[3].quantity * items[3].taxRate + items[4].baseUnitPrice * items[4].quantity * items[4].taxRate
+        : (count > 0 ? items[0].baseUnitPrice * items[0].quantity * items[0].taxRate : 0) + (count > 1 ? items[1].baseUnitPrice * items[1].quantity * items[1].taxRate : 0) + (count > 2 ? items[2].baseUnitPrice * items[2].quantity * items[2].taxRate : 0) + (count > 3 ? items[3].baseUnitPrice * items[3].quantity * items[3].taxRate : 0) + (count > 4 ? items[4].baseUnitPrice * items[4].quantity * items[4].taxRate : 0);
+    }
+    function legacyBaseTax1(items, count) {
+      return count >= 10 ? items[5].baseUnitPrice * items[5].quantity * items[5].taxRate + items[6].baseUnitPrice * items[6].quantity * items[6].taxRate + items[7].baseUnitPrice * items[7].quantity * items[7].taxRate + items[8].baseUnitPrice * items[8].quantity * items[8].taxRate + items[9].baseUnitPrice * items[9].quantity * items[9].taxRate
+        : (count > 5 ? items[5].baseUnitPrice * items[5].quantity * items[5].taxRate : 0) + (count > 6 ? items[6].baseUnitPrice * items[6].quantity * items[6].taxRate : 0) + (count > 7 ? items[7].baseUnitPrice * items[7].quantity * items[7].taxRate : 0) + (count > 8 ? items[8].baseUnitPrice * items[8].quantity * items[8].taxRate : 0) + (count > 9 ? items[9].baseUnitPrice * items[9].quantity * items[9].taxRate : 0);
+    }
+    function legacyBaseTax2(items, count) {
+      return count >= 15 ? items[10].baseUnitPrice * items[10].quantity * items[10].taxRate + items[11].baseUnitPrice * items[11].quantity * items[11].taxRate + items[12].baseUnitPrice * items[12].quantity * items[12].taxRate + items[13].baseUnitPrice * items[13].quantity * items[13].taxRate + items[14].baseUnitPrice * items[14].quantity * items[14].taxRate
+        : (count > 10 ? items[10].baseUnitPrice * items[10].quantity * items[10].taxRate : 0) + (count > 11 ? items[11].baseUnitPrice * items[11].quantity * items[11].taxRate : 0) + (count > 12 ? items[12].baseUnitPrice * items[12].quantity * items[12].taxRate : 0) + (count > 13 ? items[13].baseUnitPrice * items[13].quantity * items[13].taxRate : 0) + (count > 14 ? items[14].baseUnitPrice * items[14].quantity * items[14].taxRate : 0);
+    }
+    function legacyBaseTax3(items, count) {
+      return count >= 20 ? items[15].baseUnitPrice * items[15].quantity * items[15].taxRate + items[16].baseUnitPrice * items[16].quantity * items[16].taxRate + items[17].baseUnitPrice * items[17].quantity * items[17].taxRate + items[18].baseUnitPrice * items[18].quantity * items[18].taxRate + items[19].baseUnitPrice * items[19].quantity * items[19].taxRate
+        : (count > 15 ? items[15].baseUnitPrice * items[15].quantity * items[15].taxRate : 0) + (count > 16 ? items[16].baseUnitPrice * items[16].quantity * items[16].taxRate : 0) + (count > 17 ? items[17].baseUnitPrice * items[17].quantity * items[17].taxRate : 0) + (count > 18 ? items[18].baseUnitPrice * items[18].quantity * items[18].taxRate : 0) + (count > 19 ? items[19].baseUnitPrice * items[19].quantity * items[19].taxRate : 0);
+    }
+    function legacyBaseTax4(items, count) {
+      return count >= 25 ? items[20].baseUnitPrice * items[20].quantity * items[20].taxRate + items[21].baseUnitPrice * items[21].quantity * items[21].taxRate + items[22].baseUnitPrice * items[22].quantity * items[22].taxRate + items[23].baseUnitPrice * items[23].quantity * items[23].taxRate + items[24].baseUnitPrice * items[24].quantity * items[24].taxRate
+        : (count > 20 ? items[20].baseUnitPrice * items[20].quantity * items[20].taxRate : 0) + (count > 21 ? items[21].baseUnitPrice * items[21].quantity * items[21].taxRate : 0) + (count > 22 ? items[22].baseUnitPrice * items[22].quantity * items[22].taxRate : 0) + (count > 23 ? items[23].baseUnitPrice * items[23].quantity * items[23].taxRate : 0) + (count > 24 ? items[24].baseUnitPrice * items[24].quantity * items[24].taxRate : 0);
+    }
+    function legacyBaseTax5(items, count) {
+      return count >= 30 ? items[25].baseUnitPrice * items[25].quantity * items[25].taxRate + items[26].baseUnitPrice * items[26].quantity * items[26].taxRate + items[27].baseUnitPrice * items[27].quantity * items[27].taxRate + items[28].baseUnitPrice * items[28].quantity * items[28].taxRate + items[29].baseUnitPrice * items[29].quantity * items[29].taxRate
+        : (count > 25 ? items[25].baseUnitPrice * items[25].quantity * items[25].taxRate : 0) + (count > 26 ? items[26].baseUnitPrice * items[26].quantity * items[26].taxRate : 0) + (count > 27 ? items[27].baseUnitPrice * items[27].quantity * items[27].taxRate : 0) + (count > 28 ? items[28].baseUnitPrice * items[28].quantity * items[28].taxRate : 0) + (count > 29 ? items[29].baseUnitPrice * items[29].quantity * items[29].taxRate : 0);
+    }
+    function legacyUnplannedBaseTax(order, authorization, ratio) {
+      let items = authorization.canonicalItems.values();
+      let count = items.size();
+      let weightedTax = (count > 0 ? legacyBaseTax0(items, count) : 0) + (count > 5 ? legacyBaseTax1(items, count) : 0) + (count > 10 ? legacyBaseTax2(items, count) : 0) + (count > 15 ? legacyBaseTax3(items, count) : 0) + (count > 20 ? legacyBaseTax4(items, count) : 0) + (count > 25 ? legacyBaseTax5(items, count) : 0);
+      return weightedTax * (1 - ratio) / 100.0;
+    }
+    function legacyFirstTenderTax(order, authorization) {
+      let ratio = order.subtotal > 0 ? (order.discountAmount * 1.0) / order.subtotal : 0;
+      // Canonical add-on prices are nonnegative; immutable quantity-weighted
+      // canonicalAddOnTotal == 0 proves there is no add-on tax contribution.
+      let tax = !authorization.keys().hasAll(['financialBasis']) && authorization.canonicalAddOnTotal == 0
+        ? legacyUnplannedBaseTax(order, authorization, ratio)
+        : legacyTax(authorization) * (1 - ratio);
+      return bridgeMoney(order.taxTotal, tax);
+    }
+    function legacyConsumedFinancials(orderId, order, authorization) {
+      return isFrozenOnlineAuthorization(authorization, order)
+        || authorization.get('financials', {}).get('version', 0) == 2
+        || legacyConsumedNativeFinancials(orderId, order, authorization);
+    }
+    function legacyLineFinancials(line, canonical, order) {
+      let basis = legacyLineBasis(canonical);
+      let ratio = order.subtotal > 0 ? (order.discountAmount * 1.0) / order.subtotal : 0;
+      let discount = basis.subtotal * ratio;
+      let tax = basis.tax * (1 - ratio);
+      return bridgeMoney(line.lineSubtotal, basis.subtotal)
+        && bridgeMoney(line.lineDiscount, discount) && bridgeMoney(line.lineTaxable, basis.subtotal - discount)
+        && bridgeMoney(line.lineTax, tax) && bridgeMoney(line.lineTotal, basis.subtotal - discount + tax);
+    }
+    function legacySplitPaymentCreate(orderId, paymentId, order, authorization) {
+      let rows = legacyRows(order);
+      let p = request.resource.data;
+      let index = p.paymentIndex;
+      return index is int && index >= 0 && index < rows.size()
+        && paymentId == legacyPaymentId(orderId, index, rows[index].method)
+        && p.method in ['CASH','UPI','CARD','SWIGGY','ZOMATO','CREDIT']
+        && p.method == rows[index].method && bridgeMoney(p.amount, rows[index].amount)
+        && (index != 0 || legacyFirstTenderTax(order, authorization));
+    }
+    function hasCanonicalOrderFinancials(orderId, order, authorization) {
+      let f = authorization.get('financials', {});
+      let profile = userData();
+      return isFrozenOnlineAuthorization(authorization, order)
+        || (f.get('version', 0) != 2 && legacyOrderFinancials(orderId, order, authorization, profile))
+        || (f.get('version', 0) == 2
+          && (isStoredComplimentaryOrder(order) || (f.discountPercent >= 0
+            && f.discountPercent <= (profile.role == 'ADMIN' ? 100 : profile.role == 'STORE_MANAGER' ? 20 : 10)))
+          && sameMoney(order.subtotal, f.subtotal)
+          && sameMoney(order.discountPercent, f.discountPercent)
+          && sameMoney(order.discountAmount, f.discountAmount)
+          && sameMoney(order.discountTotal, f.discountAmount)
+          && sameMoney(order.discount, f.discountAmount)
+          && sameMoney(order.taxableAmount, f.taxableAmount)
+          && sameMoney(order.taxTotal, f.taxTotal)
+          && sameMoney(order.gstTotal, f.taxTotal)
+          && sameMoney(order.grandTotal, f.grandTotal)
+          && order.paymentMethod == f.paymentMethod && order.paymentStatus == f.paymentStatus
+          && order.get('isSplitPayment', false) == f.isSplitPayment
+          && hasAuthorizedPayments(orderId, f));
+    }
+    function canonicalV2LineFinancials(line, authorization, itemId) {
+      let expected = authorization.financials.lines[itemId];
+      return sameMoney(line.lineSubtotal, expected.lineSubtotal)
+        && sameMoney(line.lineDiscount, expected.lineDiscount)
+        && sameMoney(line.lineTaxable, expected.lineTaxable)
+        && sameMoney(line.lineTax, expected.lineTax)
+        && sameMoney(line.lineTotal, expected.lineTotal);
+    }
+    function hasCanonicalLineFinancials(order, authorization, itemId) {
+      return isFrozenOnlineAuthorization(authorization, order)
+        || (authorization.get('financials', {}).get('version', 0) == 2
+          ? canonicalV2LineFinancials(request.resource.data, authorization, itemId)
+          : legacyLineFinancials(request.resource.data, authorization.canonicalItems[itemId], order));
+    }
+    function canonicalV2PaymentCreate(paymentId, authorization) {
+      let expected = authorization.financials.payments[paymentId];
+      let payment = request.resource.data;
+      return payment.method == expected.method && sameMoney(payment.amount, expected.amount)
+        && payment.paymentIndex == expected.paymentIndex;
+    }
+    function legacyPaymentCreate(orderId, paymentId, order, authorization) {
+      let p = request.resource.data;
+      return order.get('isSplitPayment', false) ? legacySplitPaymentCreate(orderId, paymentId, order, authorization)
+        : p.paymentIndex == 0
+          && p.method in ['CASH','UPI','CARD','SWIGGY','ZOMATO','CREDIT']
+          && p.method == order.paymentMethod
+          && paymentId == legacyPaymentId(orderId, 0, p.method)
+          && bridgeMoney(p.amount, p.method == 'CREDIT' ? 0 : order.grandTotal)
+          && legacyFirstTenderTax(order, authorization);
+    }
+    function canonicalInitialPaymentCreate(orderId, paymentId, order) {
+      let authorization = getAfter(posAddOnAuthorizationPath(order.addOnAuthorizationId)).data;
+      return isFrozenOnlineAuthorization(authorization, order)
+        || (authorization.get('financials', {}).get('version', 0) == 2
+          ? canonicalV2PaymentCreate(paymentId, authorization)
+          : legacyPaymentCreate(orderId, paymentId, order, authorization));
+    }
+    function hasCanonicalPaymentCreate(orderId, paymentId, order) {
+      return exists(/databases/$(database)/documents/orders/$(orderId))
+        || canonicalInitialPaymentCreate(orderId, paymentId, order);
+    }
+    function isValidOrderCreate(orderId) {
+      let order = request.resource.data;
+      let authorization = getAfter(posAddOnAuthorizationPath(order.addOnAuthorizationId)).data;
+      return order.storeId is string
+        && isCheckoutStaffForStore(order.storeId)
+        && order.createdByUserId == request.auth.uid
+        && order.status == 'COMPLETED'
+        && (isValidSaleOrderCreate(order) || isValidComplimentaryOrderCreate(order, orderId))
+        && hasValidPosAddOnAuthorization(order, orderId, authorization)
+        && hasValidInventoryConsumptionStatus(order)
+        && hasCanonicalOrderFinancials(orderId, order, authorization);
+    }
+
+    function isValidComplimentaryAuthorizationConsume(authorizationId) {
+      return isCheckoutStaff()
+        && resource.data.status == 'VERIFIED'
+        && resource.data.used == false
+        && resource.data.staffUid == request.auth.uid
+        && resource.data.expiresAt is timestamp
+        && resource.data.expiresAt > request.time
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.used == true
+        && request.resource.data.usedAt is timestamp
+        && request.resource.data.usedByOrderId is string
+        && request.resource.data.usedByOrderId.size() > 0
+        && request.resource.data.usedByOrderNumber is string
+        && request.resource.data.usedByOrderNumber.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'used',
+          'usedAt',
+          'usedByOrderId',
+          'usedByOrderNumber'
+        ])
+        && getAfter(/databases/$(database)/documents/orders/$(request.resource.data.usedByOrderId)).data.commercialStatus == 'COMPLIMENTARY'
+        && getAfter(/databases/$(database)/documents/orders/$(request.resource.data.usedByOrderId)).data.complimentaryAuthorizationId == authorizationId
+        && getAfter(/databases/$(database)/documents/orders/$(request.resource.data.usedByOrderId)).data.createdByUserId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/orders/$(request.resource.data.usedByOrderId)).data.storeId == resource.data.storeId
+        && getAfter(/databases/$(database)/documents/orders/$(request.resource.data.usedByOrderId)).data.orderNumber == request.resource.data.usedByOrderNumber;
+    }
+
+    function isOrderSettlementUpdate() {
+      return isCheckoutStaffForStore(resource.data.storeId)
+        && resource.data.status == 'COMPLETED'
+        && resource.data.paymentStatus in ['UNPAID', 'PARTIAL']
+        && request.resource.data.paymentStatus == 'PAID'
+        && orderIdentityUnchanged()
+        && orderTotalsUnchanged()
+        && request.resource.data.status == resource.data.status
+        && isValidPaymentMethod(request.resource.data.paymentMethod)
+        && request.resource.data.settledBy == request.auth.uid
+        && request.resource.data.settledAt is timestamp
+        && request.resource.data.paymentBreakdown is list
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paymentStatus',
+          'paymentMethod',
+          'isSplitPayment',
+          'paymentMethodLabel',
+          'paymentBreakdown',
+          'settledAt',
+          'settledBy',
+          'settledByName',
+          'updatedAt'
+        ]);
+    }
+
+    function isValidPosAddOnAuthorizationConsume(authorizationId) {
+      let saved = resource.data;
+      let proposed = request.resource.data;
+      let order = orderAfter(saved.orderId);
+      return isCheckoutStaffForStore(saved.storeId)
+        && saved.provider == 'SERVER_CANONICAL_ADD_ONS'
+        && saved.used == false
+        && saved.staffUid == request.auth.uid
+        && saved.expiresAt is timestamp
+        && saved.expiresAt > request.time
+        && saved.orderId is string
+        && saved.orderId.size() > 0
+        && saved.canonicalItems is map
+        && saved.canonicalAddOnTotal is number
+        && saved.canonicalAddOnTotal >= 0
+        && proposed.used == true
+        && proposed.usedAt is timestamp
+        && proposed.orderNumber is string
+        && proposed.orderNumber.size() > 0
+        && proposed.diff(saved).affectedKeys().hasOnly([
+          'used',
+          'usedAt',
+          'orderNumber'
+        ])
+        && order.addOnAuthorizationId == authorizationId
+        && order.createdByUserId == request.auth.uid
+        && order.storeId == saved.storeId
+        && order.orderNumber == proposed.orderNumber
+        && legacyConsumedFinancials(saved.orderId, order, saved);
+    }
+
+    function isOrderVoidUpdate() {
+      return (isAdmin() || isStoreManager())
+        && hasStoreAccess(resource.data.storeId)
+        && resource.data.status != 'VOIDED'
+        && request.resource.data.status == 'VOIDED'
+        && orderIdentityUnchanged()
+        && orderTotalsUnchanged()
+        && request.resource.data.paymentStatus == resource.data.paymentStatus
+        && request.resource.data.voidedBy == request.auth.uid
+        && request.resource.data.voidedAt is timestamp
+        && ((isStoredComplimentaryOrder(resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'voidReason',
+            'voidedBy',
+            'voidedByName',
+            'voidedByEmail',
+            'voidedAt',
+            'updatedAt'
+        ])) || (!isStoredComplimentaryOrder(resource.data)
+          && isValidPaymentReversalStatus(request.resource.data.paymentReversalStatus)
+          && request.resource.data.paymentReversalBreakdown is list
+          && request.resource.data.paymentReversalTotal is number
+          && request.resource.data.paymentReversalTotal >= 0
+          && request.resource.data.refundedAmount is number
+          && request.resource.data.refundedAmount >= 0
+          && request.resource.data.reversedAmount is number
+          && request.resource.data.reversedAmount >= 0
+          && request.resource.data.refundPendingAmount is number
+          && request.resource.data.refundPendingAmount >= 0
+          && request.resource.data.manualRefundRequiredAmount is number
+          && request.resource.data.manualRefundRequiredAmount >= 0
+          && request.resource.data.netCollectionAmount is number
+          && request.resource.data.netCollectionAmount >= 0
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'paymentReversalStatus',
+          'paymentReversalBreakdown',
+          'paymentReversalTotal',
+          'refundedAmount',
+          'reversedAmount',
+          'refundPendingAmount',
+          'manualRefundRequiredAmount',
+          'netCollectionAmount',
+          'voidReason',
+          'voidedBy',
+          'voidedByName',
+          'voidedByEmail',
+          'voidedAt',
+          'updatedAt'
+        ])));
+    }
+
+    function isValidOrderItemCreate(orderId, itemId) {
+      let data = request.resource.data;
+      let order = orderAfter(orderId);
+      let authorization = getAfter(posAddOnAuthorizationPath(data.addOnAuthorizationId)).data;
+      let line = authorization.canonicalItems[itemId];
+      return isCheckoutStaffForStore(order.storeId)
+        && data.status == 'PENDING'
+        && data.addOnAuthorizationId == order.addOnAuthorizationId
+        && authorization.canonicalItems is map
+        && authorization.canonicalItems.keys().hasAll([itemId])
+        && data.menuItemId == line.parentProductId
+        && data.itemCode == line.parentProductCode
+        && data.quantity == line.quantity
+        && data.baseUnitPrice == line.baseUnitPrice
+        && data.unitPrice == line.baseUnitPrice
+        && data.taxRate == line.taxRate
+        && data.addOns == line.addOns
+        && data.addOnTotal == line.addOnTotal
+        && data.addOns is list
+        && data.addOns.size() <= 40
+        && ((!line.keys().hasAny(['components'])
+            && !data.keys().hasAny(['components']))
+          || (line.keys().hasAll(['components'])
+            && data.keys().hasAll(['components'])
+            && data.components is list
+            && data.components.size() <= 40
+            && data.components == line.components))
+        && data.baseUnitPrice is number
+        && data.baseUnitPrice >= 0
+        && data.addOnTotal is number
+        && data.addOnTotal >= 0
+        && data.unitPriceWithAddOns is number
+        && data.unitPriceWithAddOns == data.baseUnitPrice + data.addOnTotal
+        && data.lineSubtotal == data.unitPriceWithAddOns * data.quantity
+        && (!isStoredComplimentaryOrder(order)
+          || (data.lineSubtotal is number
+            && data.lineSubtotal > 0
+            && data.lineDiscount == data.lineSubtotal
+            && data.lineTaxable == 0
+            && data.lineTax == 0
+            && data.lineTotal == 0))
+        && hasValidInventoryConsumptionStatus(data)
+        && hasCanonicalLineFinancials(order, authorization, itemId);
+    }
+
+    function isOrderItemStatusUpdate(orderId) {
+      return isActiveStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && request.resource.data.status in ['PENDING', 'PREPARING', 'READY', 'SERVED', 'CANCELLED']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+
+    function isValidPaymentCreate(orderId, paymentId) {
+      let order = orderAfter(orderId);
+      let payment = request.resource.data;
+      return isCheckoutStaffForStore(order.storeId)
+        && order.status != 'VOIDED'
+        && order.paymentStatus != 'NOT_REQUIRED'
+        && !isStoredComplimentaryOrder(order)
+        && payment.keys().hasOnly([
+          'method',
+          'amount',
+          'reference',
+          'paymentIndex',
+          'createdAt',
+          'settledBy',
+          'settledByName',
+          'amountReceived',
+          'changeDue'
+        ])
+        && isValidPaymentMethod(payment.method)
+        && payment.amount is number
+        && payment.amount >= 0
+        && (!payment.keys().hasAny(['settledBy']) || payment.settledBy == request.auth.uid)
+        && (!payment.keys().hasAny(['amountReceived']) || payment.amountReceived is number)
+        && (!payment.keys().hasAny(['changeDue']) || payment.changeDue is number)
+        && hasCanonicalPaymentCreate(orderId, paymentId, order);
+    }
+
+    function isPayAtCounterPlaceholderUpdate(orderId) {
+      return isCheckoutStaff()
+        && hasStoreAccess(orderAfter(orderId).storeId)
+        && resource.data.method == 'PAY_AT_COUNTER'
+        && request.resource.data.method == resource.data.method
+        && request.resource.data.amount == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'reference']);
+    }
+
+    function isConfiguredInventoryStorePair(logicalStoreId, inventoryStoreId) {
+      let logical = get(/databases/$(database)/documents/stores/$(logicalStoreId)).data;
+      let physical = get(/databases/$(database)/documents/stores/$(inventoryStoreId)).data;
+      let target = logical.get('inventoryStoreId', '');
+      let physicalTarget = physical.get('inventoryStoreId', '');
+      return logicalStoreId is string && inventoryStoreId is string
+        && exists(/databases/$(database)/documents/stores/$(logicalStoreId))
+        && exists(/databases/$(database)/documents/stores/$(inventoryStoreId))
+        && target is string
+        && ((target.size() > 0 && target == inventoryStoreId)
+          || (target.size() == 0 && logicalStoreId == inventoryStoreId))
+        && physicalTarget is string
+        && (physicalTarget.size() == 0 || physicalTarget == inventoryStoreId);
+    }
+
+    function hasValidInventoryStoreAttribution(data) {
+      return (data.keys().hasAll([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName'
+        ])
+        && data.inventoryStoreId == data.storeId
+        && data.logicalSalesStoreId is string
+        && hasStoreAccess(data.inventoryStoreId)
+        && (data.logicalSalesStoreId == data.inventoryStoreId || hasStoreAccess(data.logicalSalesStoreId))
+        && isConfiguredInventoryStorePair(data.logicalSalesStoreId, data.inventoryStoreId)
+        && data.storeCode == get(/databases/$(database)/documents/stores/$(data.inventoryStoreId)).data.code
+        && data.storeName == get(/databases/$(database)/documents/stores/$(data.inventoryStoreId)).data.name
+        && data.logicalSalesStoreCode == get(/databases/$(database)/documents/stores/$(data.logicalSalesStoreId)).data.code
+        && data.logicalSalesStoreName == get(/databases/$(database)/documents/stores/$(data.logicalSalesStoreId)).data.name
+        && data.orderId is string
+        && data.logicalSalesStoreId == orderAfter(data.orderId).storeId)
+        || (!data.keys().hasAny([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          && data.orderId is string
+          && data.storeId == orderAfter(data.orderId).storeId
+          && hasStoreAccess(data.storeId)
+          && isConfiguredInventoryStorePair(data.storeId, data.storeId));
+    }
+
+    // A void must restore the exact physical pool recorded by the immutable
+    // original sale movement. It deliberately does not re-resolve the store's
+    // current alias or mutable display names: either may legitimately change
+    // after the sale, while the historical movement remains authoritative.
+    function hasValidVoidReversalInventoryAttribution(data) {
+      return data.movementType == 'ORDER_VOID_REVERSAL'
+        && data.keys().hasAll([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName',
+          'originalMovementId',
+          'originalMovementType'
+        ])
+        && data.originalMovementId is string
+        && data.originalMovementId.size() > 0
+        && exists(/databases/$(database)/documents/stockMovements/$(data.originalMovementId))
+        && get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.movementType in [
+          'SALE_DEDUCTION',
+          'ORDER_BOM_BACKFILL'
+        ]
+        && data.originalMovementType == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.movementType
+        && data.orderId is string
+        && data.orderId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.orderId
+        && data.storeId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.storeId
+        && data.inventoryStoreId == data.storeId
+        && data.logicalSalesStoreId == orderAfter(data.orderId).storeId
+        && (
+          (get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.keys().hasAll([
+              'inventoryStoreId',
+              'logicalSalesStoreId'
+            ])
+            && data.inventoryStoreId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.inventoryStoreId
+            && data.logicalSalesStoreId == get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.logicalSalesStoreId)
+          || (!get(/databases/$(database)/documents/stockMovements/$(data.originalMovementId)).data.keys().hasAny([
+              'inventoryStoreId',
+              'logicalSalesStoreId'
+            ])
+            && data.inventoryStoreId == data.logicalSalesStoreId)
+        )
+        && hasStoreAccess(data.inventoryStoreId)
+        && hasStoreAccess(data.logicalSalesStoreId);
+    }
+
+    function hasValidOptionalInventoryStoreAttribution(data) {
+      return !data.keys().hasAny([
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName'
+        ])
+        || (data.keys().hasAll([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          && (
+            (data.movementType == 'ORDER_VOID_REVERSAL'
+              && hasValidVoidReversalInventoryAttribution(data))
+            || (data.movementType != 'ORDER_VOID_REVERSAL'
+              && hasValidInventoryStoreAttribution(data))
+          ));
+    }
+
+    function hasInventoryRecordStoreAccess(data) {
+      return hasStoreAccess(data.storeId)
+        && (
+          !data.keys().hasAny([
+            'inventoryStoreId',
+            'logicalSalesStoreId',
+            'logicalSalesStoreCode',
+            'logicalSalesStoreName'
+          ])
+          || (data.keys().hasAll([
+              'inventoryStoreId',
+              'logicalSalesStoreId',
+              'logicalSalesStoreCode',
+              'logicalSalesStoreName'
+            ])
+            && data.inventoryStoreId == data.storeId
+            && hasStoreAccess(data.logicalSalesStoreId)
+            && isConfiguredInventoryStorePair(data.logicalSalesStoreId, data.inventoryStoreId))
+        );
+    }
+
+    function isSaleDeductionMovement() {
+      let data = request.resource.data;
+      return data.movementType == 'SALE_DEDUCTION'
+      && data.referenceType == 'ORDER'
+      && data.storeId is string
+      && hasStoreAccess(data.storeId)
+      && hasValidInventoryStoreAttribution(data)
+      && data.stockSystem == 'MENU_MANAGEMENT'
+      && data.stockItemType in ['RAW_INGREDIENT', 'PREP_ITEM', 'FINISHED_GOOD', 'PACKAGING', 'BOUGHT_COMPONENT']
+      && data.quantity is number
+      && data.quantity <= 0
+      && data.quantityDelta is number
+      && data.quantityDelta <= 0
+      && data.newQty is number
+      && data.previousQty is number
+      && data.newQty <= data.previousQty
+      && data.createdByUserId == request.auth.uid;
+    }
+
+    function isCheckoutStoreStockDeduction() {
+      return isCheckoutStaffForStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.currentStock is number
+        && request.resource.data.currentStock <= resource.data.currentStock
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'updatedAt']);
+    }
+
+    function isCheckoutStoreInventoryDeduction() {
+      return isCheckoutStaffForStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.currentStock is number
+        && request.resource.data.currentStock <= resource.data.currentStock
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'updatedAt']);
+    }
+
+    // Metadata can be omitted by a client; protect the authoritative parent too.
+    function isTableOrderId(orderId) {
+      return orderId is string && orderId.size() > 0 && orderId.matches('[^/]+')
+        && existsAfter(/databases/$(database)/documents/orders/$(orderId))
+        && getAfter(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']);
+    }
+
+    function referencesTableOrder(data) {
+      let orderId = data.get('orderId', '');
+      let referenceId = data.get('referenceId', '');
+      return isTableOrderId(orderId) || (referenceId != orderId && isTableOrderId(referenceId));
+    }
+
+    function isValidKotCreate() {
+      let data = request.resource.data;
+      let line = orderItemAfter(data.orderId, data.orderItemId);
+      return data.storeId is string
+        && isCheckoutStaffForStore(data.storeId)
+        && data.station in ['BARISTA', 'KITCHEN']
+        && data.status == 'PENDING'
+        && data.createdByUserId == request.auth.uid
+        && data.addOns == line.addOns
+        && ((!line.keys().hasAny(['components'])
+            && !data.keys().hasAny(['component']))
+          || (line.keys().hasAll(['components'])
+            && data.keys().hasAll(['component'])
+            && data.component is map
+            && data.component in line.components
+            && data.itemName == data.component.componentName
+            && data.itemCode == data.component.componentFinishedGoodCode
+            && data.quantity == line.quantity * data.component.quantity
+            && (data.component.prepStation == data.station
+              || data.component.prepStation == 'BOTH')));
+    }
+
+    function isValidTableKotUpdate() {
+      return isActiveStaff() && canReadKot(resource.data)
+        && ((resource.data.status == 'PENDING' && request.resource.data.status in ['PREPARING','READY','SERVED'])
+          || (resource.data.status == 'PREPARING' && request.resource.data.status == 'READY')
+          || (resource.data.status == 'READY' && request.resource.data.status == 'SERVED'))
+        && request.resource.data.tablePreparationStarted == true
+        && ((resource.data.get('tablePreparationStarted',false) == true && request.resource.data.tablePreparationStartedAt == resource.data.tablePreparationStartedAt)
+          || (resource.data.get('tablePreparationStarted',false) == false && request.resource.data.tablePreparationStartedAt == request.time))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt','readyAt','servedAt','handledByUserId','handledByName','tablePreparationStarted','tablePreparationStartedAt'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['handledByUserId']) || request.resource.data.handledByUserId == request.auth.uid);
+    }
+
+    function isValidKotUpdate() {
+      return isActiveStaff()
+        && canReadKot(resource.data)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.orderId == resource.data.orderId
+        && request.resource.data.orderNumber == resource.data.orderNumber
+        && request.resource.data.orderItemId == resource.data.orderItemId
+        && request.resource.data.station == resource.data.station
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdByUserId == resource.data.createdByUserId
+        && isValidKotStatus(request.resource.data.status)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'updatedAt',
+          'readyAt',
+          'servedAt',
+          'cancelledAt',
+          'cancelledBy',
+          'cancelledByName',
+          'cancellationReason',
+          'handledByUserId',
+          'handledByName',
+          'voidReason',
+          'returnedAt',
+          'returnReason',
+          'wastageAt',
+          'wastageReason',
+          'remakeRequestedAt',
+          'remakeReason'
+        ])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['handledByUserId']) || request.resource.data.handledByUserId == request.auth.uid)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['cancelledBy']) || request.resource.data.cancelledBy == request.auth.uid);
+    }
+
+    function canReadKot(data) {
+      return isAdmin()
+        || (isStoreManager() && hasStoreAccess(data.storeId))
+        || (isCashier() && hasStoreAccess(data.storeId))
+        || (isBarista() && data.station == 'BARISTA' && hasStoreAccess(data.storeId))
+        || (isKitchen() && data.station == 'KITCHEN' && hasStoreAccess(data.storeId));
+    }
+
+    function isSafePublicTrackingDocument(data, trackingToken) {
+      return data.keys().hasOnly([
+        'trackingToken',
+        'publicOrderReference',
+        'storeName',
+        'orderType',
+        'tableNumber',
+        'items',
+        'subtotal',
+        'gstTotal',
+        'total',
+        'publicStatus',
+        'submittedAt',
+        'acceptedAt',
+        'readyAt',
+        'servedAt',
+        'publicOrderNumber',
+        'paymentProvider',
+        'paymentStatus',
+        'paymentAvailableUntil',
+        'customerStatusMessage'
+      ])
+      && data.trackingToken == trackingToken
+      && data.trackingToken is string
+      && data.trackingToken.size() >= 32
+      && data.publicOrderReference is string
+      && data.publicOrderReference.size() > 0
+      && data.publicOrderReference.size() <= 32
+      && data.storeName is string
+      && data.storeName.size() > 0
+      && data.storeName.size() <= 80
+      && data.orderType in ['PICKUP', 'DINE_IN']
+      && (
+        (data.orderType == 'DINE_IN'
+          && data.tableNumber is string
+          && data.tableNumber.size() > 0
+          && data.tableNumber.size() <= 20)
+        || (data.orderType == 'PICKUP'
+          && (!data.keys().hasAny(['tableNumber']) || data.tableNumber == null))
+      )
+      && data.items is list
+      && data.items.size() > 0
+      && data.items.size() <= 30
+      && data.subtotal is number
+      && data.gstTotal is number
+      && data.total is number
+      && data.subtotal >= 0
+      && data.gstTotal >= 0
+      && data.total >= 0
+      && data.publicStatus in ['PENDING', 'PAYMENT_PROCESSING', 'PAID_PENDING_ACCEPTANCE', 'ACCEPTED', 'ACCEPTED_AWAITING_PAYMENT', 'CONVERTED', 'PREPARING', 'READY', 'SERVED', 'COMPLETED', 'REJECTED', 'NEEDS_ATTENTION', 'CANCELLED', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'CANCELLED_REFUNDED', 'PAYMENT_REVIEW_REQUIRED']
+      && (!data.keys().hasAny(['paymentProvider']) || data.paymentProvider in ['PAY_AT_COUNTER', 'RAZORPAY'])
+      && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['NOT_STARTED', 'AWAITING_PAYMENT', 'PAYMENT_PROCESSING', 'FAILED', 'PAID', 'REFUND_PENDING', 'REFUNDED', 'REFUND_FAILED', 'PAYMENT_REVIEW_REQUIRED'])
+      && (!data.keys().hasAny(['paymentAvailableUntil']) || data.paymentAvailableUntil is timestamp)
+      && data.customerStatusMessage is string
+      && data.customerStatusMessage.size() > 0
+      && data.customerStatusMessage.size() <= 160
+      && data.submittedAt is timestamp
+      && (!data.keys().hasAny(['acceptedAt']) || data.acceptedAt is timestamp)
+      && (!data.keys().hasAny(['readyAt']) || data.readyAt is timestamp)
+      && (!data.keys().hasAny(['servedAt']) || data.servedAt is timestamp)
+      && (!data.keys().hasAny(['publicOrderNumber']) || (data.publicOrderNumber is string && data.publicOrderNumber.size() <= 80));
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+      allow create: if isAdmin() && !isFranchiseProfile(request.resource.data);
+      allow update: if isAdmin()
+        && !isFranchiseProfile(resource.data)
+        && !isFranchiseProfile(request.resource.data);
+      allow delete: if isAdmin() && !isFranchiseProfile(resource.data);
+    }
+
+    // Admin SDK callables create and manage these append-only audit records.
+    match /franchiseAccessAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /reportAccessAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // App Settings
+    match /appSettings/{document} {
+      allow get: if isActiveStaff() || document == 'gstConfig';
+      allow list: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /appSettings/{document=**} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    // Stores
+    match /stores/{storeId} {
+      // Anonymous customer ordering may discover active locations. Signed-in
+      // non-admin staff remain limited to their explicit store assignments.
+      // Draft/inactive location configuration is restricted to active Admin users.
+      allow read: if isAdmin()
+        || (!isSignedIn() && resource.data.isActive == true)
+        || (
+          isActiveStaff()
+          && (
+            resource.data.isActive == true
+            || (isStoreManager() && resource.data.internalPosTestEnabled == true)
+          )
+          && hasStoreAccess(storeId)
+        );
+      // All store mutations use Admin SDK callables so provisioning, immutable
+      // codes, readiness gates, activation, and audit history cannot be bypassed.
+      allow create, update, delete: if false;
+    }
+
+    match /storeProvisioningJobs/{jobId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /storeProvisioningAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+    
+    // Categories
+    match /categories/{categoryId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+    
+    match /importDiagnostics/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /importManifests/{document=**} {
+      allow read, write: if isAdmin();
+    }
+    
+    // Menu Items
+    match /menuItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow create, delete: if isAdmin();
+      // Admin can update all fields.
+      // Store Manager can only update availableStoreIds.
+      allow update: if isAdmin() || (isStoreManager() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availableStoreIds', 'updatedAt']));
+    }
+    
+    // Counters
+    match /counters/{counterId} {
+      allow read: if isCheckoutStaff();
+      allow write: if isCheckoutStaff();
+    }
+
+    // Customers
+    match /customers/{customerId} {
+      allow get, list: if isCheckoutStaff();
+      allow create, update: if isCheckoutStaff();
+      allow delete: if isAdmin();
+    }
+
+    match /onlineOrders/{onlineOrderId} {
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      allow get, list: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow update: if isCheckoutStaff()
+        && (isAdmin() || hasStoreAccess(resource.data.storeId))
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.items == resource.data.items
+        // Paid gateway orders are accepted or refunded only by secured callables.
+        && resource.data.paymentProvider != 'RAZORPAY';
+      allow delete: if isAdmin() && resource.data.paymentProvider != 'RAZORPAY';
+    }
+
+    match /publicOrderTracking/{trackingToken} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isAdmin()
+        && isSafePublicTrackingDocument(request.resource.data, trackingToken);
+      allow update: if isActiveStaff()
+        && isSafePublicTrackingDocument(request.resource.data, trackingToken)
+        && request.resource.data.trackingToken == resource.data.trackingToken
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'publicStatus',
+          'acceptedAt',
+          'readyAt',
+          'servedAt',
+          'publicOrderNumber',
+          'paymentProvider',
+          'paymentStatus',
+          'paymentAvailableUntil',
+          'customerStatusMessage'
+        ]);
+      allow delete: if isAdmin();
+    }
+
+    match /publicMenuAvailability/{storeCode} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if (isAdmin() || isStoreManager())
+        && request.resource.data.storeCode == storeCode
+        && hasStoreAccess(request.resource.data.storeId);
+      allow delete: if isAdmin();
+    }
+
+    match /productImageAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // Razorpay credentials, intents, verification state, and webhook audits are server-only.
+    match /razorpayPaymentIntents/{intentId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /razorpayWebhookEvents/{eventId} {
+      allow read, create, update, delete: if false;
+    }
+
+    // Verified customer identity, canonical checkout data, reservations, and
+    // refunds are available only through backend-authorised callables.
+    match /customerProfiles/{customerUid} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /customerCheckoutSessions/{sessionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    // BOND financial and qualification state is written only by post-commit Admin
+    // SDK workers. Verified customers may read only records bound to their Auth UID;
+    // Store Managers, Cashiers and other customers gain no network-wide access.
+    match /loyaltyAccounts/{customerId} {
+      allow get: if (isSignedIn() && request.auth.uid == customerId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /loyaltyPointLedger/{ledgerEntryId} {
+      allow get, list: if (isSignedIn() && resource.data.customerId == request.auth.uid) || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /clubMemberships/{membershipId} {
+      allow get, list: if (isSignedIn() && resource.data.customerId == request.auth.uid) || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /qualifyingVisitEvents/{eventId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /qualifyingVisitDays/{dayId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /loyaltyShadowLogs/{logId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /posRazorpaySessions/{sessionId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /posRazorpayWebhookEvents/{eventId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /inventoryReservations/{reservationId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /razorpayRefunds/{refundId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /addOnGroups/{groupId} {
+      allow read: if isActiveStaff();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /addOnGroupAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /productAddOnAudit/{auditId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /dayClosings/{closingId} {
+      allow get: if isCheckoutStaff() && (
+        !exists(/databases/$(database)/documents/dayClosings/$(closingId))
+        || isAdmin()
+        || hasStoreAccess(resource.data.storeId)
+      );
+      allow list: if isAdmin();
+      allow create: if isCheckoutStaff() && hasStoreAccess(request.resource.data.storeId);
+      allow update: if (isAdmin() || isStoreManager())
+        && hasStoreAccess(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId;
+      allow delete: if isAdmin();
+    }
+
+    match /purchaseEntries/{purchaseId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create: if (isAdmin() || isStoreManager())
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.status == 'POSTED';
+      allow update, delete: if false;
+    }
+
+    match /purchaseDrafts/{draftId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create, update, delete: if false;
+    }
+
+    // Created server-side; the client may only consume one with its exact order transaction.
+    match /complimentaryAuthorizations/{authorizationId} {
+      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create, delete: if false;
+      allow update: if isValidComplimentaryAuthorizationConsume(authorizationId);
+    }
+
+    // Created server-side; the client may only consume its own short-lived checkout authorization.
+    match /posAddOnAuthorizations/{authorizationId} {
+      allow read: if isCheckoutStaff()
+        && resource.data.staffUid == request.auth.uid
+        && hasStoreAccess(resource.data.storeId);
+      allow create, delete: if false;
+      allow update: if isValidPosAddOnAuthorizationConsume(authorizationId);
+    }
+
+    // Table sessions and effects are authoritative server writes only.
+    match /tableServiceConfig/{storeId} { allow read: if isCheckoutStaff() && hasStoreAccess(storeId); allow write: if false; }
+    match /tables/{tableId} { allow read: if isCheckoutStaff() && hasStoreAccess(resource.data.storeId); allow write: if false; }
+    match /tableSessions/{sessionId} { allow read: if isCheckoutStaff() && hasStoreAccess(resource.data.storeId); allow write: if false; }
+    match /tableOperations/{operationId} { allow read, write: if false; }
+    match /tableAudit/{auditId} { allow read: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId); allow write: if false; }
+
+    // Orders Collection
+    match /orders/{orderId} {
+      allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(resource.data.storeId));
+      allow create: if !request.resource.data.keys().hasAny(['tableSessionId']) && isValidOrderCreate(orderId);
+      allow update: if resource != null && !resource.data.keys().hasAny(['tableSessionId']) && (isOrderSettlementUpdate() || isOrderVoidUpdate());
+      allow delete: if isAdmin() && !get(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']);
+      
+      // Order Subcollections
+      match /items/{itemId} {
+        allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
+        allow create: if !orderAfter(orderId).keys().hasAny(['tableSessionId']) && isValidOrderItemCreate(orderId, itemId);
+        allow update: if resource != null && isOrderItemStatusUpdate(orderId);
+        allow delete: if isAdmin() && !get(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']);
+      }
+      match /payments/{paymentId} {
+        allow read: if isCheckoutStaff() && (isAdmin() || hasStoreAccess(get(/databases/$(database)/documents/orders/$(orderId)).data.storeId));
+        allow create: if !getAfter(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']) && isValidPaymentCreate(orderId, paymentId);
+        allow update: if !get(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']) && isPayAtCounterPlaceholderUpdate(orderId);
+        allow delete: if isAdmin() && !get(/databases/$(database)/documents/orders/$(orderId)).data.keys().hasAny(['tableSessionId']);
+      }
+    }
+
+    match /kotItems/{kotId} {
+      allow read: if isActiveStaff() && canReadKot(resource.data);
+      
+      allow create: if !request.resource.data.keys().hasAny(['tableSessionId']) && !isTableOrderId(request.resource.data.orderId) && isValidKotCreate();
+      
+      allow update: if resource != null && (resource.data.keys().hasAny(['tableSessionId']) ? isValidTableKotUpdate() : isValidKotUpdate());
+      
+      allow delete: if isAdmin() && !resource.data.keys().hasAny(['tableSessionId']);
+    }
+
+    match /inventoryItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /storeInventory/{stockId} {
+      allow read: if isActiveStaff();
+      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId) 
+                    || isCheckoutStoreInventoryDeduction();
+      allow delete: if isAdmin();
+    }
+
+    match /recipes/{recipeId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /stockMovements/{movementId} {
+      allow read: if isActiveStaff();
+      allow create: if !request.resource.data.keys().hasAny(['tableSessionId']) && !referencesTableOrder(request.resource.data) && isCheckoutStaff()
+        && hasStoreAccess(request.resource.data.storeId)
+        && (
+          ((isAdmin() || isStoreManager()) && hasValidOptionalInventoryStoreAttribution(request.resource.data))
+          || isSaleDeductionMovement()
+        );
+      allow delete: if false; // no deletions
+      allow update: if false; // no modifications
+    }
+
+    match /pendingInventoryConsumption/{pendingId} {
+      allow read: if isActiveStaff() && (isAdmin() || hasInventoryRecordStoreAccess(resource.data));
+      allow create: if !request.resource.data.keys().hasAny(['tableSessionId']) && !referencesTableOrder(request.resource.data) && isCheckoutStaff()
+        && request.resource.data.keys().hasOnly([
+          'storeId',
+          'storeCode',
+          'storeName',
+          'inventoryStoreId',
+          'logicalSalesStoreId',
+          'logicalSalesStoreCode',
+          'logicalSalesStoreName',
+          'orderId',
+          'orderNumber',
+          'orderLineId',
+          'finishedGoodId',
+          'finishedGoodCode',
+          'finishedGoodName',
+          'quantitySold',
+          'soldAt',
+          'source',
+          'status',
+          'reason',
+          'createdAt',
+          'resolvedAt',
+          'resolvedBy',
+          'appliedBomVersion',
+          'inventoryMovementIds',
+          'idempotencyKey'
+        ])
+        && request.resource.data.storeId is string
+        && hasStoreAccess(request.resource.data.storeId)
+        && request.resource.data.orderId is string
+        && request.resource.data.orderId.size() > 0
+        && hasValidInventoryStoreAttribution(request.resource.data)
+        && request.resource.data.status == 'PENDING_BOM'
+        && request.resource.data.idempotencyKey == pendingId
+        && request.resource.data.orderNumber is string
+        && request.resource.data.orderNumber.size() > 0
+        && request.resource.data.orderLineId is string
+        && request.resource.data.orderLineId.size() > 0
+        && request.resource.data.finishedGoodId is string
+        && request.resource.data.finishedGoodId.size() > 0
+        && request.resource.data.finishedGoodCode is string
+        && request.resource.data.finishedGoodCode.size() > 0
+        && request.resource.data.finishedGoodName is string
+        && request.resource.data.finishedGoodName.size() > 0
+        && request.resource.data.quantitySold is number
+        && request.resource.data.quantitySold > 0
+        && request.resource.data.soldAt is timestamp
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.source in ['POS', 'CUSTOMER_WEB_ACCEPT']
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.resolvedAt == null
+        && request.resource.data.resolvedBy == null
+        && request.resource.data.appliedBomVersion == null
+        && request.resource.data.inventoryMovementIds is list
+        && request.resource.data.inventoryMovementIds.size() == 0;
+      allow update: if !isTableOrderId(resource.data.orderId) && (isAdmin() || isStoreManager())
+        && (isAdmin() || hasInventoryRecordStoreAccess(resource.data))
+        && resource.data.status == 'PENDING_BOM'
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'reason',
+          'resolvedAt',
+          'resolvedBy',
+          'updatedAt'
+        ])
+        && request.resource.data.resolvedBy == request.auth.uid
+        && request.resource.data.resolvedAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    // --- Menu Management V2 Collections ---
+    match /rawIngredients/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /prepItems/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /finishedGoods/{itemId} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    // Private per-store commercial and menu-presentation overrides.
+    // Release 1B has no POS consumer, so only an active Admin may read or write them.
+    match /storeItemConfig/{configId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /storeStock/{stockId} {
+      allow read: if isActiveStaff();
+      allow create: if ((isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId))
+                    || (isCashier() && isSaleCreatedStoreStock(stockId));
+      allow update: if (isAdmin() || isStoreManager()) && hasStoreAccess(resource.data.storeId)
+                    || isCheckoutStoreStockDeduction();
+      allow delete: if isAdmin();
+    }
+
+    match /prepProductions/{prodId} {
+      allow read: if isActiveStaff();
+      allow create: if (isAdmin() || isStoreManager()) && hasStoreAccess(request.resource.data.storeId);
+      allow delete, update: if isAdmin();
+    }
+  }
+}
